@@ -211,14 +211,19 @@ class CSSMemoryExperiment(Experiment, ABC):
             m_index += n
         
         # Observables
-        logical_z = code.logical_z if hasattr(code, "logical_z") else []
+        logical_z_ops = code.logical_z_ops if hasattr(code, "logical_z_ops") else []
         
-        for logical_idx, op in enumerate(logical_z):
+        # m_index now points past all measurements, so we need to count backward
+        # Final measurement of data qubits starts at m_index - n
+        for logical_idx, op in enumerate(logical_z_ops):
             recs = []
             for q, pauli in enumerate(op):
                 if pauli in ["Z", "Y"]:
-                    recs.append(m_index - n + q)
+                    # rec[-1] is the last measurement (qubit n-1 of data)
+                    # rec[-n] is the first measurement (qubit 0 of data)
+                    rec_lookback = n - q
+                    recs.append(stim.target_rec(-rec_lookback))
             if recs:
-                c.append("OBSERVABLE_INCLUDE", recs, [logical_idx])
+                c.append("OBSERVABLE_INCLUDE", recs, [float(logical_idx)])
         
         return c
