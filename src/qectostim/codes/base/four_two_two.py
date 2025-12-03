@@ -27,28 +27,16 @@ class FourQubit422Code(TopologicalCSSCode):
             (1.0, 1.0),
             (0.0, 1.0),
         ]
-        coord_to_index = {c: i for i, c in enumerate(data_coords)}
 
-        # One X face and one Z face, both touching all 4 edges.
-        # boundary_2 has shape (#edges, #faces) = (4, 2).
-        # Each row is an edge (data qubit); each column is a face (stabilizer).
-        # Row i, col j = 1 if edge i is part of face j.
+        # boundary_2 has shape (#edges, #faces) = (4, 1). This defines one X stabilizer (XXXX).
         boundary_2 = np.array(
-            [
-                [1, 1],  # edge 0 (qubit 0): part of X and Z faces
-                [1, 1],  # edge 1 (qubit 1): part of X and Z faces
-                [1, 1],  # edge 2 (qubit 2): part of X and Z faces
-                [1, 1],  # edge 3 (qubit 3): part of X and Z faces
-            ],
+            [[1], [1], [1], [1]],  # All 4 data qubits are in the X stabilizer
             dtype=np.uint8,
         )
 
-        # Provide a vertex structure: 1 vertex, all edges connect to it.
-        # boundary_1 has shape (#vertices, #edges) = (1, 4).
+        # boundary_1 has shape (#vertices, #edges) = (1, 4). This defines one Z stabilizer (ZZZZ).
         boundary_1 = np.array(
-            [
-                [1, 1, 1, 1],  # vertex 0: connected to all 4 edges
-            ],
+            [[1, 1, 1, 1]],  # All 4 data qubits are in the Z stabilizer
             dtype=np.uint8,
         )
 
@@ -67,15 +55,13 @@ class FourQubit422Code(TopologicalCSSCode):
             {
                 "distance": 2,
                 "data_coords": data_coords,
-                "x_stab_coords": [(0.5, 0.5)],  # Single X stabilizer (XXXX)
-                "z_stab_coords": [(0.5, 0.5)],  # Single Z stabilizer (ZZZZ)
-                "data_qubits": [0, 1, 2, 3],
-                "ancilla_qubits": [4, 5],
-                "logical_x_support": [0, 1],  # XXII - only qubits 0,1
-                "logical_z_support": [0, 1],  # ZZII - only qubits 0,1
-                # Schedules for syndrome extraction
-                "x_schedule": [(0.0, 0.0)],  # No geometric decomposition; single phase
-                "z_schedule": [(0.0, 0.0)],  # No geometric decomposition; single phase
+                "x_stab_coords": [(0.5, 1.0)],  # X stabilizer (XXXX) at top
+                "z_stab_coords": [(0.5, 0.0)],  # Z stabilizer (ZZZZ) at bottom
+                "data_qubits": list(range(4)),
+                "ancilla_qubits": [4, 5],  # One for X (4), one for Z (5)
+                "logical_x_support": [0, 1],  # XXII
+                "logical_z_support": [0, 1],  # ZZII
+                # Schedules for syndrome extraction (naive, single step)
             }
         )
 

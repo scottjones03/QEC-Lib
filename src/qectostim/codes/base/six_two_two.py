@@ -41,8 +41,17 @@ class SixQubit622Code(TopologicalCSSCode):
 
         chain_complex = CSSChainComplex3(boundary_2=boundary_2, boundary_1=boundary_1)
 
-        logical_x: List[PauliString] = []  # TODO: define logical X operators from paper snippet
-        logical_z: List[PauliString] = []  # TODO: define logical Z operators from paper snippet
+        # Define logical operators for [6,2,2] code
+        # Logical X operators (span kernel of Hz)
+        logical_x: List[PauliString] = [
+            "XXXIII",  # Logical X on first block (qubits 0-2)
+            "IIIXXX",  # Logical X on second block (qubits 3-5)
+        ]
+        # Logical Z operators (span kernel of Hx)
+        logical_z: List[PauliString] = [
+            "ZZZIII",  # Logical Z on first block (qubits 0-2)
+            "IIIZZI",  # Logical Z on second block (qubits 3,4)
+        ]
 
         meta = dict(metadata or {})
         meta["name"] = "C6"
