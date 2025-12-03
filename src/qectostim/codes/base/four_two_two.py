@@ -1,39 +1,80 @@
-# src/qec_to_stim/codes/base/four_qubit_422.py
+# src/qectostim/codes/topological/four_qubit_422.py
 from __future__ import annotations
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from src.qectostim.codes.abstract_code import CSSCode, PauliString
+from ..complexes.css_complex import CSSChainComplex3
+from ..abstract_css import TopologicalCSSCode
+from ..abstract_homological import Coord2D
+from ..abstract_code import PauliString
 
 
-class FourQubitCode(CSSCode):
+class FourQubit422Code(TopologicalCSSCode):
+    """The [[4,2,2]] Little Shor code.
+
+    Stabilizers:
+        S_X = XXXX
+        S_Z = ZZZZ
     """
-    [[4,2,2]] "Little Shor" code.
 
-    Stabilizers: XXXX and ZZZZ.
-    Hx = Hz = [1,1,1,1].
-    2 logical qubits.
-    """
-
-    def __init__(self, metadata: Optional[Dict[str, Any]] = None):
-        hx = np.array([[1, 1, 1, 1]], dtype=np.uint8)
-        hz = np.array([[1, 1, 1, 1]], dtype=np.uint8)
-        logical_x, logical_z = self._default_logicals()
-        meta = dict(metadata or {})
-        meta.setdefault("distance", 2)
-        super().__init__(hx=hx, hz=hz, logical_x=logical_x, logical_z=logical_z, metadata=meta)
-
-    @staticmethod
-    def _default_logicals() -> (List[PauliString], List[PauliString]):
-        # One reasonable choice; you can plug in your favourite
-        # e.g. from earlier discussions.
-        lx: List[PauliString] = [
-            {2: "X", 3: "X"},  # logical X1
-            {0: "X", 1: "X"},  # logical X2
+    def __init__(self, *, metadata: Optional[Dict[str, Any]] = None):
+        data_coords: List[Coord2D] = [
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (1.0, 1.0),
+            (0.0, 1.0),
         ]
-        lz: List[PauliString] = [
-            {3: "Z"},          # logical Z1
-            {1: "Z"},          # logical Z2
+
+        # boundary_2 has shape (4, 1): 4 edges, 1 face per basis
+        # This will give Hx = boundary_2.T = (1, 4)
+        boundary_2 = np.array(
+            [
+                [1],
+                [1],
+                [1],
+                [1],
+            ],
+            dtype=np.uint8,
+        )
+
+        # boundary_1 has shape (1, 4): 1 vertex, 4 edges
+        # Hz = boundary_1 = (1, 4)
+        boundary_1 = np.array(
+            [
+                [1, 1, 1, 1],
+            ],
+            dtype=np.uint8,
+        )
+
+        chain_complex = CSSChainComplex3(boundary_2=boundary_2, boundary_1=boundary_1)
+
+        logical_z = [
+            "ZZII",
+            "IZZI",
         ]
-        return lx, lz
+        logical_x = [
+            "XXII",
+            "IXXI",
+        ]
+        meta: Dict[str, Any] = dict(metadata or {})
+        meta.update(
+            {
+                "distance": 2,
+                "data_coords": data_coords,
+                "x_stab_coords": [(0.4, 0.5)],
+                "z_stab_coords": [(0.6, 0.5)],
+                "data_qubits": [0, 1, 2, 3],
+                "ancilla_qubits": [4, 5],
+                "logical_x_support": [0, 1],
+                "logical_z_support": [0, 1],
+                "x_schedule": None,
+                "z_schedule": None,
+            }
+        )
+
+        super().__init__(chain_complex, logical_x, logical_z, metadata=meta)
+
+    def qubit_coords(self) -> List[Coord2D]:
+        meta = getattr(self, "_metadata", {})
+        return list(meta.get("data_coords", []))
