@@ -1,10 +1,11 @@
 # src/qec_to_stim/codes/base/generic_css.py
 from __future__ import annotations
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 import numpy as np
 
-from src.qectostim.codes.abstract_code import CSSCode, PauliString
+from qectostim.codes.abstract_css import CSSCode
+from qectostim.codes.abstract_code import PauliString
 
 
 class GenericCSSCode(CSSCode):
@@ -26,7 +27,7 @@ class GenericCSSCode(CSSCode):
                          metadata=metadata or {})
 
     @staticmethod
-    def _infer_logicals(hx: np.ndarray, hz: np.ndarray) -> (List[PauliString], List[PauliString]):
+    def _infer_logicals(hx: np.ndarray, hz: np.ndarray) -> Tuple[List[PauliString], List[PauliString]]:
         # TODO: implement symplectic linear algebra to compute logicals.
         # For v0, you can require users to pass logicals and raise if missing.
         raise NotImplementedError("Automatic logical inference not implemented yet")

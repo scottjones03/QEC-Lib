@@ -5,8 +5,8 @@ from typing import List
 
 import stim
 
-from src.qectostim.codes.abstract_code import Code
-from src.qectostim.noise.models import NoiseModel
+from qectostim.codes.abstract_code import Code
+from qectostim.noise.models import NoiseModel
 
 
 class Gadget(ABC):

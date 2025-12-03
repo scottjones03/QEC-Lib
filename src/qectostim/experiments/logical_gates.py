@@ -4,10 +4,10 @@ from typing import Any, Dict, Optional, List
 
 import stim
 
-from src.qectostim.experiments import Experiment
-from src.qectostim.codes.abstract_code import Code
-from src.qectostim.noise.models import NoiseModel
-from src.qectostim.noise.stim_noise import apply_noise_to_circuit
+from qectostim.experiments import Experiment
+from qectostim.codes.abstract_code import Code
+from qectostim.noise.models import NoiseModel
+from qectostim.noise.stim_noise import apply_noise_to_circuit
 
 
 class LogicalGateExperiment(Experiment):
