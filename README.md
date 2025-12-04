@@ -1,10 +1,10 @@
-# 📦 Comprehensive Quantum Error Correction Library (QEC-Lib)
+# Comprehensive Quantum Error Correction Library (QEC-Lib)
 
 A modular and extensible Python framework for building, simulating, and decoding quantum error-correcting codes.
 
 ---
 
-## 🔍 Overview
+## Overview
 
 This library provides:
 
@@ -28,25 +28,25 @@ print(results.ler)
 
 ⸻
 
-✨ Key Capabilities (Current & Evolving)
+## Key Capabilities (Current & Evolving)
 
 
-Base CSS code classes (surface, Steane, Shor, Reed-Muller, etc.)					✅
+Base CSS code classes (surface, Steane, Shor, Reed-Muller, etc.)					Done
 
-Composite code constructs (concatenated, dual, subcode, etc.)						🔧 WIP
+Composite code constructs (concatenated, dual, subcode, etc.)						WIP
 
-Stim circuit generation for memory experiments										✅
+Stim circuit generation for memory experiments										Done
 
-MWPM decoding via PyMatching														✅
+MWPM decoding via PyMatching														Done
 
-Fault-tolerant gate gadgets															🚧 Roadmap (teleportation + CSS code surgery)
+Fault-tolerant gate gadgets															Roadmap (teleportation + CSS code surgery)
 
-Benchmarks for LER, LER-no-decode & NDR												✅
+Benchmarks for LER, LER-no-decode & NDR												Done
 
 
 ⸻
 
-🧱 Architecture & Design
+## Architecture & Design
 
 Base CSS Code Classes
 
@@ -81,7 +81,7 @@ Composite & Transform Classes (Roadmap)
 
 ⸻
 
-🎯 Fault-Tolerance Goals
+Fault-Tolerance Goals
 
 We plan to support:
 
@@ -94,7 +94,7 @@ This aims to support a flexible and universal fault-tolerant computing framework
 
 ⸻
 
-🚀 Getting Started
+Getting Started
 ```
 git clone https://github.com/scottjones03/qec-lib.git
 cd qec-lib
@@ -117,7 +117,7 @@ python examples/comprehensive_diagnostic.py
 
 ⸻
 
-📅 Roadmap
+Roadmap
 
 	•	Expand supported code families (LDPC, color codes, Bacon-Shor, 3D gauge codes)
 	•	Add more decoder backends (Fusion Blossom, BP+OSD, etc.)
@@ -127,17 +127,14 @@ python examples/comprehensive_diagnostic.py
 
 ⸻
 
-🤝 Contributing
+Contributing
 
 Contributions are welcome!
 Please open issues or pull requests for new codes, decoders, benchmarks or documentation improvements.
 
 ⸻
 
-⭐ Citation
+Citation
 
 If you use this library in your work, please cite this repository (or include attribution) until a formal publication is available.
 
----
-
-If you like, I can also add a **Table of Contents** at the top to improve navigation (helpful for long READMEs).
