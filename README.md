@@ -30,22 +30,19 @@ print(results.ler)
 
 ✨ Key Capabilities (Current & Evolving)
 
-Capability	Status
-Base CSS code classes (surface, Steane, Shor, Reed-Muller, etc.)	✅
-Composite code constructs (concatenated, dual, subcode, etc.)	🔧 WIP
-Stim circuit generation for memory experiments	✅
-MWPM decoding via PyMatching	✅
-Fault-tolerant gate gadgets	🚧 Roadmap (teleportation + CSS code surgery)
-Benchmarks for LER, LER-no-decode & NDR	✅
 
+Base CSS code classes (surface, Steane, Shor, Reed-Muller, etc.)					✅
 
-⸻
+Composite code constructs (concatenated, dual, subcode, etc.)						🔧 WIP
 
-🧪 Example: Diagnostic Benchmark
+Stim circuit generation for memory experiments										✅
 
-Here’s how you can run a comprehensive diagnostic across codes and noise levels to obtain LER, LER-no-decode and NDR.
+MWPM decoding via PyMatching														✅
 
-(You might want to reduce output or summarise results in README to keep it readable.)
+Fault-tolerant gate gadgets															🚧 Roadmap (teleportation + CSS code surgery)
+
+Benchmarks for LER, LER-no-decode & NDR												✅
+
 
 ⸻
 
@@ -54,11 +51,17 @@ Here’s how you can run a comprehensive diagnostic across codes and noise level
 Base CSS Code Classes
 
 Currently supported (or planned):
+
 	•	RotatedSurfaceCode(d)
+	
 	•	FourQubit422Code ([[4,2,2]])
+	
 	•	SteanCode713 ([[7,1,3]])
+	
 	•	ShorCode91 ([[9,1,3]])
+	
 	•	ReedMuller151 ([[15,1,3]])
+	
 	•	GenericCSSCode(Hx, Hz) — allows specifying custom CSS codes from parity-check matrices
 
 Each code object exposes:
@@ -70,6 +73,7 @@ code.Hx, code.Hz
 code.logical_ops  
 ```
 Composite & Transform Classes (Roadmap)
+
 	•	ConcatenatedCode — multi-level encoding to increase distance
 	•	DualCode — swap X/Z structure of a CSS code (useful for transversal logic)
 	•	Subcode, GaugeFixedCode, etc., to construct subcodes or gauge-fixed versions
@@ -80,6 +84,7 @@ Composite & Transform Classes (Roadmap)
 🎯 Fault-Tolerance Goals
 
 We plan to support:
+
 	•	Transversal gates, where available (e.g. Steane or 4-qubit code)
 	•	Teleportation-based logical Clifford gates — for codes where transversal gates aren’t available
 	•	General CSS-code surgery for universal CNOT between arbitrary CSS codes
@@ -91,7 +96,7 @@ This aims to support a flexible and universal fault-tolerant computing framework
 
 🚀 Getting Started
 ```
-git clone https://github.com/<yourusername>/qec-lib.git
+git clone https://github.com/scottjones03/qec-lib.git
 cd qec-lib
 pip install -r requirements.txt
 ```
@@ -113,6 +118,7 @@ python examples/comprehensive_diagnostic.py
 ⸻
 
 📅 Roadmap
+
 	•	Expand supported code families (LDPC, color codes, Bacon-Shor, 3D gauge codes)
 	•	Add more decoder backends (Fusion Blossom, BP+OSD, etc.)
 	•	Implement full logical-gate gadget library (Clifford + T)
