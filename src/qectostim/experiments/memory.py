@@ -279,13 +279,21 @@ class CSSMemoryExperiment(MemoryExperiment):
                                 c.append("CNOT", [dq, a])
 
             # ---- Measure ancillas in batches (like Stim) ----
+            # For a CSS memory experiment, we need BOTH X and Z syndromes:
+            # - Z-basis memory: Z stabilizers detect X errors (needed for correction)
+            #                   X stabilizers also detect Z errors that would flip the observable
+            # - X-basis memory: X stabilizers detect Z errors (needed for correction)
+            #                   Z stabilizers also detect X errors
+            #
+            # Both types of stabilizers should be measured in EVERY round to enable
+            # proper error correction. The final round may use M instead of MR.
+            
             # Collect all X-ancillas to measure in this round
-            # X-ancillas are measured every round except the last (where we use M instead of MR)
+            # X-ancillas are measured every round (not just for X-basis)
             x_ancillas_to_measure = []
             for s_idx in range(n_x):
-                should_measure_x = (basis == "X") or (r < self.rounds - 1)
-                if should_measure_x:
-                    x_ancillas_to_measure.append((s_idx, anc_x[s_idx]))
+                # Always measure X-ancillas in every round for proper syndrome extraction
+                x_ancillas_to_measure.append((s_idx, anc_x[s_idx]))
             
             # Collect all Z-ancillas to measure in this round
             # Z-ancillas are measured every round for syndrome extraction and space-like detectors
@@ -300,28 +308,20 @@ class CSSMemoryExperiment(MemoryExperiment):
                 if r < self.rounds - 1:
                     c.append("MR", x_qubits)
                 else:
-                    c.append("M", x_qubits)
+                    c.append("MR", x_qubits)  # Use MR even in last round for consistency
                 m_index += len(x_qubits)
             
             # Create time-like detectors for X-ancillas
-            # For Z-basis, we create detectors comparing consecutive X measurements
-            # For X-basis, detectors only exist in final measurement (no time-like)
+            # For Z-basis, X-ancillas detect Z errors (which don't affect Z-basis logical state directly,
+            # but are needed for proper decoding when errors propagate)
             for offset, (s_idx, _) in enumerate(x_ancillas_to_measure):
                 cur = x_meas_start_idx + offset
                 coord = stab_coord(x_stab_coords, s_idx)
                 
-                if basis == "X":
-                    if last_x_meas[s_idx] is None:
-                        add_detector(coord, [cur], t=0.0)
-                    else:
-                        add_detector(coord, [last_x_meas[s_idx], cur], t=0.0)
-                else:  # basis == "Z"
-                    # For Z-basis, create detectors for X-ancillas in non-final rounds
-                    if r < self.rounds - 1:
-                        if last_x_meas[s_idx] is None:
-                            add_detector(coord, [cur], t=0.0)
-                        else:
-                            add_detector(coord, [last_x_meas[s_idx], cur], t=0.0)
+                if last_x_meas[s_idx] is None:
+                    add_detector(coord, [cur], t=0.0)
+                else:
+                    add_detector(coord, [last_x_meas[s_idx], cur], t=0.0)
                 
                 last_x_meas[s_idx] = cur
             
@@ -344,11 +344,9 @@ class CSSMemoryExperiment(MemoryExperiment):
                 
                 last_z_meas[s_idx] = cur
             
-            # Mark X-ancillas not measured this round
-            for s_idx in range(n_x):
-                should_measure_x = (basis == "X") or (r < self.rounds - 1)
-                if not should_measure_x:
-                    last_x_meas[s_idx] = None
+            # Update last_x_meas for all X-ancillas (they are now measured in every round)
+            for offset, (s_idx, _) in enumerate(x_ancillas_to_measure):
+                last_x_meas[s_idx] = x_meas_start_idx + offset
 
             if data_coords is not None:
                 c.append("SHIFT_COORDS", [], [0.0, 0.0, 1.0])
@@ -433,27 +431,20 @@ class CSSMemoryExperiment(MemoryExperiment):
             # ---- Logical observable ---------------------------------------
             rec_indices_by_data = data_meas_indices_all
 
-            meta_support = (
-                meta.get("logical_z_support")
-                if basis == "Z"
-                else meta.get("logical_x_support")
-            )
-            logical_support: list[int] = []
-            if meta_support is not None:
-                logical_support = list(meta_support)
-            else:
-                # Derive support from stored logical operators if metadata absent.
-                def pauli_at(pauli_obj, q: int) -> str:
-                    if isinstance(pauli_obj, str):
-                        return pauli_obj[q]
+            # Derive logical support directly from logical operators (preferred)
+            # This removes redundant metadata dependency
+            def pauli_at(pauli_obj, q: int) -> str:
+                if isinstance(pauli_obj, str):
                     return pauli_obj[q]
+                return pauli_obj[q]
 
-                if basis == "Z" and code.logical_z_ops:
-                    L = code.logical_z_ops[self.logical_qubit]
-                    logical_support = [q for q in range(n) if pauli_at(L, q) in ("Z", "Y")]
-                elif basis == "X" and code.logical_x_ops:
-                    L = code.logical_x_ops[self.logical_qubit]
-                    logical_support = [q for q in range(n) if pauli_at(L, q) in ("X", "Y")]
+            logical_support: list[int] = []
+            if basis == "Z" and code.logical_z_ops and self.logical_qubit < len(code.logical_z_ops):
+                L = code.logical_z_ops[self.logical_qubit]
+                logical_support = [q for q in range(n) if pauli_at(L, q) in ("Z", "Y")]
+            elif basis == "X" and code.logical_x_ops and self.logical_qubit < len(code.logical_x_ops):
+                L = code.logical_x_ops[self.logical_qubit]
+                logical_support = [q for q in range(n) if pauli_at(L, q) in ("X", "Y")]
 
             if not logical_support:
                 logical_support = measured_qubits
@@ -472,4 +463,5 @@ class CSSMemoryExperiment(MemoryExperiment):
         # NOTE: Final measurement block on data qubits uses M (not MR).
         #       Detector coordinates above use correct spacetime (x, y, t).
         #       All DETECTOR rec indices reference valid measurement results.
+
         return c

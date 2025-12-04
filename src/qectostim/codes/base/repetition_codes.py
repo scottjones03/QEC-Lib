@@ -5,14 +5,19 @@ Implements the family of repetition codes which encode 1 logical qubit
 in N physical qubits with distance N. These are the simplest possible
 CSS codes and demonstrate directional error suppression.
 
-The implementation uses:
-- Hz: Adjacent-pair Z-type checks (detect X errors)
-- Hx: Empty or minimal X-type checks
+Key insight: Classical repetition codes use ONLY one type of parity check:
+adjacent-pair Z-checks. This detects bit-flip (X) errors via syndrome changes.
+The logical information is encoded in the global parity across all qubits.
+
+The implementation uses (matching Stim convention):
+- Hz: (N-1) adjacent-pair Z-type checks (detect X errors via syndrome)
+- Hx: Empty (no X-type checks - this code only detects X errors)
 
 Key Features:
 - Distance = N (scales with code size)
-- Directional: Z-errors detected via boundary operators
-- Classical limit: repition error-correcting code
+- Directional: detects X errors via local syndrome, no distance for Z errors
+- Matches Stim repetition code structure
+- k = 1 logical qubit with proper CSS structure
 """
 
 from typing import Tuple, List, Dict, Any, Optional
@@ -78,65 +83,54 @@ class RepetitionCode(CSSCode):
     def _generate_checks(self) -> Tuple[np.ndarray, np.ndarray]:
         """Generate check matrices for [[N,1,N]] repetition code
         
-        Uses structure:
-        - Hz: (N-1) adjacent-pair Z checks 
+        Matches Stim's standard repetition code structure:
+        - Hz: (N-1) adjacent-pair Z-type checks (detect X/bit-flip errors)
           Each checks (qubit i, qubit i+1)
-          Rank: N-1
           
-        - Hx: All zeros (rank 0)
-          This is valid CSS (0 @ anything = 0)
-          Allows k = n - rank(Hx) - rank(Hz) = N - 0 - (N-1) = 1 ✓
+        - Hx: Single row of all zeros (rank 0)
+          No X-type checks. This code only detects X errors, not Z errors.
+          For CSS code structure, Hx is minimal to satisfy orthogonality.
         
-        Logical operators:
-        - Lx: anything (no Hx to anticommute with)
-          Use: full-chain [X,X,...,X] for distance
-        - Lz: must anticommute with ALL Hz (adjacent pairs)
-          Use: middle qubit [I...IZI...I] for distance
+        With rank(Hx)=0 and rank(Hz)=N-1:
+        k = n - rank(Hx) - rank(Hz) = N - 0 - (N-1) = 1 ✓
         
         Returns
         -------
-        Hx : ndarray of shape (N-1, N) or (1, N)
-            Zero matrix for X checks
+        Hx : ndarray of shape (1, N) with all zeros
+            Minimal X-type check matrix (for CSS structure)
         Hz : ndarray of shape (N-1, N)  
             Z-type check matrix (adjacent pairs)
         """
-        # Hz: single full-chain Z parity check (all qubits)
-        Hz = np.ones((1, self.N), dtype=np.uint8)
-        
-        # Hx: adjacent-pair X parity checks
-        Hx = np.zeros((self.N - 1, self.N), dtype=np.uint8)
+        # Hz: adjacent-pair Z-type parity checks (N-1 checks)
+        # Matches Stim: checks Z*Z on adjacent qubits
+        Hz = np.zeros((self.N - 1, self.N), dtype=np.uint8)
         for i in range(self.N - 1):
-            Hx[i, i] = 1
-            Hx[i, i + 1] = 1
+            Hz[i, i] = 1
+            Hz[i, i + 1] = 1
+        
+        # Hx: Minimal matrix (one row of all zeros)
+        # This represents the fact that this code only detects X errors
+        # CSS orthogonality: 0 @ anything = 0 ✓
+        Hx = np.zeros((1, self.N), dtype=np.uint8)
         
         return Hx, Hz
     
     def _generate_logical_operators(self) -> Tuple[List[PauliString], List[PauliString]]:
         """Generate logical X and Z operators
         
-        NOTE: This is a NON-STANDARD CSS code where Hx has rank 0 (all zeros).
-        The code structure encodes 1 logical qubit via boundary effects.
-        
         For the [[N,1,N]] repetition code with Hx = zeros and Hz = adjacent pairs:
         
-        Lx = [X,X,...,X]:
-        - Any X error flips some adjacent-pair parity checks
-        - Distance N because boundary qubits create long-range coupling
+        Lx = [X,X,...,X] (full-chain X):
+        - Full-chain X anticommutes with most stabilizer measurements at boundaries
+        - Encodes logical information: parity of entire chain
+        - Any X error on any qubit flips the parity
+        - Distance N for detecting/correcting X errors
         
-        Lz = [Z,Z,...,Z] (FULL CHAIN):
-        - Although it COMMUTES with Hz (even overlap each pair),
-          this is actually correct! Here's why:
-        
-        In this code structure:
-        - Logical Z encodes the Z-BASIS DATA (what's stored)
-        - Z-type checks (Hz) should COMMUTE with Lz (they don't affect logical value)
-        - X-type errors are detected by Z-checks (X anticommutes with Z)
-        - The logical information is in the AGREEMENT/PRODUCT across all qubits
-        
-        This is the "product code" or "gauge" structure where the logical value
-        is determined by GLOBAL properties, not local anticommutation.
-        
-        Return full-chain for both X and Z to maximize distance.
+        Lz = [Z,I,...,I] (single-qubit Z):
+        - Single qubit Z commutes with all Hz checks (even overlap with each pair)
+        - Represents storable information in one qubit's Z-basis state
+        - X errors detected via syndrome, not by anticommutation with Lz
+        - This is correct for a detection-only (not correction) code
         
         Returns
         -------
@@ -145,9 +139,11 @@ class RepetitionCode(CSSCode):
         Lz : list[PauliString]
             Logical Z operators (1 for [[N,1,N]])
         """
-        # Full-chain operators for maximum distance
+        # Full-chain X operator
         lx_str = "X" * self.N
-        lz_str = "Z" * self.N
+        
+        # Single-qubit Z operator (first qubit)
+        lz_str = "Z" + "I" * (self.N - 1)
         
         return [lx_str], [lz_str]
 

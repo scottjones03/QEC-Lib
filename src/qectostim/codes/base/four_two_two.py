@@ -43,12 +43,12 @@ class FourQubit422Code(TopologicalCSSCode):
         chain_complex = CSSChainComplex3(boundary_2=boundary_2, boundary_1=boundary_1)
 
         logical_z = [
-            "ZZII",  # logical Z on qubit 0
-            "IZZI",  # logical Z on qubit 1
+            "ZIZI",  # logical Z1: anticommutes with XXII (overlap on qubit 0)
+            "IZIZ",  # logical Z2: anticommutes with IXXI (overlap on qubit 1)
         ]
         logical_x = [
-            "XXII",  # logical X on qubit 0
-            "IXXI",  # logical X on qubit 1
+            "XXII",  # logical X1
+            "IXXI",  # logical X2
         ]
         meta: Dict[str, Any] = dict(metadata or {})
         meta.update(
@@ -59,8 +59,8 @@ class FourQubit422Code(TopologicalCSSCode):
                 "z_stab_coords": [(0.5, 0.0)],  # Z stabilizer (ZZZZ) at bottom
                 "data_qubits": list(range(4)),
                 "ancilla_qubits": [4, 5],  # One for X (4), one for Z (5)
-                "logical_x_support": [0, 1],  # XXII
-                "logical_z_support": [0, 1],  # ZZII
+                "logical_x_support": [0, 1],  # XXII qubits 0,1
+                "logical_z_support": [0, 2],  # ZIZI qubits 0,2
                 # Schedules for syndrome extraction (naive, single step)
             }
         )
