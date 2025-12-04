@@ -40,35 +40,6 @@ Benchmarks for LER, LER-no-decode & NDR	✔
 
 ⸻
 
-🧪 Example: Comprehensive LER/NDR Diagnostic
-
-The example below runs multiple codes at multiple noise levels and reports:
-	•	✅ LER — logical error rate after decoding
-	•	📉 LER-no-decode — raw error effect without decoder correction
-	•	🚨 NDR — non-detection rate (silent logical failures)
-	•	⚠ Warnings automatically flag suspicious behavior
-
-Output looks like:
-
-====================================================================================================
-COMPREHENSIVE LER/NDR DIAGNOSTIC
-====================================================================================================
-Code                 | d  |        LER | LER-no-dec |        NDR | Warnings
--------------------------------------------------------------------------------------------
-FourQubit422         |  2 |   0.005000 |   0.010200 |   0.001200 | ✓ OK
-RotatedSurface3      |  3 |   0.001300 |   0.004900 |   0.000100 | ✓ OK
-...
-Summary:
-Total tests: 27
-Tests passing: 24
-
-Full diagnostic script:
-📄 examples/comprehensive_diagnostic.py
-
-It highlights validity and unexpected behavior — crucial for regression testing decoders and noise models.
-
-⸻
-
 🧱 Library Architecture
 
 Base Code Classes (CSS)
