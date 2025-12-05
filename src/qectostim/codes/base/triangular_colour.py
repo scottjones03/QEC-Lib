@@ -207,16 +207,10 @@ class TriangularColourCode(TopologicalCSSCode):
         meta["x_stab_coords"] = stab_coords
         meta["z_stab_coords"] = stab_coords  # Same for colour codes (self-dual)
         
-        # Measurement schedule for colour codes
-        # Colour codes use 6-body or 4-body stabilizers in 6.6.6 tiling
-        # A 3-round schedule is typical (one round per colour)
-        sqrt3 = math.sqrt(3)
-        meta["x_schedule"] = [
-            (1.0, 0.0),           # Round 1
-            (-0.5, sqrt3/2),      # Round 2
-            (-0.5, -sqrt3/2),     # Round 3
-        ]
-        meta["z_schedule"] = meta["x_schedule"]  # Same for self-dual colour codes
+        # NOTE: We deliberately omit x_schedule/z_schedule here.
+        # The geometric schedule approach requires stabilizer coords + offsets to exactly
+        # match data qubit coords. For colour codes with irregular geometry, the matrix-based
+        # fallback circuit construction in CSSMemoryExperiment is more reliable.
         
         super().__init__(chain_complex, logical_x, logical_z, metadata=meta)
         

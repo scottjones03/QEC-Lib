@@ -114,15 +114,10 @@ class SteanCode713(TopologicalCSSCode):
         meta["logical_x_support"] = [0, 1, 2]
         meta["logical_z_support"] = [0, 1, 2]
         
-        # Measurement schedule (colour code 3-round)
-        import math
-        sqrt3 = math.sqrt(3)
-        meta["x_schedule"] = [
-            (1.0, 0.0),
-            (-0.5, sqrt3/2),
-            (-0.5, -sqrt3/2),
-        ]
-        meta["z_schedule"] = meta["x_schedule"]  # Self-dual
+        # NOTE: We deliberately omit x_schedule/z_schedule here.
+        # The geometric schedule approach requires stabilizer coords + offsets to exactly
+        # match data qubit coords, which is complex for colour codes. Instead, we use
+        # the fallback matrix-based circuit construction in CSSMemoryExperiment.
 
         super().__init__(chain_complex, logical_x, logical_z, metadata=meta)
         

@@ -176,16 +176,10 @@ class HexagonalColourCode(TopologicalCSSCode):
         meta["x_stab_coords"] = stab_coords
         meta["z_stab_coords"] = stab_coords  # Same for colour codes
         
-        # Measurement schedule for 4.8.8 colour codes
-        # Uses mix of weight-4 (squares) and weight-8 (octagons)
-        # 3-round schedule typical for colour codes
-        sqrt2 = math.sqrt(2)
-        meta["x_schedule"] = [
-            (1.0, 0.0),           # Right
-            (0.0, 1.0),           # Down
-            (-sqrt2/2, sqrt2/2),  # Diagonal
-        ]
-        meta["z_schedule"] = meta["x_schedule"]  # Same for self-dual
+        # NOTE: We deliberately omit x_schedule/z_schedule here.
+        # The geometric schedule approach requires stabilizer coords + offsets to exactly
+        # match data qubit coords. For colour codes with irregular geometry, the matrix-based
+        # fallback circuit construction in CSSMemoryExperiment is more reliable.
         
         super().__init__(chain_complex, logical_x, logical_z, metadata=meta)
         
