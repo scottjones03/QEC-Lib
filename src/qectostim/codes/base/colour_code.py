@@ -4,7 +4,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from ..abstract_homological import CSSChainComplex3, TopologicalCSSCode, Coord2D
+from ..complexes.css_complex import CSSChainComplex3
+from ..abstract_css import TopologicalCSSCode, Coord2D
 from ..abstract_code import PauliString
 
 
