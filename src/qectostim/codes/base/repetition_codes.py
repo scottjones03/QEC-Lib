@@ -18,11 +18,15 @@ Key Features:
 - Directional: detects X errors via local syndrome, no distance for Z errors
 - Matches Stim repetition code structure
 - k = 1 logical qubit with proper CSS structure
+
+Note: This is NOT a TopologicalCSSCode because it only has one type of
+stabilizer (Z checks), making it a 2-chain complex rather than a 3-chain
+complex. It remains a CSSCode with geometric enhancements.
 """
 
 from typing import Tuple, List, Dict, Any, Optional
 import numpy as np
-from qectostim.codes.abstract_css import CSSCode
+from qectostim.codes.abstract_css import CSSCode, Coord2D
 from qectostim.codes.abstract_code import PauliString
 
 
@@ -68,12 +72,24 @@ class RepetitionCode(CSSCode):
         logical_x, logical_z = self._generate_logical_operators()
         
         # Setup metadata
+        # Generate linear chain coordinates
+        data_coords = [(float(i), 0.0) for i in range(N)]
+        # Z stabilizer coordinates (between adjacent qubits)
+        z_stab_coords = [(float(i) + 0.5, 0.0) for i in range(N - 1)]
+        
         meta: Dict[str, Any] = metadata or {}
         meta.update({
+            "name": f"Repetition_{N}",
+            "n": N,
+            "k": 1,
             "distance": N,
             "code_size": N,
             "code_type": "repetition",
             "logical_qubits": 1,
+            "data_coords": data_coords,
+            "x_stab_coords": [],  # No X stabilizers
+            "z_stab_coords": z_stab_coords,
+            "z_schedule": [(0.5, 0.0), (-0.5, 0.0)],  # Adjacent pair check
         })
         
         # Call parent CSSCode constructor
@@ -146,6 +162,10 @@ class RepetitionCode(CSSCode):
         lz_str = "Z" + "I" * (self.N - 1)
         
         return [lx_str], [lz_str]
+    
+    def qubit_coords(self) -> List[Coord2D]:
+        """Return qubit coordinates for visualization (linear chain)."""
+        return list(self.metadata.get("data_coords", []))
 
 
 # Convenience factory functions for common code sizes

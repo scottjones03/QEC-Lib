@@ -14,38 +14,48 @@ from qectostim.decoders.base import Decoder
 class BPOSDDecoder(Decoder):
     """Belief-propagation + OSD decoder using stimbposd.
 
-    This expects the `stimbposd` package to be installed.
+    Uses the stimbposd package which directly accepts Stim DetectorErrorModels.
+    BP+OSD is particularly effective for LDPC and QLDPC codes.
+    
+    Parameters
+    ----------
+    dem : stim.DetectorErrorModel
+        The detector error model to decode.
+    max_bp_iters : int, default=30
+        Maximum number of belief propagation iterations.
+    bp_method : str, default='product_sum'
+        BP algorithm variant. Options: 'product_sum', 'minimum_sum'.
+    osd_order : int, default=60
+        Order of OSD post-processing.
+    osd_method : str, default='osd_cs'
+        OSD algorithm variant.
     """
 
     dem: stim.DetectorErrorModel
-    p: float  # physical error rate / prior
-    max_bp_iters: int = 50
-    osd_order: int = 2
-    seed: Optional[int] = None
+    max_bp_iters: int = 30
+    bp_method: str = "product_sum"
+    osd_order: int = 60
+    osd_method: str = "osd_cs"
 
     def __post_init__(self) -> None:
         try:
-            import stimbposd  # type: ignore
+            from stimbposd import BPOSD  # type: ignore
         except ImportError as exc:
             raise ImportError(
                 "BPOSDDecoder requires the `stimbposd` package. "
                 "Install it via `pip install stimbposd`."
             ) from exc
 
-        self._stimbposd = stimbposd
         self.num_detectors = self.dem.num_detectors
         self.num_observables = self.dem.num_observables
 
-        # Build an internal decoder object from the DEM.
-        # stimbposd typically has helpers like:
-        #   stimbposd.Decoder.from_detector_error_model(dem, p, ...)
-        # Adjust to the actual API in your version.
-        self._decoder = self._stimbposd.Decoder.from_detector_error_model(
+        # BPOSD accepts the DEM directly
+        self._decoder = BPOSD(
             self.dem,
-            p=self.p,
             max_bp_iters=self.max_bp_iters,
+            bp_method=self.bp_method,
             osd_order=self.osd_order,
-            seed=self.seed,
+            osd_method=self.osd_method,
         )
 
     def decode_batch(self, dets: np.ndarray) -> np.ndarray:
@@ -59,7 +69,6 @@ class BPOSDDecoder(Decoder):
                 f"got {dets.shape[1]}"
             )
 
-        # stimbposd typically offers a batch decode function; if not, loop.
         corrections = self._decoder.decode_batch(dets)
         corrections = np.asarray(corrections, dtype=np.uint8)
         if corrections.ndim == 1:

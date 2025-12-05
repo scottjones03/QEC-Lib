@@ -2,14 +2,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, TYPE_CHECKING
 
 import numpy as np
 import stim
 
 from qectostim.codes.composite.concatenated import ConcatenatedCode
 from qectostim.decoders.base import Decoder
-from qectostim.decoders.decoder_selector import select_decoder
+
+# Lazy import to avoid circular dependency
+if TYPE_CHECKING:
+    from qectostim.decoders.decoder_selector import select_decoder
 
 
 @dataclass
@@ -28,13 +31,14 @@ class ConcatenatedDecoder(Decoder):
     preferred: Optional[str] = None
 
     # Extra knobs passed down to select_decoder for each level
-    physical_error_rate: float = 1e-3
-    max_bp_iters: int = 50
-    osd_order: int = 2
-    tesseract_bond_dim: int = 16
-    belief_damping: float = 0.0
+    max_bp_iters: int = 30
+    osd_order: int = 60
+    tesseract_bond_dim: int = 5
 
     def __post_init__(self) -> None:
+        # Local import to avoid circular dependency
+        from qectostim.decoders.decoder_selector import select_decoder
+        
         meta = getattr(self.code, "metadata", getattr(self.code, "_metadata", {}))
         concat_meta = meta.get("concatenation", {})
 
@@ -59,11 +63,9 @@ class ConcatenatedDecoder(Decoder):
                 lvl_dem,
                 preferred=self.preferred,
                 code=None,  # inner/outer codes not needed for DEM-only decoders
-                physical_error_rate=self.physical_error_rate,
                 max_bp_iters=self.max_bp_iters,
                 osd_order=self.osd_order,
-                tesseract_bond_dim=self.tesseract_bond_dim,
-                belief_damping=self.belief_damping,
+                tesseract_det_beam=self.tesseract_bond_dim,
             )
             self._level_decoders.append(dec)
 

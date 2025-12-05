@@ -14,13 +14,12 @@ from typing import Dict, Any, List, Optional, Tuple
 
 import numpy as np
 
-from qectostim.codes.abstract_css import CSSCode
+from qectostim.codes.abstract_css import TopologicalCSSCode, Coord2D
 from qectostim.codes.abstract_code import PauliString
+from qectostim.codes.complexes.css_complex import CSSChainComplex3
 
-Coord2D = Tuple[float, float]
 
-
-class ShorCode91(CSSCode):
+class ShorCode91(TopologicalCSSCode):
     """
     [[9,1,3]] Shor code (first quantum error-correcting code).
 
@@ -35,7 +34,7 @@ class ShorCode91(CSSCode):
     """
 
     def __init__(self, metadata: Optional[Dict[str, Any]] = None):
-        """Initialize Shor's code with proper CSS structure."""
+        """Initialize Shor's code with proper CSS structure and chain complex."""
 
         # Z-type stabilizers: 6 weight-2 checks within rows
         # Rows: {0,1}, {1,2} (row 0)
@@ -57,20 +56,53 @@ class ShorCode91(CSSCode):
             [0, 0, 0, 1, 1, 1, 1, 1, 1],  # rows 1&2: {3,4,5,6,7,8}
         ], dtype=np.uint8)
 
+        # Build chain complex
+        n_qubits = 9
+        boundary_2_x = hx.T.astype(np.uint8)  # shape (9, 2)
+        boundary_2_z = hz.T.astype(np.uint8)  # shape (9, 6)
+        boundary_2 = np.concatenate([boundary_2_x, boundary_2_z], axis=1)
+        boundary_1 = np.zeros((0, n_qubits), dtype=np.uint8)
+        
+        chain_complex = CSSChainComplex3(boundary_2=boundary_2, boundary_1=boundary_1)
+
         # Logical operators for single logical qubit
         # Logical X: X on all qubits in one pattern
         logical_x = ["XXXXXXXXX"]
         # Logical Z: Z on all qubits (or representative pattern)
         logical_z = ["ZZZZZZZZZ"]
 
+        # 3x3 grid coordinates
+        coords = {q: (float(q % 3), float(q // 3)) for q in range(9)}
+        data_coords = [coords[i] for i in range(9)]
+        
+        # X stabilizer coordinates (between rows)
+        x_stab_coords = [(1.0, 0.5), (1.0, 1.5)]  # between row 0-1, row 1-2
+        # Z stabilizer coordinates (within each row, between adjacent qubits)
+        z_stab_coords = [
+            (0.5, 0.0), (1.5, 0.0),  # row 0
+            (0.5, 1.0), (1.5, 1.0),  # row 1
+            (0.5, 2.0), (1.5, 2.0),  # row 2
+        ]
+
         meta = dict(metadata or {})
         meta["name"] = "Shor_91"
         meta["n"] = 9
         meta["k"] = 1
         meta["distance"] = 3
+        meta["data_coords"] = data_coords
+        meta["x_stab_coords"] = x_stab_coords
+        meta["z_stab_coords"] = z_stab_coords
+        
+        # Measurement schedules
+        meta["x_schedule"] = [(0.0, 0.5), (1.0, 0.5), (2.0, 0.5)]  # 3 qubits per X stab
+        meta["z_schedule"] = [(0.5, 0.0), (-0.5, 0.0)]  # 2 qubits per Z stab
 
-        # 3x3 grid coordinates
-        coords = {q: (q % 3, q // 3) for q in range(9)}
-        meta["data_coords"] = [coords[i] for i in range(9)]
-
-        super().__init__(hx=hx, hz=hz, logical_x=logical_x, logical_z=logical_z, metadata=meta)
+        super().__init__(chain_complex, logical_x, logical_z, metadata=meta)
+        
+        # Override parity check matrices
+        self._hx = hx.astype(np.uint8)
+        self._hz = hz.astype(np.uint8)
+    
+    def qubit_coords(self) -> List[Coord2D]:
+        """Return qubit coordinates for visualization."""
+        return list(self.metadata.get("data_coords", []))

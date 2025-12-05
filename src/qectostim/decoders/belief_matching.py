@@ -12,37 +12,42 @@ from qectostim.decoders.base import Decoder
 
 @dataclass
 class BeliefMatchingDecoder(Decoder):
-    """Decoder using the `beliefmatching` package on Stim DEMs."""
+    """Decoder using the `beliefmatching` package on Stim DEMs.
+    
+    Uses belief propagation combined with minimum-weight perfect matching.
+    The beliefmatching package directly accepts Stim DetectorErrorModels.
+    
+    Parameters
+    ----------
+    dem : stim.DetectorErrorModel
+        The detector error model to decode.
+    max_bp_iters : int, default=20
+        Maximum number of belief propagation iterations.
+    bp_method : str, default='product_sum'
+        BP algorithm variant. Options: 'product_sum', 'minimum_sum'.
+    """
 
     dem: stim.DetectorErrorModel
-    p: float
-    max_iters: int = 50
-    damping: float = 0.0  # if supported
+    max_bp_iters: int = 20
+    bp_method: str = "product_sum"
 
     def __post_init__(self) -> None:
         try:
-            import beliefmatching as bm  # type: ignore
+            from beliefmatching import BeliefMatching  # type: ignore
         except ImportError as exc:
             raise ImportError(
                 "BeliefMatchingDecoder requires the `beliefmatching` package. "
                 "Install it via `pip install beliefmatching`."
             ) from exc
 
-        self._bm = bm
         self.num_detectors = self.dem.num_detectors
         self.num_observables = self.dem.num_observables
 
-        # Convert DEM into the internal graph representation used by beliefmatching.
-        # The library typically has something like:
-        #   graph = bm.StimGraph.from_dem(dem)
-        self._graph = self._bm.StimGraph.from_dem(self.dem)
-
-        # Create a decoder object.
-        self._decoder = self._bm.Decoder(
-            graph=self._graph,
-            p=self.p,
-            max_iters=self.max_iters,
-            damping=self.damping,
+        # BeliefMatching accepts the DEM directly
+        self._decoder = BeliefMatching(
+            self.dem,
+            max_bp_iters=self.max_bp_iters,
+            bp_method=self.bp_method,
         )
 
     def decode_batch(self, dets: np.ndarray) -> np.ndarray:

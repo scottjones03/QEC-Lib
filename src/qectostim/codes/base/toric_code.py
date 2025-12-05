@@ -10,6 +10,11 @@ For a 3x3 torus:
 The stabilizers are:
 - X plaquettes: 4-body operators on edges around each face
 - Z stars: 4-body operators on edges meeting at each vertex
+
+Chain complex structure:
+- C2 (faces/plaquettes) --∂2--> C1 (edges/qubits) --∂1--> C0 (vertices)
+- X stabilizers come from ∂2 (plaquettes acting on boundary edges)
+- Z stabilizers come from ∂1^T (vertices acting on incident edges)
 """
 
 from __future__ import annotations
@@ -17,96 +22,165 @@ from typing import Dict, Any, List, Optional, Tuple
 
 import numpy as np
 
-from qectostim.codes.abstract_css import CSSCode
+from qectostim.codes.abstract_css import TopologicalCSSCode, Coord2D
 from qectostim.codes.abstract_code import PauliString
+from qectostim.codes.complexes.css_complex import CSSChainComplex3
 
-Coord2D = Tuple[float, float]
 
-
-class ToricCode33(CSSCode):
+class ToricCode33(TopologicalCSSCode):
     """
     [[18,2,3]] Toric code on a 3×3 torus.
 
-    18 qubits (edges), 9 X-type plaquette checks, 9 Z-type vertex checks.
+    18 qubits (edges), 8 X-type plaquette checks, 8 Z-type vertex checks.
     Encodes 2 logical qubits with distance 3.
+    
+    Inherits from TopologicalCSSCode with chain complex structure:
+    C2 (faces) --∂2--> C1 (edges/qubits) --∂1--> C0 (vertices)
     """
 
     def __init__(self, metadata: Optional[Dict[str, Any]] = None):
-        """Initialize the 3x3 toric code.
+        """Initialize the 3x3 toric code with chain complex structure.
         
         Qubit layout on 3x3 torus:
         - Horizontal edges: qubits 0-8 (h[row,col] at edge between vertices)
         - Vertical edges: qubits 9-17 (v[row,col] at edge between vertices)
-        
-        Vertex (i,j) connects to:
-        - horizontal edge h[i,j] (right)
-        - horizontal edge h[i,(j-1)%3] (left)
-        - vertical edge v[i,j] (down)
-        - vertical edge v[(i-1)%3,j] (up)
-        
-        Plaquette (i,j) (face) is bounded by:
-        - horizontal edge h[i,j] (top)
-        - horizontal edge h[(i+1)%3,j] (bottom)
-        - vertical edge v[i,j] (left)
-        - vertical edge v[i,(j+1)%3] (right)
         """
         L = 3  # Lattice size
         n_qubits = 2 * L * L  # 18 qubits
         
-        # Edge indexing:
-        # Horizontal edge at (row, col): index = row * L + col
-        # Vertical edge at (row, col): index = L*L + row * L + col
+        # Build lattice geometry and parity check matrices
+        (
+            data_coords,
+            x_stab_coords,
+            z_stab_coords,
+            hx,
+            hz,
+            boundary_2,
+            boundary_1,
+        ) = self._build_toric_lattice(L)
+        
+        # Create chain complex
+        chain_complex = CSSChainComplex3(boundary_2=boundary_2, boundary_1=boundary_1)
+        
+        # Build logical operators
+        logical_x, logical_z = self._build_logicals(L, n_qubits)
+        
+        # Metadata
+        meta: Dict[str, Any] = dict(metadata or {})
+        meta.update({
+            "name": "ToricCode_3x3",
+            "n": n_qubits,
+            "k": 2,
+            "distance": L,
+            "lattice_size": L,
+            "data_coords": data_coords,
+            "x_stab_coords": x_stab_coords,
+            "z_stab_coords": z_stab_coords,
+            "logical_x_support": list(range(L)),
+            "logical_z_support": list(range(L * L, L * L + L)),
+        })
+        
+        # Measurement schedules for toric code (4-phase schedule)
+        meta["x_schedule"] = [
+            (0.5, 0.0),    # right horizontal edge
+            (-0.5, 0.0),   # left horizontal edge
+            (0.0, 0.5),    # bottom vertical edge
+            (0.0, -0.5),   # top vertical edge
+        ]
+        meta["z_schedule"] = [
+            (0.5, 0.0),    # right horizontal edge
+            (0.0, 0.5),    # down vertical edge
+            (-0.5, 0.0),   # left horizontal edge
+            (0.0, -0.5),   # up vertical edge
+        ]
+        
+        # Call TopologicalCSSCode constructor
+        super().__init__(chain_complex, logical_x, logical_z, metadata=meta)
+        
+        # Override with explicit X/Z parity check matrices
+        self._hx = hx
+        self._hz = hz
+
+    @staticmethod
+    def _build_toric_lattice(L: int) -> Tuple[
+        List[Coord2D],   # data_coords
+        List[Coord2D],   # x_stab_coords
+        List[Coord2D],   # z_stab_coords
+        np.ndarray,      # hx
+        np.ndarray,      # hz
+        np.ndarray,      # boundary_2
+        np.ndarray,      # boundary_1
+    ]:
+        """Build the toric code lattice, parity check matrices, and chain complex."""
+        n_qubits = 2 * L * L
+        
+        # Edge indexing functions
         def h_edge(row, col):
             return (row % L) * L + (col % L)
         
         def v_edge(row, col):
             return L * L + (row % L) * L + (col % L)
         
-        # Z-type stabilizers (vertex/star operators)
-        # Each vertex (i,j) has a Z stabilizer on its 4 incident edges
-        # Note: Only L*L-1 are independent (product of all = identity)
-        hz_full = np.zeros((L * L, n_qubits), dtype=np.uint8)
+        # Data qubit coordinates
+        coords = {}
         for i in range(L):
             for j in range(L):
-                vertex_idx = i * L + j
-                # Four edges incident to vertex (i,j)
-                hz_full[vertex_idx, h_edge(i, j)] = 1        # right horizontal
-                hz_full[vertex_idx, h_edge(i, (j - 1) % L)] = 1  # left horizontal
-                hz_full[vertex_idx, v_edge(i, j)] = 1        # down vertical
-                hz_full[vertex_idx, v_edge((i - 1) % L, j)] = 1  # up vertical
-        
-        # Remove last row (dependent on others since sum of all = 0)
-        hz = hz_full[:-1]
+                coords[h_edge(i, j)] = (j + 0.5, float(i))
+                coords[v_edge(i, j)] = (float(j), i + 0.5)
+        data_coords = [coords.get(i, (0.0, 0.0)) for i in range(n_qubits)]
         
         # X-type stabilizers (plaquette/face operators)
-        # Each plaquette (i,j) has an X stabilizer on its 4 boundary edges
-        # Note: Only L*L-1 are independent (product of all = identity)
         hx_full = np.zeros((L * L, n_qubits), dtype=np.uint8)
         for i in range(L):
             for j in range(L):
                 plaq_idx = i * L + j
-                # Four edges bounding plaquette (i,j)
-                hx_full[plaq_idx, h_edge(i, j)] = 1          # top horizontal
-                hx_full[plaq_idx, h_edge((i + 1) % L, j)] = 1  # bottom horizontal
-                hx_full[plaq_idx, v_edge(i, j)] = 1          # left vertical
-                hx_full[plaq_idx, v_edge(i, (j + 1) % L)] = 1  # right vertical
+                hx_full[plaq_idx, h_edge(i, j)] = 1
+                hx_full[plaq_idx, h_edge((i + 1) % L, j)] = 1
+                hx_full[plaq_idx, v_edge(i, j)] = 1
+                hx_full[plaq_idx, v_edge(i, (j + 1) % L)] = 1
+        hx = hx_full[:-1]  # Remove last dependent row
         
-        # Remove last row (dependent on others since sum of all = 0)
-        hx = hx_full[:-1]
+        # Z-type stabilizers (vertex/star operators)
+        hz_full = np.zeros((L * L, n_qubits), dtype=np.uint8)
+        for i in range(L):
+            for j in range(L):
+                vertex_idx = i * L + j
+                hz_full[vertex_idx, h_edge(i, j)] = 1
+                hz_full[vertex_idx, h_edge(i, (j - 1) % L)] = 1
+                hz_full[vertex_idx, v_edge(i, j)] = 1
+                hz_full[vertex_idx, v_edge((i - 1) % L, j)] = 1
+        hz = hz_full[:-1]  # Remove last dependent row
         
-        # Verify CSS orthogonality
-        css_check = np.dot(hx, hz.T) % 2
-        # Note: For toric code, each vertex-plaquette pair shares 0 or 2 edges,
-        # so the overlap is always even.
-        assert np.allclose(css_check, 0), f"CSS orthogonality violated"
+        # Build chain complex boundary matrices
+        # ∂2: shape (n_edges, n_faces) - faces to edges incidence
+        # For CSS: H_X = ∂2^T, so ∂2 = H_X^T
+        boundary_2 = hx.T
         
-        # Logical operators (2 logical qubits)
-        # Logical X1: horizontal string across one cycle (all horizontal edges in row 0)
+        # ∂1: shape (n_vertices, n_edges) - edges to vertices incidence
+        # For CSS: H_Z = ∂1, so ∂1 = H_Z
+        boundary_1 = hz
+        
+        # Stabilizer coordinates
+        x_stab_coords = [(j + 0.5, i + 0.5) for i in range(L) for j in range(L)][:-1]
+        z_stab_coords = [(float(j), float(i)) for i in range(L) for j in range(L)][:-1]
+        
+        return (data_coords, x_stab_coords, z_stab_coords, hx, hz, boundary_2, boundary_1)
+
+    @staticmethod
+    def _build_logicals(L: int, n_qubits: int) -> Tuple[List[str], List[str]]:
+        """Build logical operators for toric code."""
+        def h_edge(row, col):
+            return (row % L) * L + (col % L)
+        
+        def v_edge(row, col):
+            return L * L + (row % L) * L + (col % L)
+        
+        # Logical X1: horizontal string (all horizontal edges in row 0)
         lx1 = ['I'] * n_qubits
         for j in range(L):
             lx1[h_edge(0, j)] = 'X'
         
-        # Logical Z1: vertical string across dual cycle (all vertical edges in column 0)
+        # Logical Z1: vertical string (all vertical edges in column 0)
         lz1 = ['I'] * n_qubits
         for i in range(L):
             lz1[v_edge(i, 0)] = 'Z'
@@ -116,31 +190,28 @@ class ToricCode33(CSSCode):
         for j in range(L):
             lx2[v_edge(0, j)] = 'X'
         
-        # Logical Z2: horizontal string on dual (all horizontal edges in column 0)
+        # Logical Z2: horizontal string (all horizontal edges in column 0)
         lz2 = ['I'] * n_qubits
         for i in range(L):
             lz2[h_edge(i, 0)] = 'Z'
         
-        logical_x = [''.join(lx1), ''.join(lx2)]
-        logical_z = [''.join(lz1), ''.join(lz2)]
+        return [''.join(lx1), ''.join(lx2)], [''.join(lz1), ''.join(lz2)]
 
-        meta = dict(metadata or {})
-        meta["name"] = "ToricCode_3x3"
-        meta["n"] = n_qubits
-        meta["k"] = 2
-        meta["distance"] = L
-        meta["lattice_size"] = L
-        
-        # Logical supports
-        meta["logical_x_support"] = [h_edge(0, j) for j in range(L)]  # First logical
-        meta["logical_z_support"] = [v_edge(i, 0) for i in range(L)]  # First logical
+    def qubit_coords(self) -> List[Coord2D]:
+        """Return 2D coordinates for data qubits."""
+        return list(self.metadata["data_coords"])
 
-        # Coordinates: place horizontal edges at (col+0.5, row), vertical at (col, row+0.5)
-        coords = {}
-        for i in range(L):
-            for j in range(L):
-                coords[h_edge(i, j)] = (j + 0.5, i)
-                coords[v_edge(i, j)] = (j, i + 0.5)
-        meta["data_coords"] = [coords.get(i, (0, 0)) for i in range(n_qubits)]
+    @property
+    def hx(self) -> np.ndarray:
+        """X stabilizers: shape (#X-checks, #data)."""
+        return self._hx
 
-        super().__init__(hx=hx, hz=hz, logical_x=logical_x, logical_z=logical_z, metadata=meta)
+    @property
+    def hz(self) -> np.ndarray:
+        """Z stabilizers: shape (#Z-checks, #data)."""
+        return self._hz
+
+    @property
+    def distance(self) -> int:
+        """Code distance."""
+        return self.metadata.get("distance", 3)

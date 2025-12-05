@@ -5,16 +5,19 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from .abstract_code import PauliString
+from .abstract_code import PauliString, StabilizerCode
 from .abstract_homological import HomologicalCode, TopologicalCode, Coord2D
 from .complexes.css_complex import CSSChainComplex3
 
 
-class CSSCode(HomologicalCode):
+class CSSCode(StabilizerCode, HomologicalCode):
     """
     CSS code based on a 3-chain complex: C2 --∂2--> C1 --∂1--> C0.
 
     Here we expose Hx and Hz as the usual parity-check matrices acting on qubits (C1).
+    
+    Inherits from StabilizerCode to provide the stabilizer_matrix property
+    and from HomologicalCode for chain complex structure.
     """
 
     def __init__(self, hx: np.ndarray, hz: np.ndarray, logical_x: List[PauliString],
@@ -46,6 +49,39 @@ class CSSCode(HomologicalCode):
         rank_hx = np.linalg.matrix_rank(self._hx % 2)
         rank_hz = np.linalg.matrix_rank(self._hz % 2)
         return self.n - rank_hx - rank_hz
+    
+    # --- StabilizerCode interface ---
+    
+    @property
+    def stabilizer_matrix(self) -> np.ndarray:
+        """
+        Return stabilizer generators in symplectic form [X_part | Z_part].
+        
+        For CSS codes:
+        - X stabilizers from hx: [hx | 0]
+        - Z stabilizers from hz: [0 | hz]
+        
+        Returns shape (num_x_stabs + num_z_stabs, 2*n)
+        """
+        n = self.n
+        num_x_stabs = self._hx.shape[0]
+        num_z_stabs = self._hz.shape[0]
+        
+        # Build symplectic matrix
+        stab_mat = np.zeros((num_x_stabs + num_z_stabs, 2 * n), dtype=np.uint8)
+        
+        # X stabilizers: [hx | 0]
+        stab_mat[:num_x_stabs, :n] = self._hx
+        
+        # Z stabilizers: [0 | hz]
+        stab_mat[num_x_stabs:, n:] = self._hz
+        
+        return stab_mat
+    
+    @property
+    def is_css(self) -> bool:
+        """CSS codes are always CSS by construction."""
+        return True
 
     @property
     def logical_x_ops(self) -> List[PauliString]:

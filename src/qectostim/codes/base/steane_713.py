@@ -32,13 +32,12 @@ from typing import Dict, Any, List, Optional, Tuple
 
 import numpy as np
 
-from qectostim.codes.abstract_css import CSSCode
+from qectostim.codes.abstract_css import TopologicalCSSCode, Coord2D
 from qectostim.codes.abstract_code import PauliString
+from qectostim.codes.complexes.css_complex import CSSChainComplex3
 
-Coord2D = Tuple[float, float]
 
-
-class SteanCode713(CSSCode):
+class SteanCode713(TopologicalCSSCode):
     """
     [[7,1,3]] Steane code (triangular color code).
 
@@ -48,7 +47,7 @@ class SteanCode713(CSSCode):
 
     def __init__(self, metadata: Optional[Dict[str, Any]] = None):
         """
-        Initialize the Steane code with proper CSS structure.
+        Initialize the Steane code with proper CSS structure and chain complex.
 
         Stabilizers from Hamming [7,4,3] code:
         X stabilizers: {3,4,5,6}, {1,2,5,6}, {0,2,4,6}
@@ -70,33 +69,20 @@ class SteanCode713(CSSCode):
             [1, 0, 1, 0, 1, 0, 1],  # qubits {0,2,4,6}
         ], dtype=np.uint8)
 
+        # Build chain complex
+        n_qubits = 7
+        boundary_2_x = hx.T.astype(np.uint8)  # shape (7, 3)
+        boundary_2_z = hz.T.astype(np.uint8)  # shape (7, 3)
+        boundary_2 = np.concatenate([boundary_2_x, boundary_2_z], axis=1)
+        boundary_1 = np.zeros((0, n_qubits), dtype=np.uint8)
+        
+        chain_complex = CSSChainComplex3(boundary_2=boundary_2, boundary_1=boundary_1)
+
         # Logical operators - use minimum weight representatives (weight 3)
-        # The codewords of the [7,4,3] Hamming code include:
-        # - 0000000 (trivial)
-        # - Weight-3 codewords (these are the minimum weight logical operators)
-        # - Weight-4 codewords (these are stabilizers)
-        # - Weight-7 codeword: 1111111 (product of all stabilizers with logical)
-        #
-        # Minimum weight logical operators (weight 3):
-        # X: 1110000 -> qubits {0,1,2}
-        # Z: 1110000 -> qubits {0,1,2} (self-dual)
-        #
-        # These commute with all stabilizers and anticommute with each other.
         logical_x = ["XXXIIII"]  # Logical X on qubits {0,1,2}, weight 3
         logical_z = ["ZZZIIII"]  # Logical Z on qubits {0,1,2}, weight 3
 
-        meta = dict(metadata or {})
-        meta["name"] = "Steane_713"
-        meta["n"] = 7
-        meta["k"] = 1
-        meta["distance"] = 3
-        
-        # Add logical support for proper observable tracking
-        meta["logical_x_support"] = [0, 1, 2]
-        meta["logical_z_support"] = [0, 1, 2]
-
         # Geometric layout: triangular arrangement
-        # Vertices at corners, edge centers, and face center
         coords = {
             0: (1.0, 2.0),    # top vertex
             1: (0.0, 0.0),    # bottom-left vertex
@@ -106,6 +92,44 @@ class SteanCode713(CSSCode):
             5: (1.0, 0.0),    # bottom edge center
             6: (1.0, 1.0),    # face center
         }
-        meta["data_coords"] = [coords[i] for i in range(7)]
+        data_coords = [coords[i] for i in range(7)]
+        
+        # Face centers for stabilizer coordinates (color code faces)
+        stab_coords = [
+            (1.5, 0.5),  # Face {3,4,5,6}
+            (0.5, 0.5),  # Face {1,2,5,6}
+            (1.0, 1.33), # Face {0,2,4,6}
+        ]
 
-        super().__init__(hx=hx, hz=hz, logical_x=logical_x, logical_z=logical_z, metadata=meta)
+        meta = dict(metadata or {})
+        meta["name"] = "Steane_713"
+        meta["n"] = 7
+        meta["k"] = 1
+        meta["distance"] = 3
+        meta["is_colour_code"] = True
+        meta["tiling"] = "triangular"
+        meta["data_coords"] = data_coords
+        meta["x_stab_coords"] = stab_coords
+        meta["z_stab_coords"] = stab_coords  # Self-dual
+        meta["logical_x_support"] = [0, 1, 2]
+        meta["logical_z_support"] = [0, 1, 2]
+        
+        # Measurement schedule (colour code 3-round)
+        import math
+        sqrt3 = math.sqrt(3)
+        meta["x_schedule"] = [
+            (1.0, 0.0),
+            (-0.5, sqrt3/2),
+            (-0.5, -sqrt3/2),
+        ]
+        meta["z_schedule"] = meta["x_schedule"]  # Self-dual
+
+        super().__init__(chain_complex, logical_x, logical_z, metadata=meta)
+        
+        # Override parity check matrices
+        self._hx = hx.astype(np.uint8)
+        self._hz = hz.astype(np.uint8)
+    
+    def qubit_coords(self) -> List[Coord2D]:
+        """Return qubit coordinates for visualization."""
+        return list(self.metadata.get("data_coords", []))

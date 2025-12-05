@@ -14,39 +14,41 @@ from qectostim.decoders.base import Decoder
 class TesseractDecoder(Decoder):
     """Wrapper for the tesseract tensor-network decoder on Stim DEMs.
 
-    Requires the `tesseract-decoder` Python package (or whatever name it uses
-    in your environment). The exact import may need tweaking based on the
-    installed package.
+    Uses the tesseract_decoder package which provides efficient tensor-network
+    based decoding. Particularly effective for codes with complex error structures.
+    
+    Parameters
+    ----------
+    dem : stim.DetectorErrorModel
+        The detector error model to decode.
+    det_beam : int, default=5
+        Beam search width for detector ordering.
+    merge_errors : bool, default=True
+        Whether to merge similar error mechanisms.
     """
 
     dem: stim.DetectorErrorModel
-    max_bond_dim: int = 16
-    error_model: str = "phenomenological"
+    det_beam: int = 5
+    merge_errors: bool = True
 
     def __post_init__(self) -> None:
         try:
-            import tesseract as tdec  # type: ignore
+            import tesseract_decoder as tdec  # type: ignore
         except ImportError as exc:
             raise ImportError(
-                "TesseractDecoder requires the `tesseract` package. "
-                "Install it (e.g. `pip install tesseract-decoder`), "
-                "or choose a different decoder."
+                "TesseractDecoder requires the `tesseract-decoder` package. "
+                "Install it via `pip install tesseract-decoder`."
             ) from exc
 
-        self._tdec = tdec
         self.num_detectors = self.dem.num_detectors
         self.num_observables = self.dem.num_observables
 
-        # Build a tesseract model from the DEM. The exact API may vary slightly
-        # depending on the version of tesseract you install; adjust as needed.
-        #
-        # Typical pattern (from the repo) is something like:
-        #   model = tdec.Decoder.from_stim_dem(dem, max_bond_dim=..., ...)
-        self._decoder = self._tdec.Decoder.from_stim_dem(
-            self.dem,
-            max_bond_dim=self.max_bond_dim,
-            error_model=self.error_model,
-        )
+        # Build decoder via TesseractConfig
+        config = tdec.tesseract.TesseractConfig()
+        config.det_beam = self.det_beam
+        config.merge_errors = 1 if self.merge_errors else 0
+        
+        self._decoder = config.compile_decoder_for_dem(self.dem)
 
     def decode_batch(self, dets: np.ndarray) -> np.ndarray:
         dets = np.asarray(dets, dtype=np.uint8)
@@ -61,15 +63,10 @@ class TesseractDecoder(Decoder):
 
         shots = dets.shape[0]
         corrections = np.zeros((shots, self.num_observables), dtype=np.uint8)
+        
         for i in range(shots):
-            s = dets[i].astype(bool)
-            # Most tesseract APIs return a correction bitstring over observables.
-            corr = self._decoder.decode(s)
-            corr = np.asarray(corr, dtype=np.uint8).reshape(-1)
-            if corr.size != self.num_observables:
-                raise ValueError(
-                    "TesseractDecoder: decoder returned size "
-                    f"{corr.size}, expected {self.num_observables}."
-                )
-            corrections[i, :] = corr
+            # decode returns a list of bools for each observable
+            corr = self._decoder.decode(dets[i].astype(bool))
+            corrections[i, :] = np.asarray(corr, dtype=np.uint8)
+            
         return corrections
