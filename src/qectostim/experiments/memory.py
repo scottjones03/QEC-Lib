@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import abc
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import stim
@@ -12,9 +12,55 @@ from qectostim.experiments.experiment import Experiment
 from qectostim.noise.models import NoiseModel
 
 
+# ============================================================================
+# Helper Functions (shared across experiment classes)
+# ============================================================================
+
+def get_logical_ops(code, op_type: str):
+    """Get logical operators, handling both property and method access."""
+    ops_attr = getattr(code, f'logical_{op_type}_ops', None)
+    if ops_attr is None:
+        return []
+    return ops_attr() if callable(ops_attr) else ops_attr
+
+
+def ops_valid(ops) -> bool:
+    """Check if logical ops exist and are non-empty."""
+    if ops is None:
+        return False
+    if isinstance(ops, np.ndarray):
+        return ops.size > 0
+    return bool(len(ops) > 0)
+
+
+def ops_len(ops) -> int:
+    """Get length of logical ops."""
+    if isinstance(ops, np.ndarray):
+        return ops.shape[0] if ops.ndim > 0 else 0
+    return len(ops)
+
+
+def pauli_at(pauli_obj, q: int) -> str:
+    """Get Pauli at qubit q. Returns 'I' if not in support."""
+    if isinstance(pauli_obj, str):
+        if q < len(pauli_obj):
+            return pauli_obj[q]
+        return 'I'
+    elif isinstance(pauli_obj, dict):
+        return pauli_obj.get(q, 'I')
+    return 'I'
+
+
+# ============================================================================
+# Base Classes with Template Method Helpers
+# ============================================================================
+
 class MemoryExperiment(Experiment):
     """
     Repeated stabilizer measurement (memory) experiment for a single logical qubit.
+    
+    This base class provides shared helper methods for circuit construction
+    that subclasses can use via the template method pattern.
     """
 
     def __init__(
@@ -35,6 +81,138 @@ class MemoryExperiment(Experiment):
     @abc.abstractmethod
     def to_stim(self) -> stim.Circuit:
         ...
+    
+    # ========================================================================
+    # Template Method Helpers - Shared Circuit Building Logic
+    # ========================================================================
+    
+    def _emit_qubit_coords(
+        self,
+        circuit: stim.Circuit,
+        data_qubits: List[int],
+        data_coords: Optional[List[Tuple[float, float]]],
+        ancilla_qubits: Optional[List[int]] = None,
+        ancilla_coords: Optional[List[Tuple[float, float]]] = None,
+    ) -> Dict[Tuple[float, float], int]:
+        """Emit QUBIT_COORDS instructions for data and ancilla qubits.
+        
+        Returns a mapping from (x, y) coordinate to data qubit index.
+        """
+        coord_to_data: Dict[Tuple[float, float], int] = {}
+        
+        if data_coords is not None:
+            for q, coord in zip(data_qubits, data_coords):
+                if len(coord) >= 2:
+                    x, y = float(coord[0]), float(coord[1])
+                    coord_tuple = (x, y)
+                    if coord_tuple not in coord_to_data:
+                        coord_to_data[coord_tuple] = q
+                        circuit.append("QUBIT_COORDS", [q], [x, y])
+        
+        if ancilla_qubits is not None and ancilla_coords is not None:
+            for a, coord in zip(ancilla_qubits, ancilla_coords):
+                if len(coord) >= 2:
+                    circuit.append("QUBIT_COORDS", [a], [float(coord[0]), float(coord[1])])
+        
+        return coord_to_data
+    
+    def _add_detector(
+        self,
+        circuit: stim.Circuit,
+        rec_indices: List[int],
+        m_index: int,
+        coord: Tuple[float, ...] = (0.0, 0.0, 0.0),
+    ) -> None:
+        """Emit a DETECTOR with the given measurement record indices.
+        
+        Args:
+            circuit: The stim circuit to append to.
+            rec_indices: Absolute measurement indices (0, 1, 2, ...).
+            m_index: Current total number of measurements (for computing lookbacks).
+            coord: Detector coordinates (x, y, t) or (x, y, t, color).
+        """
+        if not rec_indices:
+            return
+        lookbacks = [idx - m_index for idx in rec_indices]
+        circuit.append(
+            "DETECTOR",
+            [stim.target_rec(lb) for lb in lookbacks],
+            list(coord),
+        )
+    
+    def _emit_observable(
+        self,
+        circuit: stim.Circuit,
+        rec_indices: List[int],
+        m_index: int,
+        observable_index: int = 0,
+    ) -> None:
+        """Emit an OBSERVABLE_INCLUDE declaration.
+        
+        Args:
+            circuit: The stim circuit to append to.
+            rec_indices: Absolute measurement indices for the logical observable.
+            m_index: Current total number of measurements.
+            observable_index: Which logical observable (default 0).
+        """
+        if not rec_indices:
+            return
+        lookbacks = [idx - m_index for idx in rec_indices]
+        obs_targets = [stim.target_rec(lb) for lb in lookbacks]
+        circuit.append("OBSERVABLE_INCLUDE", obs_targets, observable_index)
+    
+    def _get_detector_coords(
+        self,
+        stab_coords: Optional[List[Tuple[float, float]]],
+        s_idx: int,
+        t: float,
+    ) -> Tuple[float, ...]:
+        """Return detector coordinates for a stabilizer.
+        
+        Subclasses can override to add additional coordinates (e.g., color).
+        
+        Args:
+            stab_coords: List of (x, y) stabilizer positions.
+            s_idx: Stabilizer index.
+            t: Time coordinate.
+            
+        Returns:
+            Tuple of detector coordinates (x, y, t) or extended.
+        """
+        if stab_coords is None or s_idx >= len(stab_coords):
+            return (0.0, 0.0, t)
+        x, y = stab_coords[s_idx]
+        return (float(x), float(y), t)
+    
+    def _get_logical_support(
+        self,
+        code: Code,
+        basis: str,
+        logical_qubit: int,
+        n: int,
+    ) -> List[int]:
+        """Get the qubit support for a logical operator.
+        
+        Args:
+            code: The quantum error correcting code.
+            basis: "Z" or "X" - which logical to use.
+            logical_qubit: Index of the logical qubit.
+            n: Total number of physical qubits.
+            
+        Returns:
+            List of qubit indices in the logical operator support.
+        """
+        if basis == "Z":
+            ops = get_logical_ops(code, 'z')
+            pauli_chars = ("Z", "Y")
+        else:
+            ops = get_logical_ops(code, 'x')
+            pauli_chars = ("X", "Y")
+        
+        if ops_valid(ops) and logical_qubit < ops_len(ops):
+            L = ops[logical_qubit]
+            return [q for q in range(n) if pauli_at(L, q) in pauli_chars]
+        return []
 
 
 class StabilizerMemoryExperiment(MemoryExperiment):
@@ -102,10 +280,50 @@ class StabilizerMemoryExperiment(MemoryExperiment):
         if total_qubits > 0:
             c.append("R", range(total_qubits))
         
-        # Prepare logical state in chosen basis
+        # Get the logical operator we will track (determines preparation and measurement)
         basis = self.basis.upper()
-        if basis == "X" and n > 0:
-            c.append("H", data_qubits)
+        if basis == "Z":
+            logical_ops = get_logical_ops(code, 'z')
+        else:
+            logical_ops = get_logical_ops(code, 'x')
+        
+        # Parse the logical operator to determine per-qubit bases
+        # The logical operator L determines what eigenstate we prepare:
+        # - For Z component on qubit q: prepare |0⟩ (Z eigenstate +1)
+        # - For X component on qubit q: prepare |+⟩ (X eigenstate +1)
+        # - For Y component on qubit q: prepare |+i⟩ (Y eigenstate +1)
+        # This ensures the initial state is a +1 eigenstate of L.
+        logical_pauli_map = {}  # q -> 'X', 'Y', or 'Z'
+        logical_support = []
+        
+        if ops_valid(logical_ops) and self.logical_qubit < ops_len(logical_ops):
+            L = logical_ops[self.logical_qubit]
+            
+            if isinstance(L, str):
+                for i, p in enumerate(L):
+                    if p in ('X', 'Y', 'Z'):
+                        logical_pauli_map[i] = p
+                        logical_support.append(i)
+            elif isinstance(L, dict):
+                for q, p in L.items():
+                    if p in ('X', 'Y', 'Z'):
+                        logical_pauli_map[q] = p
+                        logical_support.append(q)
+        
+        # Prepare initial state as +1 eigenstate of the logical operator
+        # After reset (|0⟩^n), apply gates to prepare eigenstates:
+        # - Z component: |0⟩ is already +1 eigenstate of Z (no gate needed)
+        # - X component: |+⟩ = H|0⟩ is +1 eigenstate of X
+        # - Y component: |+i⟩ = SH|0⟩ is +1 eigenstate of Y
+        if n > 0:
+            for q in data_qubits:
+                pauli = logical_pauli_map.get(q)
+                if pauli == 'X':
+                    c.append("H", [q])
+                elif pauli == 'Y':
+                    c.append("H", [q])
+                    c.append("S", [q])
+                # For Z or no logical component: |0⟩ is fine
         
         c.append("TICK")
         
@@ -122,7 +340,17 @@ class StabilizerMemoryExperiment(MemoryExperiment):
         
         # Syndrome rounds
         for r in range(self.rounds):
-            # Measure each stabilizer
+            # For non-CSS codes with mixed X/Z stabilizers, we need careful ordering:
+            # 1. Reset ALL ancillas at once
+            # 2. Apply all stabilizer gates
+            # 3. Measure all ancillas
+            # This prevents reset operations from interfering with ongoing stabilizer measurements.
+            
+            # Step 1: Reset all ancillas at the start of the round
+            if num_stabs > 0:
+                c.append("R", anc_qubits)
+            
+            # Step 2: Apply gates for each stabilizer
             for s_idx in range(num_stabs):
                 a = anc_qubits[s_idx]
                 
@@ -131,26 +359,29 @@ class StabilizerMemoryExperiment(MemoryExperiment):
                 z_part = stab_mat[s_idx, n:]
                 
                 # For each qubit in the stabilizer:
-                # - If X component: H-CX-H
-                # - If Z component: CX
-                # - If Y component (both X and Z): H-CX-H followed by CX (or combined)
-                
-                # Reset ancilla for this measurement
-                # (For first round or if using demolition measurement)
+                # - If only X component: use CX with H gates on data
+                # - If only Z component: use CX directly  
+                # - If Y component (both X and Z): use CY gate or S†-H-CX-H-S sequence
+                #
+                # The standard approach for measuring a Pauli P on qubit q:
+                # - X: H-CX(q,a)-H  (or just CX after H on data)
+                # - Z: CX(q,a)
+                # - Y: S†-H-CX(q,a)-H-S (or CY gate)
                 
                 for q in range(n):
                     x_bit = x_part[q]
                     z_bit = z_part[q]
                     
                     if x_bit and z_bit:
-                        # Y component: apply H-CX-H-S-CX (measure Y)
-                        # Simplified: measure as Z first, then X
+                        # Y component: S†-H-CX-H-S sequence
+                        # This correctly measures Y while preserving the data qubit state
+                        c.append("S_DAG", [q])
                         c.append("H", [q])
                         c.append("CX", [q, a])
                         c.append("H", [q])
-                        c.append("CX", [q, a])
+                        c.append("S", [q])
                     elif x_bit:
-                        # X component: H-CX-H on data, CX to ancilla
+                        # X component: H-CX-H on data
                         c.append("H", [q])
                         c.append("CX", [q, a])
                         c.append("H", [q])
@@ -167,18 +398,49 @@ class StabilizerMemoryExperiment(MemoryExperiment):
                 m_index += num_stabs
             
             # Time-like detectors
+            # For non-CSS codes with mixed stabilizers, the initial |0⟩ state
+            # is NOT guaranteed to be a +1 eigenstate of all stabilizers.
+            # Therefore, skip first-round detectors (they just establish baseline).
+            # Only compare consecutive syndrome measurements.
             for s_idx in range(num_stabs):
                 cur = meas_start + s_idx
-                if last_stab_meas[s_idx] is None:
-                    add_detector([cur], t=0.0)
-                else:
+                if last_stab_meas[s_idx] is not None:
+                    # Compare with previous round
                     add_detector([last_stab_meas[s_idx], cur], t=0.0)
+                # Note: We intentionally skip first-round detectors for non-CSS codes
+                # because the initial syndrome is not deterministic
                 last_stab_meas[s_idx] = cur
         
         # Final data measurement
+        # For mixed logical operators, we need to measure each qubit in the 
+        # appropriate basis for the logical operator we want to track.
+        # We use logical_pauli_map and logical_support from the initialization.
         if n > 0:
-            if basis == "X":
-                c.append("H", data_qubits)
+            # Build qubit_basis from logical_pauli_map
+            # Default: Z-basis for qubits not in the logical support
+            qubit_basis = {q: 'Z' for q in data_qubits}
+            for q, pauli in logical_pauli_map.items():
+                qubit_basis[q] = pauli
+            
+            # Use logical_support from initialization, or fallback to all data qubits
+            final_logical_support = logical_support if logical_support else data_qubits
+            
+            # Apply basis change gates before measurement
+            # Group qubits by measurement basis for efficiency
+            x_basis_qubits = [q for q in data_qubits if qubit_basis[q] == 'X']
+            y_basis_qubits = [q for q in data_qubits if qubit_basis[q] == 'Y']
+            # Z-basis qubits need no pre-measurement gate
+            
+            # Apply H for X-basis measurement
+            if x_basis_qubits:
+                c.append("H", x_basis_qubits)
+            
+            # Apply S†-H for Y-basis measurement  
+            for q in y_basis_qubits:
+                c.append("S_DAG", [q])
+                c.append("H", [q])
+            
+            # Measure all data qubits
             c.append("M", data_qubits)
             
             first_data_idx = m_index
@@ -186,16 +448,45 @@ class StabilizerMemoryExperiment(MemoryExperiment):
             m_index += n
             
             # Space-like detectors
+            # For space-like detectors we need to check if the stabilizer can be 
+            # verified by the final measurements. Since we now measure in mixed bases
+            # determined by the logical operator, we check if each stabilizer can be
+            # verified by comparing syndrome with data measurement parities.
             for s_idx in range(num_stabs):
                 x_part = stab_mat[s_idx, :n]
                 z_part = stab_mat[s_idx, n:]
                 
-                # For Z-basis: check Z-components
-                # For X-basis: check X-components
-                if basis == "Z":
-                    support = np.where(z_part == 1)[0]
-                else:
-                    support = np.where(x_part == 1)[0]
+                # For each qubit in the stabilizer, check if we can measure it
+                # in the right basis. A stabilizer is measurable if for each qubit:
+                # - X component: qubit measured in X or Y basis
+                # - Z component: qubit measured in Z or Y basis  
+                # - Y component: qubit measured in Y basis
+                can_measure = True
+                support = []
+                
+                for q in range(n):
+                    x_bit = x_part[q]
+                    z_bit = z_part[q]
+                    meas_basis = qubit_basis.get(q, basis)
+                    
+                    if x_bit and z_bit:  # Y component
+                        if meas_basis != 'Y':
+                            can_measure = False
+                            break
+                        support.append(q)
+                    elif x_bit:  # X component
+                        if meas_basis not in ('X', 'Y'):
+                            can_measure = False
+                            break
+                        support.append(q)
+                    elif z_bit:  # Z component
+                        if meas_basis not in ('Z', 'Y'):
+                            can_measure = False
+                            break
+                        support.append(q)
+                
+                if not can_measure:
+                    continue
                 
                 data_idxs = [data_meas[q] for q in support if q in data_meas]
                 recs = list(data_idxs)
@@ -206,26 +497,13 @@ class StabilizerMemoryExperiment(MemoryExperiment):
                     add_detector(recs, t=1.0)
             
             # Logical observable
-            def get_logical_support(pauli_ops: List[PauliString], pauli_type: str) -> List[int]:
-                """Extract support of logical operator."""
-                if not pauli_ops or self.logical_qubit >= len(pauli_ops):
-                    return list(range(n))
-                L = pauli_ops[self.logical_qubit]
-                if isinstance(L, str):
-                    return [i for i, p in enumerate(L) if p in (pauli_type, "Y")]
-                return [q for q, p in L.items() if p in (pauli_type, "Y")]
-            
-            if basis == "Z":
-                logical_support = get_logical_support(code.logical_z_ops(), "Z")
-            else:
-                logical_support = get_logical_support(code.logical_x_ops(), "X")
-            
-            obs_rec_indices = [data_meas[q] for q in logical_support if q in data_meas]
-            if not obs_rec_indices:
-                obs_rec_indices = list(data_meas.values())
-            
-            lookbacks = [idx - m_index for idx in obs_rec_indices]
-            c.append("OBSERVABLE_INCLUDE", [stim.target_rec(lb) for lb in lookbacks], 0)
+            # We've already computed logical_support and measured each qubit in the
+            # correct basis for the logical operator. Just include those measurements.
+            if final_logical_support:
+                obs_rec_indices = [data_meas[q] for q in final_logical_support if q in data_meas]
+                if obs_rec_indices:
+                    lookbacks = [idx - m_index for idx in obs_rec_indices]
+                    c.append("OBSERVABLE_INCLUDE", [stim.target_rec(lb) for lb in lookbacks], 0)
         
         return c
 
@@ -635,24 +913,16 @@ class CSSMemoryExperiment(StabilizerMemoryExperiment):
             # ---- Logical observable ---------------------------------------
             rec_indices_by_data = data_meas_indices_all
 
-            # Derive logical support directly from logical operators (preferred)
-            # This removes redundant metadata dependency
-            def pauli_at(pauli_obj, q: int) -> str:
-                """Get Pauli at qubit q. Returns 'I' if not in support."""
-                if isinstance(pauli_obj, str):
-                    if q < len(pauli_obj):
-                        return pauli_obj[q]
-                    return 'I'
-                elif isinstance(pauli_obj, dict):
-                    return pauli_obj.get(q, 'I')
-                return 'I'
-
+            # Use module-level helper functions (get_logical_ops, pauli_at, ops_valid, ops_len)
             logical_support: list[int] = []
-            if basis == "Z" and code.logical_z_ops and self.logical_qubit < len(code.logical_z_ops):
-                L = code.logical_z_ops[self.logical_qubit]
+            z_ops = get_logical_ops(code, 'z')
+            x_ops = get_logical_ops(code, 'x')
+            
+            if basis == "Z" and ops_valid(z_ops) and self.logical_qubit < ops_len(z_ops):
+                L = z_ops[self.logical_qubit]
                 logical_support = [q for q in range(n) if pauli_at(L, q) in ("Z", "Y")]
-            elif basis == "X" and code.logical_x_ops and self.logical_qubit < len(code.logical_x_ops):
-                L = code.logical_x_ops[self.logical_qubit]
+            elif basis == "X" and ops_valid(x_ops) and self.logical_qubit < ops_len(x_ops):
+                L = x_ops[self.logical_qubit]
                 logical_support = [q for q in range(n) if pauli_at(L, q) in ("X", "Y")]
 
             if not logical_support:
@@ -673,4 +943,285 @@ class CSSMemoryExperiment(StabilizerMemoryExperiment):
         #       Detector coordinates above use correct spacetime (x, y, t).
         #       All DETECTOR rec indices reference valid measurement results.
 
+        return c
+
+
+class ColorCodeMemoryExperiment(CSSMemoryExperiment):
+    """
+    Memory experiment for color codes with Chromobius-compatible DEM generation.
+    
+    This class extends CSSMemoryExperiment to emit detector coordinates with the
+    4th component encoding (basis, color) as required by the Chromobius decoder:
+    
+    - coord[3] = 0, 1, 2 for X-type red, green, blue stabilizers
+    - coord[3] = 3, 4, 5 for Z-type red, green, blue stabilizers
+    
+    The code must provide:
+    - metadata["stab_colors"]: list of colors (0=red, 1=green, 2=blue) per stabilizer
+    - metadata["is_chromobius_compatible"]: True
+    
+    For self-dual color codes (where X and Z stabilizers have the same support),
+    both X and Z detectors use the same color assignments.
+    """
+    
+    def __init__(
+        self,
+        code: CSSCode,
+        rounds: int,
+        noise_model: Dict[str, Any] | None = None,
+        basis: str = "Z",
+        metadata: Optional[Dict[str, Any]] = None,
+    ):
+        # Validate that code has color metadata
+        code_meta = getattr(code, "metadata", {}) if hasattr(code, "metadata") else {}
+        if not code_meta.get("is_chromobius_compatible", False):
+            raise ValueError(
+                "ColorCodeMemoryExperiment requires a code with "
+                "metadata['is_chromobius_compatible'] = True"
+            )
+        if "stab_colors" not in code_meta:
+            raise ValueError(
+                "ColorCodeMemoryExperiment requires code.metadata['stab_colors'] "
+                "to be a list of colors (0=red, 1=green, 2=blue) per stabilizer"
+            )
+        
+        super().__init__(
+            code=code,
+            rounds=rounds,
+            noise_model=noise_model,
+            basis=basis,
+            metadata=metadata
+        )
+        
+        self._stab_colors = code_meta["stab_colors"]
+    
+    def to_stim(self) -> stim.Circuit:
+        """
+        Build a color code memory experiment with Chromobius-compatible detectors.
+        
+        Overrides CSSMemoryExperiment.to_stim() to add color annotations to
+        detector coordinates. The 4th coordinate encodes:
+        - X-type: color (0=red, 1=green, 2=blue)
+        - Z-type: color + 3 (3=red, 4=green, 5=blue)
+        """
+        # Get the base circuit from parent class
+        # We need to rebuild with color-annotated detectors
+        code = self.code
+        n = code.n
+        hx = code.hx
+        hz = code.hz
+
+        basis = self.basis.upper()
+        
+        # Get metadata
+        meta = getattr(code, "metadata", {}) if hasattr(code, "metadata") else {}
+        x_coords_meta = meta.get("x_stab_coords")
+        z_coords_meta = meta.get("z_stab_coords")
+        
+        # Handle potential layer swap (from parent class)
+        if x_coords_meta is not None and z_coords_meta is not None:
+            if hx.shape[0] != len(x_coords_meta) and hz.shape[0] == len(x_coords_meta):
+                hx, hz = hz, hx
+
+        n_x = hx.shape[0]
+        n_z = hz.shape[0]
+        
+        # Qubit allocation
+        data_qubits = list(range(n))
+        anc_x = list(range(n, n + n_x))
+        anc_z = list(range(n + n_x, n + n_x + n_z))
+        
+        c = stim.Circuit()
+        
+        # Data and stabilizer coordinates
+        data_coords = meta.get("data_coords")
+        x_stab_coords = meta.get("x_stab_coords")
+        z_stab_coords = meta.get("z_stab_coords")
+        stab_colors = self._stab_colors
+        
+        # Build coordinate lookup
+        coord_to_data: dict[tuple[float, float], int] = {}
+        
+        if data_coords is not None:
+            for q, (x, y) in enumerate(data_coords):
+                coord = (float(x), float(y))
+                if coord in coord_to_data:
+                    continue
+                coord_to_data[coord] = q
+                c.append("QUBIT_COORDS", [q], [coord[0], coord[1]])
+        
+        if x_stab_coords is not None:
+            for a, (x, y) in zip(anc_x, x_stab_coords):
+                c.append("QUBIT_COORDS", [a], [float(x), float(y)])
+        
+        if z_stab_coords is not None:
+            for a, (x, y) in zip(anc_z, z_stab_coords):
+                c.append("QUBIT_COORDS", [a], [float(x), float(y)])
+        
+        # Initial preparation
+        total_qubits = n + n_x + n_z
+        if total_qubits:
+            c.append("R", range(total_qubits))
+        
+        if basis == "X" and n > 0:
+            c.append("H", data_qubits)
+        
+        c.append("TICK")
+        
+        # Measurement tracking
+        m_index = 0
+        last_x_meas: list[Optional[int]] = [None] * n_x
+        last_z_meas: list[Optional[int]] = [None] * n_z
+        
+        def get_color(s_idx: int, is_x_type: bool) -> int:
+            """Get Chromobius color encoding for stabilizer.
+            
+            For X-type: color in {0, 1, 2}
+            For Z-type: color + 3 in {3, 4, 5}
+            """
+            base_color = stab_colors[s_idx % len(stab_colors)] if stab_colors else 0
+            return base_color if is_x_type else base_color + 3
+        
+        def add_detector_with_color(
+            coord: tuple[float, float],
+            rec_indices: list[int],
+            t: float,
+            s_idx: int,
+            is_x_type: bool
+        ) -> None:
+            """Emit a DETECTOR with 4D coordinates including color."""
+            if not rec_indices:
+                return
+            lookbacks = [idx - m_index for idx in rec_indices]
+            color_val = get_color(s_idx, is_x_type)
+            c.append(
+                "DETECTOR",
+                [stim.target_rec(lb) for lb in lookbacks],
+                [float(coord[0]), float(coord[1]), t, float(color_val)],
+            )
+        
+        def stab_coord(coords: Optional[List[tuple[float, float]]], idx: int) -> tuple[float, float]:
+            if coords is None or idx >= len(coords):
+                return (0.0, 0.0)
+            x, y = coords[idx]
+            return (float(x), float(y))
+        
+        # Syndrome rounds
+        for r in range(self.rounds):
+            # Prepare X ancillas
+            if n_x:
+                for s_idx in range(n_x):
+                    c.append("H", [anc_x[s_idx]])
+            
+            # X stabilizer gates (CNOT from data to ancilla after H)
+            if n_x:
+                for s_idx, row in enumerate(hx):
+                    a = anc_x[s_idx]
+                    for dq in np.where(row == 1)[0]:
+                        c.append("CNOT", [dq, a])
+                    c.append("H", [a])
+            
+            c.append("TICK")
+            
+            # Z stabilizer gates (CNOT from data to ancilla)
+            if n_z:
+                for s_idx, row in enumerate(hz):
+                    a = anc_z[s_idx]
+                    for dq in np.where(row == 1)[0]:
+                        c.append("CNOT", [dq, a])
+            
+            # Measure X ancillas
+            x_meas_start = m_index
+            if n_x:
+                c.append("MR", anc_x)
+                m_index += n_x
+            
+            # X-type detectors with color
+            for s_idx in range(n_x):
+                cur = x_meas_start + s_idx
+                coord = stab_coord(x_stab_coords, s_idx)
+                
+                if last_x_meas[s_idx] is None:
+                    add_detector_with_color(coord, [cur], 0.0, s_idx, is_x_type=True)
+                else:
+                    add_detector_with_color(coord, [last_x_meas[s_idx], cur], 0.0, s_idx, is_x_type=True)
+                
+                last_x_meas[s_idx] = cur
+            
+            # Measure Z ancillas
+            z_meas_start = m_index
+            if n_z:
+                c.append("MR", anc_z)
+                m_index += n_z
+            
+            # Z-type detectors with color
+            for s_idx in range(n_z):
+                cur = z_meas_start + s_idx
+                coord = stab_coord(z_stab_coords, s_idx)
+                
+                if last_z_meas[s_idx] is None:
+                    add_detector_with_color(coord, [cur], 0.0, s_idx, is_x_type=False)
+                else:
+                    add_detector_with_color(coord, [last_z_meas[s_idx], cur], 0.0, s_idx, is_x_type=False)
+                
+                last_z_meas[s_idx] = cur
+            
+            if data_coords is not None:
+                c.append("SHIFT_COORDS", [], [0.0, 0.0, 1.0])
+        
+        # Final data measurement
+        if n:
+            if basis == "X":
+                c.append("H", data_qubits)
+            c.append("M", data_qubits)
+            
+            first_data_idx = m_index
+            data_meas = {q: first_data_idx + i for i, q in enumerate(data_qubits)}
+            m_index += n
+            
+            # Space-like detectors with color
+            if basis == "Z":
+                stab_mat = hz
+                last_stab_meas = last_z_meas
+                stab_coords_final = z_stab_coords
+                is_x_type = False
+            else:
+                stab_mat = hx
+                last_stab_meas = last_x_meas
+                stab_coords_final = x_stab_coords
+                is_x_type = True
+            
+            if stab_mat is not None and stab_mat.size > 0:
+                for s_idx in range(stab_mat.shape[0]):
+                    row = stab_mat[s_idx]
+                    data_idxs = [data_meas[q] for q in np.where(row == 1)[0] if q in data_meas]
+                    recs = list(data_idxs)
+                    
+                    if s_idx < len(last_stab_meas) and last_stab_meas[s_idx] is not None:
+                        recs.append(last_stab_meas[s_idx])
+                    
+                    if recs:
+                        coord = stab_coord(stab_coords_final, s_idx)
+                        add_detector_with_color(coord, recs, 1.0, s_idx, is_x_type)
+            
+            # Logical observable
+            z_ops = get_logical_ops(code, 'z')
+            x_ops = get_logical_ops(code, 'x')
+            logical_support: list[int] = []
+            
+            if basis == "Z" and ops_valid(z_ops) and self.logical_qubit < ops_len(z_ops):
+                L = z_ops[self.logical_qubit]
+                logical_support = [q for q in range(n) if pauli_at(L, q) in ("Z", "Y")]
+            elif basis == "X" and ops_valid(x_ops) and self.logical_qubit < ops_len(x_ops):
+                L = x_ops[self.logical_qubit]
+                logical_support = [q for q in range(n) if pauli_at(L, q) in ("X", "Y")]
+            
+            if not logical_support:
+                logical_support = data_qubits
+            
+            obs_rec_indices = [data_meas[q] for q in logical_support if q in data_meas]
+            if obs_rec_indices:
+                lookbacks = [idx - m_index for idx in obs_rec_indices]
+                c.append("OBSERVABLE_INCLUDE", [stim.target_rec(lb) for lb in lookbacks], 0)
+        
         return c

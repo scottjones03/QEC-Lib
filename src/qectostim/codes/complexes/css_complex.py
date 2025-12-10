@@ -1,22 +1,85 @@
+# src/qectostim/codes/complexes/css_complex.py
+"""
+CSS chain complex classes for different chain lengths.
+
+Chain Complex Structure:
+    - CSSChainComplex2: 2-chain (C1 → C0) - Repetition codes
+    - CSSChainComplex3: 3-chain (C2 → C1 → C0) - 2D surface/toric codes  
+    - CSSChainComplex4: 4-chain (C3 → C2 → C1 → C0) - 3D toric codes
+    - FiveCSSChainComplex: 5-chain (C4 → C3 → C2 → C1 → C0) - 4D tesseract
+
+The convention is:
+    - boundary_k (sigma_k): C_k → C_{k-1}, shape (#C_{k-1}, #C_k)
+    - Hx comes from the boundary map above qubit_grade
+    - Hz comes from the transpose of the boundary map at qubit_grade
+"""
 from dataclasses import dataclass
+from typing import Optional
 import numpy as np
 
 from .chain_complex import ChainComplex
 
 
 @dataclass
+class CSSChainComplex2(ChainComplex):
+    """
+    2-term chain complex for simple CSS codes like repetition code:
+
+        C1 --∂1--> C0
+
+    - C1: Qubits (n physical bits)
+    - C0: Checks (parity checks)
+    
+    For the repetition code:
+    - C1 has n elements (data bits)
+    - C0 has n-1 elements (parity checks between adjacent bits)
+    """
+
+    boundary_1: np.ndarray  # shape: (#C0, #C1)
+
+    def __init__(self, boundary_1: np.ndarray):
+        self.boundary_1 = boundary_1
+        
+        boundary_maps = {
+            1: boundary_1,
+        }
+        # Qubits live on C1 → grade 1
+        ChainComplex.__init__(self, boundary_maps=boundary_maps, qubit_grade=1)
+
+    @property
+    def n_qubits(self) -> int:
+        """Number of physical qubits (C1)."""
+        return self.boundary_1.shape[1]
+
+    @property
+    def n_checks(self) -> int:
+        """Number of checks (C0)."""
+        return self.boundary_1.shape[0]
+
+    @property
+    def hz(self) -> np.ndarray:
+        """Z-stabilizer parity-check matrix."""
+        return (self.boundary_1.astype(np.uint8) % 2)
+
+    @property
+    def hx(self) -> np.ndarray:
+        """X-stabilizer parity-check matrix (empty for 2-chain)."""
+        return np.zeros((0, self.n_qubits), dtype=np.uint8)
+
+
+@dataclass
 class CSSChainComplex3(ChainComplex):
     """
-    3-term chain complex for a CSS code:
+    3-term chain complex for 2D CSS codes:
 
         C2 --∂2--> C1 --∂1--> C0
 
-    In a surface/colour-code picture:
-      - C2 ~ faces (plaquettes)
-      - C1 ~ edges (data qubits)
-      - C0 ~ vertices
+    Standard surface/toric code structure:
+      - C2: faces (plaquettes) - X stabilizers
+      - C1: edges (data qubits)
+      - C0: vertices - Z stabilizers
 
-    Canonical CSS parity-checks:
+    Parity-checks:
       - H_X := ∂2^T  (faces → edges)
       - H_Z := ∂1    (edges → vertices)
     """
@@ -25,21 +88,15 @@ class CSSChainComplex3(ChainComplex):
     boundary_1: np.ndarray  # shape: (#C0, #C1)
 
     def __init__(self, boundary_2: np.ndarray, boundary_1: np.ndarray):
-        # Store raw boundaries
         self.boundary_2 = boundary_2
         self.boundary_1 = boundary_1
 
-        # Build underlying ChainComplex structure.
-        # Grades: 2, 1, 0 with:
-        #   sigma_2 = ∂2, sigma_1 = ∂1
         boundary_maps = {
             2: boundary_2,
             1: boundary_1,
         }
-        # Qubits live on C1 (edges) → grade 1.
+        # Qubits live on C1 (edges) → grade 1
         ChainComplex.__init__(self, boundary_maps=boundary_maps, qubit_grade=1)
-
-    # --- basic dimensions ---
 
     @property
     def n_edges(self) -> int:
@@ -56,8 +113,6 @@ class CSSChainComplex3(ChainComplex):
         """Number of 0-cells / vertices (= C0)."""
         return self.boundary_1.shape[0]
 
-    # --- CSS parity-check matrices ---
-
     @property
     def hx(self) -> np.ndarray:
         """X-stabilizer parity-check matrix H_X (mod 2)."""
@@ -67,31 +122,115 @@ class CSSChainComplex3(ChainComplex):
     @property
     def hz(self) -> np.ndarray:
         """Z-stabilizer parity-check matrix H_Z (mod 2)."""
-        # ∂1: shape (#C0, #C1); treat rows as Z checks acting on edges (C1).
+        # ∂1: shape (#C0, #C1)
         return (self.boundary_1.astype(np.uint8) % 2)
+
+
+@dataclass  
+class CSSChainComplex4(ChainComplex):
+    """
+    4-term chain complex for 3D CSS codes:
+
+        C3 --∂3--> C2 --∂2--> C1 --∂1--> C0
+
+    Standard 3D toric code structure:
+      - C3: 3-cells (cubes)
+      - C2: 2-cells (faces)
+      - C1: 1-cells (edges, data qubits)
+      - C0: 0-cells (vertices)
+
+    For 3D toric with qubits on edges (grade 1):
+      - H_X := ∂2^T (faces → edges)
+      - H_Z := ∂1   (edges → vertices)
+      - Meta-X checks from ∂3
+      - Meta-Z checks from ∂1's structure
+    """
+
+    boundary_3: np.ndarray  # shape: (#C2, #C3)
+    boundary_2: np.ndarray  # shape: (#C1, #C2)
+    boundary_1: np.ndarray  # shape: (#C0, #C1)
+
+    def __init__(
+        self,
+        boundary_3: np.ndarray,
+        boundary_2: np.ndarray,
+        boundary_1: np.ndarray,
+        qubit_grade: int = 1,
+    ):
+        self.boundary_3 = boundary_3
+        self.boundary_2 = boundary_2
+        self.boundary_1 = boundary_1
+
+        boundary_maps = {
+            3: boundary_3,
+            2: boundary_2,
+            1: boundary_1,
+        }
+        ChainComplex.__init__(self, boundary_maps=boundary_maps, qubit_grade=qubit_grade)
+
+    @property
+    def n_cubes(self) -> int:
+        """Number of 3-cells (C3)."""
+        return self.boundary_3.shape[1]
+
+    @property
+    def n_faces(self) -> int:
+        """Number of 2-cells (C2)."""
+        return self.boundary_2.shape[1]
+
+    @property
+    def n_edges(self) -> int:
+        """Number of 1-cells / edges (C1)."""
+        return self.boundary_1.shape[1]
+
+    @property
+    def n_vertices(self) -> int:
+        """Number of 0-cells / vertices (C0)."""
+        return self.boundary_1.shape[0]
+
+    @property
+    def hx(self) -> np.ndarray:
+        """X-stabilizer parity-check matrix."""
+        if self.qubit_grade == 1:
+            # Qubits on edges: Hx from ∂2^T
+            return (self.boundary_2.T.astype(np.uint8) % 2)
+        elif self.qubit_grade == 2:
+            # Qubits on faces: Hx from ∂3^T
+            return (self.boundary_3.T.astype(np.uint8) % 2)
+        else:
+            raise ValueError(f"Unsupported qubit_grade {self.qubit_grade}")
+
+    @property
+    def hz(self) -> np.ndarray:
+        """Z-stabilizer parity-check matrix."""
+        if self.qubit_grade == 1:
+            # Qubits on edges: Hz from ∂1
+            return (self.boundary_1.astype(np.uint8) % 2)
+        elif self.qubit_grade == 2:
+            # Qubits on faces: Hz from ∂2^T
+            return (self.boundary_2.T.astype(np.uint8) % 2)
+        else:
+            raise ValueError(f"Unsupported qubit_grade {self.qubit_grade}")
 
 
 class FiveCSSChainComplex(ChainComplex):
     """
-    5-step CSS chain complex:
+    5-term chain complex for 4D CSS codes:
 
-        C4 --sigma4--> C3 --sigma3--> C2 --sigma2--> C1 --sigma1--> C0
+        C4 --σ4--> C3 --σ3--> C2 --σ2--> C1 --σ1--> C0
 
-    with:
-        - data qubits on C2
-        - X checks from sigma2 (generalising ∂2)
-        - Z checks from sigma3^T (generalising ∂3^T)
-        - X meta-checks from sigma1
-        - Z meta-checks from sigma4^T
+    Standard 4D toric code (tesseract) structure:
+      - C4: 4-cells (hypercubes)
+      - C3: 3-cells (cubes)
+      - C2: 2-cells (faces, typically qubits)
+      - C1: 1-cells (edges)
+      - C0: 0-cells (vertices)
 
-    Shapes:
-        sigma_k has shape (#C_{k-1}, #C_k).
-
-    So:
-        - sigma2: (#C1, #C2)
-        - sigma3: (#C2, #C3)
-        - sigma1: (#C0, #C1)
-        - sigma4: (#C3, #C4)
+    With qubits on C2 (faces):
+      - H_X := σ2^T (C2 → C1)
+      - H_Z := σ3^T (C3 → C2)
+      - Meta-X checks from σ1
+      - Meta-Z checks from σ4^T
     """
 
     def __init__(
@@ -100,6 +239,7 @@ class FiveCSSChainComplex(ChainComplex):
         sigma3: np.ndarray,
         sigma2: np.ndarray,
         sigma1: np.ndarray,
+        qubit_grade: int = 2,
     ):
         self.sigma4 = sigma4
         self.sigma3 = sigma3
@@ -112,50 +252,49 @@ class FiveCSSChainComplex(ChainComplex):
             2: sigma2,
             1: sigma1,
         }
-        # Qubits on C2 → grade 2.
-        super().__init__(boundary_maps=boundary_maps, qubit_grade=2)
+        super().__init__(boundary_maps=boundary_maps, qubit_grade=qubit_grade)
 
-    # --- CSS parity checks and meta-checks ---
+    @property
+    def n_hypercubes(self) -> int:
+        """Number of 4-cells (C4)."""
+        return self.sigma4.shape[1]
+
+    @property
+    def n_cubes(self) -> int:
+        """Number of 3-cells (C3)."""
+        return self.sigma3.shape[1]
+
+    @property
+    def n_faces(self) -> int:
+        """Number of 2-cells (C2)."""
+        return self.sigma2.shape[1]
+
+    @property
+    def n_edges(self) -> int:
+        """Number of 1-cells (C1)."""
+        return self.sigma1.shape[1]
+
+    @property
+    def n_vertices(self) -> int:
+        """Number of 0-cells (C0)."""
+        return self.sigma1.shape[0]
 
     @property
     def hx(self) -> np.ndarray:
-        """
-        X-type stabilizers H_X.
-
-        X checks come from sigma2 (C2→C1), generalising H_X := ∂2^T in 2D:
-            sigma2: (#C1, #C2)
-            H_X := sigma2^T: (#C2, #C1)
-        """
+        """X-type stabilizers from σ2^T."""
         return (self.sigma2.T.astype(np.uint8) % 2)
 
     @property
     def hz(self) -> np.ndarray:
-        """
-        Z-type stabilizers H_Z.
-
-        Z checks come from sigma3^T:
-            sigma3: (#C2, #C3)
-            H_Z := sigma3^T: (#C3, #C2)
-        """
+        """Z-type stabilizers from σ3^T."""
         return (self.sigma3.T.astype(np.uint8) % 2)
 
     @property
     def meta_x(self) -> np.ndarray:
-        """
-        X-type meta-checks (syndrome-of-syndrome in the X sector).
-
-        Taken directly from sigma1 (C1→C0):
-            sigma1: (#C0, #C1)
-        """
+        """X-type meta-checks from σ1."""
         return (self.sigma1.astype(np.uint8) % 2)
 
     @property
     def meta_z(self) -> np.ndarray:
-        """
-        Z-type meta-checks (syndrome-of-syndrome in the Z sector).
-
-        Taken from sigma4^T:
-            sigma4: (#C3, #C4)
-            meta_Z := sigma4^T: (#C4, #C3)
-        """
+        """Z-type meta-checks from σ4^T."""
         return (self.sigma4.T.astype(np.uint8) % 2)

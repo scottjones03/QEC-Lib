@@ -14,6 +14,8 @@ from qectostim.decoders.union_find_decoder import UnionFindDecoder
 from qectostim.decoders.tesseract_decoder import TesseractDecoder
 from qectostim.decoders.bp_osd import BPOSDDecoder
 from qectostim.decoders.belief_matching import BeliefMatchingDecoder
+from qectostim.decoders.mle_decoder import MLEDecoder, HypergraphDecoder
+from qectostim.decoders.chromobius_decoder import ChromobiusDecoder
 
 def select_decoder(
     dem: stim.DetectorErrorModel,
@@ -38,6 +40,9 @@ def select_decoder(
           - "tesseract"
           - "bposd", "bp-osd"
           - "beliefmatching", "belief"
+          - "mle", "maximum-likelihood" (exact, for small codes only)
+          - "hypergraph", "hyper" (PyMatching + boundary L0 correction)
+          - "chromobius", "chromo" (for hyperedge DEMs)
     code : Optional[Code]
         Code object. ConcatenatedCode triggers the special concatenated decoder.
     max_bp_iters : int
@@ -83,6 +88,18 @@ def select_decoder(
     # Belief-matching
     if name in {"beliefmatching", "belief-matching", "belief"}:
         return BeliefMatchingDecoder(dem, max_bp_iters=max_bp_iters)
+
+    # MLE decoder (exact, for small codes)
+    if name in {"mle", "maximum-likelihood", "lookup"}:
+        return MLEDecoder(dem)
+
+    # Hypergraph decoder (PyMatching + boundary L0 correction)
+    if name in {"hypergraph", "hyper"}:
+        return HypergraphDecoder(dem)
+
+    # Chromobius decoder (for hyperedge DEMs)
+    if name in {"chromobius", "chromo"}:
+        return ChromobiusDecoder(dem)
 
     # Fallback: PyMatching.
     return PyMatchingDecoder(dem)

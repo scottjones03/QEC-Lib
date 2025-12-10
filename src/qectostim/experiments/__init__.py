@@ -7,14 +7,21 @@ Class Hierarchy:
     └── MemoryExperiment (ABC) - Repeated stabilizer measurements
         └── StabilizerMemoryExperiment - For general stabilizer codes
             └── CSSMemoryExperiment - Optimized for CSS codes
+                └── ColorCodeMemoryExperiment - For color codes with Chromobius support
 """
 
 from .experiment import Experiment
-from .memory import MemoryExperiment, StabilizerMemoryExperiment, CSSMemoryExperiment
+from .memory import (
+    MemoryExperiment,
+    StabilizerMemoryExperiment,
+    CSSMemoryExperiment,
+    ColorCodeMemoryExperiment,
+)
 
 __all__ = [
     "Experiment",
     "MemoryExperiment",
     "StabilizerMemoryExperiment",
     "CSSMemoryExperiment",
+    "ColorCodeMemoryExperiment",
 ]
