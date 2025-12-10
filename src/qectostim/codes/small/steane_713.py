@@ -69,12 +69,13 @@ class SteanCode713(TopologicalCSSCode):
             [1, 0, 1, 0, 1, 0, 1],  # qubits {0,2,4,6}
         ], dtype=np.uint8)
 
-        # Build chain complex
-        n_qubits = 7
-        boundary_2_x = hx.T.astype(np.uint8)  # shape (7, 3)
-        boundary_2_z = hz.T.astype(np.uint8)  # shape (7, 3)
-        boundary_2 = np.concatenate([boundary_2_x, boundary_2_z], axis=1)
-        boundary_1 = np.zeros((0, n_qubits), dtype=np.uint8)
+        # Build chain complex for CSS code structure:
+        #   C2 (X stabilizers) --∂2--> C1 (qubits) --∂1--> C0 (Z stabilizers)
+        #
+        # boundary_2 = Hx.T: maps faces (X stabs) → edges (qubits), shape (n, #X_checks)
+        # boundary_1 = Hz:   maps edges (qubits) → vertices (Z stabs), shape (#Z_checks, n)
+        boundary_2 = hx.T.astype(np.uint8)  # shape (7, 3) - 7 qubits, 3 X stabilizers
+        boundary_1 = hz.astype(np.uint8)    # shape (3, 7) - 3 Z stabilizers, 7 qubits
         
         chain_complex = CSSChainComplex3(boundary_2=boundary_2, boundary_1=boundary_1)
 

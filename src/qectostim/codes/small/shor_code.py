@@ -56,12 +56,13 @@ class ShorCode91(TopologicalCSSCode):
             [0, 0, 0, 1, 1, 1, 1, 1, 1],  # rows 1&2: {3,4,5,6,7,8}
         ], dtype=np.uint8)
 
-        # Build chain complex
-        n_qubits = 9
-        boundary_2_x = hx.T.astype(np.uint8)  # shape (9, 2)
-        boundary_2_z = hz.T.astype(np.uint8)  # shape (9, 6)
-        boundary_2 = np.concatenate([boundary_2_x, boundary_2_z], axis=1)
-        boundary_1 = np.zeros((0, n_qubits), dtype=np.uint8)
+        # Build chain complex for CSS code structure:
+        #   C2 (X stabilizers) --∂2--> C1 (qubits) --∂1--> C0 (Z stabilizers)
+        #
+        # boundary_2 = Hx.T: maps faces (X stabs) → edges (qubits), shape (n, #X_checks)
+        # boundary_1 = Hz:   maps edges (qubits) → vertices (Z stabs), shape (#Z_checks, n)
+        boundary_2 = hx.T.astype(np.uint8)  # shape (9, 2) - 9 qubits, 2 X stabilizers
+        boundary_1 = hz.astype(np.uint8)    # shape (6, 9) - 6 Z stabilizers, 9 qubits
         
         chain_complex = CSSChainComplex3(boundary_2=boundary_2, boundary_1=boundary_1)
 
