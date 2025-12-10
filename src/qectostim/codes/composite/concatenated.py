@@ -55,6 +55,79 @@ def _normalize_logical_ops(ops: List[Any]) -> List[PauliString]:
 Coord2D = Tuple[float, float]
 
 
+def _compute_optimal_scale(
+    outer_coords: List[Coord2D],
+    inner_coords: List[Coord2D],
+    margin: float = 3.0,
+) -> float:
+    """
+    Compute optimal scale factor to prevent inner block overlap.
+    
+    The scale is chosen so that when inner code blocks are placed at
+    each outer qubit position, they don't overlap. This requires:
+        scale * min_outer_distance > inner_bounding_box_diagonal * margin
+    
+    Parameters
+    ----------
+    outer_coords : List[Coord2D]
+        Coordinates of outer code qubits.
+    inner_coords : List[Coord2D]
+        Coordinates of inner code qubits.
+    margin : float, optional
+        Safety margin multiplier (default 3.0). Larger values give more
+        spacing between inner blocks. A margin of 3.0 provides good 
+        visual separation for plotting.
+        
+    Returns
+    -------
+    float
+        Optimal scale factor.
+        
+    Examples
+    --------
+    >>> outer = [(0,0), (1,0), (0,1), (1,1)]  # 422-like
+    >>> inner = [(1,1), (3,1), (5,1), ...]     # Surface-like
+    >>> _compute_optimal_scale(outer, inner)  # Returns ~17 with margin=3.0
+    """
+    if len(outer_coords) < 2:
+        # Single outer qubit - no spacing needed
+        return 1.0
+    
+    # Compute inner bounding box diagonal (size of inner block)
+    inner_arr = np.array(inner_coords, dtype=float)
+    inner_min = inner_arr.min(axis=0)
+    inner_max = inner_arr.max(axis=0)
+    inner_diagonal = np.linalg.norm(inner_max - inner_min)
+    
+    # If inner is a single point, use a small default size
+    if inner_diagonal < 1e-9:
+        inner_diagonal = 1.0
+    
+    # Find minimum pairwise distance between outer qubits
+    outer_arr = np.array(outer_coords, dtype=float)
+    n_outer = len(outer_coords)
+    min_outer_dist = float('inf')
+    
+    for i in range(n_outer):
+        for j in range(i + 1, n_outer):
+            dist = np.linalg.norm(outer_arr[i] - outer_arr[j])
+            if dist > 1e-9:  # Avoid zero distances
+                min_outer_dist = min(min_outer_dist, dist)
+    
+    # If all outer qubits are at the same position, use default
+    if min_outer_dist == float('inf'):
+        return 1.0
+    
+    # Scale formula: we want inner blocks separated by at least inner_diagonal
+    # After scaling, outer positions are multiplied by scale
+    # So: scale * min_outer_dist > inner_diagonal * margin
+    # => scale > inner_diagonal * margin / min_outer_dist
+    optimal_scale = (inner_diagonal * margin) / min_outer_dist
+    
+    # Ensure minimum scale of 1.0 and round to nice number
+    return max(optimal_scale, 1.0)
+
+
 class ConcatenatedCode(Code):
     """
     Abstract base class for concatenated codes: outer ∘ inner.
@@ -328,7 +401,12 @@ class ConcatenatedTopologicalCSSCode(ConcatenatedCSSCode, TopologicalCSSCode):
     metadata : dict, optional
         Additional metadata.
     scale : float, optional
-        Scale factor for inner code layout (default 0.4).
+        Scale factor for inner code layout. If None (default), an optimal
+        scale is computed automatically to prevent inner block overlap.
+        Typical values: ~20-30 for 4-qubit outer codes, ~3-5 for surface codes.
+    margin : float, optional
+        Safety margin for automatic scale computation (default 3.0).
+        Larger values give more spacing between inner blocks.
     """
 
     def __init__(
@@ -337,7 +415,8 @@ class ConcatenatedTopologicalCSSCode(ConcatenatedCSSCode, TopologicalCSSCode):
         inner: TopologicalCSSCode,
         depth: int = 1,
         metadata: Optional[Dict[str, Any]] = None,
-        scale: float = 0.4,
+        scale: Optional[float] = None,
+        margin: float = 3.0,
     ) -> None:
         # Build the concatenated CSS structure (Hx, Hz, etc.).
         ConcatenatedCSSCode.__init__(self, outer=outer, inner=inner, depth=depth, metadata=metadata)
@@ -349,6 +428,14 @@ class ConcatenatedTopologicalCSSCode(ConcatenatedCSSCode, TopologicalCSSCode):
             inner_coords = self._effective_inner.qubit_coords()
         else:
             inner_coords = inner.qubit_coords()
+
+        # Compute optimal scale automatically if not provided
+        if scale is None:
+            scale = _compute_optimal_scale(outer_coords, inner_coords, margin)
+        
+        # Store the computed/provided scale in metadata for reference
+        self._metadata['scale'] = scale
+        self._metadata['scale_auto_computed'] = (scale is None)
 
         # Compute inner bounding box to centre inner blocks.
         inner_arr = np.array(inner_coords, dtype=float)

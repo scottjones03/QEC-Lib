@@ -63,11 +63,13 @@ class HammingCSSCode(TopologicalCSSCode):
         hx = H.copy()
         hz = H.copy()
         
-        # Build chain complex
-        boundary_2_x = hx.T.astype(np.uint8)  # shape (n, m)
-        boundary_2_z = hz.T.astype(np.uint8)  # shape (n, m)
-        boundary_2 = np.concatenate([boundary_2_x, boundary_2_z], axis=1)
-        boundary_1 = np.zeros((0, n), dtype=np.uint8)
+        # Build chain complex for CSS code structure:
+        #   C2 (X stabilizers) --∂2--> C1 (qubits) --∂1--> C0 (Z stabilizers)
+        #
+        # boundary_2 = Hx.T: maps faces (X stabs) → edges (qubits), shape (n, #X_checks)
+        # boundary_1 = Hz:   maps edges (qubits) → vertices (Z stabs), shape (#Z_checks, n)
+        boundary_2 = hx.T.astype(np.uint8)  # shape (n, m)
+        boundary_1 = hz.astype(np.uint8)    # shape (m, n)
         
         chain_complex = CSSChainComplex3(boundary_2=boundary_2, boundary_1=boundary_1)
         

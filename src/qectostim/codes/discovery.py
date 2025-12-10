@@ -287,6 +287,9 @@ def discover_all_codes(
     min_distance: Optional[int] = None,
     max_qubits: Optional[int] = None,
     include_qldpc: bool = True,
+    include_bosonic: bool = False,    # Bosonic codes use continuous variables
+    include_qudit: bool = False,       # Qudit codes use d>2 dimensions
+    include_fracton: bool = False,    # Fracton codes have exotic excitations
     timeout_per_code: float = 5.0,
 ) -> Dict[str, Code]:
     """
@@ -306,6 +309,9 @@ def discover_all_codes(
         min_distance: Only include codes with distance >= this value
         max_qubits: Only include codes with n <= this value
         include_qldpc: Include QLDPC codes (may be large)
+        include_bosonic: Include bosonic codes (GKP, rotor - use continuous variables)
+        include_qudit: Include qudit codes (Galois field - use d>2 dimensions)
+        include_fracton: Include fracton codes (XCube, Haah - exotic excitations)
         timeout_per_code: Max seconds to wait for each code to instantiate (default 5.0)
         
     Returns:
@@ -323,6 +329,7 @@ def discover_all_codes(
     
     # List of code classes to try instantiating with default parameters
     # Format: (class_name, factory_func_or_default_args, module_hint)
+    # Includes both direct instantiation and pre-built factory functions
     code_specs = [
         # ========== SMALL CODES ==========
         # Standard small CSS codes (no args needed)
@@ -332,6 +339,10 @@ def discover_all_codes(
         ("ShorCode91", {}),
         ("ReedMullerCode151", {}),
         ("HammingCSSCode", {}),
+        # Pre-built Hamming CSS factories
+        ("HammingCSS7", "factory"),   # [[7,1,3]] Steane
+        ("HammingCSS15", "factory"),  # [[15,7,3]]
+        ("HammingCSS31", "factory"),  # [[31,21,3]]
         
         # Non-CSS codes (no args needed)
         ("PerfectCode513", {}),
@@ -351,24 +362,56 @@ def discover_all_codes(
         ("RotatedSurfaceCode", {"distance": 5}),
         ("ToricCode", {"Lx": 3, "Ly": 3}),
         ("ToricCode", {"Lx": 5, "Ly": 5}),
+        ("ToricCode33", "factory"),  # Pre-built 3x3 toric
         ("XZZXSurfaceCode", {"distance": 3}),
         ("XZZXSurfaceCode", {"distance": 5}),
-        # Note: ToricCode4D is the 4D toric/tesseract code
+        ("XZZXSurface3", "factory"),  # Pre-built XZZX d=3
+        ("XZZXSurface5", "factory"),  # Pre-built XZZX d=5
+        ("KitaevSurfaceCode", {"n_faces": 10}),  # Generic Kitaev surface
+        
+        # 4D Toric codes (tesseract)
         ("ToricCode4D", {"L": 2}),
         ("ToricCode4D", {"L": 3}),
-        # 3D Toric codes
-        ("ToricCode3D", {"Lx": 3, "Ly": 3, "Lz": 3}),
-        ("ToricCode3D", {"Lx": 4, "Ly": 4, "Lz": 4}),
+        ("ToricCode4D_2", "factory"),  # Pre-built L=2
+        ("ToricCode4D_3", "factory"),  # Pre-built L=3
+        ("LoopToricCode4D", {"L": 2}),  # 4D loop toric
+        ("LoopToric4D_2", "factory"),   # Pre-built
+        
+        # 3D Toric codes (uses L parameter, not Lx/Ly/Lz)
+        ("ToricCode3D", {"L": 3}),
+        ("ToricCode3D", {"L": 4}),
+        ("ToricCode3D_3x3x3", "factory"),  # Pre-built 3D
+        ("ToricCode3D_4x4x4", "factory"),  # Pre-built 3D
+        ("ToricCode3DFaces", {"L": 3}),  # 3D with faces
         
         # Hyperbolic surface codes
         ("HyperbolicSurfaceCode", {"genus": 2, "p": 5, "q": 4}),
+        ("Hyperbolic45Code", {}),  # Pre-configured {4,5}
+        ("Hyperbolic57Code", {}),  # Pre-configured {5,7}
+        ("Hyperbolic38Code", {}),  # Pre-configured {3,8}
+        ("Hyperbolic45_G2", "factory"),  # genus=2
+        ("Hyperbolic57_G2", "factory"),
+        ("Hyperbolic38_G2", "factory"),
         ("FreedmanMeyerLuoCode", {"L": 4}),
+        ("FreedmanMeyerLuo_4", "factory"),
+        ("FreedmanMeyerLuo_5", "factory"),
         ("GuthLubotzkyCode", {"level": 2}),
+        ("GuthLubotzky_4", "factory"),
+        ("GuthLubotzky_5", "factory"),
         ("GoldenCode", {"level": 1}),
+        ("GoldenCode_5", "factory"),
+        ("GoldenCode_8", "factory"),
+        
+        # Exotic surface codes
         ("FractalSurfaceCode", {"L": 3}),
+        ("FractalSurface_L2", "factory"),
+        ("FractalSurface_L3", "factory"),
         ("TwistedToricCode", {"L": 3}),
+        ("TwistedToric_4x4", "factory"),
         ("LCSCode", {"L": 3}),
+        ("LCS_3x3", "factory"),
         ("ProjectivePlaneSurfaceCode", {"L": 3}),
+        ("ProjectivePlane_4", "factory"),
         
         # ========== COLOR CODES ==========
         ("TriangularColourCode", {"distance": 3}),
@@ -376,35 +419,54 @@ def discover_all_codes(
         ("HexagonalColourCode", {"distance": 2}),
         ("HexagonalColourCode", {"distance": 3}),
         ("ColourCode488", {"distance": 3}),
-        ("TruncatedTrihexColorCode", {}),  # Fixed name
+        ("TruncatedTrihexColorCode", {}),
+        ("TruncatedTrihex_2x2", "factory"),
         
         # 3D Color codes
-        ("ColorCode3D", {"distance": 3}),   # Fixed: was ColorCode3D_d3
-        ("ColorCode3D", {"distance": 5}),   # Fixed: was ColorCode3D_d5
-        ("ColorCode3DPrism", {"Lx": 2, "Ly": 3}),  # Fixed: was ColorCode3DPrism_2x3
-        ("CubicHoneycombColorCode", {"L": 2}),  # Fixed: was CubicHoneycomb_L2
-        ("TetrahedralColorCode", {"L": 2}),     # Fixed: was Tetrahedral_L2
-        ("BallColorCode", {"dim": 3}),          # Fixed: was BallColor_3D
-        ("BallColorCode", {"dim": 4}),          # Fixed: was BallColor_4D
+        ("ColorCode3D", {"distance": 3}),
+        ("ColorCode3D", {"distance": 5}),
+        ("ColorCode3D_d3", "factory"),
+        ("ColorCode3D_d5", "factory"),
+        ("ColorCode3DPrism", {"Lx": 2, "Ly": 3}),
+        ("ColorCode3DPrism_2x3", "factory"),
+        ("CubicHoneycombColorCode", {"L": 2}),
+        ("CubicHoneycomb_L2", "factory"),
+        ("TetrahedralColorCode", {"L": 2}),
+        ("Tetrahedral_L2", "factory"),
+        ("BallColorCode", {"dim": 3}),
+        ("BallColorCode", {"dim": 4}),
+        ("BallColor_3D", "factory"),
+        ("BallColor_4D", "factory"),
         
         # Hyperbolic color codes
-        ("HyperbolicColorCode", {"p": 4, "q": 5, "genus": 2}),  # Fixed: was HyperbolicColor_45_g2
-        ("HyperbolicColorCode", {"p": 6, "q": 4, "genus": 2}),  # Fixed: was HyperbolicColor_64_g2
+        ("HyperbolicColorCode", {"p": 4, "q": 5, "genus": 2}),
+        ("HyperbolicColorCode", {"p": 6, "q": 4, "genus": 2}),
+        ("HyperbolicColor_45_g2", "factory"),
+        ("HyperbolicColor_64_g2", "factory"),
         
         # Pin and rainbow codes
-        ("QuantumPinCode", {"distance": 3, "m": 2}),      # Fixed: was QuantumPin_d3_m2
-        ("QuantumPinCode", {"distance": 5, "m": 3}),      # Fixed: was QuantumPin_d5_m3
-        ("DoublePinCode", {"distance": 3}),               # Fixed: was DoublePin_d3
-        ("DoublePinCode", {"distance": 5}),               # Fixed: was DoublePin_d5
-        ("RainbowCode", {"L": 3, "r": 3}),                # Fixed: was Rainbow_L3_r3
-        ("RainbowCode", {"L": 5, "r": 4}),                # Fixed: was Rainbow_L5_r4
-        ("HolographicRainbowCode", {"L": 4, "distance": 2}),  # Fixed: was HolographicRainbow_L4_d2
-        ("HolographicRainbowCode", {"L": 6, "distance": 3}),  # Fixed: was HolographicRainbow_L6_d3
+        ("QuantumPinCode", {"distance": 3, "m": 2}),
+        ("QuantumPinCode", {"distance": 5, "m": 3}),
+        ("QuantumPin_d3_m2", "factory"),
+        ("QuantumPin_d5_m3", "factory"),
+        ("DoublePinCode", {"distance": 3}),
+        ("DoublePinCode", {"distance": 5}),
+        ("DoublePin_d3", "factory"),
+        ("DoublePin_d5", "factory"),
+        ("RainbowCode", {"L": 3, "r": 3}),
+        ("RainbowCode", {"L": 5, "r": 4}),
+        ("Rainbow_L3_r3", "factory"),
+        ("Rainbow_L5_r4", "factory"),
+        ("HolographicRainbowCode", {"L": 4, "distance": 2}),
+        ("HolographicRainbowCode", {"L": 6, "distance": 3}),
+        ("HolographicRainbow_L4_d2", "factory"),
+        ("HolographicRainbow_L6_d3", "factory"),
         
         # ========== QLDPC CODES ==========
         # Hypergraph product codes
         ("HGPHamming7", "factory"),
-        ("HypergraphProductCode", {"base_matrix": None}),  # Will fail, use factory below
+        ("HGPRep5", "factory"),  # HGP from repetition code
+        ("HypergraphProductCode", {"base_matrix": None}),  # Will fail, use factory
         # Bivariate bicycle codes
         ("BBGrossCode", "factory"),
         ("BivariateBicycleCode", {"m": 6, "polynomial_a": [1, 2], "polynomial_b": [0, 3]}),
@@ -429,20 +491,22 @@ def discover_all_codes(
         ("BalancedProductHamming", "factory"),
         
         # ========== SUBSYSTEM CODES ==========
-        ("BaconShorCode", {"m": 3, "n": 3}),  # Uses m, n parameters
-        ("SubsystemSurfaceCode", {"distance": 3}),  # Fixed: was SubsystemSurface3
-        ("SubsystemSurfaceCode", {"distance": 5}),  # Fixed: was SubsystemSurface5
-        ("GaugeColorCode", {"distance": 3}),        # Fixed: was GaugeColor3
+        ("BaconShorCode", {"m": 3, "n": 3}),
+        ("SubsystemSurfaceCode", {"distance": 3}),
+        ("SubsystemSurfaceCode", {"distance": 5}),
+        ("SubsystemSurface3", "factory"),
+        ("SubsystemSurface5", "factory"),
+        ("GaugeColorCode", {"distance": 3}),
+        ("GaugeColor3", "factory"),
         
         # ========== FLOQUET CODES ==========
-        ("Honeycomb2x3", "factory"),  # Pre-built instance
-        ("Honeycomb3x3", "factory"),  # Pre-built instance
-        ("ISGFloquet3", "factory"),   # Pre-built instance
-        ("HoneycombCode", {"rows": 4, "cols": 4}),  # Direct instantiation
-        ("ISGFloquetCode", {"base_distance": 5}),   # Direct instantiation
+        ("Honeycomb2x3", "factory"),
+        ("Honeycomb3x3", "factory"),
+        ("ISGFloquet3", "factory"),
+        ("HoneycombCode", {"rows": 4, "cols": 4}),
+        ("ISGFloquetCode", {"base_distance": 5}),
         
         # ========== TOPOLOGICAL / FRACTON CODES ==========
-        # Factory functions that return pre-built instances
         ("HaahCode_3", "factory"),
         ("HaahCode_4", "factory"),
         ("XCubeCode_3", "factory"),
@@ -459,20 +523,40 @@ def discover_all_codes(
         ("GaloisQuditSurfaceCode", {"Lx": 3, "Ly": 3, "q": 3}),
         ("GaloisQuditSurfaceCode", {"Lx": 4, "Ly": 4, "q": 5}),
         ("GaloisQuditColorCode", {"L": 3, "q": 3}),
+        ("GaloisSurface_3x3_GF3", "factory"),
+        ("GaloisSurface_4x4_GF5", "factory"),
+        ("GaloisHGP_GF3_n5", "factory"),
+        ("GaloisHGP_GF5_n7", "factory"),
+        ("GaloisColor_L3_GF3", "factory"),
+        ("GaloisExpander_n8_GF3", "factory"),
         ("ModularQuditSurfaceCode", {"Lx": 3, "Ly": 3, "d": 3}),
         ("ModularQuditSurfaceCode", {"Lx": 4, "Ly": 4, "d": 5}),
         ("ModularQudit3DSurfaceCode", {"L": 3, "d": 3}),
         ("ModularQuditColorCode", {"L": 3, "d": 3}),
+        ("ModularSurface_3x3_d3", "factory"),
+        ("ModularSurface_4x4_d5", "factory"),
+        ("ModularSurface3D_L3_d3", "factory"),
+        ("ModularSurface3D_L4_d5", "factory"),
+        ("ModularColor_L3_d3", "factory"),
+        ("ModularColor_L4_d5", "factory"),
         
         # ========== BOSONIC CODES ==========
         ("IntegerHomologyBosonicCode", {"L": 3, "dim": 2}),
         ("IntegerHomologyBosonicCode", {"L": 4, "dim": 3}),
+        ("IntegerHomology_L3_2D", "factory"),
+        ("IntegerHomology_L4_3D", "factory"),
         ("HomologicalRotorCode", {"L": 3}),
         ("HomologicalRotorCode", {"L": 5}),
+        ("RotorCode_L3", "factory"),
+        ("RotorCode_L5", "factory"),
         ("HomologicalNumberPhaseCode", {"L": 3, "T": 2}),
         ("HomologicalNumberPhaseCode", {"L": 4, "T": 3}),
+        ("NumberPhase_L3_T2", "factory"),
+        ("NumberPhase_L4_T3", "factory"),
         ("GKPSurfaceCode", {"Lx": 3, "Ly": 3}),
         ("GKPSurfaceCode", {"Lx": 5, "Ly": 5}),
+        ("GKPSurface_3x3", "factory"),
+        ("GKPSurface_5x5", "factory"),
         
         # ========== COMPOSITE CODES ==========
         ("HypergraphProductCode", "factory"),
@@ -481,16 +565,36 @@ def discover_all_codes(
     
     # Skip list for codes known to hang or take very long to instantiate
     # These codes have expensive constructors that may block indefinitely
+    # or have implementation bugs that prevent instantiation
     skip_codes = {
-        # These codes have known performance issues in their constructors
+        # Performance issues in constructors
         "HolographicRainbowCode",
+        "HolographicRainbow_L4_d2",
+        "HolographicRainbow_L6_d3",
         "ColorCode3D",
-        "ColorCode3DPrism", 
+        "ColorCode3D_d3",
+        "ColorCode3D_d5",
+        "ColorCode3DPrism",
+        "ColorCode3DPrism_2x3",
         "BallColorCode",
-        "ToricCode3D",
+        "BallColor_3D",
+        "BallColor_4D",
+        "ToricCode3D",  # Works but slow for large L
+        "ToricCode3D_4x4x4",  # 192 qubits
+        "ToricCode3DFaces",
         "HomologicalNumberPhaseCode",  # Often hangs
+        "NumberPhase_L3_T2",
+        "NumberPhase_L4_T3",
         "ModularQudit3DSurfaceCode",   # Can be slow
+        "ModularSurface3D_L3_d3",
+        "ModularSurface3D_L4_d5",
         "HigherDimHom_4D",             # 4D codes are expensive
+        # Implementation bugs - need chain complex fixes
+        "ToricCode4D",      # Matrix dimension mismatch in chain complex
+        "ToricCode4D_2",
+        "ToricCode4D_3",
+        "LoopToricCode4D",  # Wrong super().__init__ signature
+        "LoopToric4D_2",
     }
     
     for spec_item in code_specs:
@@ -523,6 +627,9 @@ def discover_all_codes(
                 include_subsystem,
                 include_floquet,
                 include_qldpc,
+                include_bosonic,
+                include_qudit,
+                include_fracton,
                 min_distance,
                 max_qubits
             ):
@@ -532,7 +639,7 @@ def discover_all_codes(
             name = _get_code_name(code, class_name)
             codes[name] = code
             
-        except Exception as e:
+        except Exception:
             # Skip codes that fail to instantiate
             # This is expected for some codes that require specific parameters
             continue
@@ -547,10 +654,31 @@ def _passes_filters(
     include_subsystem: bool,
     include_floquet: bool,
     include_qldpc: bool,
+    include_bosonic: bool,
+    include_qudit: bool,
+    include_fracton: bool,
     min_distance: Optional[int],
     max_qubits: Optional[int],
 ) -> bool:
     """Check if a code passes all filter criteria."""
+    
+    # Check for bosonic codes (GKP, rotor, etc.) - use continuous variables
+    bosonic_names = ['GKP', 'Rotor', 'Bosonic', 'IntegerHomology']
+    is_bosonic = any(name in type(code).__name__ for name in bosonic_names)
+    if is_bosonic and not include_bosonic:
+        return False
+    
+    # Check for qudit codes (Galois field, etc.) - use d>2 dimensions
+    qudit_names = ['Galois', 'Qudit', 'ModularQudit']
+    is_qudit = any(name in type(code).__name__ for name in qudit_names)
+    if is_qudit and not include_qudit:
+        return False
+    
+    # Check for fracton codes (XCube, Haah, Chamon, etc.) - exotic excitations
+    fracton_names = ['XCube', 'Haah', 'Chamon', 'Checkerboard', 'Fractal', 'Sierpinski', 'Fracton']
+    is_fracton = any(name in type(code).__name__ for name in fracton_names)
+    if is_fracton and not include_fracton:
+        return False
     
     # Check code type
     is_css = getattr(code, 'is_css', False)
