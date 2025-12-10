@@ -9,8 +9,6 @@ A modular and extensible Python framework for building, simulating, and decoding
 > This project is actively evolving — documentation and APIs may change rapidly. If you find inconsistencies or have questions, please open an issue: https://github.com/scottjones03/qec-lib/issues/new/choose
 
 ![Python](https://img.shields.io/badge/python-3.10%20|%203.11%20|%203.12%20|%203.13-blue)
-[![build](https://github.com/scottjones03/qec-lib/actions/workflows/ci.yml/badge.svg)](https://github.com/scottjones03/qec-lib/actions/workflows/ci.yml)
-[![docs](https://github.com/scottjones03/qec-lib/actions/workflows/gh-pages.yml/badge.svg)](https://github.com/scottjones03/qec-lib/actions/workflows/gh-pages.yml)
 [![Stars](https://img.shields.io/github/stars/scottjones03/qec-lib.svg)](https://github.com/scottjones03/qec-lib/stargazers)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
@@ -107,66 +105,4 @@ python examples/comprehensive_diagnostic.py
 
 If you use this library in your research, please cite the repository and include attribution until a formal publication is available.
 
----
-Files added: `ETHICAL_NOTICE.md`, `CONTRIBUTING.md`, `INSTALLATION.md`.
-	•	HomologicalProductCode — for building QLDPC or hypergraph-product codes
-
-⸻
-
-Fault-Tolerance Goals
-
-We plan to support:
-
-	•	Transversal gates, where available (e.g. Steane or 4-qubit code)
-	•	Teleportation-based logical Clifford gates — for codes where transversal gates aren’t available
-	•	General CSS-code surgery for universal CNOT between arbitrary CSS codes
-	•	Mixed-code workflows (e.g. color code → surface code teleportation)
-
-This aims to support a flexible and universal fault-tolerant computing framework.
-
-⸻
-
-Getting Started
-```
-git clone https://github.com/scottjones03/qec-lib.git
-cd qec-lib
-pip install -r requirements.txt
-```
-Example usage:
-```
-from qec.codes import RotatedSurfaceCode
-from qec.sim import CSSMemoryExperiment, DepolarizingNoise
-
-code = RotatedSurfaceCode(distance=3)
-exp = CSSMemoryExperiment(code, rounds=3, noise_model=DepolarizingNoise(p=0.01))
-results = exp.run(shots=5000)
-print(results)
-```
-To run the diagnostic benchmark:
-
-python examples/comprehensive_diagnostic.py
-
-
-⸻
-
-Roadmap
-
-	•	Expand supported code families (LDPC, color codes, Bacon-Shor, 3D gauge codes)
-	•	Add more decoder backends (Fusion Blossom, BP+OSD, etc.)
-	•	Implement full logical-gate gadget library (Clifford + T)
-	•	Performance optimisations & parallel simulation support
-	•	Documentation website / tutorials / Jupyter notebooks
-
-⸻
-
-Contributing
-
-Contributions are welcome!
-Please open issues or pull requests for new codes, decoders, benchmarks or documentation improvements.
-
-⸻
-
-Citation
-
-If you use this library in your work, please cite this repository (or include attribution) until a formal publication is available.
 
