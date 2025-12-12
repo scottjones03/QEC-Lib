@@ -8,6 +8,9 @@ Class Hierarchy:
         └── StabilizerMemoryExperiment - For general stabilizer codes
             └── CSSMemoryExperiment - Optimized for CSS codes
                 └── ColorCodeMemoryExperiment - For color codes with Chromobius support
+    
+    FaultTolerantGadgetExperiment - Memory-Gadget-Memory pattern for FT gates
+    LogicalGateExperiment - Automatic gadget routing for logical gates
 """
 
 from .experiment import Experiment
@@ -17,11 +20,50 @@ from .memory import (
     CSSMemoryExperiment,
     ColorCodeMemoryExperiment,
 )
+from .concatenated_memory import ConcatenatedMemoryExperiment
+from .ft_gadget_experiment import (
+    FaultTolerantGadgetExperiment,
+    FTGadgetExperimentResult,
+    run_ft_gadget_experiment,
+)
+from .logical_gates import (
+    LogicalGateExperiment,
+    GateRouter,
+    GateRoute,
+    get_gate_route,
+    run_logical_gate,
+)
+from .stabilizer_rounds import (
+    DetectorContext,
+    StabilizerRoundBuilder,
+    GeneralStabilizerRoundBuilder,
+    StabilizerBasis,
+    get_logical_support,
+)
 
 __all__ = [
+    # Base
     "Experiment",
+    # Memory experiments
     "MemoryExperiment",
     "StabilizerMemoryExperiment",
     "CSSMemoryExperiment",
     "ColorCodeMemoryExperiment",
+    "ConcatenatedMemoryExperiment",
+    # Gadget experiments
+    "FaultTolerantGadgetExperiment",
+    "FTGadgetExperimentResult",
+    "run_ft_gadget_experiment",
+    # Logical gate experiments
+    "LogicalGateExperiment",
+    "GateRouter",
+    "GateRoute",
+    "get_gate_route",
+    "run_logical_gate",
+    # Utilities
+    "DetectorContext",
+    "StabilizerRoundBuilder",
+    "GeneralStabilizerRoundBuilder",
+    "StabilizerBasis",
+    "get_logical_support",
 ]

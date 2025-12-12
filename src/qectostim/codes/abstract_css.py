@@ -234,6 +234,265 @@ class CSSCode(HomologicalCode):
         """Return additional metadata."""
         return dict(self._metadata)
 
+    # =========================================================================
+    # Logical Operator Support Methods (for gadgets and surgery)
+    # =========================================================================
+    
+    def logical_x_support(self, logical_idx: int = 0) -> List[int]:
+        """
+        Get qubit indices in the support of a logical X operator.
+        
+        This is essential for CSS surgery, which needs to identify boundary
+        qubits where logical operators can be coupled between codes.
+        
+        Parameters
+        ----------
+        logical_idx : int
+            Index of the logical qubit (default 0 for single-logical codes).
+            
+        Returns
+        -------
+        List[int]
+            Physical qubit indices where logical X has non-identity support.
+            
+        Raises
+        ------
+        IndexError
+            If logical_idx >= k (number of logical qubits).
+            
+        Examples
+        --------
+        >>> code = RotatedSurfaceCode(distance=3)
+        >>> code.logical_x_support()  # Returns qubits along one boundary
+        [0, 1, 2]
+        """
+        if logical_idx >= self.k:
+            raise IndexError(f"Logical index {logical_idx} >= k={self.k}")
+        
+        # Check metadata first (many codes pre-compute this)
+        if 'logical_x_support' in self._metadata:
+            support = self._metadata['logical_x_support']
+            # Handle both single-logical (list of ints) and multi-logical (list of lists)
+            if support and isinstance(support[0], (list, tuple)):
+                return list(support[logical_idx]) if logical_idx < len(support) else []
+            return list(support)  # Single logical case
+        
+        # Fall back to parsing logical_x_ops
+        if logical_idx < len(self._logical_x):
+            L = self._logical_x[logical_idx]
+            return self._pauli_support(L, ('X', 'Y'))
+        
+        return list(range(self.n))  # Ultimate fallback: all qubits
+    
+    def logical_z_support(self, logical_idx: int = 0) -> List[int]:
+        """
+        Get qubit indices in the support of a logical Z operator.
+        
+        This is essential for CSS surgery, which needs to identify boundary
+        qubits where logical operators can be coupled between codes.
+        
+        Parameters
+        ----------
+        logical_idx : int
+            Index of the logical qubit (default 0 for single-logical codes).
+            
+        Returns
+        -------
+        List[int]
+            Physical qubit indices where logical Z has non-identity support.
+            
+        Raises
+        ------
+        IndexError
+            If logical_idx >= k (number of logical qubits).
+        """
+        if logical_idx >= self.k:
+            raise IndexError(f"Logical index {logical_idx} >= k={self.k}")
+        
+        # Check metadata first
+        if 'logical_z_support' in self._metadata:
+            support = self._metadata['logical_z_support']
+            if support and isinstance(support[0], (list, tuple)):
+                return list(support[logical_idx]) if logical_idx < len(support) else []
+            return list(support)
+        
+        # Fall back to parsing logical_z_ops
+        if logical_idx < len(self._logical_z):
+            L = self._logical_z[logical_idx]
+            return self._pauli_support(L, ('Z', 'Y'))
+        
+        return list(range(self.n))
+    
+    def _pauli_support(self, pauli_op: PauliString, paulis: Tuple[str, ...]) -> List[int]:
+        """
+        Extract qubit indices where a Pauli operator has specified Pauli types.
+        
+        Parameters
+        ----------
+        pauli_op : PauliString
+            The Pauli operator (str or dict format).
+        paulis : Tuple[str, ...]
+            Which Pauli types to look for (e.g., ('X', 'Y') or ('Z', 'Y')).
+            
+        Returns
+        -------
+        List[int]
+            Qubit indices in the support.
+        """
+        support = []
+        if isinstance(pauli_op, str):
+            for q, p in enumerate(pauli_op):
+                if p in paulis:
+                    support.append(q)
+        elif isinstance(pauli_op, dict):
+            for q, p in pauli_op.items():
+                if p in paulis:
+                    support.append(q)
+        elif isinstance(pauli_op, np.ndarray):
+            # Symplectic form: first n bits are X, second n bits are Z
+            n = len(pauli_op) // 2
+            x_part = pauli_op[:n]
+            z_part = pauli_op[n:]
+            for q in range(n):
+                has_x = bool(x_part[q]) if q < len(x_part) else False
+                has_z = bool(z_part[q]) if q < len(z_part) else False
+                if has_x and has_z:
+                    p = 'Y'
+                elif has_x:
+                    p = 'X'
+                elif has_z:
+                    p = 'Z'
+                else:
+                    continue
+                if p in paulis:
+                    support.append(q)
+        return support
+    
+    def logical_x_string(self, logical_idx: int = 0) -> str:
+        """
+        Get logical X operator as a Pauli string.
+        
+        Parameters
+        ----------
+        logical_idx : int
+            Index of the logical qubit.
+            
+        Returns
+        -------
+        str
+            Pauli string like "XXIIIXXII".
+        """
+        if logical_idx >= self.k:
+            raise IndexError(f"Logical index {logical_idx} >= k={self.k}")
+        
+        if logical_idx < len(self._logical_x):
+            L = self._logical_x[logical_idx]
+            return self._pauli_to_string(L)
+        return "I" * self.n
+    
+    def logical_z_string(self, logical_idx: int = 0) -> str:
+        """
+        Get logical Z operator as a Pauli string.
+        
+        Parameters
+        ----------
+        logical_idx : int
+            Index of the logical qubit.
+            
+        Returns
+        -------
+        str
+            Pauli string like "ZZIIIZZZII".
+        """
+        if logical_idx >= self.k:
+            raise IndexError(f"Logical index {logical_idx} >= k={self.k}")
+        
+        if logical_idx < len(self._logical_z):
+            L = self._logical_z[logical_idx]
+            return self._pauli_to_string(L)
+        return "I" * self.n
+    
+    def _pauli_to_string(self, pauli_op: PauliString) -> str:
+        """Convert a PauliString to string format."""
+        result = ['I'] * self.n
+        if isinstance(pauli_op, str):
+            for i, p in enumerate(pauli_op):
+                if i < self.n:
+                    result[i] = p
+        elif isinstance(pauli_op, dict):
+            for q, p in pauli_op.items():
+                if 0 <= q < self.n:
+                    result[q] = p
+        elif isinstance(pauli_op, np.ndarray):
+            n = self.n
+            x_part = pauli_op[:n] if len(pauli_op) >= n else pauli_op
+            z_part = pauli_op[n:2*n] if len(pauli_op) >= 2*n else np.zeros(n)
+            for q in range(n):
+                has_x = bool(x_part[q]) if q < len(x_part) else False
+                has_z = bool(z_part[q]) if q < len(z_part) else False
+                if has_x and has_z:
+                    result[q] = 'Y'
+                elif has_x:
+                    result[q] = 'X'
+                elif has_z:
+                    result[q] = 'Z'
+        return ''.join(result)
+    
+    def get_observable_transformation(
+        self,
+        gate_name: str,
+        logical_idx: int = 0,
+    ) -> Dict[str, str]:
+        """
+        Compute how logical operators transform under a transversal gate.
+        
+        This is essential for tracking logical observables through gadget circuits.
+        
+        Parameters
+        ----------
+        gate_name : str
+            Gate name: 'H', 'S', 'X', 'Z', 'CNOT', etc.
+        logical_idx : int
+            Which logical qubit.
+            
+        Returns
+        -------
+        Dict[str, str]
+            Mapping from observable type to transformed type.
+            E.g., {'X': 'Z', 'Z': 'X'} for Hadamard.
+            
+        Examples
+        --------
+        >>> code.get_observable_transformation('H')
+        {'X': 'Z', 'Z': 'X'}
+        >>> code.get_observable_transformation('S')
+        {'X': 'Y', 'Z': 'Z'}
+        """
+        # Standard Clifford transformations
+        gate = gate_name.upper()
+        
+        if gate == 'H':
+            return {'X': 'Z', 'Z': 'X', 'Y': '-Y'}
+        elif gate == 'S':
+            return {'X': 'Y', 'Z': 'Z', 'Y': '-X'}
+        elif gate == 'S_DAG':
+            return {'X': '-Y', 'Z': 'Z', 'Y': 'X'}
+        elif gate == 'X':
+            return {'X': 'X', 'Z': '-Z', 'Y': '-Y'}
+        elif gate == 'Z':
+            return {'X': '-X', 'Z': 'Z', 'Y': '-Y'}
+        elif gate == 'Y':
+            return {'X': '-X', 'Z': '-Z', 'Y': 'Y'}
+        elif gate in ('CX', 'CNOT'):
+            # Returns transformation for control qubit
+            # Target would be: X: X, Z: Z_ctrl @ Z_tgt
+            return {'X': 'X', 'Z': 'Z'}  # Control is unchanged
+        elif gate == 'CZ':
+            return {'X': 'X', 'Z': 'Z'}  # Control is unchanged for Z obs
+        else:
+            # Unknown gate - assume identity
+            return {'X': 'X', 'Z': 'Z', 'Y': 'Y'}
+
 
 class CSSCodeWithComplex(CSSCode):
     """
@@ -410,7 +669,7 @@ class TopologicalCSSCode(CSSCodeWithComplex, TopologicalCode):
         return coords if coords else None
 
 
-class TopologicalCSSCode3D(CSSCodeWithComplex, TopologicalCode):
+class TopologicalCSSCode3D(CSSCode, TopologicalCode):
     """
     CSS code defined by a 4-term chain complex (C3 → C2 → C1 → C0) with 3D geometry.
     
@@ -425,14 +684,20 @@ class TopologicalCSSCode3D(CSSCodeWithComplex, TopologicalCode):
     - C0: 0-cells (vertices)
     
     For the standard 3D toric code, qubits are on edges (grade 1).
+    
+    This class supports two initialization modes:
+    1. With chain_complex: Hx and Hz are derived from the complex
+    2. With hx/hz directly: For codes that compute parity matrices directly
     """
 
     def __init__(
         self,
-        chain_complex: "CSSChainComplex4",
-        logical_x: List[PauliString],
-        logical_z: List[PauliString],
+        hx: Optional[np.ndarray] = None,
+        hz: Optional[np.ndarray] = None,
+        logical_x: Optional[List[PauliString]] = None,
+        logical_z: Optional[List[PauliString]] = None,
         *,
+        chain_complex: Optional["CSSChainComplex4"] = None,
         embeddings: Optional[Dict[int, CellEmbedding]] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ):
@@ -441,20 +706,44 @@ class TopologicalCSSCode3D(CSSCodeWithComplex, TopologicalCode):
         
         Parameters
         ----------
-        chain_complex : CSSChainComplex4
-            The 4-term chain complex. Required.
+        hx : np.ndarray, optional
+            X-stabilizer parity check matrix. Required if chain_complex is None.
+        hz : np.ndarray, optional  
+            Z-stabilizer parity check matrix. Required if chain_complex is None.
         logical_x, logical_z : list of PauliString
             Logical operators.
+        chain_complex : CSSChainComplex4, optional
+            The 4-term chain complex. If provided, hx and hz are derived from it.
         embeddings : dict, optional
             Maps grade → CellEmbedding for geometry.
         metadata : dict, optional
             Additional metadata.
         """
         meta = dict(metadata or {})
+        
+        # If chain_complex provided, derive hx/hz from it
+        if chain_complex is not None:
+            self._chain_complex = chain_complex
+            meta["chain_complex"] = chain_complex
+            if hx is None:
+                hx = chain_complex.hx if hasattr(chain_complex, 'hx') else np.zeros((0, 0), dtype=np.uint8)
+            if hz is None:
+                hz = chain_complex.hz if hasattr(chain_complex, 'hz') else np.zeros((0, 0), dtype=np.uint8)
+        else:
+            self._chain_complex = None
+        
+        if hx is None or hz is None:
+            raise ValueError("Either chain_complex or both hx and hz must be provided")
+        
+        if logical_x is None:
+            logical_x = []
+        if logical_z is None:
+            logical_z = []
 
-        CSSCodeWithComplex.__init__(
+        CSSCode.__init__(
             self,
-            chain_complex=chain_complex,
+            hx=hx,
+            hz=hz,
             logical_x=logical_x,
             logical_z=logical_z,
             metadata=meta,

@@ -110,6 +110,18 @@ class FiberBundleCode(QLDPCCode):
         meta["connection_pattern"] = connection_pattern
         
         super().__init__(hx=hx, hz=hz, logical_x=logical_x, logical_z=logical_z, metadata=meta)
+        
+        # Store for qubit_coords
+        self._fiber_size = L
+        self._base_n = n_base
+    
+    def qubit_coords(self) -> List[Tuple[float, float]]:
+        """Return 2D qubit coordinates using fiber × base grid layout."""
+        coords = []
+        for base_pos in range(self._base_n):
+            for fiber_pos in range(self._fiber_size):
+                coords.append((float(base_pos), float(fiber_pos)))
+        return coords
 
 
 def create_fiber_bundle_repetition(length: int = 4, fiber: int = 3) -> FiberBundleCode:

@@ -1,684 +1,520 @@
+# src/qectostim/gadgets/scheduling.py
 """
-Parallel gate scheduling for fault-tolerant gadget circuits.
+Parallel Gate Scheduler for Gadget Circuits.
 
-This module provides infrastructure for scheduling quantum gates in parallel
-layers, minimizing circuit depth while respecting qubit dependencies.
+Schedules gates for maximum parallelism while respecting qubit constraints.
+Supports both geometric scheduling (for topological codes with explicit schedules)
+and graph-coloring-based scheduling (fallback for arbitrary codes).
 
-Two scheduling strategies are supported:
-1. Geometric scheduling: Uses code's cnot_schedule when available
-2. Graph coloring: Greedy coloring fallback for arbitrary gate patterns
+Key features:
+- CircuitLayer abstraction for time slices
+- Geometric scheduling using x_schedule/z_schedule from code metadata
+- Greedy graph coloring for conflict-free CNOT layers
+- Stim circuit generation with proper TICK and SHIFT_COORDS
 """
+from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set, Tuple, Any, Union
-from enum import Enum
+from typing import List, Tuple, Optional, Dict, Any, Set
+from collections import defaultdict
+import numpy as np
+import stim
 
-from .coordinates import CoordND
-
-
-class GateType(Enum):
-    """Supported gate types for scheduling."""
-    # Single qubit gates
-    I = "I"
-    X = "X"
-    Y = "Y"
-    Z = "Z"
-    H = "H"
-    S = "S"
-    S_DAG = "S_DAG"
-    SQRT_X = "SQRT_X"
-    SQRT_X_DAG = "SQRT_X_DAG"
-    
-    # Two qubit gates
-    CX = "CX"
-    CY = "CY"
-    CZ = "CZ"
-    
-    # Special operations
-    R = "R"  # Reset
-    M = "M"  # Measure Z
-    MX = "MX"  # Measure X
-    MR = "MR"  # Measure and reset
-    MRX = "MRX"  # Measure X and reset
-
-
-@dataclass
-class ScheduledGate:
-    """A gate scheduled in the circuit."""
-    gate_type: GateType
-    targets: Tuple[int, ...]  # Global qubit indices
-    
-    def __post_init__(self):
-        # Ensure targets is a tuple
-        if not isinstance(self.targets, tuple):
-            self.targets = tuple(self.targets)
+from qectostim.gadgets.layout import GadgetLayout
+from qectostim.gadgets.coordinates import (
+    CoordND,
+    emit_qubit_coords_nd,
+    emit_detector_nd,
+    pad_coord_to_dim,
+)
+from qectostim.utils.scheduling_core import graph_coloring_cnots
 
 
 @dataclass
 class CircuitLayer:
     """
-    A single time-slice of parallel operations.
+    A single time slice of parallelizable operations.
     
-    All operations in a layer execute simultaneously and must not
-    share any qubit targets.
+    All operations within a layer can be executed simultaneously
+    (no qubit conflicts).
     """
-    time: float
+    
+    time: float = 0.0
     resets: List[int] = field(default_factory=list)
-    gates: List[ScheduledGate] = field(default_factory=list)
-    measurements: List[Tuple[int, GateType]] = field(default_factory=list)
+    single_qubit_gates: Dict[str, List[int]] = field(default_factory=dict)
+    two_qubit_gates: Dict[str, List[Tuple[int, int]]] = field(default_factory=dict)
+    measurements: List[int] = field(default_factory=list)
+    measurement_reset: bool = False  # Use MR instead of M
+    
+    def add_single_gate(self, gate_name: str, qubit: int) -> None:
+        """Add a single-qubit gate."""
+        if gate_name not in self.single_qubit_gates:
+            self.single_qubit_gates[gate_name] = []
+        self.single_qubit_gates[gate_name].append(qubit)
+    
+    def add_two_qubit_gate(self, gate_name: str, q1: int, q2: int) -> None:
+        """Add a two-qubit gate."""
+        if gate_name not in self.two_qubit_gates:
+            self.two_qubit_gates[gate_name] = []
+        self.two_qubit_gates[gate_name].append((q1, q2))
     
     def get_all_qubits(self) -> Set[int]:
-        """Return all qubits used in this layer."""
+        """Get all qubits involved in this layer."""
         qubits = set(self.resets)
-        for gate in self.gates:
-            qubits.update(gate.targets)
-        for qubit, _ in self.measurements:
-            qubits.add(qubit)
+        for gate_qubits in self.single_qubit_gates.values():
+            qubits.update(gate_qubits)
+        for gate_pairs in self.two_qubit_gates.values():
+            for q1, q2 in gate_pairs:
+                qubits.add(q1)
+                qubits.add(q2)
+        qubits.update(self.measurements)
         return qubits
     
-    def can_add_gate(self, gate: ScheduledGate) -> bool:
-        """Check if gate can be added without conflicts."""
-        used = self.get_all_qubits()
-        return all(q not in used for q in gate.targets)
+    def is_empty(self) -> bool:
+        """Check if layer has no operations."""
+        return (
+            not self.resets and 
+            not self.single_qubit_gates and 
+            not self.two_qubit_gates and 
+            not self.measurements
+        )
     
-    def can_add_reset(self, qubit: int) -> bool:
-        """Check if reset can be added without conflicts."""
-        return qubit not in self.get_all_qubits()
-    
-    def can_add_measurement(self, qubit: int) -> bool:
-        """Check if measurement can be added without conflicts."""
-        return qubit not in self.get_all_qubits()
+    def to_stim(self, circuit: stim.Circuit) -> None:
+        """Append this layer's operations to a Stim circuit."""
+        # Resets first
+        if self.resets:
+            circuit.append("R", self.resets)
+        
+        # Single-qubit gates
+        for gate_name, qubits in self.single_qubit_gates.items():
+            if qubits:
+                circuit.append(gate_name, qubits)
+        
+        # Two-qubit gates
+        for gate_name, pairs in self.two_qubit_gates.items():
+            for q1, q2 in pairs:
+                circuit.append(gate_name, [q1, q2])
+        
+        # Measurements
+        if self.measurements:
+            if self.measurement_reset:
+                circuit.append("MR", self.measurements)
+            else:
+                circuit.append("M", self.measurements)
 
 
 class GadgetScheduler:
     """
-    Scheduler for fault-tolerant gadget circuits.
+    Schedules operations for a gadget circuit with maximum parallelism.
     
-    Manages parallel gate scheduling with two strategies:
-    1. Geometric: Uses code's cnot_schedule for natural parallelism
-    2. Graph coloring: Greedy coloring for arbitrary patterns
+    Uses geometric scheduling when available (codes with x_schedule/z_schedule),
+    otherwise falls back to greedy graph coloring.
     
     Parameters
     ----------
     layout : GadgetLayout
-        The layout manager providing qubit indices and coordinates.
-    time_start : float
-        Starting time coordinate for the schedule.
+        The spatial layout of code blocks.
+        
+    Examples
+    --------
+    >>> scheduler = GadgetScheduler(layout)
+    >>> scheduler.schedule_transversal_gate("H", "control")
+    >>> scheduler.schedule_stabilizer_round("control", "x")
+    >>> circuit = scheduler.to_stim()
     """
     
-    def __init__(self, layout: Any, time_start: float = 0.0):
+    def __init__(self, layout: GadgetLayout):
         self.layout = layout
-        self.current_time = time_start
         self.layers: List[CircuitLayer] = []
-        self._measurement_records: List[Tuple[int, float, str]] = []  # (qubit, time, type)
+        self.current_time: float = 0.0
+        self._measurement_index = 0
+        self._detector_info: List[Tuple[CoordND, float, List[int]]] = []
+        self._observable_info: List[Tuple[int, List[int]]] = []
     
-    def _get_or_create_layer(self, time: float) -> CircuitLayer:
-        """Get layer at time, creating if necessary."""
-        for layer in self.layers:
-            if abs(layer.time - time) < 1e-9:
-                return layer
-        layer = CircuitLayer(time=time)
+    def add_layer(self, layer: Optional[CircuitLayer] = None) -> CircuitLayer:
+        """Add a new layer (time slice) to the schedule."""
+        if layer is None:
+            layer = CircuitLayer(time=self.current_time)
+        else:
+            layer.time = self.current_time
         self.layers.append(layer)
-        self.layers.sort(key=lambda l: l.time)
         return layer
     
-    def advance_time(self, delta: float = 1.0) -> float:
-        """Advance the current time and return new time."""
+    def advance_time(self, delta: float = 1.0) -> None:
+        """Advance the current time."""
         self.current_time += delta
-        return self.current_time
     
-    def schedule_resets(self, qubits: List[int], time: Optional[float] = None) -> float:
+    def schedule_resets(self, qubits: List[int]) -> CircuitLayer:
+        """Schedule reset operations on given qubits."""
+        layer = self.add_layer()
+        layer.resets = list(qubits)
+        self.advance_time()
+        return layer
+    
+    def schedule_transversal_gate(
+        self,
+        gate_name: str,
+        block_name: str,
+        target_qubits: Optional[List[int]] = None,
+    ) -> CircuitLayer:
         """
-        Schedule reset operations on qubits.
+        Schedule a transversal (parallel) single-qubit gate on a block.
         
         Parameters
         ----------
-        qubits : List[int]
-            Global qubit indices to reset.
-        time : Optional[float]
-            Time to schedule at. Uses current_time if None.
+        gate_name : str
+            Gate name (e.g., 'H', 'S', 'T').
+        block_name : str
+            Name of the code block.
+        target_qubits : List[int], optional
+            Specific global qubit indices. If None, applies to all data qubits.
             
         Returns
         -------
-        float
-            Time at which resets are scheduled.
+        CircuitLayer
+            The layer containing the transversal gate.
         """
-        t = time if time is not None else self.current_time
-        layer = self._get_or_create_layer(t)
+        if target_qubits is None:
+            target_qubits = self.layout.get_block_data_qubits(block_name)
         
-        for q in qubits:
-            if layer.can_add_reset(q):
-                layer.resets.append(q)
-            else:
-                # Create new layer if conflict
-                t = self.advance_time()
-                layer = self._get_or_create_layer(t)
-                layer.resets.append(q)
-        
-        return t
+        layer = self.add_layer()
+        layer.single_qubit_gates[gate_name] = list(target_qubits)
+        self.advance_time()
+        return layer
     
-    def schedule_single_qubit_gate(
+    def schedule_transversal_two_qubit_gate(
         self,
-        gate_type: GateType,
-        qubits: List[int],
-        time: Optional[float] = None
-    ) -> float:
+        gate_name: str,
+        block_name_a: str,
+        block_name_b: str,
+    ) -> CircuitLayer:
         """
-        Schedule single-qubit gates in parallel.
+        Schedule a transversal two-qubit gate between two blocks.
+        
+        Pairs qubits by index: qubit i of block A with qubit i of block B.
+        Blocks must have the same number of data qubits.
         
         Parameters
         ----------
-        gate_type : GateType
-            The gate to apply.
-        qubits : List[int]
-            Global qubit indices.
-        time : Optional[float]
-            Time to schedule at.
+        gate_name : str
+            Gate name (e.g., 'CNOT', 'CZ').
+        block_name_a : str
+            First block (control for CNOT).
+        block_name_b : str
+            Second block (target for CNOT).
             
         Returns
         -------
-        float
-            Time at which gates are scheduled.
+        CircuitLayer
+            The layer containing the transversal two-qubit gate.
         """
-        t = time if time is not None else self.current_time
-        layer = self._get_or_create_layer(t)
+        qubits_a = self.layout.get_block_data_qubits(block_name_a)
+        qubits_b = self.layout.get_block_data_qubits(block_name_b)
         
-        for q in qubits:
-            gate = ScheduledGate(gate_type, (q,))
-            if layer.can_add_gate(gate):
-                layer.gates.append(gate)
-            else:
-                # Should not happen for single-qubit gates on distinct qubits
-                t = self.advance_time()
-                layer = self._get_or_create_layer(t)
-                layer.gates.append(gate)
+        if len(qubits_a) != len(qubits_b):
+            raise ValueError(
+                f"Blocks have different sizes: {block_name_a}={len(qubits_a)}, "
+                f"{block_name_b}={len(qubits_b)}"
+            )
         
-        return t
-    
-    def schedule_two_qubit_gates_geometric(
-        self,
-        gate_type: GateType,
-        pairs: List[Tuple[int, int]],
-        schedule: Optional[List[List[int]]] = None
-    ) -> float:
-        """
-        Schedule two-qubit gates using geometric schedule.
-        
-        Uses the code's cnot_schedule if provided, otherwise falls back
-        to graph coloring.
-        
-        Parameters
-        ----------
-        gate_type : GateType
-            Two-qubit gate type (CX, CY, CZ).
-        pairs : List[Tuple[int, int]]
-            List of (control, target) pairs as global indices.
-        schedule : Optional[List[List[int]]]
-            Pre-computed schedule from code. Each sublist is a layer
-            containing pair indices that can execute in parallel.
-            
-        Returns
-        -------
-        float
-            Time after all gates scheduled.
-        """
-        if not pairs:
-            return self.current_time
-            
-        if schedule is not None:
-            return self._apply_geometric_schedule(gate_type, pairs, schedule)
-        else:
-            return self._apply_graph_coloring_schedule(gate_type, pairs)
-    
-    def _apply_geometric_schedule(
-        self,
-        gate_type: GateType,
-        pairs: List[Tuple[int, int]],
-        schedule: List[List[int]]
-    ) -> float:
-        """Apply pre-computed geometric schedule."""
-        for layer_indices in schedule:
-            layer = self._get_or_create_layer(self.current_time)
-            
-            for idx in layer_indices:
-                if idx < len(pairs):
-                    ctrl, tgt = pairs[idx]
-                    gate = ScheduledGate(gate_type, (ctrl, tgt))
-                    layer.gates.append(gate)
-            
-            self.advance_time()
-        
-        return self.current_time
-    
-    def _apply_graph_coloring_schedule(
-        self,
-        gate_type: GateType,
-        pairs: List[Tuple[int, int]]
-    ) -> float:
-        """
-        Apply greedy graph coloring for scheduling.
-        
-        Build conflict graph where edges connect gates sharing a qubit,
-        then greedily color to find parallel layers.
-        """
-        n = len(pairs)
-        if n == 0:
-            return self.current_time
-            
-        # Build conflict graph as adjacency list
-        conflicts: Dict[int, Set[int]] = {i: set() for i in range(n)}
-        
-        for i in range(n):
-            ctrl_i, tgt_i = pairs[i]
-            qubits_i = {ctrl_i, tgt_i}
-            
-            for j in range(i + 1, n):
-                ctrl_j, tgt_j = pairs[j]
-                qubits_j = {ctrl_j, tgt_j}
-                
-                if qubits_i & qubits_j:  # Overlap
-                    conflicts[i].add(j)
-                    conflicts[j].add(i)
-        
-        # Greedy graph coloring
-        colors: Dict[int, int] = {}
-        
-        for gate_idx in range(n):
-            # Find colors used by neighbors
-            neighbor_colors = {colors[nb] for nb in conflicts[gate_idx] if nb in colors}
-            
-            # Find smallest available color
-            color = 0
-            while color in neighbor_colors:
-                color += 1
-            
-            colors[gate_idx] = color
-        
-        # Group by color
-        max_color = max(colors.values()) + 1 if colors else 0
-        color_groups: List[List[int]] = [[] for _ in range(max_color)]
-        
-        for gate_idx, color in colors.items():
-            color_groups[color].append(gate_idx)
-        
-        # Schedule each color group as a layer
-        for group in color_groups:
-            layer = self._get_or_create_layer(self.current_time)
-            
-            for gate_idx in group:
-                ctrl, tgt = pairs[gate_idx]
-                gate = ScheduledGate(gate_type, (ctrl, tgt))
-                layer.gates.append(gate)
-            
-            self.advance_time()
-        
-        return self.current_time
-    
-    def schedule_measurements(
-        self,
-        qubits: List[int],
-        basis: GateType = GateType.M,
-        time: Optional[float] = None,
-        labels: Optional[List[str]] = None
-    ) -> float:
-        """
-        Schedule measurement operations.
-        
-        Parameters
-        ----------
-        qubits : List[int]
-            Global qubit indices to measure.
-        basis : GateType
-            Measurement basis (M, MX, MR, MRX).
-        time : Optional[float]
-            Time to schedule at.
-        labels : Optional[List[str]]
-            Labels for measurement records.
-            
-        Returns
-        -------
-        float
-            Time at which measurements are scheduled.
-        """
-        t = time if time is not None else self.current_time
-        layer = self._get_or_create_layer(t)
-        
-        for i, q in enumerate(qubits):
-            if layer.can_add_measurement(q):
-                layer.measurements.append((q, basis))
-                label = labels[i] if labels and i < len(labels) else f"meas_{q}"
-                self._measurement_records.append((q, t, label))
-            else:
-                t = self.advance_time()
-                layer = self._get_or_create_layer(t)
-                layer.measurements.append((q, basis))
-                label = labels[i] if labels and i < len(labels) else f"meas_{q}"
-                self._measurement_records.append((q, t, label))
-        
-        return t
+        layer = self.add_layer()
+        layer.two_qubit_gates[gate_name] = list(zip(qubits_a, qubits_b))
+        self.advance_time()
+        return layer
     
     def schedule_stabilizer_round(
         self,
         block_name: str,
-        stabilizer_type: str,  # "X" or "Z"
-        data_qubits: List[int],
-        ancilla_qubits: List[int],
-        cnot_pairs: List[Tuple[int, int]],
-        cnot_schedule: Optional[List[List[int]]] = None
-    ) -> float:
+        stab_type: str = "both",  # "x", "z", or "both"
+        use_measurement_reset: bool = True,
+    ) -> List[CircuitLayer]:
         """
-        Schedule a complete stabilizer measurement round.
+        Schedule a full stabilizer measurement round for a block.
+        
+        Uses geometric scheduling if the code has x_schedule/z_schedule metadata,
+        otherwise falls back to greedy graph coloring.
         
         Parameters
         ----------
         block_name : str
-            Name of the block (for labeling).
-        stabilizer_type : str
-            "X" or "Z" for stabilizer type.
-        data_qubits : List[int]
-            Data qubit global indices.
-        ancilla_qubits : List[int]
-            Ancilla qubit global indices.
-        cnot_pairs : List[Tuple[int, int]]
-            CNOT (control, target) pairs.
-        cnot_schedule : Optional[List[List[int]]]
-            Pre-computed CNOT schedule.
+            Name of the code block.
+        stab_type : str
+            Which stabilizers to measure: "x", "z", or "both".
+        use_measurement_reset : bool
+            Whether to use MR (measure+reset) instead of M.
             
         Returns
         -------
-        float
-            Time after round completes.
+        List[CircuitLayer]
+            The layers comprising the stabilizer round.
         """
-        # Reset ancillas
-        self.schedule_resets(ancilla_qubits)
-        self.advance_time()
+        block = self.layout.blocks.get(block_name)
+        if block is None:
+            return []
         
-        # Hadamard on ancillas for X stabilizers
-        if stabilizer_type == "X":
-            self.schedule_single_qubit_gate(GateType.H, ancilla_qubits)
-            self.advance_time()
+        code = block.code
+        layers = []
         
-        # CNOTs
-        self.schedule_two_qubit_gates_geometric(
-            GateType.CX, cnot_pairs, cnot_schedule
+        # Get stabilizer matrices - safely handle non-CSS codes
+        # CSS codes define hx/hz as @property returning numpy arrays
+        # Non-CSS codes may not have these or may have them as methods
+        hx_raw = getattr(code, 'hx', None)
+        hz_raw = getattr(code, 'hz', None)
+        # Only use if it's actually a numpy array (has .shape attribute)
+        hx = hx_raw if hx_raw is not None and hasattr(hx_raw, 'shape') else None
+        hz = hz_raw if hz_raw is not None and hasattr(hz_raw, 'shape') else None
+        
+        # Get scheduling info from metadata
+        meta = getattr(code, '_metadata', {}) or {}
+        x_schedule = meta.get('x_schedule')
+        z_schedule = meta.get('z_schedule')
+        data_coords = meta.get('data_coords', [])
+        x_stab_coords = meta.get('x_stab_coords', [])
+        z_stab_coords = meta.get('z_stab_coords', [])
+        
+        data_qubits = self.layout.get_block_data_qubits(block_name)
+        x_ancillas = self.layout.get_block_x_ancillas(block_name)
+        z_ancillas = self.layout.get_block_z_ancillas(block_name)
+        
+        # Check if we can use geometric scheduling
+        use_geo_x = (
+            x_schedule is not None and 
+            data_coords and 
+            x_stab_coords and 
+            len(x_stab_coords) == len(x_ancillas)
+        )
+        use_geo_z = (
+            z_schedule is not None and 
+            data_coords and 
+            z_stab_coords and 
+            len(z_stab_coords) == len(z_ancillas)
         )
         
-        # Hadamard on ancillas for X stabilizers
-        if stabilizer_type == "X":
-            self.schedule_single_qubit_gate(GateType.H, ancilla_qubits)
+        # Build coordinate lookup for geometric scheduling
+        coord_to_data = {}
+        if data_coords:
+            for local_idx, coord in enumerate(data_coords):
+                coord_to_data[tuple(coord)] = data_qubits[local_idx] if local_idx < len(data_qubits) else None
+        
+        # Schedule X stabilizers
+        if stab_type in ("x", "both") and hx is not None and len(x_ancillas) > 0:
+            # Prepare X ancillas (H gate)
+            h_layer = self.add_layer()
+            h_layer.single_qubit_gates["H"] = list(x_ancillas)
             self.advance_time()
+            layers.append(h_layer)
+            
+            if use_geo_x:
+                # Geometric scheduling: one TICK per phase
+                for dx, dy in x_schedule:
+                    cnot_layer = self.add_layer()
+                    for s_idx, (sx, sy) in enumerate(x_stab_coords):
+                        if s_idx >= len(x_ancillas):
+                            continue
+                        anc = x_ancillas[s_idx]
+                        nbr = (float(sx) + dx, float(sy) + dy)
+                        dq = coord_to_data.get(nbr)
+                        if dq is not None:
+                            cnot_layer.add_two_qubit_gate("CNOT", dq, anc)
+                    self.advance_time()
+                    layers.append(cnot_layer)
+            else:
+                # Fallback: use graph coloring for conflict-free CNOT layers
+                layers.extend(self._schedule_stabilizers_graph_coloring(
+                    hx, data_qubits, x_ancillas
+                ))
+            
+            # Final H on X ancillas
+            h_layer2 = self.add_layer()
+            h_layer2.single_qubit_gates["H"] = list(x_ancillas)
+            self.advance_time()
+            layers.append(h_layer2)
+            
+            # Measure X ancillas
+            meas_layer = self.add_layer()
+            meas_layer.measurements = list(x_ancillas)
+            meas_layer.measurement_reset = use_measurement_reset
+            self.advance_time()
+            layers.append(meas_layer)
         
-        # Measure ancillas
-        labels = [f"{block_name}_{stabilizer_type}_{i}" for i in range(len(ancilla_qubits))]
-        self.schedule_measurements(ancilla_qubits, labels=labels)
-        self.advance_time()
+        # Schedule Z stabilizers
+        if stab_type in ("z", "both") and hz is not None and len(z_ancillas) > 0:
+            if use_geo_z:
+                # Geometric scheduling
+                for dx, dy in z_schedule:
+                    cnot_layer = self.add_layer()
+                    for s_idx, (sx, sy) in enumerate(z_stab_coords):
+                        if s_idx >= len(z_ancillas):
+                            continue
+                        anc = z_ancillas[s_idx]
+                        nbr = (float(sx) + dx, float(sy) + dy)
+                        dq = coord_to_data.get(nbr)
+                        if dq is not None:
+                            cnot_layer.add_two_qubit_gate("CNOT", dq, anc)
+                    self.advance_time()
+                    layers.append(cnot_layer)
+            else:
+                # Fallback: graph coloring
+                layers.extend(self._schedule_stabilizers_graph_coloring(
+                    hz, data_qubits, z_ancillas
+                ))
+            
+            # Measure Z ancillas
+            meas_layer = self.add_layer()
+            meas_layer.measurements = list(z_ancillas)
+            meas_layer.measurement_reset = use_measurement_reset
+            self.advance_time()
+            layers.append(meas_layer)
         
-        return self.current_time
+        return layers
     
-    def schedule_transversal_gate(
+    def _schedule_stabilizers_graph_coloring(
         self,
-        gate_type: GateType,
-        block_qubits: List[int]
-    ) -> float:
+        stab_matrix: np.ndarray,
+        data_qubits: List[int],
+        ancilla_qubits: List[int],
+    ) -> List[CircuitLayer]:
         """
-        Schedule a transversal single-qubit gate on a block.
+        Schedule CNOT gates using greedy graph coloring.
+        
+        Creates conflict-free layers where no qubit is used twice.
         
         Parameters
         ----------
-        gate_type : GateType
-            The gate to apply transversally.
-        block_qubits : List[int]
-            All data qubits in the block.
+        stab_matrix : np.ndarray
+            Stabilizer matrix (n_stabs x n_data).
+        data_qubits : List[int]
+            Global indices of data qubits.
+        ancilla_qubits : List[int]
+            Global indices of ancilla qubits.
             
         Returns
         -------
-        float
-            Time after gate applied.
+        List[CircuitLayer]
+            CNOT layers with no conflicts.
         """
-        self.schedule_single_qubit_gate(gate_type, block_qubits)
-        self.advance_time()
-        return self.current_time
+        if stab_matrix is None or stab_matrix.size == 0:
+            return []
+        
+        n_stabs, n_data = stab_matrix.shape
+        
+        # Collect all CNOT operations: (data_qubit, ancilla_qubit)
+        all_cnots = []
+        for s_idx in range(min(n_stabs, len(ancilla_qubits))):
+            anc = ancilla_qubits[s_idx]
+            for d_idx in range(min(n_data, len(data_qubits))):
+                if stab_matrix[s_idx, d_idx]:
+                    dq = data_qubits[d_idx]
+                    all_cnots.append((dq, anc))
+        
+        if not all_cnots:
+            return []
+        
+        # Use shared graph coloring algorithm
+        layers_data = graph_coloring_cnots(all_cnots)
+        
+        # Convert to CircuitLayer objects
+        result = []
+        for layer_cnots in layers_data:
+            layer = self.add_layer()
+            layer.two_qubit_gates["CNOT"] = layer_cnots
+            self.advance_time()
+            result.append(layer)
+        
+        return result
     
-    def schedule_transversal_two_qubit(
+    def schedule_measurements(
         self,
-        gate_type: GateType,
-        control_qubits: List[int],
-        target_qubits: List[int]
-    ) -> float:
+        qubits: List[int],
+        use_reset: bool = False,
+    ) -> CircuitLayer:
+        """Schedule measurement operations."""
+        layer = self.add_layer()
+        layer.measurements = list(qubits)
+        layer.measurement_reset = use_reset
+        self.advance_time()
+        return layer
+    
+    def add_detector(
+        self,
+        coord: CoordND,
+        measurement_indices: List[int],
+    ) -> None:
         """
-        Schedule a transversal two-qubit gate between blocks.
+        Register a detector to be emitted.
         
         Parameters
         ----------
-        gate_type : GateType
-            Two-qubit gate (CX, CZ).
-        control_qubits : List[int]
-            Control qubits from one block.
-        target_qubits : List[int]
-            Target qubits from another block.
-            
-        Returns
-        -------
-        float
-            Time after gates applied.
+        coord : CoordND
+            Spatial coordinate for the detector.
+        measurement_indices : List[int]
+            Absolute measurement record indices.
         """
-        if len(control_qubits) != len(target_qubits):
-            raise ValueError("Control and target qubit lists must have same length")
-        
-        pairs = list(zip(control_qubits, target_qubits))
-        self.schedule_two_qubit_gates_geometric(gate_type, pairs)
-        
-        return self.current_time
+        self._detector_info.append((coord, self.current_time, measurement_indices))
     
-    def schedule_joint_measurement(
+    def add_observable(
         self,
-        bridge_ancilla: int,
-        target_qubits: List[int],
-        measurement_type: str,  # "XX" or "ZZ"
-        cnot_schedule: Optional[List[List[int]]] = None
-    ) -> float:
+        observable_idx: int,
+        measurement_indices: List[int],
+    ) -> None:
         """
-        Schedule a joint parity measurement via bridge ancilla.
+        Register an observable to be emitted.
         
         Parameters
         ----------
-        bridge_ancilla : int
-            Global index of bridge ancilla.
-        target_qubits : List[int]
-            Data qubits to measure parity of.
-        measurement_type : str
-            "XX" or "ZZ" for measurement type.
-        cnot_schedule : Optional[List[List[int]]]
-            Pre-computed CNOT schedule.
+        observable_idx : int
+            Logical observable index.
+        measurement_indices : List[int]
+            Absolute measurement record indices.
+        """
+        self._observable_info.append((observable_idx, measurement_indices))
+    
+    def to_stim(self, include_coords: bool = True) -> stim.Circuit:
+        """
+        Convert the scheduled layers to a Stim circuit.
+        
+        Parameters
+        ----------
+        include_coords : bool
+            Whether to emit QUBIT_COORDS instructions.
             
         Returns
         -------
-        float
-            Time after measurement.
+        stim.Circuit
+            The complete Stim circuit.
         """
-        # Reset bridge ancilla
-        self.schedule_resets([bridge_ancilla])
-        self.advance_time()
+        circuit = stim.Circuit()
         
-        # For XX: H on ancilla, CNOTs from ancilla to targets, H on ancilla
-        # For ZZ: CNOTs from targets to ancilla
+        # Emit QUBIT_COORDS
+        if include_coords:
+            for global_idx, coord in sorted(self.layout.qubit_map.global_coords.items()):
+                emit_qubit_coords_nd(circuit, global_idx, coord)
         
-        if measurement_type == "XX":
-            self.schedule_single_qubit_gate(GateType.H, [bridge_ancilla])
-            self.advance_time()
+        # Emit layers with TICKs
+        for i, layer in enumerate(self.layers):
+            if not layer.is_empty():
+                layer.to_stim(circuit)
+                # Track measurements
+                n_meas = len(layer.measurements)
+                self._measurement_index += n_meas
             
-            pairs = [(bridge_ancilla, t) for t in target_qubits]
-            self.schedule_two_qubit_gates_geometric(GateType.CX, pairs, cnot_schedule)
-            
-            self.schedule_single_qubit_gate(GateType.H, [bridge_ancilla])
-            self.advance_time()
-        else:  # ZZ
-            pairs = [(t, bridge_ancilla) for t in target_qubits]
-            self.schedule_two_qubit_gates_geometric(GateType.CX, pairs, cnot_schedule)
+            # Add TICK between layers (except after last)
+            if i < len(self.layers) - 1:
+                circuit.append("TICK")
         
-        # Measure bridge ancilla
-        self.schedule_measurements([bridge_ancilla], labels=["joint_parity"])
-        self.advance_time()
+        # Emit detectors
+        for coord, time, meas_indices in self._detector_info:
+            emit_detector_nd(circuit, meas_indices, coord, time, self._measurement_index)
         
-        return self.current_time
+        # Emit observables
+        for obs_idx, meas_indices in self._observable_info:
+            if meas_indices:
+                lookbacks = [idx - self._measurement_index for idx in meas_indices]
+                targets = [stim.target_rec(lb) for lb in lookbacks]
+                circuit.append("OBSERVABLE_INCLUDE", targets, obs_idx)
+        
+        return circuit
     
-    def get_measurement_record_index(
-        self,
-        qubit: int,
-        time: float
-    ) -> Optional[int]:
-        """
-        Get the measurement record index for a measurement.
-        
-        Returns negative index (as used in Stim rec syntax).
-        """
-        # Find matching measurement
-        for i, (q, t, _) in enumerate(self._measurement_records):
-            if q == qubit and abs(t - time) < 1e-9:
-                # Convert to negative index from end
-                return i - len(self._measurement_records)
-        return None
-    
-    def to_stim_instructions(self) -> List[str]:
-        """
-        Convert schedule to Stim circuit instructions.
-        
-        Returns
-        -------
-        List[str]
-            List of Stim instruction strings.
-        """
-        instructions = []
-        
-        # Sort layers by time
-        sorted_layers = sorted(self.layers, key=lambda l: l.time)
-        
-        for layer in sorted_layers:
-            # Emit TICK for time boundary
-            instructions.append("TICK")
-            
-            # Resets
-            if layer.resets:
-                qubits = " ".join(str(q) for q in layer.resets)
-                instructions.append(f"R {qubits}")
-            
-            # Gates by type
-            gates_by_type: Dict[GateType, List[ScheduledGate]] = {}
-            for gate in layer.gates:
-                if gate.gate_type not in gates_by_type:
-                    gates_by_type[gate.gate_type] = []
-                gates_by_type[gate.gate_type].append(gate)
-            
-            for gate_type, gates in gates_by_type.items():
-                if len(gates[0].targets) == 1:
-                    # Single qubit gates
-                    qubits = " ".join(str(g.targets[0]) for g in gates)
-                    instructions.append(f"{gate_type.value} {qubits}")
-                else:
-                    # Two qubit gates
-                    pairs = []
-                    for g in gates:
-                        pairs.extend([str(g.targets[0]), str(g.targets[1])])
-                    qubits = " ".join(pairs)
-                    instructions.append(f"{gate_type.value} {qubits}")
-            
-            # Measurements
-            if layer.measurements:
-                # Group by measurement type
-                by_type: Dict[GateType, List[int]] = {}
-                for qubit, mtype in layer.measurements:
-                    if mtype not in by_type:
-                        by_type[mtype] = []
-                    by_type[mtype].append(qubit)
-                
-                for mtype, qubits in by_type.items():
-                    qs = " ".join(str(q) for q in qubits)
-                    instructions.append(f"{mtype.value} {qs}")
-        
-        return instructions
-    
-    def get_circuit_depth(self) -> int:
-        """Return the number of time layers in the schedule."""
-        return len(self.layers)
-    
-    def get_stats(self) -> Dict[str, int]:
-        """
-        Get statistics about the schedule.
-        
-        Returns
-        -------
-        Dict[str, int]
-            Statistics including gate counts and depth.
-        """
-        stats = {
-            "depth": len(self.layers),
-            "total_gates": 0,
-            "single_qubit_gates": 0,
-            "two_qubit_gates": 0,
-            "measurements": 0,
-            "resets": 0,
-        }
-        
-        for layer in self.layers:
-            stats["resets"] += len(layer.resets)
-            stats["measurements"] += len(layer.measurements)
-            
-            for gate in layer.gates:
-                stats["total_gates"] += 1
-                if len(gate.targets) == 1:
-                    stats["single_qubit_gates"] += 1
-                else:
-                    stats["two_qubit_gates"] += 1
-        
-        return stats
-
-
-def merge_schedules(
-    schedules: List['GadgetScheduler'],
-    time_gap: float = 1.0
-) -> 'GadgetScheduler':
-    """
-    Merge multiple schedules sequentially.
-    
-    Parameters
-    ----------
-    schedules : List[GadgetScheduler]
-        Schedules to merge.
-    time_gap : float
-        Time gap between schedules.
-        
-    Returns
-    -------
-    GadgetScheduler
-        Merged schedule.
-    """
-    if not schedules:
-        raise ValueError("No schedules to merge")
-    
-    # Use first schedule's layout (they should be compatible)
-    merged = GadgetScheduler(schedules[0].layout, time_start=0.0)
-    
-    current_offset = 0.0
-    
-    for sched in schedules:
-        # Copy layers with time offset
-        for layer in sched.layers:
-            new_layer = CircuitLayer(
-                time=layer.time + current_offset,
-                resets=list(layer.resets),
-                gates=list(layer.gates),
-                measurements=list(layer.measurements)
-            )
-            merged.layers.append(new_layer)
-        
-        # Copy measurement records with offset
-        for qubit, time, label in sched._measurement_records:
-            merged._measurement_records.append((qubit, time + current_offset, label))
-        
-        # Update offset for next schedule
-        if sched.layers:
-            max_time = max(l.time for l in sched.layers)
-            current_offset = max_time + time_gap
-    
-    merged.current_time = current_offset
-    return merged
+    def get_measurement_count(self) -> int:
+        """Get total number of measurements scheduled."""
+        return sum(len(layer.measurements) for layer in self.layers)

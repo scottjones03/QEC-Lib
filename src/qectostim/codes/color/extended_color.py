@@ -144,6 +144,34 @@ class TruncatedTrihexColorCode(CSSCode):
         logical_z = vectors_to_paulis_z(logical_z_vecs)
         return logical_x, logical_z
     
+    def qubit_coords(self) -> List[Tuple[float, float]]:
+        """
+        Return 2D coordinates for visualization.
+        
+        Uses HGP two-sector grid layout based on lattice size.
+        """
+        coords: List[Tuple[float, float]] = []
+        
+        L = max(self.Lx, self.Ly) * 3
+        n_left = L * L
+        right_offset = L + 2
+        side = L - 1 if L > 1 else 1
+        
+        for i in range(self.n):
+            if i < n_left:
+                # Left sector: L x L grid
+                col = i % L
+                row = i // L
+                coords.append((float(col), float(row)))
+            else:
+                # Right sector: (L-1) x (L-1) grid, offset to right
+                right_idx = i - n_left
+                col = right_idx % side
+                row = right_idx // side
+                coords.append((float(col + right_offset), float(row)))
+        
+        return coords
+    
     def description(self) -> str:
         return f"4.6.12 Truncated Trihex Color Code, n={self.n}"
 
@@ -279,6 +307,38 @@ class HyperbolicColorCode(CSSCode):
         logical_x = vectors_to_paulis_x(logical_x_vecs)
         logical_z = vectors_to_paulis_z(logical_z_vecs)
         return logical_x, logical_z
+    
+    def qubit_coords(self) -> List[Tuple[float, float]]:
+        """
+        Return 2D coordinates for visualization.
+        
+        Uses grid layout based on HGP construction size.
+        """
+        coords: List[Tuple[float, float]] = []
+        
+        # Compute L from geometry parameters
+        chi = 2 - 2 * self.genus
+        denom = 2 * self.p + 2 * self.q - self.p * self.q
+        n_target = max(20, abs(chi * self.p * self.q // denom) * 2)
+        L = max(4, int(np.sqrt(n_target / 2)))
+        
+        n_left = L * L
+        right_offset = L + 2
+        
+        for i in range(self.n):
+            if i < n_left:
+                # Left sector: L x L grid
+                col = i % L
+                row = i // L
+                coords.append((float(col), float(row)))
+            else:
+                # Right sector: L x L grid, offset to right
+                right_idx = i - n_left
+                col = right_idx % L
+                row = right_idx // L
+                coords.append((float(col + right_offset), float(row)))
+        
+        return coords
     
     def description(self) -> str:
         return f"Hyperbolic Color Code {{{self.p},{self.q}}} g={self.genus}, n={self.n}"
@@ -444,16 +504,39 @@ class BallColorCode(CSSCode):  # Variable dimension 3-5
         """Compute logical operators."""
         return (["Z" * n_qubits], ["X" * n_qubits])
     
+    def qubit_coords(self) -> List[Tuple[float, float]]:
+        """
+        Return 2D coordinates for visualization.
+        
+        Uses grid layout for the hyperoctahedron edges.
+        """
+        coords: List[Tuple[float, float]] = []
+        
+        # Use simple square grid layout
+        grid_size = int(np.ceil(np.sqrt(self.n)))
+        
+        for i in range(self.n):
+            col = i % grid_size
+            row = i // grid_size
+            coords.append((float(col), float(row)))
+        
+        return coords
+    
     def description(self) -> str:
         return f"Ball Color Code dim={self.dimension}, n={self.n}"
 
 
-class CubicHoneycombColorCode(TopologicalCSSCode3D):
+class CubicHoneycombColorCode(CSSCode):
     """
     3D Color Code on Bitruncated Cubic Honeycomb.
     
     A 3D color code on a specific 4-colorable space-filling tiling
     composed of truncated octahedra.
+    
+    Note: This implementation uses CSSCode as base since the
+    chain complex construction is simplified. For proper topological
+    structure with a 4-chain complex, extend TopologicalCSSCode3D
+    with a CSSChainComplex4 parameter.
     
     Attributes:
         L: Lattice size
@@ -479,6 +562,7 @@ class CubicHoneycombColorCode(TopologicalCSSCode3D):
             hz=hz,
             logical_x=logicals[0],
             logical_z=logicals[1],
+            metadata={"name": name, "n": n_qubits, "L": L}
         )
     
     @staticmethod
@@ -537,16 +621,49 @@ class CubicHoneycombColorCode(TopologicalCSSCode3D):
         """Compute logical operators."""
         return (["Z" * n_qubits], ["X" * n_qubits])
     
+    def qubit_coords(self) -> List[Tuple[float, float]]:
+        """
+        Return 2D coordinates for visualization.
+        
+        Uses HGP two-sector grid layout.
+        """
+        coords: List[Tuple[float, float]] = []
+        
+        rep_size = self.L * 3
+        n_left = rep_size * rep_size
+        right_offset = rep_size + 2
+        side = rep_size - 1 if rep_size > 1 else 1
+        
+        for i in range(self.n):
+            if i < n_left:
+                # Left sector: rep_size x rep_size grid
+                col = i % rep_size
+                row = i // rep_size
+                coords.append((float(col), float(row)))
+            else:
+                # Right sector: (rep_size-1) x (rep_size-1) grid, offset to right
+                right_idx = i - n_left
+                col = right_idx % side
+                row = right_idx // side
+                coords.append((float(col + right_offset), float(row)))
+        
+        return coords
+    
     def description(self) -> str:
         return f"Cubic Honeycomb Color Code L={self.L}, n={self.n}"
 
 
-class TetrahedralColorCode(TopologicalCSSCode3D):
+class TetrahedralColorCode(CSSCode):
     """
     3D Color Code on Tetrahedral Lattice.
     
     A 3D color code on selected tetrahedra of a 3D tiling,
     with 4-coloring of tetrahedra.
+    
+    Note: This implementation uses CSSCode as base since the
+    chain complex construction is simplified. For proper topological
+    structure with a 4-chain complex, extend TopologicalCSSCode3D
+    with a CSSChainComplex4 parameter.
     
     Attributes:
         L: Lattice dimension
@@ -572,6 +689,7 @@ class TetrahedralColorCode(TopologicalCSSCode3D):
             hz=hz,
             logical_x=logicals[0],
             logical_z=logicals[1],
+            metadata={"name": name, "n": n_qubits, "L": L}
         )
     
     @staticmethod
@@ -669,6 +787,24 @@ class TetrahedralColorCode(TopologicalCSSCode3D):
     ) -> Tuple[List[str], List[str]]:
         """Compute logical operators."""
         return (["Z" * n_qubits], ["X" * n_qubits])
+    
+    def qubit_coords(self) -> List[Tuple[float, float]]:
+        """
+        Return 2D coordinates for visualization.
+        
+        Uses grid layout based on octahedral/tetrahedral structure.
+        """
+        coords: List[Tuple[float, float]] = []
+        
+        # Use simple square grid layout
+        grid_size = int(np.ceil(np.sqrt(self.n)))
+        
+        for i in range(self.n):
+            col = i % grid_size
+            row = i // grid_size
+            coords.append((float(col), float(row)))
+        
+        return coords
     
     def description(self) -> str:
         return f"Tetrahedral Color Code L={self.L}, n={self.n}"

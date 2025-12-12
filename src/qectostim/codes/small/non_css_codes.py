@@ -143,9 +143,11 @@ class SixQubit642Code(StabilizerCode):
     def stabilizer_matrix(self) -> np.ndarray:
         return self._stabilizer_matrix
     
+    @property
     def logical_x_ops(self) -> List[PauliString]:
         return self._logical_x
     
+    @property
     def logical_z_ops(self) -> List[PauliString]:
         return self._logical_z
     
@@ -233,9 +235,11 @@ class BareAncillaCode713(StabilizerCode):
     def stabilizer_matrix(self) -> np.ndarray:
         return self._stabilizer_matrix
     
+    @property
     def logical_x_ops(self) -> List[PauliString]:
         return self._logical_x
     
+    @property
     def logical_z_ops(self) -> List[PauliString]:
         return self._logical_z
     
@@ -326,9 +330,11 @@ class TenQubitCode(StabilizerCode):
     def stabilizer_matrix(self) -> np.ndarray:
         return self._stabilizer_matrix
     
+    @property
     def logical_x_ops(self) -> List[PauliString]:
         return self._logical_x
     
+    @property
     def logical_z_ops(self) -> List[PauliString]:
         return self._logical_z
     
@@ -405,9 +411,11 @@ class FiveQubitMixedCode(StabilizerCode):
     def stabilizer_matrix(self) -> np.ndarray:
         return self._stabilizer_matrix
     
+    @property
     def logical_x_ops(self) -> List[PauliString]:
         return self._logical_x
     
+    @property
     def logical_z_ops(self) -> List[PauliString]:
         return self._logical_z
     

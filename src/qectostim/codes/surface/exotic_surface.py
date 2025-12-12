@@ -13,6 +13,7 @@ from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 
 from ..abstract_css import CSSCode, TopologicalCSSCode4D
+from ..complexes.css_complex import FiveCSSChainComplex
 
 
 class FractalSurfaceCode(CSSCode):
@@ -154,6 +155,20 @@ class FractalSurfaceCode(CSSCode):
         """Compute logical operators."""
         return (["Z" * n_qubits], ["X" * n_qubits])
     
+    def qubit_coords(self) -> List[Tuple[float, float]]:
+        """Return 2D coordinates for visualization.
+        
+        Lays out qubits on a grid based on the fractal level.
+        """
+        # Grid size based on fractal level (3^level x 3^level with holes)
+        side = 3 ** self.level
+        coords: List[Tuple[float, float]] = []
+        for i in range(self.n):
+            col = i % side
+            row = i // side
+            coords.append((float(col), float(row)))
+        return coords
+    
     def description(self) -> str:
         return f"Fractal Surface Code level {self.level}, n={self.n}"
 
@@ -260,6 +275,26 @@ class TwistedToricCode(CSSCode):
         """Compute logical operators."""
         # Twisted toric code has different logical structure
         return (["Z" * n_qubits], ["X" * n_qubits])
+    
+    def qubit_coords(self) -> List[Tuple[float, float]]:
+        """Return 2D coordinates for visualization.
+        
+        Lays out qubits on a Lx × 2Ly grid (horizontal + vertical edges).
+        """
+        coords: List[Tuple[float, float]] = []
+        # n = 2 * Lx * Ly qubits: Lx*Ly horizontal + Lx*Ly vertical
+        n_per_type = self.Lx * self.Ly
+        # Horizontal edges
+        for i in range(n_per_type):
+            col = i % self.Ly
+            row = i // self.Ly
+            coords.append((float(col) + 0.5, float(row)))
+        # Vertical edges (offset)
+        for i in range(n_per_type):
+            col = i % self.Ly
+            row = i // self.Ly
+            coords.append((float(col), float(row) + 0.5))
+        return coords
     
     def description(self) -> str:
         return f"Twisted Toric Code {self.Lx}×{self.Ly} twist={self.twist}, n={self.n}"
@@ -384,6 +419,31 @@ class ProjectivePlaneSurfaceCode(CSSCode):
         """Compute logical operators for RP² (1 logical qubit)."""
         return (["Z" * n_qubits], ["X" * n_qubits])
     
+    def qubit_coords(self) -> List[Tuple[float, float]]:
+        """Return 2D coordinates for visualization.
+        
+        Uses HGP two-sector grid layout.
+        """
+        na = nb = self.L
+        ma = mb = self.L - 1
+        n_left = na * nb
+        n_right = ma * mb
+        right_offset = nb + 2
+        
+        coords: List[Tuple[float, float]] = []
+        # Left sector: L × L grid
+        for i in range(min(n_left, self.n)):
+            col = i % nb
+            row = i // nb
+            coords.append((float(col), float(row)))
+        # Right sector: (L-1) × (L-1) grid offset
+        for i in range(n_left, self.n):
+            right_idx = i - n_left
+            col = right_idx % mb
+            row = right_idx // mb
+            coords.append((float(col + right_offset), float(row)))
+        return coords
+    
     def description(self) -> str:
         return f"Projective Plane Surface Code L={self.L}, n={self.n}"
 
@@ -484,6 +544,20 @@ class KitaevSurfaceCode(CSSCode):
     ) -> Tuple[List[str], List[str]]:
         """Compute logical operators."""
         return (["Z" * n_qubits], ["X" * n_qubits])
+    
+    def qubit_coords(self) -> List[Tuple[float, float]]:
+        """Return 2D coordinates for visualization.
+        
+        Uses the provided vertex coordinates to compute edge midpoints.
+        """
+        coords: List[Tuple[float, float]] = []
+        for v1_idx, v2_idx in self.edges:
+            v1 = self.vertices[v1_idx]
+            v2 = self.vertices[v2_idx]
+            mid_x = (v1[0] + v2[0]) / 2.0
+            mid_y = (v1[1] + v2[1]) / 2.0
+            coords.append((mid_x, mid_y))
+        return coords
     
     def description(self) -> str:
         return f"Kitaev Surface Code, n={self.n}, faces={len(self.faces)}"
@@ -611,6 +685,31 @@ class LCSCode(CSSCode):
         """Compute logical operators."""
         return (["Z" * n_qubits], ["X" * n_qubits])
     
+    def qubit_coords(self) -> List[Tuple[float, float]]:
+        """Return 2D coordinates for visualization.
+        
+        Lays out qubits in layers, stacked vertically.
+        """
+        qubits_per_layer = 2 * self.L * self.L
+        n_couplers = (self.n_layers - 1) * self.L
+        layer_height = 2 * self.L + 1
+        
+        coords: List[Tuple[float, float]] = []
+        # Layer qubits
+        for layer in range(self.n_layers):
+            for i in range(qubits_per_layer):
+                col = i % (2 * self.L)
+                row = i // (2 * self.L)
+                y_offset = layer * layer_height
+                coords.append((float(col), float(row + y_offset)))
+        # Coupler qubits (between layers)
+        for layer_pair in range(self.n_layers - 1):
+            for idx in range(self.L):
+                col = idx
+                row = (layer_pair + 1) * layer_height - 0.5
+                coords.append((float(col), float(row)))
+        return coords
+    
     def description(self) -> str:
         return f"LCS Code {self.n_layers} layers, L={self.L}, n={self.n}"
 
@@ -641,11 +740,40 @@ class LoopToricCode4D(TopologicalCSSCode4D):
         
         logicals = self._compute_logicals(hx, hz, n_qubits)
         
+        # Build FiveCSSChainComplex for proper 4D topology
+        # In FiveCSSChainComplex: hx = sigma3.T and hz = sigma2
+        # So: sigma3 = hx.T and sigma2 = hz
+        
+        n_x_stabs = hx.shape[0]
+        n_z_stabs = hz.shape[0]
+        
+        # sigma3: C3 → C2 (cubes -> faces), hx = sigma3.T, so sigma3 = hx.T
+        sigma3 = hx.T.astype(np.uint8)  # shape: (n_qubits, n_x_stabs)
+        
+        # sigma2: C2 → C1 (faces -> edges), hz = sigma2, so sigma2 = hz
+        sigma2 = hz.astype(np.uint8)  # shape: (n_z_stabs, n_qubits)
+        
+        # sigma1: C1 → C0 (terminal boundary, empty for truncated complex)
+        # Must have shape (n_vertices, n_edges) where n_edges = sigma2.shape[0]
+        sigma1 = np.zeros((0, n_z_stabs), dtype=np.uint8)
+        
+        # sigma4: C4 → C3 (initial boundary, empty for truncated complex)
+        # Must have shape (n_cubes, n_4cells) where n_cubes = sigma3.shape[1]
+        sigma4 = np.zeros((n_x_stabs, 0), dtype=np.uint8)
+        
+        chain_complex = FiveCSSChainComplex(
+            sigma4=sigma4,
+            sigma3=sigma3,
+            sigma2=sigma2,
+            sigma1=sigma1,
+            qubit_grade=2,
+        )
+        
         super().__init__(
-            hx=hx,
-            hz=hz,
+            chain_complex=chain_complex,
             logical_x=logicals[0],
             logical_z=logicals[1],
+            metadata={"name": name, "L": L},
         )
     
     @staticmethod
@@ -719,6 +847,29 @@ class LoopToricCode4D(TopologicalCSSCode4D):
     ) -> Tuple[List[str], List[str]]:
         """Compute logical operators."""
         return (["Z" * n_qubits], ["X" * n_qubits])
+    
+    def qubit_coords(self) -> List[Tuple[float, float]]:
+        """Return 2D coordinates for visualization.
+        
+        Uses HGP two-sector grid layout.
+        """
+        n_left = self.L * self.L
+        n_right = self.L * self.L
+        right_offset = self.L + 2
+        
+        coords: List[Tuple[float, float]] = []
+        # Left sector
+        for i in range(min(n_left, self.n)):
+            col = i % self.L
+            row = i // self.L
+            coords.append((float(col), float(row)))
+        # Right sector
+        for i in range(n_left, self.n):
+            right_idx = i - n_left
+            col = right_idx % self.L
+            row = right_idx // self.L
+            coords.append((float(col + right_offset), float(row)))
+        return coords
     
     def description(self) -> str:
         return f"(2,2) Loop Toric Code 4D, L={self.L}, n={self.n}"

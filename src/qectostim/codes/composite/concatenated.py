@@ -523,7 +523,141 @@ class ConcatenatedTopologicalCSSCode(ConcatenatedCSSCode, TopologicalCSSCode):
             'inner_x_stab_count': len(inner_x_stab_coords),
             'inner_z_stab_count': len(inner_z_stab_coords),
         })
+        
+        # Store references for concatenated decoder support
+        self._outer_code = outer
+        self._inner_code = inner
 
     def qubit_coords(self) -> List[Coord2D]:
         """Return 2D coordinates for all physical qubits."""
         return self._qubit_coords
+    
+    def build_concatenation_decoder_metadata(
+        self,
+        rounds: int = 3,
+        noise_model: Optional[Any] = None,
+        basis: str = "Z",
+    ) -> Dict[str, Any]:
+        """
+        Build metadata required for ConcatenatedDecoder.
+        
+        This method generates per-level DEMs and detector mappings needed for
+        hierarchical decoding of concatenated codes. Uses ConcatenatedMemoryExperiment
+        to ensure detector ordering matches the hierarchical structure expected by
+        ConcatenatedDecoder.
+        
+        Parameters
+        ----------
+        rounds : int
+            Number of syndrome measurement rounds.
+        noise_model : optional
+            Noise model to apply. If None, uses CircuitDepolarizingNoise(p1=0.001, p2=0.001).
+        basis : str
+            Measurement basis ('X' or 'Z').
+            
+        Returns
+        -------
+        Dict[str, Any]
+            Dictionary with keys:
+            - 'dem_per_level': List of DEMs, one per concatenation level
+            - 'dem_slices': Detector index slices for each level
+            - 'logicals_per_level': Number of logical qubits per level
+            - 'inner_dem': DEM for a single inner code block
+            - 'outer_dem': DEM for the outer code
+            - 'global_dem': DEM for the full concatenated code with block-grouped detectors
+        """
+        from qectostim.experiments.concatenated_memory import ConcatenatedMemoryExperiment
+        from qectostim.experiments.memory import CSSMemoryExperiment
+        from qectostim.noise.models import CircuitDepolarizingNoise
+        
+        if noise_model is None:
+            noise_model = CircuitDepolarizingNoise(p1=0.001, p2=0.001)
+        
+        # Generate the GLOBAL DEM using ConcatenatedMemoryExperiment
+        # This ensures detector ordering matches hierarchical structure
+        concat_exp = ConcatenatedMemoryExperiment(
+            code=self,
+            rounds=rounds,
+            noise_model=noise_model,
+            basis=basis,
+        )
+        concat_circuit = noise_model.apply(concat_exp.to_stim())
+        try:
+            global_dem = concat_circuit.detector_error_model(decompose_errors=True)
+        except Exception:
+            global_dem = concat_circuit.detector_error_model(
+                decompose_errors=True,
+                ignore_decomposition_failures=True
+            )
+        
+        # Get detector slices from the experiment - this matches the actual circuit structure
+        exp_slices = concat_exp.get_detector_slices()
+        inner_slices = exp_slices['inner_slices']
+        outer_slices = exp_slices['outer_slices']
+        inner_dets_per_block = exp_slices['inner_dets_per_block']
+        outer_dets = exp_slices['outer_dets']
+        
+        # Generate inner code DEM (for a single inner block)
+        inner_exp = CSSMemoryExperiment(
+            code=self._inner_code,
+            rounds=rounds,
+            noise_model=noise_model,
+            basis=basis,
+        )
+        inner_circuit = noise_model.apply(inner_exp.to_stim())
+        try:
+            inner_dem = inner_circuit.detector_error_model(decompose_errors=True)
+        except Exception:
+            inner_dem = inner_circuit.detector_error_model(
+                decompose_errors=True, 
+                ignore_decomposition_failures=True
+            )
+        
+        # Generate outer code DEM  
+        outer_exp = CSSMemoryExperiment(
+            code=self._outer_code,
+            rounds=rounds,
+            noise_model=noise_model,
+            basis=basis,
+        )
+        outer_circuit = noise_model.apply(outer_exp.to_stim())
+        try:
+            outer_dem = outer_circuit.detector_error_model(decompose_errors=True)
+        except Exception:
+            outer_dem = outer_circuit.detector_error_model(
+                decompose_errors=True,
+                ignore_decomposition_failures=True
+            )
+        
+        # For 2-level concatenation (outer ∘ inner):
+        # Level 0 (inner): n_outer copies of inner DEM
+        # Level 1 (outer): outer DEM
+        # 
+        # Use slices from the experiment, NOT from CSSMemoryExperiment detector counts,
+        # because ConcatenatedMemoryExperiment has different detector structure.
+        
+        n_outer = self._n_outer
+        
+        # Note: inner_slices and outer_slices come from exp_slices above
+        # inner_dets_per_block and outer_dets also come from exp_slices
+        
+        total_expected_detectors = n_outer * inner_dets_per_block + outer_dets
+        
+        concat_meta = {
+            'dem_per_level': [inner_dem, outer_dem],
+            'dem_slices': [inner_slices, outer_slices],
+            'logicals_per_level': [self._inner_code.k, self._outer_code.k],
+            'inner_dem': inner_dem,
+            'outer_dem': outer_dem,
+            'global_dem': global_dem,
+            'n_inner_blocks': n_outer,
+            'inner_n_detectors': inner_dets_per_block,  # From experiment, not CSSMemoryExperiment
+            'outer_n_detectors': outer_dets,  # From experiment
+            'total_expected_detectors': total_expected_detectors,
+            'global_dem_n_detectors': global_dem.num_detectors,
+        }
+        
+        # Store in metadata
+        self._metadata['concatenation'] = concat_meta
+        
+        return concat_meta

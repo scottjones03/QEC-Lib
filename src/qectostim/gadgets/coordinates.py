@@ -2,41 +2,36 @@
 """
 N-Dimensional Coordinate Utilities for Gadgets.
 
-This module provides utilities for handling coordinates of arbitrary dimension
-(2D, 3D, 4D, or higher) across gadget circuits. It supports:
-- Coordinate type inference from code metadata
-- Bounding box computation for layout
+Provides utilities for handling coordinates across 2D, 3D, 4D (and higher) 
+topological codes, enabling gadget circuits to work with arbitrary dimensions.
+
+Key features:
+- CoordND type supporting arbitrary spatial dimensions
+- Bounding box computation for any-dimensional coordinate sets
 - Bridge ancilla positioning between code blocks
-- Stim circuit emission for QUBIT_COORDS and DETECTOR with N-D coordinates
+- Stim circuit emission with proper QUBIT_COORDS and DETECTOR coordinates
 """
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple, Union, Sequence
-from dataclasses import dataclass
+from typing import List, Tuple, Optional, Union, Dict, Any
 import numpy as np
-
 import stim
 
-from qectostim.codes.abstract_code import Code
-
-
-# Type alias for N-dimensional coordinates (supports 2D, 3D, 4D, etc.)
-CoordND = Tuple[float, ...]
-
-# Convenience aliases
+# Type aliases for coordinates
 Coord2D = Tuple[float, float]
 Coord3D = Tuple[float, float, float]
 Coord4D = Tuple[float, float, float, float]
+CoordND = Tuple[float, ...]  # Arbitrary dimension
 
 
-def get_code_dimension(code: Code) -> int:
+def get_code_dimension(code: Any) -> int:
     """
-    Infer spatial dimension from code's coordinate metadata.
+    Infer spatial dimension from a code's coordinate metadata.
     
     Parameters
     ----------
     code : Code
-        A code object that may have qubit_coords() method.
+        A code object, possibly with qubit_coords() method.
         
     Returns
     -------
@@ -47,82 +42,44 @@ def get_code_dimension(code: Code) -> int:
         coords = code.qubit_coords()
         if coords and len(coords) > 0:
             first_coord = coords[0]
-            if isinstance(first_coord, (tuple, list)):
+            if isinstance(first_coord, (list, tuple)):
                 return len(first_coord)
     
-    # Check metadata for coordinate info
-    meta = getattr(code, '_metadata', {}) or {}
-    data_coords = meta.get('data_coords', [])
-    if data_coords and len(data_coords) > 0:
-        first_coord = data_coords[0]
-        if isinstance(first_coord, (tuple, list)):
-            return len(first_coord)
+    # Check metadata fallback
+    if hasattr(code, '_metadata'):
+        meta = code._metadata or {}
+        data_coords = meta.get('data_coords', [])
+        if data_coords and len(data_coords) > 0:
+            return len(data_coords[0])
     
     return 2  # Default to 2D
 
 
-def normalize_coord(coord: Sequence[float], target_dim: int) -> CoordND:
-    """
-    Normalize a coordinate to target dimension by padding with zeros.
-    
-    Parameters
-    ----------
-    coord : Sequence[float]
-        Original coordinate of any dimension.
-    target_dim : int
-        Target dimension to normalize to.
-        
-    Returns
-    -------
-    CoordND
-        Coordinate padded to target dimension.
-        
-    Examples
-    --------
-    >>> normalize_coord((1.0, 2.0), 3)
-    (1.0, 2.0, 0.0)
-    >>> normalize_coord((1.0, 2.0, 3.0, 4.0), 3)
-    (1.0, 2.0, 3.0)  # Truncates if larger
-    """
-    coord_list = list(coord)
-    if len(coord_list) < target_dim:
-        coord_list.extend([0.0] * (target_dim - len(coord_list)))
-    elif len(coord_list) > target_dim:
-        coord_list = coord_list[:target_dim]
-    return tuple(coord_list)
-
-
 def get_bounding_box(coords: List[CoordND]) -> Tuple[CoordND, CoordND]:
     """
-    Compute bounding box of a set of N-dimensional coordinates.
+    Compute the axis-aligned bounding box of a coordinate set.
     
     Parameters
     ----------
     coords : List[CoordND]
-        List of coordinates, all of the same dimension.
+        List of N-dimensional coordinates.
         
     Returns
     -------
     Tuple[CoordND, CoordND]
         (min_corner, max_corner) of the bounding box.
         
-    Raises
-    ------
-    ValueError
-        If coords is empty or coordinates have inconsistent dimensions.
+    Examples
+    --------
+    >>> get_bounding_box([(0, 0), (2, 3), (1, 1)])
+    ((0.0, 0.0), (2.0, 3.0))
     """
     if not coords:
-        raise ValueError("Cannot compute bounding box of empty coordinate list")
+        return ((), ())
     
-    dim = len(coords[0])
     arr = np.array(coords, dtype=float)
-    
-    if arr.ndim == 1:
-        arr = arr.reshape(1, -1)
-    
     min_corner = tuple(arr.min(axis=0).tolist())
     max_corner = tuple(arr.max(axis=0).tolist())
-    
     return min_corner, max_corner
 
 
@@ -133,7 +90,7 @@ def get_bounding_box_diagonal(coords: List[CoordND]) -> float:
     Parameters
     ----------
     coords : List[CoordND]
-        List of coordinates.
+        List of N-dimensional coordinates.
         
     Returns
     -------
@@ -147,33 +104,26 @@ def get_bounding_box_diagonal(coords: List[CoordND]) -> float:
     return np.linalg.norm(np.array(max_corner) - np.array(min_corner))
 
 
-def compute_min_pairwise_distance(coords: List[CoordND]) -> float:
+def get_centroid(coords: List[CoordND]) -> CoordND:
     """
-    Compute minimum pairwise distance between coordinates.
+    Compute the centroid (center of mass) of a coordinate set.
     
     Parameters
     ----------
     coords : List[CoordND]
-        List of coordinates.
+        List of N-dimensional coordinates.
         
     Returns
     -------
-    float
-        Minimum pairwise Euclidean distance. Returns inf if < 2 points.
+    CoordND
+        The centroid coordinate.
     """
-    if len(coords) < 2:
-        return float('inf')
+    if not coords:
+        return ()
     
     arr = np.array(coords, dtype=float)
-    min_dist = float('inf')
-    
-    for i in range(len(arr)):
-        for j in range(i + 1, len(arr)):
-            dist = np.linalg.norm(arr[i] - arr[j])
-            if dist > 1e-9:
-                min_dist = min(min_dist, dist)
-    
-    return min_dist
+    centroid = arr.mean(axis=0)
+    return tuple(centroid.tolist())
 
 
 def translate_coords(
@@ -188,7 +138,7 @@ def translate_coords(
     coords : List[CoordND]
         Original coordinates.
     offset : CoordND
-        Translation offset (same dimension as coords).
+        Offset to add to each coordinate.
         
     Returns
     -------
@@ -198,53 +148,127 @@ def translate_coords(
     if not coords:
         return []
     
-    dim = len(coords[0])
-    offset_arr = np.array(offset[:dim])
-    
-    result = []
-    for coord in coords:
-        translated = tuple((np.array(coord) + offset_arr).tolist())
-        result.append(translated)
-    
-    return result
+    offset_arr = np.array(offset, dtype=float)
+    return [tuple((np.array(c) + offset_arr).tolist()) for c in coords]
 
 
-def compute_bridge_position(
-    coords_a: List[CoordND],
-    coords_b: List[CoordND],
-    offset_a: CoordND,
-    offset_b: CoordND,
+def compute_non_overlapping_offset(
+    existing_coords: List[CoordND],
+    new_coords: List[CoordND],
+    margin: float = 2.0,
+    direction: int = 0,  # 0=x, 1=y, 2=z, etc.
 ) -> CoordND:
     """
-    Compute midpoint position for bridge ancilla between two blocks.
+    Compute offset for new_coords to place them next to existing_coords without overlap.
     
     Parameters
     ----------
-    coords_a : List[CoordND]
-        Coordinates of first code block (in local frame).
-    coords_b : List[CoordND]
-        Coordinates of second code block (in local frame).
-    offset_a : CoordND
-        Global offset of first block.
-    offset_b : CoordND
-        Global offset of second block.
+    existing_coords : List[CoordND]
+        Coordinates already placed.
+    new_coords : List[CoordND]
+        Coordinates to be placed.
+    margin : float
+        Gap between bounding boxes.
+    direction : int
+        Which axis to offset along (0=x, 1=y, 2=z, ...).
         
     Returns
     -------
     CoordND
-        Position for bridge ancilla (midpoint between block centers).
+        Offset to apply to new_coords.
     """
-    if not coords_a or not coords_b:
-        # Fallback to midpoint of offsets
-        return tuple((np.array(offset_a) + np.array(offset_b)) / 2)
+    if not existing_coords or not new_coords:
+        dim = len(new_coords[0]) if new_coords else 2
+        return tuple([0.0] * dim)
     
-    # Compute centers of each block in global coordinates
-    center_a = np.mean(coords_a, axis=0) + np.array(offset_a[:len(coords_a[0])])
-    center_b = np.mean(coords_b, axis=0) + np.array(offset_b[:len(coords_b[0])])
+    dim = len(existing_coords[0])
     
-    # Return midpoint
-    midpoint = (center_a + center_b) / 2
-    return tuple(midpoint.tolist())
+    # Get bounding boxes
+    exist_min, exist_max = get_bounding_box(existing_coords)
+    new_min, new_max = get_bounding_box(new_coords)
+    
+    # Compute offset so new block is to the "right" of existing along direction axis
+    offset = [0.0] * dim
+    
+    # New block's min should be at existing block's max + margin
+    shift = exist_max[direction] - new_min[direction] + margin
+    offset[direction] = shift
+    
+    return tuple(offset)
+
+
+def compute_bridge_position(
+    block_a_coords: List[CoordND],
+    block_b_coords: List[CoordND],
+    offset_a: CoordND,
+    offset_b: CoordND,
+) -> CoordND:
+    """
+    Compute position for bridge ancilla(s) between two code blocks.
+    
+    Places the bridge at the midpoint between the two block centroids.
+    
+    Parameters
+    ----------
+    block_a_coords : List[CoordND]
+        Local coordinates of block A.
+    block_b_coords : List[CoordND]
+        Local coordinates of block B.
+    offset_a : CoordND
+        Global offset of block A.
+    offset_b : CoordND
+        Global offset of block B.
+        
+    Returns
+    -------
+    CoordND
+        Global coordinate for bridge ancilla.
+    """
+    # Get global centroids
+    centroid_a = get_centroid(translate_coords(block_a_coords, offset_a))
+    centroid_b = get_centroid(translate_coords(block_b_coords, offset_b))
+    
+    if not centroid_a or not centroid_b:
+        return ()
+    
+    # Midpoint
+    midpoint = tuple(
+        (a + b) / 2.0 
+        for a, b in zip(centroid_a, centroid_b)
+    )
+    return midpoint
+
+
+def pad_coord_to_dim(coord: CoordND, target_dim: int, pad_value: float = 0.0) -> CoordND:
+    """
+    Pad a coordinate to a target dimension.
+    
+    Useful for embedding lower-dimensional codes in higher-dimensional spaces.
+    
+    Parameters
+    ----------
+    coord : CoordND
+        Original coordinate.
+    target_dim : int
+        Target number of dimensions.
+    pad_value : float
+        Value to use for padding (default 0.0).
+        
+    Returns
+    -------
+    CoordND
+        Padded coordinate.
+        
+    Examples
+    --------
+    >>> pad_coord_to_dim((1.0, 2.0), 4)
+    (1.0, 2.0, 0.0, 0.0)
+    """
+    current_dim = len(coord)
+    if current_dim >= target_dim:
+        return coord
+    
+    return coord + tuple([pad_value] * (target_dim - current_dim))
 
 
 def emit_qubit_coords_nd(
@@ -253,18 +277,18 @@ def emit_qubit_coords_nd(
     coord: CoordND,
 ) -> None:
     """
-    Emit QUBIT_COORDS instruction with N-dimensional coordinates.
+    Emit QUBIT_COORDS instruction for a qubit with N-dimensional coordinates.
     
-    Stim supports arbitrary coordinate dimensions in QUBIT_COORDS.
+    Stim supports arbitrary coordinate dimensions.
     
     Parameters
     ----------
     circuit : stim.Circuit
-        Stim circuit to append to.
+        Circuit to append to.
     qubit_idx : int
         Qubit index.
     coord : CoordND
-        N-dimensional coordinate tuple.
+        Spatial coordinates (any dimension).
     """
     coord_list = [float(c) for c in coord]
     circuit.append("QUBIT_COORDS", [qubit_idx], coord_list)
@@ -278,89 +302,93 @@ def emit_detector_nd(
     m_index: int,
 ) -> None:
     """
-    Emit DETECTOR instruction with (spatial..., time) coordinates.
+    Emit DETECTOR instruction with spatial coordinates plus time.
     
     The time dimension is appended as the final coordinate.
     
     Parameters
     ----------
     circuit : stim.Circuit
-        Stim circuit to append to.
+        Circuit to append to.
     rec_indices : List[int]
         Measurement record indices (absolute).
     coord : CoordND
         Spatial coordinates.
     time : float
-        Time layer for this detector.
+        Time coordinate (appended as final dimension).
     m_index : int
         Current measurement index for computing lookbacks.
     """
     if not rec_indices:
         return
     
-    # Compute lookbacks from absolute indices
+    # Compute lookbacks from current measurement index
     lookbacks = [idx - m_index for idx in rec_indices]
     targets = [stim.target_rec(lb) for lb in lookbacks]
     
-    # Append time as final coordinate dimension
-    coord_with_time = list(coord) + [time]
-    
-    circuit.append("DETECTOR", targets, coord_with_time)
+    # Append time as final coordinate
+    full_coords = list(coord) + [time]
+    circuit.append("DETECTOR", targets, full_coords)
 
 
-def get_code_coords(code: Code) -> Dict[str, List[CoordND]]:
+def emit_observable_include(
+    circuit: stim.Circuit,
+    rec_indices: List[int],
+    observable_idx: int,
+    m_index: int,
+) -> None:
     """
-    Extract all coordinate metadata from a code.
+    Emit OBSERVABLE_INCLUDE instruction.
+    
+    Parameters
+    ----------
+    circuit : stim.Circuit
+        Circuit to append to.
+    rec_indices : List[int]
+        Measurement record indices (absolute).
+    observable_idx : int
+        Which logical observable (0, 1, ...).
+    m_index : int
+        Current measurement index for computing lookbacks.
+    """
+    if not rec_indices:
+        return
+    
+    lookbacks = [idx - m_index for idx in rec_indices]
+    targets = [stim.target_rec(lb) for lb in lookbacks]
+    circuit.append("OBSERVABLE_INCLUDE", targets, observable_idx)
+
+
+def get_code_coords(code: Any) -> Tuple[List[CoordND], List[CoordND], List[CoordND]]:
+    """
+    Extract data, X-stabilizer, and Z-stabilizer coordinates from a code.
     
     Parameters
     ----------
     code : Code
-        Code object with potential coordinate metadata.
+        A topological code with coordinate metadata.
         
     Returns
     -------
-    Dict[str, List[CoordND]]
-        Dictionary with keys 'data', 'x_stab', 'z_stab' mapping to coordinate lists.
+    Tuple[List[CoordND], List[CoordND], List[CoordND]]
+        (data_coords, x_stab_coords, z_stab_coords)
     """
-    result = {
-        'data': [],
-        'x_stab': [],
-        'z_stab': [],
-    }
+    data_coords: List[CoordND] = []
+    x_stab_coords: List[CoordND] = []
+    z_stab_coords: List[CoordND] = []
     
     # Try qubit_coords() method first
     if hasattr(code, 'qubit_coords'):
-        result['data'] = list(code.qubit_coords())
+        data_coords = [tuple(c) for c in code.qubit_coords()]
     
-    # Check metadata
-    meta = getattr(code, '_metadata', {}) or {}
+    # Get stabilizer coords from metadata
+    if hasattr(code, '_metadata'):
+        meta = code._metadata or {}
+        if 'data_coords' in meta and not data_coords:
+            data_coords = [tuple(c) for c in meta['data_coords']]
+        if 'x_stab_coords' in meta:
+            x_stab_coords = [tuple(c) for c in meta['x_stab_coords']]
+        if 'z_stab_coords' in meta:
+            z_stab_coords = [tuple(c) for c in meta['z_stab_coords']]
     
-    if 'data_coords' in meta:
-        result['data'] = list(meta['data_coords'])
-    if 'x_stab_coords' in meta:
-        result['x_stab'] = list(meta['x_stab_coords'])
-    if 'z_stab_coords' in meta:
-        result['z_stab'] = list(meta['z_stab_coords'])
-    
-    return result
-
-
-def infer_max_dimension(codes: List[Code]) -> int:
-    """
-    Infer maximum spatial dimension across multiple codes.
-    
-    Parameters
-    ----------
-    codes : List[Code]
-        List of code objects.
-        
-    Returns
-    -------
-    int
-        Maximum dimension found (defaults to 2 if none found).
-    """
-    max_dim = 2
-    for code in codes:
-        dim = get_code_dimension(code)
-        max_dim = max(max_dim, dim)
-    return max_dim
+    return data_coords, x_stab_coords, z_stab_coords

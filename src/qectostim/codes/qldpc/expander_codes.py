@@ -151,6 +151,41 @@ class ExpanderLPCode(QLDPCCode):
         """Compute logical operators."""
         return (["Z" * n_qubits], ["X" * n_qubits])
     
+    def qubit_coords(self) -> List[Tuple[float, float]]:
+        """
+        Return 2D coordinates for visualization.
+        
+        Uses HGP two-sector grid layout:
+        - Left sector (na*nb qubits): grid na x nb
+        - Right sector (ma*mb qubits): offset to the right of left sector
+        """
+        coords: List[Tuple[float, float]] = []
+        
+        # Compute dimensions from HGP construction
+        na = self.n_vertices * self.lift_order  # base code bits
+        ma = self.n_vertices * self.lift_order  # base code checks (approx)
+        nb = na  # Same base code for both factors
+        mb = ma
+        
+        n_left = na * nb
+        
+        # All qubits in order
+        for i in range(self.n):
+            if i < n_left:
+                # Left sector: grid layout
+                col = i % nb
+                row = i // nb
+                coords.append((float(col), float(row)))
+            else:
+                # Right sector: offset to right of left sector
+                right_offset = nb + 2  # Gap between sectors
+                right_idx = i - n_left
+                col = right_idx % mb
+                row = right_idx // mb
+                coords.append((float(col + right_offset), float(row)))
+        
+        return coords
+    
     def description(self) -> str:
         return f"Expander LP Code n_v={self.n_vertices}, d={self.degree}, m={self.lift_order}, n={self.n}"
 
@@ -317,6 +352,24 @@ class DHLVCode(QLDPCCode):
         """Compute logical operators."""
         return (["Z" * n_qubits], ["X" * n_qubits])
     
+    def qubit_coords(self) -> List[Tuple[float, float]]:
+        """
+        Return 2D coordinates for visualization.
+        
+        Uses HGP two-sector grid layout based on iterated squaring structure.
+        """
+        coords: List[Tuple[float, float]] = []
+        
+        # Use a simple grid layout based on n
+        grid_size = int(np.ceil(np.sqrt(self.n)))
+        
+        for i in range(self.n):
+            col = i % grid_size
+            row = i // grid_size
+            coords.append((float(col), float(row)))
+        
+        return coords
+    
     def description(self) -> str:
         return f"DHLV Code base={self.base_size}, iter={self.iterations}, n={self.n}"
 
@@ -426,6 +479,37 @@ class CampbellDoubleHGPCode(QLDPCCode):
     ) -> Tuple[List[str], List[str]]:
         """Compute logical operators."""
         return (["Z" * n_qubits], ["X" * n_qubits])
+    
+    def qubit_coords(self) -> List[Tuple[float, float]]:
+        """
+        Return 2D coordinates for visualization.
+        
+        Uses HGP two-sector grid layout based on L x L structure.
+        - Left sector: L x L grid
+        - Right sector: (L-1) x (L-1) grid, offset to the right
+        """
+        coords: List[Tuple[float, float]] = []
+        
+        L = self.L
+        n_left = L * L
+        
+        # All qubits in order
+        for i in range(self.n):
+            if i < n_left:
+                # Left sector: L x L grid
+                col = i % L
+                row = i // L
+                coords.append((float(col), float(row)))
+            else:
+                # Right sector: (L-1) x (L-1) grid, offset to right
+                right_offset = L + 2
+                right_idx = i - n_left
+                side = L - 1 if L > 1 else 1
+                col = right_idx % side
+                row = right_idx // side
+                coords.append((float(col + right_offset), float(row)))
+        
+        return coords
     
     def description(self) -> str:
         return f"Campbell Double HGP Code L={self.L}, n={self.n}"
@@ -562,6 +646,38 @@ class LosslessExpanderBPCode(QLDPCCode):
         """Compute logical operators."""
         return (["Z" * n_qubits], ["X" * n_qubits])
     
+    def qubit_coords(self) -> List[Tuple[float, float]]:
+        """
+        Return 2D coordinates for visualization.
+        
+        Uses HGP two-sector grid layout based on graph structure.
+        """
+        coords: List[Tuple[float, float]] = []
+        
+        n = self.n_vertices
+        d = min(4, n - 1)  # degree used in construction
+        n_edges = (n * d) // 2  # approximate edge count
+        
+        n_left = n_edges * n_edges
+        
+        # Use square grid for left sector
+        left_grid = int(np.ceil(np.sqrt(n_left)))
+        right_offset = left_grid + 2
+        right_grid = int(np.ceil(np.sqrt(self.n - n_left if self.n > n_left else 1)))
+        
+        for i in range(self.n):
+            if i < n_left:
+                col = i % left_grid
+                row = i // left_grid
+                coords.append((float(col), float(row)))
+            else:
+                right_idx = i - n_left
+                col = right_idx % right_grid
+                row = right_idx // right_grid
+                coords.append((float(col + right_offset), float(row)))
+        
+        return coords
+    
     def description(self) -> str:
         return f"Lossless Expander BP Code n_v={self.n_vertices}, n={self.n}"
 
@@ -683,43 +799,43 @@ class HigherDimHomProductCode(QLDPCCode):
             # New left sector: old_n * L qubits
             # New right sector: old_mx * L qubits
             new_n_left = old_n * L
-            new_n_right = old_mx * L
+            new_n_right = old_mx * (L - 1)  # ma = L-1 checks in d1
             new_n = new_n_left + new_n_right
             
             new_mx = old_mx * L
-            new_mz = old_n * L
+            new_mz = old_n * (L - 1)  # ma = L-1
             
             new_hx = np.zeros((new_mx, new_n), dtype=np.uint8)
             new_hz = np.zeros((new_mz, new_n), dtype=np.uint8)
             
-            # Build X-checks
+            # Build X-checks: H_X^new = old_hx ⊗ I_L + I_mx ⊗ d1^T (right sector)
             for old_x_stab in range(old_mx):
                 for bit_d1 in range(L):
                     x_stab = old_x_stab * L + bit_d1
-                    # old_hx ⊗ I term
+                    # old_hx ⊗ I_L term (left sector)
                     for old_q in range(old_n):
                         if old_hx[old_x_stab, old_q]:
                             q = old_q * L + bit_d1
                             new_hx[x_stab, q] ^= 1
-                    # I ⊗ d1 term (right sector)
-                    for check_d1 in range(L):
+                    # I_mx ⊗ d1^T term (right sector): d1 has shape (L-1, L)
+                    for check_d1 in range(L - 1):  # ma = L-1 checks
                         if d1[check_d1, bit_d1]:
-                            q = new_n_left + old_x_stab * L + check_d1
+                            q = new_n_left + old_x_stab * (L - 1) + check_d1
                             new_hx[x_stab, q] ^= 1
             
-            # Build Z-checks
+            # Build Z-checks: H_Z^new = I_n ⊗ d1 + old_hx^T ⊗ I_{L-1} (right sector)
             for old_q in range(old_n):
-                for check_d1 in range(L):
-                    z_stab = old_q * L + check_d1
-                    # I ⊗ d1^T term
+                for check_d1 in range(L - 1):  # ma = L-1 checks
+                    z_stab = old_q * (L - 1) + check_d1
+                    # I_n ⊗ d1 term (left sector)
                     for bit_d1 in range(L):
                         if d1[check_d1, bit_d1]:
                             q = old_q * L + bit_d1
                             new_hz[z_stab, q] ^= 1
-                    # old_hx^T ⊗ I term (right sector)
+                    # old_hx^T ⊗ I_{L-1} term (right sector)
                     for old_x_stab in range(old_mx):
                         if old_hx[old_x_stab, old_q]:
-                            q = new_n_left + old_x_stab * L + check_d1
+                            q = new_n_left + old_x_stab * (L - 1) + check_d1
                             new_hz[z_stab, q] ^= 1
             
             hx, hz = new_hx % 2, new_hz % 2
@@ -733,6 +849,24 @@ class HigherDimHomProductCode(QLDPCCode):
     ) -> Tuple[List[str], List[str]]:
         """Compute logical operators."""
         return (["Z" * n_qubits], ["X" * n_qubits])
+    
+    def qubit_coords(self) -> List[Tuple[float, float]]:
+        """
+        Return 2D coordinates for visualization.
+        
+        Uses grid layout based on iterated product structure.
+        """
+        coords: List[Tuple[float, float]] = []
+        
+        # Use simple square grid layout
+        grid_size = int(np.ceil(np.sqrt(self.n)))
+        
+        for i in range(self.n):
+            col = i % grid_size
+            row = i // grid_size
+            coords.append((float(col), float(row)))
+        
+        return coords
     
     def description(self) -> str:
         return f"Higher-Dim Hom Product Code D={self.dimensions}, L={self.L}, n={self.n}"

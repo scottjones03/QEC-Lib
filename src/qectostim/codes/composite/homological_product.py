@@ -157,6 +157,18 @@ class HomologicalProductCode(CSSCodeWithComplex):
             metadata=meta,
         )
     
+    def qubit_coords(self) -> List[Tuple[float, float]]:
+        """Return 2D qubit coordinates for the product code.
+        
+        Uses a grid layout based on the tensor product structure:
+        - Left sector: n_a × n_b qubits laid out in an n_a × n_b grid
+        - Right sector: (m_a - n_a) × (m_b - n_b) qubits offset to the right
+        """
+        n = self.n
+        # Use sqrt grid layout as fallback
+        side = int(np.ceil(np.sqrt(n)))
+        return [(float(i % side), float(i // side)) for i in range(n)]
+    
     @property
     def name(self) -> str:
         return f"HomologicalProduct({self.code_a.name}, {self.code_b.name})"

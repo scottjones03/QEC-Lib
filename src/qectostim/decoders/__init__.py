@@ -68,3 +68,14 @@ try:
     __all__.extend(["MLEDecoder", "HypergraphDecoder"])
 except ImportError:
     pass
+
+# Concatenated code decoders
+try:
+    from qectostim.decoders.concatenated_decoder import (
+        ConcatenatedDecoder,
+        FlatConcatenatedDecoder,
+        ConcatenatedDecoderIncompatibleError,
+    )
+    __all__.extend(["ConcatenatedDecoder", "FlatConcatenatedDecoder", "ConcatenatedDecoderIncompatibleError"])
+except ImportError:
+    pass

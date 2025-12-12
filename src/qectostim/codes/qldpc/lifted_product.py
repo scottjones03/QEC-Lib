@@ -112,6 +112,20 @@ class LiftedProductCode(QLDPCCode):
         meta["base_dimensions"] = (m, n)
         
         super().__init__(hx=hx, hz=hz, logical_x=logical_x, logical_z=logical_z, metadata=meta)
+        
+        # Store for qubit_coords
+        self._lift_size = L
+        self._base_n = n
+    
+    def qubit_coords(self) -> List[Tuple[float, float]]:
+        """Return 2D qubit coordinates using lift × base grid layout."""
+        coords = []
+        for i in range(self.n):
+            # Grid layout: (base_position, lift_position)
+            base_pos = i // self._lift_size
+            lift_pos = i % self._lift_size
+            coords.append((float(base_pos), float(lift_pos)))
+        return coords
 
 
 def create_lifted_product_repetition(length: int = 3, lift: int = 3) -> LiftedProductCode:

@@ -49,12 +49,15 @@ class BPOSDDecoder(Decoder):
         self.num_detectors = self.dem.num_detectors
         self.num_observables = self.dem.num_observables
 
+        # Clamp osd_order to valid range [0, num_detectors - 1]
+        effective_osd_order = max(0, min(self.osd_order, self.num_detectors - 1))
+
         # BPOSD accepts the DEM directly
         self._decoder = BPOSD(
             self.dem,
             max_bp_iters=self.max_bp_iters,
             bp_method=self.bp_method,
-            osd_order=self.osd_order,
+            osd_order=effective_osd_order,
             osd_method=self.osd_method,
         )
 
