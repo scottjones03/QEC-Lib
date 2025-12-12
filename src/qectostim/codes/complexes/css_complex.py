@@ -281,13 +281,21 @@ class FiveCSSChainComplex(ChainComplex):
 
     @property
     def hx(self) -> np.ndarray:
-        """X-type stabilizers from σ2^T."""
-        return (self.sigma2.T.astype(np.uint8) % 2)
+        """X-type stabilizers from σ3^T.
+        
+        For qubits on grade 2 (faces), X-stabilizers come from 
+        3-cells (cubes) checking their boundary 2-cells.
+        """
+        return (self.sigma3.T.astype(np.uint8) % 2)
 
     @property
     def hz(self) -> np.ndarray:
-        """Z-type stabilizers from σ3^T."""
-        return (self.sigma3.T.astype(np.uint8) % 2)
+        """Z-type stabilizers from σ2.
+        
+        For qubits on grade 2 (faces), Z-stabilizers come from
+        1-cells (edges) checking their incident 2-cells.
+        """
+        return (self.sigma2.astype(np.uint8) % 2)
 
     @property
     def meta_x(self) -> np.ndarray:

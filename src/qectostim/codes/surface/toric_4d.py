@@ -270,7 +270,7 @@ class ToricCode4D(TopologicalCSSCode4D):
         # For qubits on 2-cells: Hx = sigma3^T, Hz = sigma2
         
         # sigma1: edges -> vertices (n_vertices × n_edges)
-        # sigma2: faces -> edges (n_edges × n_faces) 
+        # sigma2: faces -> edges (n_edges × n_faces), and Hz = sigma2
         # sigma3: cubes -> faces (n_faces × n_cubes), and Hx = sigma3^T
         # sigma4: 4-cells -> cubes (n_cubes × n_4cells)
         
@@ -280,11 +280,16 @@ class ToricCode4D(TopologicalCSSCode4D):
         n_4cells = L**4     # Only 1 type of 4-cell orientation
         n_vertices = L**4
         
-        # sigma3: from Hx (3-cells to 2-cells)
-        sigma3 = hx_full.T  # shape (n_faces, n_cubes)
+        # In FiveCSSChainComplex: hx = sigma3.T and hz = sigma2
+        # So: sigma3 = hx.T and sigma2 = hz
         
-        # sigma2: from Hz (2-cells to 1-cells)  
-        sigma2 = hz_full.T  # shape (n_edges, n_faces)
+        # sigma3: C3 → C2 (cubes -> faces), shape (n_faces, n_cubes)
+        # hx_full has shape (n_cubes, n_faces), so sigma3 = hx_full.T
+        sigma3 = hx_full.T  # shape (n_faces, n_cubes) = (96, 64) for L=2
+        
+        # sigma2: C2 → C1 (faces -> edges), shape (n_edges, n_faces)
+        # hz_full has shape (n_edges, n_faces), so sigma2 = hz_full
+        sigma2 = hz_full  # shape (n_edges, n_faces) = (64, 96) for L=2
         
         # sigma1: edges -> vertices (build from edge structure)
         # Each edge connects two vertices
@@ -438,6 +443,35 @@ class ToricCode4D(TopologicalCSSCode4D):
         logical_z.append(''.join(lz6))
         
         return logical_x, logical_z
+    
+    def qubit_coords(self) -> List[Tuple[float, float]]:
+        """Return 2D coordinates for visualization.
+        
+        Projects 4D lattice onto 2D, grouping by face orientation.
+        Each orientation gets a separate block in a 2x3 grid layout.
+        """
+        L = self._L
+        n_per_orient = L ** 4
+        # 6 orientations arranged in 2 rows of 3
+        orient_offset = [
+            (0, 0),      # xy: top-left
+            (L + 1, 0),  # xz: top-middle  
+            (2*L + 2, 0), # xw: top-right
+            (0, L + 1),  # yz: bottom-left
+            (L + 1, L + 1), # yw: bottom-middle
+            (2*L + 2, L + 1), # zw: bottom-right
+        ]
+        
+        coords: List[Tuple[float, float]] = []
+        for orient_idx in range(6):
+            x_off, y_off = orient_offset[orient_idx]
+            for i in range(n_per_orient):
+                # Map linear index to 2D position within the L x L^3 block
+                # Use first two dimensions for 2D projection
+                col = i % L
+                row = (i // L) % L
+                coords.append((float(col + x_off), float(row + y_off)))
+        return coords
 
 
 # Pre-configured instances

@@ -275,6 +275,33 @@ class HyperbolicSurfaceCode(CSSCode):
         logical_z: List[PauliString] = [{i: 'X' for i in range(n_qubits)}] * k
         return (logical_x, logical_z)
     
+    def qubit_coords(self) -> List[Tuple[float, float]]:
+        """Return 2D coordinates for visualization.
+        
+        Uses HGP two-sector grid layout based on the tessellation parameters.
+        """
+        # HGP construction uses r = ceil(sqrt(n/2)) repetition code
+        r = max(3, int(np.ceil(np.sqrt(self.n / 2))))
+        n_bits = r
+        m = r - 1
+        n_left = n_bits * n_bits
+        n_right = m * m
+        right_offset = n_bits + 2
+        
+        coords: List[Tuple[float, float]] = []
+        # Left sector
+        for i in range(min(n_left, self.n)):
+            col = i % n_bits
+            row = i // n_bits
+            coords.append((float(col), float(row)))
+        # Right sector
+        for i in range(n_left, self.n):
+            right_idx = i - n_left
+            col = right_idx % m
+            row = right_idx // m
+            coords.append((float(col + right_offset), float(row)))
+        return coords
+    
     def description(self) -> str:
         return f"Hyperbolic Surface Code {{{self.p},{self.q}}} genus {self.genus}, n={self.n}"
 
@@ -427,6 +454,31 @@ class FreedmanMeyerLuoCode(CSSCode):
             logical_z[i, n_qubits // 2 + i] = 1
         
         return logical_x, logical_z
+    
+    def qubit_coords(self) -> List[Tuple[float, float]]:
+        """Return 2D coordinates for visualization.
+        
+        Uses HGP two-sector grid layout.
+        """
+        n_bits = self._L * (self._L + 1)
+        n_checks = self._L * self._L
+        n_left = n_bits * n_bits
+        n_right = n_checks * n_checks
+        right_offset = n_bits + 2
+        
+        coords: List[Tuple[float, float]] = []
+        # Left sector
+        for i in range(min(n_left, self.n)):
+            col = i % n_bits
+            row = i // n_bits
+            coords.append((float(col), float(row)))
+        # Right sector
+        for i in range(n_left, self.n):
+            right_idx = i - n_left
+            col = right_idx % n_checks
+            row = right_idx // n_checks
+            coords.append((float(col + right_offset), float(row)))
+        return coords
 
 
 # ============================================================================
@@ -535,6 +587,31 @@ class GuthLubotzkyCode(CSSCode):
             logical_z[i, n_qubits // 2 + i] = 1
         
         return logical_x, logical_z
+    
+    def qubit_coords(self) -> List[Tuple[float, float]]:
+        """Return 2D coordinates for visualization.
+        
+        Uses HGP two-sector grid layout.
+        """
+        n1 = self._L * self._L
+        m1 = self._L * (self._L - 1)
+        n_left = n1 * n1
+        n_right = m1 * m1
+        right_offset = n1 + 2
+        
+        coords: List[Tuple[float, float]] = []
+        # Left sector
+        for i in range(min(n_left, self.n)):
+            col = i % n1
+            row = i // n1
+            coords.append((float(col), float(row)))
+        # Right sector
+        for i in range(n_left, self.n):
+            right_idx = i - n_left
+            col = right_idx % m1
+            row = right_idx // m1
+            coords.append((float(col + right_offset), float(row)))
+        return coords
 
 
 # ============================================================================
@@ -644,6 +721,34 @@ class GoldenCode(CSSCode):
             logical_z[i, n_qubits // 2 + i] = 1
         
         return logical_x, logical_z
+    
+    def qubit_coords(self) -> List[Tuple[float, float]]:
+        """Return 2D coordinates for visualization.
+        
+        Uses HGP two-sector grid layout with golden ratio dimensions.
+        """
+        phi = (1 + np.sqrt(5)) / 2
+        na = self._L
+        nb = int(np.ceil(self._L * phi))
+        ma = na - 1
+        mb = nb - 1
+        n_left = na * nb
+        n_right = ma * mb
+        right_offset = nb + 2
+        
+        coords: List[Tuple[float, float]] = []
+        # Left sector
+        for i in range(min(n_left, self.n)):
+            col = i % nb
+            row = i // nb
+            coords.append((float(col), float(row)))
+        # Right sector
+        for i in range(n_left, self.n):
+            right_idx = i - n_left
+            col = right_idx % mb
+            row = right_idx // mb
+            coords.append((float(col + right_offset), float(row)))
+        return coords
 
 
 # Pre-configured instances

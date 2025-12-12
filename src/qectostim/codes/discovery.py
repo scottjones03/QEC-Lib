@@ -97,6 +97,11 @@ def _instantiate_code_in_process(
         result_queue.put(('error', str(e)))
 
 
+class CodeInstantiationTimeoutError(Exception):
+    """Raised when a code takes too long to instantiate."""
+    pass
+
+
 def _try_instantiate_with_timeout(
     class_name: str,
     spec: Any,
@@ -117,7 +122,11 @@ def _try_instantiate_with_timeout(
         use_subprocess: If True, use multiprocessing (slower but more reliable)
         
     Returns:
-        Instantiated Code object, or None if failed/timed out
+        Instantiated Code object, or None if class not found
+        
+    Raises:
+        CodeInstantiationTimeoutError: If instantiation takes too long
+        Exception: If instantiation fails for any other reason
     """
     # First, find which module contains this class
     module_name = None
@@ -157,21 +166,18 @@ def _try_instantiate_with_timeout(
             if process.is_alive():
                 process.kill()
                 process.join()
-            return None
+            raise CodeInstantiationTimeoutError(f"Timed out after {timeout}s")
         
         try:
             status, _ = result_queue.get_nowait()
         except queue.Empty:
-            return None
+            raise CodeInstantiationTimeoutError(f"No result received")
         
         if status != 'success':
-            return None
+            raise Exception("Subprocess failed to instantiate code")
         
-        # Re-instantiate in main process
-        try:
-            return _do_instantiate()
-        except Exception:
-            return None
+        # Re-instantiate in main process (may still raise)
+        return _do_instantiate()
     
     # Use ThreadPoolExecutor for timeout - works in Jupyter and everywhere
     # This is more portable than signal.alarm() which fails in non-main threads
@@ -186,16 +192,13 @@ def _try_instantiate_with_timeout(
             # Cancel the future if possible, don't wait for it
             future.cancel()
             executor.shutdown(wait=False)
-            return None
+            raise CodeInstantiationTimeoutError(f"Timed out after {timeout}s")
         except Exception:
             executor.shutdown(wait=False)
-            return None
+            raise  # Re-raise the actual exception
     else:
-        # Fallback: direct instantiation without timeout
-        try:
-            return _do_instantiate()
-        except Exception:
-            return None
+        # Direct instantiation without timeout - may raise
+        return _do_instantiate()
 
 
 # Import from new module structure
@@ -291,6 +294,7 @@ def discover_all_codes(
     include_qudit: bool = False,       # Qudit codes use d>2 dimensions
     include_fracton: bool = False,    # Fracton codes have exotic excitations
     timeout_per_code: float = 5.0,
+    report_failures: bool = False,
 ) -> Dict[str, Code]:
     """
     Dynamically discover and instantiate all available QEC codes.
@@ -313,19 +317,28 @@ def discover_all_codes(
         include_qudit: Include qudit codes (Galois field - use d>2 dimensions)
         include_fracton: Include fracton codes (XCube, Haah - exotic excitations)
         timeout_per_code: Max seconds to wait for each code to instantiate (default 5.0)
+        report_failures: If True, return tuple (codes, failures) where failures
+                        is a dict mapping code names to error messages
         
     Returns:
-        Dict mapping code names (strings) to instantiated Code objects.
-        Codes that fail to instantiate or timeout are silently skipped.
+        If report_failures=False: Dict mapping code names to Code objects.
+        If report_failures=True: Tuple of (codes_dict, failures_dict)
+            where failures_dict maps code names to error messages.
         
     Example:
         >>> codes = discover_all_codes(max_qubits=50, timeout_per_code=3.0)
         >>> for name, code in codes.items():
         ...     print(f"{name}: [[{code.n},{code.k},{code.distance}]]")
+        
+        >>> # With failure reporting
+        >>> codes, failures = discover_all_codes(report_failures=True)
+        >>> for name, error in failures.items():
+        ...     print(f"FAILED: {name}: {error}")
     """
     modules = _get_all_modules()
     
     codes: Dict[str, Code] = {}
+    failures: Dict[str, str] = {}  # Track failures with error messages
     
     # List of code classes to try instantiating with default parameters
     # Format: (class_name, factory_func_or_default_args, module_hint)
@@ -367,7 +380,7 @@ def discover_all_codes(
         ("XZZXSurfaceCode", {"distance": 5}),
         ("XZZXSurface3", "factory"),  # Pre-built XZZX d=3
         ("XZZXSurface5", "factory"),  # Pre-built XZZX d=5
-        ("KitaevSurfaceCode", {"n_faces": 10}),  # Generic Kitaev surface
+        # KitaevSurfaceCode requires explicit graph geometry - use factories instead
         
         # 4D Toric codes (tesseract)
         ("ToricCode4D", {"L": 2}),
@@ -395,18 +408,18 @@ def discover_all_codes(
         ("FreedmanMeyerLuoCode", {"L": 4}),
         ("FreedmanMeyerLuo_4", "factory"),
         ("FreedmanMeyerLuo_5", "factory"),
-        ("GuthLubotzkyCode", {"level": 2}),
+        ("GuthLubotzkyCode", {"L": 4}),
         ("GuthLubotzky_4", "factory"),
         ("GuthLubotzky_5", "factory"),
-        ("GoldenCode", {"level": 1}),
+        ("GoldenCode", {"L": 5}),
         ("GoldenCode_5", "factory"),
         ("GoldenCode_8", "factory"),
         
         # Exotic surface codes
-        ("FractalSurfaceCode", {"L": 3}),
+        ("FractalSurfaceCode", {"level": 2}),
         ("FractalSurface_L2", "factory"),
         ("FractalSurface_L3", "factory"),
-        ("TwistedToricCode", {"L": 3}),
+        ("TwistedToricCode", {"Lx": 4, "Ly": 4, "twist": 1}),
         ("TwistedToric_4x4", "factory"),
         ("LCSCode", {"L": 3}),
         ("LCS_3x3", "factory"),
@@ -427,14 +440,14 @@ def discover_all_codes(
         ("ColorCode3D", {"distance": 5}),
         ("ColorCode3D_d3", "factory"),
         ("ColorCode3D_d5", "factory"),
-        ("ColorCode3DPrism", {"Lx": 2, "Ly": 3}),
+        ("ColorCode3DPrism", {"L": 2, "base_distance": 3}),
         ("ColorCode3DPrism_2x3", "factory"),
         ("CubicHoneycombColorCode", {"L": 2}),
         ("CubicHoneycomb_L2", "factory"),
         ("TetrahedralColorCode", {"L": 2}),
         ("Tetrahedral_L2", "factory"),
-        ("BallColorCode", {"dim": 3}),
-        ("BallColorCode", {"dim": 4}),
+        ("BallColorCode", {"dimension": 3}),
+        ("BallColorCode", {"dimension": 4}),
         ("BallColor_3D", "factory"),
         ("BallColor_4D", "factory"),
         
@@ -445,20 +458,20 @@ def discover_all_codes(
         ("HyperbolicColor_64_g2", "factory"),
         
         # Pin and rainbow codes
-        ("QuantumPinCode", {"distance": 3, "m": 2}),
-        ("QuantumPinCode", {"distance": 5, "m": 3}),
+        ("QuantumPinCode", {"d": 3, "m": 2}),
+        ("QuantumPinCode", {"d": 5, "m": 3}),
         ("QuantumPin_d3_m2", "factory"),
         ("QuantumPin_d5_m3", "factory"),
-        ("DoublePinCode", {"distance": 3}),
-        ("DoublePinCode", {"distance": 5}),
+        ("DoublePinCode", {"d": 3}),
+        ("DoublePinCode", {"d": 5}),
         ("DoublePin_d3", "factory"),
         ("DoublePin_d5", "factory"),
         ("RainbowCode", {"L": 3, "r": 3}),
         ("RainbowCode", {"L": 5, "r": 4}),
         ("Rainbow_L3_r3", "factory"),
         ("Rainbow_L5_r4", "factory"),
-        ("HolographicRainbowCode", {"L": 4, "distance": 2}),
-        ("HolographicRainbowCode", {"L": 6, "distance": 3}),
+        ("HolographicRainbowCode", {"L": 4, "bulk_depth": 2}),
+        ("HolographicRainbowCode", {"L": 6, "bulk_depth": 3}),
         ("HolographicRainbow_L4_d2", "factory"),
         ("HolographicRainbow_L6_d3", "factory"),
         
@@ -467,9 +480,9 @@ def discover_all_codes(
         ("HGPHamming7", "factory"),
         ("HGPRep5", "factory"),  # HGP from repetition code
         ("HypergraphProductCode", {"base_matrix": None}),  # Will fail, use factory
-        # Bivariate bicycle codes
+        # Bivariate bicycle codes - correct signature: l, m, A_terms, B_terms
         ("BBGrossCode", "factory"),
-        ("BivariateBicycleCode", {"m": 6, "polynomial_a": [1, 2], "polynomial_b": [0, 3]}),
+        ("BivariateBicycleCode", {"l": 6, "m": 6, "A_terms": [(0, 0), (1, 2), (2, 1)], "B_terms": [(0, 0), (0, 3), (3, 0)]}),
         # HDX codes
         ("HDX_4", "factory"),
         ("HDX_6", "factory"),
@@ -563,46 +576,39 @@ def discover_all_codes(
         ("HomologicalProductCode", "factory"),
     ]
     
-    # Skip list for codes known to hang or take very long to instantiate
-    # These codes have expensive constructors that may block indefinitely
-    # or have implementation bugs that prevent instantiation
+    # Skip list for codes known to hang or require special handling
+    # We try to keep this minimal - only codes that truly cannot instantiate
     skip_codes = {
-        # Performance issues in constructors
-        "HolographicRainbowCode",
-        "HolographicRainbow_L4_d2",
-        "HolographicRainbow_L6_d3",
-        "ColorCode3D",
-        "ColorCode3D_d3",
-        "ColorCode3D_d5",
-        "ColorCode3DPrism",
-        "ColorCode3DPrism_2x3",
-        "BallColorCode",
-        "BallColor_3D",
-        "BallColor_4D",
-        "ToricCode3D",  # Works but slow for large L
-        "ToricCode3D_4x4x4",  # 192 qubits
-        "ToricCode3DFaces",
-        "HomologicalNumberPhaseCode",  # Often hangs
+        # Product codes require complex arguments (code objects as inputs)
+        # These are factories, not standalone codes
+        "HomologicalProductCode",
+        "HypergraphProductCode",
+        
+        # Codes that hang indefinitely or have fundamental construction issues
+        "HomologicalNumberPhaseCode",  # Often hangs during construction
         "NumberPhase_L3_T2",
         "NumberPhase_L4_T3",
-        "ModularQudit3DSurfaceCode",   # Can be slow
+        
+        # Qudit codes that don't work with standard qubit decoders
+        "ModularQudit3DSurfaceCode",
         "ModularSurface3D_L3_d3",
         "ModularSurface3D_L4_d5",
-        "HigherDimHom_4D",             # 4D codes are expensive
-        # Implementation bugs - need chain complex fixes
-        "ToricCode4D",      # Matrix dimension mismatch in chain complex
-        "ToricCode4D_2",
-        "ToricCode4D_3",
-        "LoopToricCode4D",  # Wrong super().__init__ signature
-        "LoopToric4D_2",
+        
+        # Higher-dim codes with known bugs (TODO: fix these)
+        "HigherDimHom_3D",             # IndexError in construction
+        "HigherDimHom_4D",             # Construction incomplete
     }
+    
+    # Codes with known implementation bugs - track these separately for reporting
+    known_buggy_codes: set[str] = set()
     
     for spec_item in code_specs:
         class_name = spec_item[0]
         spec = spec_item[1]
         
-        # Skip known problematic codes
+        # Skip known slow codes but still report them as skipped if reporting is on
         if class_name in skip_codes:
+            failures[class_name] = "SKIPPED: Known to be very slow or require special handling"
             continue
         
         try:
@@ -617,6 +623,8 @@ def discover_all_codes(
             )
             
             if code is None:
+                # Class not found in any module
+                failures[class_name] = "NOT_FOUND: Class not found in any module"
                 continue
             
             # Apply filters
@@ -639,11 +647,22 @@ def discover_all_codes(
             name = _get_code_name(code, class_name)
             codes[name] = code
             
-        except Exception:
-            # Skip codes that fail to instantiate
-            # This is expected for some codes that require specific parameters
+        except CodeInstantiationTimeoutError as e:
+            # Timeout - distinct from other errors
+            failures[class_name] = f"TIMEOUT: {str(e)}"
+            continue
+        except Exception as e:
+            # Capture the failure with error details
+            error_type = type(e).__name__
+            error_msg = str(e)
+            # Truncate very long error messages
+            if len(error_msg) > 200:
+                error_msg = error_msg[:200] + "..."
+            failures[class_name] = f"{error_type}: {error_msg}"
             continue
     
+    if report_failures:
+        return codes, failures
     return codes
 
 

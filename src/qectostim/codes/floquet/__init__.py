@@ -5,8 +5,11 @@ Floquet codes are dynamic/measurement-based codes where stabilizers are measured
 in a time-varying sequence. The effective logical space is protected by the
 periodic measurement schedule rather than fixed stabilizers.
 
+Base Class:
+    FloquetCode: Base class for all Floquet codes (relaxes CSS constraints)
+
 Honeycomb Codes:
-    HoneycombFloquetCode: Honeycomb Floquet code with 3-body measurements
+    HoneycombCode: Honeycomb Floquet code with 3-body measurements
     Honeycomb2x3, Honeycomb3x3: Pre-configured honeycomb codes
 
 ISG (Instantaneous Stabilizer Group) Codes:
@@ -15,6 +18,7 @@ ISG (Instantaneous Stabilizer Group) Codes:
 """
 
 from .floquet_codes import (
+    FloquetCode,
     HoneycombCode,
     ISGFloquetCode,
     Honeycomb2x3,
@@ -23,6 +27,7 @@ from .floquet_codes import (
 )
 
 __all__ = [
+    "FloquetCode",
     "HoneycombCode",
     "ISGFloquetCode",
     "Honeycomb2x3",

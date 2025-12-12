@@ -1,0 +1,22 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Test TransversalH Fix",
+			"type": "shell",
+			"command": "\"/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/my_venv/bin/python\" \"/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/test_transversal_h_fix.py\"",
+			"group": "test"
+		},
+		{
+			"label": "Run TransversalH Comprehensive Test",
+			"type": "shell",
+			"command": "\"/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/my_venv/bin/python\" \"/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/test_transversal_h_comprehensive.py\"",
+			"group": "test"
+		},
+		{
+			"label": "Test Transversal Refactor",
+			"type": "shell",
+			"command": "\"/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/my_venv/bin/python\" \"/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/test_transversal_refactor.py\""
+		}
+	]
+}

@@ -119,11 +119,13 @@ class RotatedSurfaceCode(TopologicalCSSCode):
             for y in range(1, 2 * d, 2):
                 q = (float(x), float(y))
                 data_coords.add(q)
-                # Track logical operator support
-                if x == 1:
-                    x_logical_coords.add(q)
+                # Track logical operator support for rotated surface code:
+                # - Logical X runs horizontally along top row (y=1)  
+                # - Logical Z runs vertically along left column (x=1)
                 if y == 1:
-                    z_logical_coords.add(q)
+                    x_logical_coords.add(q)  # Top row for X
+                if x == 1:
+                    z_logical_coords.add(q)  # Left column for Z
 
         x_stab_coords: Set[Coord2D] = set()
         z_stab_coords: Set[Coord2D] = set()

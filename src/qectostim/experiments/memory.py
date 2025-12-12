@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import abc
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import stim
@@ -9,7 +9,17 @@ import stim
 from qectostim.codes.abstract_code import Code, StabilizerCode, PauliString
 from qectostim.codes.abstract_css import CSSCode
 from qectostim.experiments.experiment import Experiment
+from qectostim.experiments.stabilizer_rounds import (
+    DetectorContext,
+    StabilizerRoundBuilder,
+    CSSStabilizerRoundBuilder,
+    ColorCodeStabilizerRoundBuilder,
+    GeneralStabilizerRoundBuilder,
+    StabilizerBasis,
+    get_logical_support,
+)
 from qectostim.noise.models import NoiseModel
+from qectostim.utils.scheduling_core import graph_coloring_cnots
 
 
 # ============================================================================
@@ -49,6 +59,176 @@ def pauli_at(pauli_obj, q: int) -> str:
     elif isinstance(pauli_obj, dict):
         return pauli_obj.get(q, 'I')
     return 'I'
+
+
+def apply_general_stabilizer_gates_with_ticks(
+    circuit: stim.Circuit,
+    stab_matrix: np.ndarray,
+    data_qubits: List[int],
+    ancilla_qubits: List[int],
+) -> None:
+    """
+    Apply stabilizer measurement gates for general (non-CSS) stabilizers with TICK scheduling.
+    
+    Handles stabilizers with X, Y, and Z components. Uses graph coloring to schedule
+    CNOTs into conflict-free layers, with pre/post basis rotation gates.
+    
+    For each stabilizer component:
+    - X: H-CNOT-H
+    - Y: S_DAG-H-CNOT-H-S  
+    - Z: CNOT
+    
+    Parameters
+    ----------
+    circuit : stim.Circuit
+        The Stim circuit to append gates to.
+    stab_matrix : np.ndarray
+        Stabilizer matrix (n_stabs x 2*n_data) in symplectic form [X|Z].
+    data_qubits : List[int]
+        Global indices of data qubits.
+    ancilla_qubits : List[int]
+        Global indices of ancilla qubits.
+    """
+    if stab_matrix is None or stab_matrix.size == 0:
+        return
+    
+    n_stabs = stab_matrix.shape[0]
+    n = len(data_qubits)
+    
+    # Collect all operations: (data_qubit, ancilla, pauli_type)
+    # where pauli_type is 'X', 'Y', or 'Z'
+    all_ops: List[Tuple[int, int, str]] = []
+    
+    for s_idx in range(min(n_stabs, len(ancilla_qubits))):
+        anc = ancilla_qubits[s_idx]
+        x_part = stab_matrix[s_idx, :n]
+        z_part = stab_matrix[s_idx, n:2*n] if stab_matrix.shape[1] >= 2*n else np.zeros(n)
+        
+        for q in range(min(n, len(data_qubits))):
+            x_bit = x_part[q] if q < len(x_part) else 0
+            z_bit = z_part[q] if q < len(z_part) else 0
+            dq = data_qubits[q]
+            
+            if x_bit and z_bit:
+                all_ops.append((dq, anc, 'Y'))
+            elif x_bit:
+                all_ops.append((dq, anc, 'X'))
+            elif z_bit:
+                all_ops.append((dq, anc, 'Z'))
+    
+    if not all_ops:
+        return
+    
+    # Extract just CNOT pairs for scheduling
+    cnot_pairs = [(dq, anc) for dq, anc, _ in all_ops]
+    
+    # Build lookup: (dq, anc) -> pauli_type
+    op_pauli = {(dq, anc): p for dq, anc, p in all_ops}
+    
+    # Schedule into conflict-free layers using shared utility
+    layers = graph_coloring_cnots(cnot_pairs)
+    
+    # Apply each layer with TICK separation
+    for layer_idx, layer_cnots in enumerate(layers):
+        if layer_idx > 0:
+            circuit.append("TICK")
+        
+        # Group by pauli type for efficient basis changes
+        x_ops = [(dq, anc) for dq, anc in layer_cnots if op_pauli.get((dq, anc)) == 'X']
+        y_ops = [(dq, anc) for dq, anc in layer_cnots if op_pauli.get((dq, anc)) == 'Y']
+        z_ops = [(dq, anc) for dq, anc in layer_cnots if op_pauli.get((dq, anc)) == 'Z']
+        
+        # Pre-rotation for X components: H
+        if x_ops:
+            x_data = list(set(dq for dq, _ in x_ops))
+            circuit.append("H", x_data)
+        
+        # Pre-rotation for Y components: S_DAG then H
+        if y_ops:
+            y_data = list(set(dq for dq, _ in y_ops))
+            circuit.append("S_DAG", y_data)
+            circuit.append("H", y_data)
+        
+        # Apply all CNOTs
+        for dq, anc in layer_cnots:
+            circuit.append("CX", [dq, anc])
+        
+        # Post-rotation for X components: H
+        if x_ops:
+            circuit.append("H", x_data)
+        
+        # Post-rotation for Y components: H then S
+        if y_ops:
+            circuit.append("H", y_data)
+            circuit.append("S", y_data)
+
+
+def apply_stabilizer_cnots_with_ticks(
+    circuit: stim.Circuit,
+    parity_check: np.ndarray,
+    data_qubits: List[int],
+    ancilla_qubits: List[int],
+    is_x_type: bool = False,
+) -> None:
+    """
+    Apply stabilizer CNOT gates for CSS codes with TICK scheduling.
+    
+    This function applies CNOTs for either X-type or Z-type stabilizers,
+    scheduling them into conflict-free layers using graph coloring.
+    
+    For X-type stabilizers, the CNOT direction is data->ancilla.
+    For Z-type stabilizers, the CNOT direction is ancilla->data (but we use
+    the convention that control is data for Z checks in CSS codes).
+    
+    Parameters
+    ----------
+    circuit : stim.Circuit
+        The Stim circuit to append gates to.
+    parity_check : np.ndarray
+        Parity check matrix (n_stabs x n_data) - either Hx or Hz.
+    data_qubits : List[int]
+        Global indices of data qubits.
+    ancilla_qubits : List[int]
+        Global indices of ancilla qubits.
+    is_x_type : bool
+        True for X-type stabilizers (H applied before/after), False for Z-type.
+    """
+    if parity_check is None or parity_check.size == 0:
+        return
+    
+    n_stabs = parity_check.shape[0]
+    n = len(data_qubits)
+    
+    # Collect all CNOT pairs
+    cnot_pairs: List[Tuple[int, int]] = []
+    
+    for s_idx in range(min(n_stabs, len(ancilla_qubits))):
+        anc = ancilla_qubits[s_idx]
+        row = parity_check[s_idx]
+        
+        for q in range(min(n, len(row))):
+            if row[q]:
+                dq = data_qubits[q]
+                if is_x_type:
+                    # X-type: CNOT from data to ancilla
+                    cnot_pairs.append((dq, anc))
+                else:
+                    # Z-type: CNOT from ancilla to data
+                    cnot_pairs.append((anc, dq))
+    
+    if not cnot_pairs:
+        return
+    
+    # Schedule into conflict-free layers
+    layers = graph_coloring_cnots(cnot_pairs)
+    
+    # Apply each layer with TICK separation
+    for layer_idx, layer_cnots in enumerate(layers):
+        if layer_idx > 0:
+            circuit.append("TICK")
+        
+        for ctrl, targ in layer_cnots:
+            circuit.append("CX", [ctrl, targ])
 
 
 # ============================================================================
@@ -245,265 +425,48 @@ class StabilizerMemoryExperiment(MemoryExperiment):
         """
         Build a memory experiment circuit for a general stabilizer code.
         
+        Uses GeneralStabilizerRoundBuilder for consistent circuit construction
+        with proper CNOT scheduling and detector generation.
+        
         The circuit structure:
         1. Reset all data qubits and ancillas
         2. Prepare logical state in chosen basis
-        3. For each round:
-           - Measure each stabilizer using an ancilla
-           - Mixed stabilizers: use CX for Z components, H-CX-H for X components
-        4. Final data measurement
-        5. DETECTOR and OBSERVABLE_INCLUDE declarations
+        3. Emit stabilizer rounds with time-like detectors
+        4. Final data measurement with space-like detectors
+        5. Observable declaration
         """
-        code = self.code
-        n = code.n
-        stab_mat = code.stabilizer_matrix
-        num_stabs = stab_mat.shape[0] if stab_mat.size > 0 else 0
+        basis = self.basis.upper()
         
-        # Qubit allocation
-        data_qubits = list(range(n))
-        anc_qubits = list(range(n, n + num_stabs))
+        # Create detector context for tracking
+        ctx = DetectorContext()
+        
+        # Create general stabilizer round builder
+        builder = GeneralStabilizerRoundBuilder(
+            self.code, ctx, 
+            block_name="main",
+        )
         
         c = stim.Circuit()
         
-        # Geometry metadata
-        meta = getattr(code, "metadata", {}) if hasattr(code, "metadata") else {}
-        data_coords = meta.get("data_coords")
+        # Emit qubit coordinates
+        builder.emit_qubit_coords(c)
         
-        # Add qubit coordinates if available
-        if data_coords is not None:
-            for q, coord in enumerate(data_coords):
-                if len(coord) >= 2:
-                    c.append("QUBIT_COORDS", [q], [float(coord[0]), float(coord[1])])
+        # Reset all qubits
+        builder.emit_reset_all(c)
         
-        # Initial reset
-        total_qubits = n + num_stabs
-        if total_qubits > 0:
-            c.append("R", range(total_qubits))
+        # Prepare logical state
+        initial_state = "+" if basis == "X" else "0"
+        builder.emit_prepare_logical_state(c, state=initial_state, logical_idx=self.logical_qubit)
         
-        # Get the logical operator we will track (determines preparation and measurement)
-        basis = self.basis.upper()
-        if basis == "Z":
-            logical_ops = get_logical_ops(code, 'z')
-        else:
-            logical_ops = get_logical_ops(code, 'x')
+        # Emit stabilizer rounds with time-like detectors
+        for _ in range(self.rounds):
+            builder.emit_round(c, emit_detectors=True)
         
-        # Parse the logical operator to determine per-qubit bases
-        # The logical operator L determines what eigenstate we prepare:
-        # - For Z component on qubit q: prepare |0⟩ (Z eigenstate +1)
-        # - For X component on qubit q: prepare |+⟩ (X eigenstate +1)
-        # - For Y component on qubit q: prepare |+i⟩ (Y eigenstate +1)
-        # This ensures the initial state is a +1 eigenstate of L.
-        logical_pauli_map = {}  # q -> 'X', 'Y', or 'Z'
-        logical_support = []
+        # Final measurement and space-like detectors
+        builder.emit_final_measurement(c, basis=basis, logical_idx=self.logical_qubit)
         
-        if ops_valid(logical_ops) and self.logical_qubit < ops_len(logical_ops):
-            L = logical_ops[self.logical_qubit]
-            
-            if isinstance(L, str):
-                for i, p in enumerate(L):
-                    if p in ('X', 'Y', 'Z'):
-                        logical_pauli_map[i] = p
-                        logical_support.append(i)
-            elif isinstance(L, dict):
-                for q, p in L.items():
-                    if p in ('X', 'Y', 'Z'):
-                        logical_pauli_map[q] = p
-                        logical_support.append(q)
-        
-        # Prepare initial state as +1 eigenstate of the logical operator
-        # After reset (|0⟩^n), apply gates to prepare eigenstates:
-        # - Z component: |0⟩ is already +1 eigenstate of Z (no gate needed)
-        # - X component: |+⟩ = H|0⟩ is +1 eigenstate of X
-        # - Y component: |+i⟩ = SH|0⟩ is +1 eigenstate of Y
-        if n > 0:
-            for q in data_qubits:
-                pauli = logical_pauli_map.get(q)
-                if pauli == 'X':
-                    c.append("H", [q])
-                elif pauli == 'Y':
-                    c.append("H", [q])
-                    c.append("S", [q])
-                # For Z or no logical component: |0⟩ is fine
-        
-        c.append("TICK")
-        
-        # Measurement tracking
-        m_index = 0
-        last_stab_meas: List[Optional[int]] = [None] * num_stabs
-        
-        def add_detector(rec_indices: List[int], t: float = 0.0) -> None:
-            """Emit a detector with the given measurement record indices."""
-            if not rec_indices:
-                return
-            lookbacks = [idx - m_index for idx in rec_indices]
-            c.append("DETECTOR", [stim.target_rec(lb) for lb in lookbacks], [0.0, 0.0, t])
-        
-        # Syndrome rounds
-        for r in range(self.rounds):
-            # For non-CSS codes with mixed X/Z stabilizers, we need careful ordering:
-            # 1. Reset ALL ancillas at once
-            # 2. Apply all stabilizer gates
-            # 3. Measure all ancillas
-            # This prevents reset operations from interfering with ongoing stabilizer measurements.
-            
-            # Step 1: Reset all ancillas at the start of the round
-            if num_stabs > 0:
-                c.append("R", anc_qubits)
-            
-            # Step 2: Apply gates for each stabilizer
-            for s_idx in range(num_stabs):
-                a = anc_qubits[s_idx]
-                
-                # Get the stabilizer from the matrix
-                x_part = stab_mat[s_idx, :n]
-                z_part = stab_mat[s_idx, n:]
-                
-                # For each qubit in the stabilizer:
-                # - If only X component: use CX with H gates on data
-                # - If only Z component: use CX directly  
-                # - If Y component (both X and Z): use CY gate or S†-H-CX-H-S sequence
-                #
-                # The standard approach for measuring a Pauli P on qubit q:
-                # - X: H-CX(q,a)-H  (or just CX after H on data)
-                # - Z: CX(q,a)
-                # - Y: S†-H-CX(q,a)-H-S (or CY gate)
-                
-                for q in range(n):
-                    x_bit = x_part[q]
-                    z_bit = z_part[q]
-                    
-                    if x_bit and z_bit:
-                        # Y component: S†-H-CX-H-S sequence
-                        # This correctly measures Y while preserving the data qubit state
-                        c.append("S_DAG", [q])
-                        c.append("H", [q])
-                        c.append("CX", [q, a])
-                        c.append("H", [q])
-                        c.append("S", [q])
-                    elif x_bit:
-                        # X component: H-CX-H on data
-                        c.append("H", [q])
-                        c.append("CX", [q, a])
-                        c.append("H", [q])
-                    elif z_bit:
-                        # Z component: CX from data to ancilla
-                        c.append("CX", [q, a])
-            
-            c.append("TICK")
-            
-            # Measure all ancillas
-            meas_start = m_index
-            if num_stabs > 0:
-                c.append("MR", anc_qubits)
-                m_index += num_stabs
-            
-            # Time-like detectors
-            # For non-CSS codes with mixed stabilizers, the initial |0⟩ state
-            # is NOT guaranteed to be a +1 eigenstate of all stabilizers.
-            # Therefore, skip first-round detectors (they just establish baseline).
-            # Only compare consecutive syndrome measurements.
-            for s_idx in range(num_stabs):
-                cur = meas_start + s_idx
-                if last_stab_meas[s_idx] is not None:
-                    # Compare with previous round
-                    add_detector([last_stab_meas[s_idx], cur], t=0.0)
-                # Note: We intentionally skip first-round detectors for non-CSS codes
-                # because the initial syndrome is not deterministic
-                last_stab_meas[s_idx] = cur
-        
-        # Final data measurement
-        # For mixed logical operators, we need to measure each qubit in the 
-        # appropriate basis for the logical operator we want to track.
-        # We use logical_pauli_map and logical_support from the initialization.
-        if n > 0:
-            # Build qubit_basis from logical_pauli_map
-            # Default: Z-basis for qubits not in the logical support
-            qubit_basis = {q: 'Z' for q in data_qubits}
-            for q, pauli in logical_pauli_map.items():
-                qubit_basis[q] = pauli
-            
-            # Use logical_support from initialization, or fallback to all data qubits
-            final_logical_support = logical_support if logical_support else data_qubits
-            
-            # Apply basis change gates before measurement
-            # Group qubits by measurement basis for efficiency
-            x_basis_qubits = [q for q in data_qubits if qubit_basis[q] == 'X']
-            y_basis_qubits = [q for q in data_qubits if qubit_basis[q] == 'Y']
-            # Z-basis qubits need no pre-measurement gate
-            
-            # Apply H for X-basis measurement
-            if x_basis_qubits:
-                c.append("H", x_basis_qubits)
-            
-            # Apply S†-H for Y-basis measurement  
-            for q in y_basis_qubits:
-                c.append("S_DAG", [q])
-                c.append("H", [q])
-            
-            # Measure all data qubits
-            c.append("M", data_qubits)
-            
-            first_data_idx = m_index
-            data_meas = {q: first_data_idx + i for i, q in enumerate(data_qubits)}
-            m_index += n
-            
-            # Space-like detectors
-            # For space-like detectors we need to check if the stabilizer can be 
-            # verified by the final measurements. Since we now measure in mixed bases
-            # determined by the logical operator, we check if each stabilizer can be
-            # verified by comparing syndrome with data measurement parities.
-            for s_idx in range(num_stabs):
-                x_part = stab_mat[s_idx, :n]
-                z_part = stab_mat[s_idx, n:]
-                
-                # For each qubit in the stabilizer, check if we can measure it
-                # in the right basis. A stabilizer is measurable if for each qubit:
-                # - X component: qubit measured in X or Y basis
-                # - Z component: qubit measured in Z or Y basis  
-                # - Y component: qubit measured in Y basis
-                can_measure = True
-                support = []
-                
-                for q in range(n):
-                    x_bit = x_part[q]
-                    z_bit = z_part[q]
-                    meas_basis = qubit_basis.get(q, basis)
-                    
-                    if x_bit and z_bit:  # Y component
-                        if meas_basis != 'Y':
-                            can_measure = False
-                            break
-                        support.append(q)
-                    elif x_bit:  # X component
-                        if meas_basis not in ('X', 'Y'):
-                            can_measure = False
-                            break
-                        support.append(q)
-                    elif z_bit:  # Z component
-                        if meas_basis not in ('Z', 'Y'):
-                            can_measure = False
-                            break
-                        support.append(q)
-                
-                if not can_measure:
-                    continue
-                
-                data_idxs = [data_meas[q] for q in support if q in data_meas]
-                recs = list(data_idxs)
-                if last_stab_meas[s_idx] is not None:
-                    recs.append(last_stab_meas[s_idx])
-                
-                if recs:
-                    add_detector(recs, t=1.0)
-            
-            # Logical observable
-            # We've already computed logical_support and measured each qubit in the
-            # correct basis for the logical operator. Just include those measurements.
-            if final_logical_support:
-                obs_rec_indices = [data_meas[q] for q in final_logical_support if q in data_meas]
-                if obs_rec_indices:
-                    lookbacks = [idx - m_index for idx in obs_rec_indices]
-                    c.append("OBSERVABLE_INCLUDE", [stim.target_rec(lb) for lb in lookbacks], 0)
+        # Emit observable
+        ctx.emit_observable(c, observable_idx=0)
         
         return c
 
@@ -512,9 +475,8 @@ class CSSMemoryExperiment(StabilizerMemoryExperiment):
     """
     Optimized memory experiment for CSS codes.
     
-    Takes advantage of the CSS structure (separate X and Z stabilizers)
-    to create more efficient circuits. Inherits from StabilizerMemoryExperiment
-    but overrides to_stim() with a CSS-optimized implementation.
+    Uses StabilizerRoundBuilder for efficient circuit construction with
+    proper scheduling and detector generation.
     """
 
     def __init__(
@@ -525,8 +487,6 @@ class CSSMemoryExperiment(StabilizerMemoryExperiment):
         basis: str = "Z",
         metadata: Optional[Dict[str, Any]] = None,
     ):
-        # StabilizerMemoryExperiment.__init__ signature: (code, rounds, noise_model, basis, metadata)
-        # We use keyword args to be explicit
         super().__init__(
             code=code,
             rounds=rounds,
@@ -537,10 +497,56 @@ class CSSMemoryExperiment(StabilizerMemoryExperiment):
 
     def to_stim(self) -> stim.Circuit:
         """
-        Build a generic CSS memory experiment with detectors.
-
-        If the code exposes geometric metadata:
-          - metadata["data_coords"]       : list of (x, y) for data qubits
+        Build a CSS memory experiment using CSSStabilizerRoundBuilder.
+        
+        Pattern:
+          1. Reset data + ancillas
+          2. Prepare logical state in chosen basis
+          3. Emit stabilizer rounds with time-like detectors
+          4. Final data measurement with space-like detectors
+          5. Observable declaration
+        """
+        basis = self.basis.upper()
+        
+        # Create detector context for tracking
+        ctx = DetectorContext()
+        
+        # Create CSS stabilizer round builder with measurement basis
+        builder = CSSStabilizerRoundBuilder(
+            self.code, ctx, 
+            block_name="main",
+            measurement_basis=basis
+        )
+        
+        c = stim.Circuit()
+        
+        # Emit qubit coordinates
+        builder.emit_qubit_coords(c)
+        
+        # Reset all qubits
+        builder.emit_reset_all(c)
+        
+        # Prepare logical state
+        initial_state = "+" if basis == "X" else "0"
+        builder.emit_prepare_logical_state(c, state=initial_state, logical_idx=self.logical_qubit)
+        
+        # Emit stabilizer rounds with time-like detectors
+        for _ in range(self.rounds):
+            builder.emit_round(c, stab_type=StabilizerBasis.BOTH, emit_detectors=True)
+        
+        # Final measurement and space-like detectors
+        builder.emit_final_measurement(c, basis=basis, logical_idx=self.logical_qubit)
+        
+        # Emit observable
+        ctx.emit_observable(c, observable_idx=0)
+        
+        return c
+    
+    def to_stim_legacy(self) -> stim.Circuit:
+        """
+        Build a CSS memory experiment circuit (legacy implementation).
+        
+        If the code's metadata provides:
           - metadata["x_stab_coords"]    : list of (x, y) for X-check ancillas
           - metadata["z_stab_coords"]    : list of (x, y) for Z-check ancillas
           - metadata["x_schedule"]       : list of (dx, dy) steps
@@ -723,6 +729,7 @@ class CSSMemoryExperiment(StabilizerMemoryExperiment):
                     c.append("H", [a])
             else:
                 # Fallback: perform X layer then Z layer (non-interleaved)
+                # Uses graph-coloring scheduling with TICK separation
                 if n_x:
                     if use_geo_x:
                         for dx, dy in x_schedule or []:
@@ -737,13 +744,17 @@ class CSSMemoryExperiment(StabilizerMemoryExperiment):
                             a = anc_x[s_idx]
                             c.append("H", [a])
                     else:
-                        for s_idx, row in enumerate(hx):
+                        # Use graph-coloring scheduling for proper timing
+                        apply_stabilizer_cnots_with_ticks(
+                            c, hx, list(range(n)), anc_x, is_x_type=True
+                        )
+                        # Rotate X ancillas back before measurement
+                        for s_idx in range(n_x):
                             a = anc_x[s_idx]
-                            # H, then entangle, then H
-                            # (H already applied above when preparing.)
-                            for dq in np.where(row == 1)[0]:
-                                c.append("CNOT", [dq, a])
                             c.append("H", [a])
+                
+                c.append("TICK")  # Separate X and Z stabilizer layers
+                
                 if n_z:
                     if use_geo_z:
                         for dx, dy in z_schedule or []:
@@ -755,10 +766,10 @@ class CSSMemoryExperiment(StabilizerMemoryExperiment):
                                 if dq is not None:
                                     c.append("CNOT", [dq, a])
                     else:
-                        for s_idx, row in enumerate(hz):
-                            a = anc_z[s_idx]
-                            for dq in np.where(row == 1)[0]:
-                                c.append("CNOT", [dq, a])
+                        # Use graph-coloring scheduling for proper timing
+                        apply_stabilizer_cnots_with_ticks(
+                            c, hz, list(range(n)), anc_z, is_x_type=False
+                        )
 
             # ---- Measure ancillas in batches (like Stim) ----
             # For a CSS memory experiment, we need BOTH X and Z syndromes:
@@ -794,14 +805,17 @@ class CSSMemoryExperiment(StabilizerMemoryExperiment):
                 m_index += len(x_qubits)
             
             # Create time-like detectors for X-ancillas
-            # For Z-basis, X-ancillas detect Z errors (which don't affect Z-basis logical state directly,
-            # but are needed for proper decoding when errors propagate)
+            # For Z-basis memory, X-ancillas have random first-round outcomes (|0> is not X eigenstate)
+            # For X-basis memory, X-ancillas have deterministic first-round outcomes (|+> is X eigenstate)
             for offset, (s_idx, _) in enumerate(x_ancillas_to_measure):
                 cur = x_meas_start_idx + offset
                 coord = stab_coord(x_stab_coords, s_idx)
                 
                 if last_x_meas[s_idx] is None:
-                    add_detector(coord, [cur], t=0.0)
+                    # First round: only create detector if basis matches (X-basis memory)
+                    if basis == "X":
+                        add_detector(coord, [cur], t=0.0)
+                    # else: skip first-round detector for X stabilizers in Z-basis memory
                 else:
                     add_detector(coord, [last_x_meas[s_idx], cur], t=0.0)
                 
@@ -815,12 +829,17 @@ class CSSMemoryExperiment(StabilizerMemoryExperiment):
                 m_index += len(z_qubits)
             
             # Create time-like detectors for Z-ancillas
+            # For Z-basis memory, Z-ancillas have deterministic first-round outcomes (|0> is Z eigenstate)
+            # For X-basis memory, Z-ancillas have random first-round outcomes (|+> is not Z eigenstate)
             for offset, (s_idx, _) in enumerate(z_ancillas_to_measure):
                 cur = z_meas_start_idx + offset
                 coord = stab_coord(z_stab_coords, s_idx)
                 
                 if last_z_meas[s_idx] is None:
-                    add_detector(coord, [cur], t=0.0)
+                    # First round: only create detector if basis matches (Z-basis memory)
+                    if basis == "Z":
+                        add_detector(coord, [cur], t=0.0)
+                    # else: skip first-round detector for Z stabilizers in X-basis memory
                 else:
                     add_detector(coord, [last_z_meas[s_idx], cur], t=0.0)
                 
@@ -997,231 +1016,43 @@ class ColorCodeMemoryExperiment(CSSMemoryExperiment):
     
     def to_stim(self) -> stim.Circuit:
         """
-        Build a color code memory experiment with Chromobius-compatible detectors.
+        Build a color code memory experiment using ColorCodeStabilizerRoundBuilder.
         
-        Overrides CSSMemoryExperiment.to_stim() to add color annotations to
-        detector coordinates. The 4th coordinate encodes:
-        - X-type: color (0=red, 1=green, 2=blue)
-        - Z-type: color + 3 (3=red, 4=green, 5=blue)
+        Uses the specialized builder that emits 4D detector coordinates
+        with color encoding for Chromobius compatibility.
         """
-        # Get the base circuit from parent class
-        # We need to rebuild with color-annotated detectors
-        code = self.code
-        n = code.n
-        hx = code.hx
-        hz = code.hz
-
         basis = self.basis.upper()
         
-        # Get metadata
-        meta = getattr(code, "metadata", {}) if hasattr(code, "metadata") else {}
-        x_coords_meta = meta.get("x_stab_coords")
-        z_coords_meta = meta.get("z_stab_coords")
+        # Create detector context for tracking
+        ctx = DetectorContext()
         
-        # Handle potential layer swap (from parent class)
-        if x_coords_meta is not None and z_coords_meta is not None:
-            if hx.shape[0] != len(x_coords_meta) and hz.shape[0] == len(x_coords_meta):
-                hx, hz = hz, hx
-
-        n_x = hx.shape[0]
-        n_z = hz.shape[0]
-        
-        # Qubit allocation
-        data_qubits = list(range(n))
-        anc_x = list(range(n, n + n_x))
-        anc_z = list(range(n + n_x, n + n_x + n_z))
+        # Create color code stabilizer round builder
+        builder = ColorCodeStabilizerRoundBuilder(
+            self.code, ctx,
+            block_name="main",
+            measurement_basis=basis
+        )
         
         c = stim.Circuit()
         
-        # Data and stabilizer coordinates
-        data_coords = meta.get("data_coords")
-        x_stab_coords = meta.get("x_stab_coords")
-        z_stab_coords = meta.get("z_stab_coords")
-        stab_colors = self._stab_colors
+        # Emit qubit coordinates
+        builder.emit_qubit_coords(c)
         
-        # Build coordinate lookup
-        coord_to_data: dict[tuple[float, float], int] = {}
+        # Reset all qubits
+        builder.emit_reset_all(c)
         
-        if data_coords is not None:
-            for q, (x, y) in enumerate(data_coords):
-                coord = (float(x), float(y))
-                if coord in coord_to_data:
-                    continue
-                coord_to_data[coord] = q
-                c.append("QUBIT_COORDS", [q], [coord[0], coord[1]])
+        # Prepare logical state
+        initial_state = "+" if basis == "X" else "0"
+        builder.emit_prepare_logical_state(c, state=initial_state, logical_idx=self.logical_qubit)
         
-        if x_stab_coords is not None:
-            for a, (x, y) in zip(anc_x, x_stab_coords):
-                c.append("QUBIT_COORDS", [a], [float(x), float(y)])
+        # Emit stabilizer rounds with time-like detectors (4D coords with color)
+        for _ in range(self.rounds):
+            builder.emit_round(c, stab_type=StabilizerBasis.BOTH, emit_detectors=True)
         
-        if z_stab_coords is not None:
-            for a, (x, y) in zip(anc_z, z_stab_coords):
-                c.append("QUBIT_COORDS", [a], [float(x), float(y)])
+        # Final measurement and space-like detectors (4D coords with color)
+        builder.emit_final_measurement(c, basis=basis, logical_idx=self.logical_qubit)
         
-        # Initial preparation
-        total_qubits = n + n_x + n_z
-        if total_qubits:
-            c.append("R", range(total_qubits))
-        
-        if basis == "X" and n > 0:
-            c.append("H", data_qubits)
-        
-        c.append("TICK")
-        
-        # Measurement tracking
-        m_index = 0
-        last_x_meas: list[Optional[int]] = [None] * n_x
-        last_z_meas: list[Optional[int]] = [None] * n_z
-        
-        def get_color(s_idx: int, is_x_type: bool) -> int:
-            """Get Chromobius color encoding for stabilizer.
-            
-            For X-type: color in {0, 1, 2}
-            For Z-type: color + 3 in {3, 4, 5}
-            """
-            base_color = stab_colors[s_idx % len(stab_colors)] if stab_colors else 0
-            return base_color if is_x_type else base_color + 3
-        
-        def add_detector_with_color(
-            coord: tuple[float, float],
-            rec_indices: list[int],
-            t: float,
-            s_idx: int,
-            is_x_type: bool
-        ) -> None:
-            """Emit a DETECTOR with 4D coordinates including color."""
-            if not rec_indices:
-                return
-            lookbacks = [idx - m_index for idx in rec_indices]
-            color_val = get_color(s_idx, is_x_type)
-            c.append(
-                "DETECTOR",
-                [stim.target_rec(lb) for lb in lookbacks],
-                [float(coord[0]), float(coord[1]), t, float(color_val)],
-            )
-        
-        def stab_coord(coords: Optional[List[tuple[float, float]]], idx: int) -> tuple[float, float]:
-            if coords is None or idx >= len(coords):
-                return (0.0, 0.0)
-            x, y = coords[idx]
-            return (float(x), float(y))
-        
-        # Syndrome rounds
-        for r in range(self.rounds):
-            # Prepare X ancillas
-            if n_x:
-                for s_idx in range(n_x):
-                    c.append("H", [anc_x[s_idx]])
-            
-            # X stabilizer gates (CNOT from data to ancilla after H)
-            if n_x:
-                for s_idx, row in enumerate(hx):
-                    a = anc_x[s_idx]
-                    for dq in np.where(row == 1)[0]:
-                        c.append("CNOT", [dq, a])
-                    c.append("H", [a])
-            
-            c.append("TICK")
-            
-            # Z stabilizer gates (CNOT from data to ancilla)
-            if n_z:
-                for s_idx, row in enumerate(hz):
-                    a = anc_z[s_idx]
-                    for dq in np.where(row == 1)[0]:
-                        c.append("CNOT", [dq, a])
-            
-            # Measure X ancillas
-            x_meas_start = m_index
-            if n_x:
-                c.append("MR", anc_x)
-                m_index += n_x
-            
-            # X-type detectors with color
-            for s_idx in range(n_x):
-                cur = x_meas_start + s_idx
-                coord = stab_coord(x_stab_coords, s_idx)
-                
-                if last_x_meas[s_idx] is None:
-                    add_detector_with_color(coord, [cur], 0.0, s_idx, is_x_type=True)
-                else:
-                    add_detector_with_color(coord, [last_x_meas[s_idx], cur], 0.0, s_idx, is_x_type=True)
-                
-                last_x_meas[s_idx] = cur
-            
-            # Measure Z ancillas
-            z_meas_start = m_index
-            if n_z:
-                c.append("MR", anc_z)
-                m_index += n_z
-            
-            # Z-type detectors with color
-            for s_idx in range(n_z):
-                cur = z_meas_start + s_idx
-                coord = stab_coord(z_stab_coords, s_idx)
-                
-                if last_z_meas[s_idx] is None:
-                    add_detector_with_color(coord, [cur], 0.0, s_idx, is_x_type=False)
-                else:
-                    add_detector_with_color(coord, [last_z_meas[s_idx], cur], 0.0, s_idx, is_x_type=False)
-                
-                last_z_meas[s_idx] = cur
-            
-            if data_coords is not None:
-                c.append("SHIFT_COORDS", [], [0.0, 0.0, 1.0])
-        
-        # Final data measurement
-        if n:
-            if basis == "X":
-                c.append("H", data_qubits)
-            c.append("M", data_qubits)
-            
-            first_data_idx = m_index
-            data_meas = {q: first_data_idx + i for i, q in enumerate(data_qubits)}
-            m_index += n
-            
-            # Space-like detectors with color
-            if basis == "Z":
-                stab_mat = hz
-                last_stab_meas = last_z_meas
-                stab_coords_final = z_stab_coords
-                is_x_type = False
-            else:
-                stab_mat = hx
-                last_stab_meas = last_x_meas
-                stab_coords_final = x_stab_coords
-                is_x_type = True
-            
-            if stab_mat is not None and stab_mat.size > 0:
-                for s_idx in range(stab_mat.shape[0]):
-                    row = stab_mat[s_idx]
-                    data_idxs = [data_meas[q] for q in np.where(row == 1)[0] if q in data_meas]
-                    recs = list(data_idxs)
-                    
-                    if s_idx < len(last_stab_meas) and last_stab_meas[s_idx] is not None:
-                        recs.append(last_stab_meas[s_idx])
-                    
-                    if recs:
-                        coord = stab_coord(stab_coords_final, s_idx)
-                        add_detector_with_color(coord, recs, 1.0, s_idx, is_x_type)
-            
-            # Logical observable
-            z_ops = get_logical_ops(code, 'z')
-            x_ops = get_logical_ops(code, 'x')
-            logical_support: list[int] = []
-            
-            if basis == "Z" and ops_valid(z_ops) and self.logical_qubit < ops_len(z_ops):
-                L = z_ops[self.logical_qubit]
-                logical_support = [q for q in range(n) if pauli_at(L, q) in ("Z", "Y")]
-            elif basis == "X" and ops_valid(x_ops) and self.logical_qubit < ops_len(x_ops):
-                L = x_ops[self.logical_qubit]
-                logical_support = [q for q in range(n) if pauli_at(L, q) in ("X", "Y")]
-            
-            if not logical_support:
-                logical_support = data_qubits
-            
-            obs_rec_indices = [data_meas[q] for q in logical_support if q in data_meas]
-            if obs_rec_indices:
-                lookbacks = [idx - m_index for idx in obs_rec_indices]
-                c.append("OBSERVABLE_INCLUDE", [stim.target_rec(lb) for lb in lookbacks], 0)
+        # Emit observable
+        ctx.emit_observable(c, observable_idx=0)
         
         return c

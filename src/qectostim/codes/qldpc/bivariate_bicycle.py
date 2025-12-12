@@ -144,6 +144,32 @@ class BivariateBicycleCode(QLDPCCode):
         meta["row_weight"] = len(A_terms) + len(B_terms)
         
         super().__init__(hx=hx, hz=hz, logical_x=logical_x, logical_z=logical_z, metadata=meta)
+        
+        # Store l, m for qubit_coords
+        self._l = l
+        self._m = m
+    
+    def qubit_coords(self) -> List[Tuple[float, float]]:
+        """Return 2D qubit coordinates using torus grid layout.
+        
+        The BB code has two blocks of l×m qubits. We layout:
+        - Block 0: positions (i, j) for i in [0,l), j in [0,m)
+        - Block 1: positions (i + l + 1, j) for offset separation
+        """
+        coords = []
+        block_size = self._l * self._m
+        
+        # Block 0: (i, j) grid
+        for idx in range(block_size):
+            i, j = idx // self._m, idx % self._m
+            coords.append((float(i), float(j)))
+        
+        # Block 1: offset by (l + 1, 0) for visual separation
+        for idx in range(block_size):
+            i, j = idx // self._m, idx % self._m
+            coords.append((float(i + self._l + 1), float(j)))
+        
+        return coords
 
 
 # Pre-built BB codes from literature

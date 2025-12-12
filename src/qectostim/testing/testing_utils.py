@@ -134,12 +134,38 @@ def test_decoder_on_code(
     except ImportError:
         ChromobiusIncompatibleError = Exception
     
+    # Try to import ConcatenatedDecoder error
+    try:
+        from qectostim.decoders.concatenated_decoder import ConcatenatedDecoderIncompatibleError
+    except ImportError:
+        ConcatenatedDecoderIncompatibleError = Exception
+    
     result = TestResult()
+    
+    # Check if code is marked as not decoder-compatible
+    # Some non-CSS codes have high "naked L0" error rates that make standard decoding ineffective
+    code_meta = getattr(code, 'metadata', {}) if hasattr(code, 'metadata') else {}
+    if not code_meta.get('decoder_compatible', True):
+        naked_l0 = code_meta.get('naked_l0_percentage', 0)
+        result.status = 'SKIP'
+        result.error = f"Not decoder-compatible ({naked_l0}% naked L0)"
+        result.warnings.append(f"Code has {naked_l0}% naked L0 errors")
+        return result
+    
+    # Check if this is a ConcatenatedCode
+    is_concatenated_code = False
+    try:
+        from qectostim.codes.composite.concatenated import ConcatenatedCode
+        is_concatenated_code = isinstance(code, ConcatenatedCode)
+    except ImportError:
+        pass
     
     try:
         noise = CircuitDepolarizingNoise(p1=p, p2=p)
         
         # Use appropriate experiment class based on code type
+        # ConcatenatedDecoder now uses PyMatching internally, so it works with
+        # standard CSSMemoryExperiment - no special experiment needed
         is_css_code = hasattr(code, 'hx') and hasattr(code, 'hz')
         
         if code_type == 'Color' and has_color_exp:
@@ -177,19 +203,32 @@ def test_decoder_on_code(
         
         if isinstance(raw, tuple):
             det_samples = np.asarray(raw[0], dtype=np.uint8)
-            obs_samples = np.asarray(raw[1], dtype=np.uint8)
+            obs_samples = np.asarray(raw[1], dtype=np.uint8) if raw[1] is not None else None
         else:
             arr = np.asarray(raw, dtype=np.uint8)
             det_samples = arr[:, :dem.num_detectors]
-            obs_samples = arr[:, dem.num_detectors:]
+            obs_samples = arr[:, dem.num_detectors:] if dem.num_observables > 0 else None
         
-        if obs_samples.shape[1] > 0:
+        if obs_samples is not None and len(obs_samples.shape) > 1 and obs_samples.shape[1] > 0:
             result.ler_no_decode = float(obs_samples[:, 0].mean())
         
         # Create decoder
         try:
             if decoder_name in ['PyMatching', 'FusionBlossom']:
                 decoder = decoder_class(dem)
+            elif decoder_name in ['Concatenated', 'FlatConcat']:
+                # ConcatenatedDecoder and FlatConcatenatedDecoder only work with ConcatenatedCode instances
+                try:
+                    from qectostim.codes.composite.concatenated import ConcatenatedCode
+                    if not isinstance(code, ConcatenatedCode):
+                        result.status = 'SKIP'
+                        result.error = "Not a concatenated code"
+                        result.warnings.append(f'{decoder_name}: requires ConcatenatedCode')
+                        return result
+                except ImportError:
+                    pass  # Continue anyway if import fails
+                # Pass rounds to ensure metadata detector counts match the circuit
+                decoder = decoder_class(code=code, dem=dem, rounds=rounds)
             else:
                 decoder = decoder_class(dem=dem)
         except ChromobiusIncompatibleError:
@@ -197,12 +236,25 @@ def test_decoder_on_code(
             result.error = "Not a color code"
             result.warnings.append('Chromobius: requires color-code DEM')
             return result
+        except ConcatenatedDecoderIncompatibleError:
+            result.status = 'SKIP'
+            result.error = "Not a concatenated code"
+            result.warnings.append('Concatenated: requires ConcatenatedCode')
+            return result
         except Exception as e:
             err_msg = str(e)
             if 'chromobius' in err_msg.lower() or 'color' in err_msg.lower():
                 result.status = 'SKIP'
                 result.error = "Not a color code"
                 result.warnings.append('Chromobius: requires color-code DEM')
+            elif 'mledecoder is not practical' in err_msg.lower() or 'detectors' in err_msg.lower():
+                result.status = 'SKIP'
+                result.error = "Too many detectors"
+                result.warnings.append('MLE: too many detectors')
+            elif 'concatenated' in err_msg.lower() and 'requires' in err_msg.lower():
+                result.status = 'SKIP'
+                result.error = "Not a concatenated code"
+                result.warnings.append('Concatenated: requires ConcatenatedCode')
             else:
                 result.status = 'FAIL'
                 result.error = f"Decoder init: {err_msg[:25]}"
@@ -229,7 +281,7 @@ def test_decoder_on_code(
         if corrections.ndim == 1:
             corrections = corrections.reshape(-1, max(1, dem.num_observables))
         
-        if obs_samples.shape[1] > 0:
+        if obs_samples is not None and len(obs_samples.shape) > 1 and obs_samples.shape[1] > 0:
             logical_errors = (corrections[:, 0] ^ obs_samples[:, 0]).astype(np.uint8)
             result.ler = float(logical_errors.mean())
         
@@ -885,6 +937,19 @@ def load_all_decoders() -> Dict[str, Type]:
         decoder_classes['Chromobius'] = ChromobiusDecoder
     except ImportError:
         pass
+
+    # Concatenated Decoders
+    try:
+        from qectostim.decoders.concatenated_decoder import ConcatenatedDecoder
+        decoder_classes['Concatenated'] = ConcatenatedDecoder
+    except ImportError:
+        pass
+    
+    try:
+        from qectostim.decoders.concatenated_decoder import FlatConcatenatedDecoder
+        decoder_classes['FlatConcat'] = FlatConcatenatedDecoder
+    except ImportError:
+        pass
     
     return decoder_classes
 
@@ -962,6 +1027,7 @@ def discover_and_categorize_codes(
     include_qudit: bool = False,
     include_fracton: bool = False,
     timeout_per_code: float = 5.0,
+    report_failures: bool = False,
 ) -> Tuple[Dict[str, Any], Dict[str, Tuple[str, Any]]]:
     """Discover all codes and return both categories and a unified dict.
     
@@ -983,31 +1049,58 @@ def discover_and_categorize_codes(
         Include fracton codes (XCube, Haah - exotic excitations).
     timeout_per_code : float
         Timeout per code instantiation.
+    report_failures : bool
+        If True, return failures dict as third element of tuple.
         
     Returns
     -------
-    Tuple[dict, dict]
-        (categories, all_codes) where:
+    Tuple[dict, dict] or Tuple[dict, dict, dict]
+        If report_failures=False: (categories, all_codes)
+        If report_failures=True: (categories, all_codes, failures)
+        
+        Where:
         - categories: Dict with 'CSS', 'Color', etc. -> {name: code}
         - all_codes: Dict mapping name -> (type_str, code)
+        - failures: Dict mapping code_name -> error_message
         
     Example
     -------
     >>> categories, all_codes = discover_and_categorize_codes(max_qubits=50)
     >>> print(f"Total: {len(all_codes)}, CSS: {len(categories['CSS'])}")
+    
+    >>> # With failure reporting
+    >>> categories, all_codes, failures = discover_and_categorize_codes(
+    ...     max_qubits=50, report_failures=True
+    ... )
+    >>> for name, error in failures.items():
+    ...     print(f"FAILED: {name}: {error}")
     """
     from qectostim.codes import discover_all_codes
     
-    discovered = discover_all_codes(
-        max_qubits=max_qubits,
-        include_qldpc=include_qldpc,
-        include_subsystem=include_subsystem,
-        include_floquet=include_floquet,
-        include_bosonic=include_bosonic,
-        include_qudit=include_qudit,
-        include_fracton=include_fracton,
-        timeout_per_code=timeout_per_code,
-    )
+    if report_failures:
+        discovered, failures = discover_all_codes(
+            max_qubits=max_qubits,
+            include_qldpc=include_qldpc,
+            include_subsystem=include_subsystem,
+            include_floquet=include_floquet,
+            include_bosonic=include_bosonic,
+            include_qudit=include_qudit,
+            include_fracton=include_fracton,
+            timeout_per_code=timeout_per_code,
+            report_failures=True,
+        )
+    else:
+        discovered = discover_all_codes(
+            max_qubits=max_qubits,
+            include_qldpc=include_qldpc,
+            include_subsystem=include_subsystem,
+            include_floquet=include_floquet,
+            include_bosonic=include_bosonic,
+            include_qudit=include_qudit,
+            include_fracton=include_fracton,
+            timeout_per_code=timeout_per_code,
+            report_failures=False,
+        )
     
     categories = categorize_codes(discovered)
     
@@ -1017,6 +1110,8 @@ def discover_and_categorize_codes(
         for name, code in codes_dict.items():
             all_codes[name] = (code_type, code)
     
+    if report_failures:
+        return categories, all_codes, failures
     return categories, all_codes
 
 

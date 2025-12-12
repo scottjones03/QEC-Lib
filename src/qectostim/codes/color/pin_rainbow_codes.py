@@ -18,7 +18,7 @@ References:
 """
 
 from __future__ import annotations
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, List
 import numpy as np
 
 from ..generic.qldpc_base import QLDPCCode
@@ -143,6 +143,39 @@ class QuantumPinCode(QLDPCCode):
             logical_z[i, i] = 1
         
         return logical_x, logical_z
+    
+    def qubit_coords(self) -> List[Tuple[float, float]]:
+        """
+        Return 2D coordinates for visualization.
+        
+        Uses HGP two-sector grid layout:
+        - Left sector: d x (m+1) grid
+        - Right sector: (d-1) x m grid, offset to the right
+        """
+        coords: List[Tuple[float, float]] = []
+        
+        d = self._d
+        m = self._m
+        nb = m + 1
+        mb = m
+        
+        n_left = d * nb
+        right_offset = nb + 2
+        
+        for i in range(self.n):
+            if i < n_left:
+                # Left sector: d x (m+1) grid
+                col = i % nb
+                row = i // nb
+                coords.append((float(col), float(row)))
+            else:
+                # Right sector: (d-1) x m grid, offset to right
+                right_idx = i - n_left
+                col = right_idx % mb if mb > 0 else 0
+                row = right_idx // mb if mb > 0 else right_idx
+                coords.append((float(col + right_offset), float(row)))
+        
+        return coords
 
 
 class DoublePinCode(QLDPCCode):
@@ -238,6 +271,36 @@ class DoublePinCode(QLDPCCode):
             logical_z[i, n_qubits // 2 + i] = 1
         
         return logical_x, logical_z
+    
+    def qubit_coords(self) -> List[Tuple[float, float]]:
+        """
+        Return 2D coordinates for visualization.
+        
+        Uses HGP two-sector grid layout:
+        - Left sector: d x d grid
+        - Right sector: (d-1) x (d-1) grid, offset to the right
+        """
+        coords: List[Tuple[float, float]] = []
+        
+        d = self._d
+        n_left = d * d
+        right_offset = d + 2
+        side = d - 1 if d > 1 else 1
+        
+        for i in range(self.n):
+            if i < n_left:
+                # Left sector: d x d grid
+                col = i % d
+                row = i // d
+                coords.append((float(col), float(row)))
+            else:
+                # Right sector: (d-1) x (d-1) grid, offset to right
+                right_idx = i - n_left
+                col = right_idx % side
+                row = right_idx // side
+                coords.append((float(col + right_offset), float(row)))
+        
+        return coords
 
 
 class RainbowCode(QLDPCCode):
@@ -358,6 +421,37 @@ class RainbowCode(QLDPCCode):
             logical_z[i, i] = 1
         
         return logical_x, logical_z
+    
+    def qubit_coords(self) -> List[Tuple[float, float]]:
+        """
+        Return 2D coordinates for visualization.
+        
+        Uses HGP two-sector grid layout:
+        - Left sector: L x r grid
+        - Right sector: (L-1) x (r-1) grid, offset to the right
+        """
+        coords: List[Tuple[float, float]] = []
+        
+        L = self._L
+        r = self._r
+        n_left = L * r
+        right_offset = r + 2
+        side_b = r - 1 if r > 1 else 1
+        
+        for i in range(self.n):
+            if i < n_left:
+                # Left sector: L x r grid
+                col = i % r
+                row = i // r
+                coords.append((float(col), float(row)))
+            else:
+                # Right sector: (L-1) x (r-1) grid, offset to right
+                right_idx = i - n_left
+                col = right_idx % side_b
+                row = right_idx // side_b
+                coords.append((float(col + right_offset), float(row)))
+        
+        return coords
 
 
 class HolographicRainbowCode(QLDPCCode):
@@ -472,6 +566,39 @@ class HolographicRainbowCode(QLDPCCode):
             logical_z[i, n_qubits // 2 + i] = 1
         
         return logical_x, logical_z
+    
+    def qubit_coords(self) -> List[Tuple[float, float]]:
+        """
+        Return 2D coordinates for visualization.
+        
+        Uses HGP two-sector grid layout:
+        - Left sector: L x (bulk_depth+1) grid
+        - Right sector: (L-1) x bulk_depth grid, offset to the right
+        """
+        coords: List[Tuple[float, float]] = []
+        
+        L = self._L
+        depth = self._bulk_depth
+        nb = depth + 1
+        mb = depth
+        
+        n_left = L * nb
+        right_offset = nb + 2
+        
+        for i in range(self.n):
+            if i < n_left:
+                # Left sector: L x (depth+1) grid
+                col = i % nb
+                row = i // nb
+                coords.append((float(col), float(row)))
+            else:
+                # Right sector: (L-1) x depth grid, offset to right
+                right_idx = i - n_left
+                col = right_idx % mb if mb > 0 else 0
+                row = right_idx // mb if mb > 0 else right_idx
+                coords.append((float(col + right_offset), float(row)))
+        
+        return coords
 
 
 # Pre-configured instances

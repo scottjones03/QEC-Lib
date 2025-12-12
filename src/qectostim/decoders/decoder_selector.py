@@ -102,4 +102,4 @@ def select_decoder(
         return ChromobiusDecoder(dem)
 
     # Fallback: PyMatching.
-    return PyMatchingDecoder(dem)
+    return TesseractDecoder(dem, det_beam=tesseract_det_beam)

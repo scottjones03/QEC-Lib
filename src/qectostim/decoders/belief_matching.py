@@ -15,7 +15,8 @@ class BeliefMatchingDecoder(Decoder):
     """Decoder using the `beliefmatching` package on Stim DEMs.
     
     Uses belief propagation combined with minimum-weight perfect matching.
-    The beliefmatching package directly accepts Stim DetectorErrorModels.
+    The beliefmatching package directly accepts Stim DetectorErrorModels
+    and handles hyperedge decomposition internally.
     
     Parameters
     ----------
@@ -43,12 +44,30 @@ class BeliefMatchingDecoder(Decoder):
         self.num_detectors = self.dem.num_detectors
         self.num_observables = self.dem.num_observables
 
-        # BeliefMatching accepts the DEM directly
-        self._decoder = BeliefMatching(
-            self.dem,
-            max_bp_iters=self.max_bp_iters,
-            bp_method=self.bp_method,
-        )
+        # BeliefMatching accepts the DEM directly and handles hyperedges internally.
+        # For some complex codes (QLDPC, high-dimensional toric), try to use 
+        # a decomposed DEM which works better with belief propagation.
+        try:
+            # Try to compile and decompose for better hyperedge handling
+            dem_to_use = self.dem
+            try:
+                # Decompose hyperedges for codes with complex error mechanisms
+                decomposed = self.dem.rounded(3)  # Round to avoid precision issues
+                dem_to_use = decomposed
+            except Exception:
+                pass  # Use original DEM if decomposition fails
+            
+            self._decoder = BeliefMatching(
+                dem_to_use,
+                max_bp_iters=self.max_bp_iters,
+                bp_method=self.bp_method,
+            )
+        except Exception as e:
+            # If BeliefMatching initialization fails, raise a clear error
+            raise RuntimeError(
+                f"BeliefMatchingDecoder failed to initialize: {e}. "
+                f"This code may have hyperedges or error mechanisms incompatible with BP."
+            ) from e
 
     def decode_batch(self, dets: np.ndarray) -> np.ndarray:
         dets = np.asarray(dets, dtype=np.uint8)

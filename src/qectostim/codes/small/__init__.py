@@ -29,7 +29,7 @@ from .four_two_two import FourQubit422Code
 from .six_two_two import SixQubit622Code
 from .steane_713 import SteanCode713
 from .shor_code import ShorCode91
-from .hamming_css import HammingCSSCode
+from .hamming_css import HammingCSSCode, HammingCSS7, HammingCSS15, HammingCSS31
 from .reed_muller_code import ReedMullerCode151
 
 # Non-CSS codes (now local)
@@ -62,6 +62,9 @@ __all__ = [
     "SteanCode713",
     "ShorCode91",
     "HammingCSSCode",
+    "HammingCSS7",
+    "HammingCSS15",
+    "HammingCSS31",
     "ReedMullerCode151",
     # Non-CSS
     "PerfectCode513",
