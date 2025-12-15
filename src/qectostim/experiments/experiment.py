@@ -2,20 +2,18 @@
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional, List
-import abc
+from typing import Any, Dict, Optional
+
 import numpy as np
-import stim
 import stim
 
 from qectostim.codes.abstract_code import Code
 from qectostim.decoders.decoder_selector import select_decoder
 from qectostim.noise.models import NoiseModel
-import numpy as np
-import stim
 
-from qectostim.codes.abstract_css import CSSCode
+logger = logging.getLogger(__name__)
 
 class Experiment(ABC):
     def __init__(
@@ -28,9 +26,7 @@ class Experiment(ABC):
         self.noise_model = noise_model
         self.metadata = metadata or {}
 
-
-
-    @abc.abstractmethod
+    @abstractmethod
     def to_stim(self) -> stim.Circuit:
         ...
 
@@ -153,13 +149,13 @@ class Experiment(ABC):
         Common return keys: shots, logical_errors, logical_error_rate
         """
         distance = self._get_code_distance()
-        print(f"[run_decode] Code distance: {distance}")
+        logger.debug("Code distance: %d", distance)
         
         if distance <= 2:
-            print(f"[run_decode] Distance {distance} <= 2: Using detection-only path")
+            logger.debug("Distance %d <= 2: Using detection-only path", distance)
             return self._run_detection_path(shots)
         else:
-            print(f"[run_decode] Distance {distance} >= 3: Using correction path")
+            logger.debug("Distance %d >= 3: Using correction path", distance)
             return self._run_correction_path(shots, decoder_name)
 
     def _run_detection_path(self, shots: int = 10_000) -> Dict[str, Any]:
@@ -173,8 +169,7 @@ class Experiment(ABC):
           4. Calculate logical error (observable mismatch)
           5. Calculate detection efficiency: what fraction of logical errors were detected?
         """
-        print("[run_decode/detection] --- starting detection path ---")
-        print("[run_decode/detection] shots =", shots)
+        logger.debug("Starting detection path with shots=%d", shots)
 
         # 1) Build and apply noise
         base_circuit = self.to_stim()
@@ -182,7 +177,7 @@ class Experiment(ABC):
             circuit = self.noise_model.apply(base_circuit)
         else:
             circuit = base_circuit
-        print("[run_decode/detection] circuit length =", len(circuit))
+        logger.debug("Circuit length: %d", len(circuit))
 
         # 2) Sample from circuit directly
         sampler = circuit.compile_sampler()
@@ -204,8 +199,8 @@ class Experiment(ABC):
             else:
                 raise ValueError(f"Sampler array too small: expected at least {expected_cols}, got {arr.shape[1]}")
 
-        print("[run_decode/detection] det_samples.shape =", det_samples.shape)
-        print("[run_decode/detection] obs_samples.shape =", obs_samples.shape if obs_samples is not None else None)
+        logger.debug("det_samples.shape=%s, obs_samples.shape=%s", 
+                     det_samples.shape, obs_samples.shape if obs_samples is not None else None)
 
         # 4) Calculate metrics
         # Syndrome is nonzero if ANY detector fired
@@ -227,11 +222,9 @@ class Experiment(ABC):
         else:
             detection_efficiency = 1.0  # No errors to detect
         
-        print("[run_decode/detection] logical_error_count =", int(logical_error_count))
-        print("[run_decode/detection] syndrome_nonzero_count =", int(np.sum(syndrome_nonzero)))
-        print("[run_decode/detection] undetected_errors =", int(undetected_count))
-        print("[run_decode/detection] detection_efficiency =", float(detection_efficiency))
-        print("[run_decode/detection] logical_error_rate =", float(logical_error_count / shots))
+        logger.debug("Detection results: logical_errors=%d, syndrome_nonzero=%d, undetected=%d, efficiency=%.4f, ler=%.6f",
+                     int(logical_error_count), int(np.sum(syndrome_nonzero)), int(undetected_count),
+                     float(detection_efficiency), float(logical_error_count / shots))
 
         return {
             'shots': shots,
@@ -261,29 +254,39 @@ class Experiment(ABC):
           5. Run the decoder on detector outcomes to get predicted logical flips.
           6. Compare predicted vs. true logical bits to estimate logical error rate.
         """
-        print("[run_decode/correction] --- starting correction path ---")
-        print("[run_decode/correction] shots           =", shots)
-        print("[run_decode/correction] decoder_name    =", decoder_name)
+        logger.debug("Starting correction path with shots=%d, decoder=%s", shots, decoder_name)
 
         # 1) Build base circuit from the experiment.
         base_circuit = self.to_stim()
-        print("[run_decode/correction] base circuit    =", len(base_circuit), "instructions")
+        logger.debug("Base circuit: %d instructions", len(base_circuit))
 
         # 2) Apply noise model (if any).
         if self.noise_model is not None:
             circuit = self.noise_model.apply(base_circuit)
         else:
             circuit = base_circuit
-        print("[run_decode/correction] noisy circuit   =", len(circuit), "instructions")
+        logger.debug("Noisy circuit: %d instructions", len(circuit))
 
         # 3) Build DetectorErrorModel from noisy circuit.
-        dem = circuit.detector_error_model(decompose_errors=True)
-        print("[run_decode/correction] DEM: detectors   =", dem.num_detectors)
-        print("[run_decode/correction] DEM: errors      =", dem.num_errors)
-        print("[run_decode/correction] DEM: observables =", dem.num_observables)
+        # For color codes and other hypergraph codes, we need to handle decomposition failures
+        # by using ignore_decomposition_failures=True
+        try:
+            dem = circuit.detector_error_model(decompose_errors=True)
+        except ValueError as e:
+            if "Failed to decompose errors" in str(e):
+                # This is a hypergraph code (e.g., color code) - use ignore_decomposition_failures
+                logger.debug("Hypergraph DEM detected, using ignore_decomposition_failures")
+                dem = circuit.detector_error_model(
+                    decompose_errors=True,
+                    ignore_decomposition_failures=True
+                )
+            else:
+                raise
+        logger.debug("DEM: %d detectors, %d errors, %d observables", 
+                     dem.num_detectors, dem.num_errors, dem.num_observables)
 
         if dem.num_observables == 0:
-            print("[run_decode/correction] WARNING: DEM has no observables; returning zero logical errors.")
+            logger.warning("DEM has no observables; returning zero logical errors")
             logical_errors = np.zeros(shots, dtype=np.uint8)
             return {
                 "shots": shots,
@@ -293,13 +296,11 @@ class Experiment(ABC):
 
         # 4) Build decoder from DEM.
         decoder = select_decoder(dem, preferred=decoder_name)
-        print("[run_decode/correction] decoder type    =", type(decoder))
+        logger.debug("Decoder type: %s", type(decoder).__name__)
 
         # 5) Sample from the DEM directly.
-        print("[run_decode/correction] sampling DEM directly...")
         sampler = dem.compile_sampler()
         raw = sampler.sample(shots=shots)
-        print("[run_decode/correction] type(raw)       =", type(raw))
 
         # Handle both possible APIs:
         #   * tuple of (det, obs, extra)
@@ -323,8 +324,7 @@ class Experiment(ABC):
             det_samples = arr[:, :num_det]
             obs_samples = arr[:, num_det:]
 
-        print("[run_decode/correction] det_samples.shape =", det_samples.shape)
-        print("[run_decode/correction] obs_samples.shape =", obs_samples.shape)
+        logger.debug("Samples: det=%s, obs=%s", det_samples.shape, obs_samples.shape)
 
         if det_samples is None or obs_samples is None:
             raise ValueError("DEM sampler did not return detector and observable samples as expected.")
@@ -339,10 +339,8 @@ class Experiment(ABC):
             )
 
         # 6) Decode detector outcomes -> predicted logical flips.
-        print("[run_decode/correction] decoding detector samples...")
         corrections = decoder.decode_batch(det_samples)
         corrections = np.asarray(corrections, dtype=np.uint8)
-        print("[run_decode/correction] corrections.shape =", corrections.shape)
 
         # Ensure shape is (shots, num_observables)
         if corrections.ndim == 1:
@@ -358,7 +356,7 @@ class Experiment(ABC):
 
         logical_errors = (pred_log ^ true_log).astype(np.uint8)
 
-        print("[run_decode/correction] logical_error_rate =", float(logical_errors.mean()))
+        logger.debug("Logical error rate: %.6f", float(logical_errors.mean()))
 
         return {
             "shots": shots,

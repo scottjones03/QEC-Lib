@@ -465,8 +465,16 @@ class TransversalS(TransversalGate):
         super().__init__(gate_name="S", **kwargs)
     
     def get_stabilizer_transform(self) -> StabilizerTransform:
-        """S gate: X → Y, Z → Z."""
-        return StabilizerTransform(x_becomes="Y", z_becomes="Z")
+        """S gate: X → Y, Z → Z.
+        
+        The S gate transforms X stabilizers to Y stabilizers (up to phase).
+        This means X stabilizer measurement outcomes are NOT comparable across
+        the gate - we must clear history. Z stabilizers are unchanged.
+        
+        We set clear_history=True but not swap_xz (since Z basis memory
+        still uses Z as the deterministic basis).
+        """
+        return StabilizerTransform(x_becomes="Y", z_becomes="Z", clear_history=True)
     
     def get_observable_transform(self) -> ObservableTransform:
         """S gate: X → Y, Z → Z, Y → -X."""
@@ -480,8 +488,11 @@ class TransversalSDag(TransversalGate):
         super().__init__(gate_name="S_DAG", **kwargs)
     
     def get_stabilizer_transform(self) -> StabilizerTransform:
-        """S† gate: X → -Y, Z → Z."""
-        return StabilizerTransform(x_becomes="Y", z_becomes="Z")
+        """S† gate: X → -Y, Z → Z.
+        
+        Similar to S, the S† gate transforms X stabilizers, requiring history clear.
+        """
+        return StabilizerTransform(x_becomes="Y", z_becomes="Z", clear_history=True)
     
     def get_observable_transform(self) -> ObservableTransform:
         """S† gate: X → -Y, Z → Z, Y → X."""
@@ -638,11 +649,13 @@ class TransversalCNOT(TransversalGate):
     
     def get_stabilizer_transform(self) -> StabilizerTransform:
         """
-        CNOT transforms stabilizers across blocks, but types unchanged per-block.
+        CNOT transforms stabilizers across blocks.
         
-        For detectors, we track that Z errors propagate ctrl→tgt and X errors tgt→ctrl.
+        Two-qubit gates entangle the blocks, so measurements from before
+        the gate cannot be compared to measurements after. We must clear
+        the measurement history to avoid non-deterministic detectors.
         """
-        return StabilizerTransform.identity()
+        return StabilizerTransform.identity(clear_history=True)
     
     def get_observable_transform(self) -> ObservableTransform:
         """Return simplified single-block transform (identity per block)."""
@@ -678,8 +691,14 @@ class TransversalCZ(TransversalGate):
         super().__init__(gate_name="CZ", **kwargs)
     
     def get_stabilizer_transform(self) -> StabilizerTransform:
-        """CZ transforms stabilizers across blocks, but types unchanged per-block."""
-        return StabilizerTransform.identity()
+        """
+        CZ transforms stabilizers across blocks.
+        
+        Two-qubit gates entangle the blocks, so measurements from before
+        the gate cannot be compared to measurements after. We must clear
+        the measurement history to avoid non-deterministic detectors.
+        """
+        return StabilizerTransform.identity(clear_history=True)
     
     def get_observable_transform(self) -> ObservableTransform:
         """Return simplified single-block transform (identity per block)."""
@@ -713,8 +732,14 @@ class TransversalSWAP(TransversalGate):
         super().__init__(gate_name="SWAP", **kwargs)
     
     def get_stabilizer_transform(self) -> StabilizerTransform:
-        """SWAP exchanges stabilizers between blocks (types unchanged)."""
-        return StabilizerTransform.identity()
+        """
+        SWAP exchanges states between blocks.
+        
+        Two-qubit gates entangle the blocks, so measurements from before
+        the gate cannot be compared to measurements after. We must clear
+        the measurement history to avoid non-deterministic detectors.
+        """
+        return StabilizerTransform.identity(clear_history=True)
     
     def get_observable_transform(self) -> ObservableTransform:
         """Return simplified single-block transform (identity per block)."""

@@ -18,6 +18,7 @@ import numpy as np
 
 from ..abstract_css import CSSCode
 from ..abstract_code import PauliString
+from ..utils import compute_css_logicals, vectors_to_paulis_x, vectors_to_paulis_z
 
 
 class HyperbolicSurfaceCode(CSSCode):
@@ -266,14 +267,17 @@ class HyperbolicSurfaceCode(CSSCode):
     def _compute_logicals(
         hx: np.ndarray, hz: np.ndarray, n_qubits: int, genus: int
     ) -> Tuple[List[PauliString], List[PauliString]]:
-        """Compute logical operators for genus-g surface."""
+        """Compute logical operators for genus-g surface using CSS kernel/image prescription."""
         # For genus g surface, there are 2g logical qubits
-        # Each handle contributes one X and one Z logical pair
-        k = 2 * genus
-        # All qubits in each logical operator (placeholder - real implementation needs homology)
-        logical_x: List[PauliString] = [{i: 'Z' for i in range(n_qubits)}] * k
-        logical_z: List[PauliString] = [{i: 'X' for i in range(n_qubits)}] * k
-        return (logical_x, logical_z)
+        # Use CSS prescription: Logical Z in ker(Hx)/rowspace(Hz), Logical X in ker(Hz)/rowspace(Hx)
+        try:
+            log_x_vecs, log_z_vecs = compute_css_logicals(hx, hz)
+            logical_x = vectors_to_paulis_x(log_x_vecs) if log_x_vecs else [{0: 'X'}]
+            logical_z = vectors_to_paulis_z(log_z_vecs) if log_z_vecs else [{0: 'Z'}]
+            return logical_x, logical_z
+        except Exception:
+            # Fallback to single-qubit placeholder
+            return [{0: 'X'}], [{0: 'Z'}]
     
     def qubit_coords(self) -> List[Tuple[float, float]]:
         """Return 2D coordinates for visualization.
@@ -644,8 +648,17 @@ class GoldenCode(CSSCode):
         
         hx, hz, n_qubits = self._build_golden_hgp(n_a, n_b)
         
-        k = max(1, L - 1)
-        logical_x, logical_z = self._build_logicals(n_qubits, k)
+        # Compute logical operators using CSS prescription
+        try:
+            log_x_vecs, log_z_vecs = compute_css_logicals(hx, hz)
+            logical_x = vectors_to_paulis_x(log_x_vecs) if log_x_vecs else [{0: 'X'}]
+            logical_z = vectors_to_paulis_z(log_z_vecs) if log_z_vecs else [{0: 'Z'}]
+            k = len(logical_x)
+        except Exception:
+            # Fallback
+            k = max(1, L - 1)
+            logical_x = [{0: 'X'}]
+            logical_z = [{0: 'Z'}]
         
         meta: Dict[str, Any] = dict(metadata or {})
         meta.update({

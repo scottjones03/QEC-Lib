@@ -126,6 +126,64 @@ class QLDPCCode(CSSCode):
         # Consider LDPC if weights are <= 10
         return self.row_weight <= 10 and self.column_weight <= 10
 
+    def has_placeholder_logicals(self) -> bool:
+        """
+        Check if this code uses placeholder logical operators.
+        
+        Placeholder logicals are single-qubit operators like {0: 'X'} or {0: 'Z'}
+        that don't represent true logical operators. These make the code
+        incompatible with fault-tolerant gadget experiments.
+        
+        Returns
+        -------
+        bool
+            True if logical operators appear to be placeholders.
+        """
+        # Check X logicals
+        for lx in self._logical_x:
+            if isinstance(lx, dict):
+                # Dict form: {0: 'X'} is a placeholder
+                if len(lx) == 1 and 0 in lx:
+                    return True
+            elif isinstance(lx, str):
+                # String form: check if only qubit 0 has X
+                x_count = sum(1 for p in lx if p in ('X', 'Y'))
+                if x_count == 1 and len(lx) > 0 and lx[0] in ('X', 'Y'):
+                    return True
+        
+        # Check Z logicals
+        for lz in self._logical_z:
+            if isinstance(lz, dict):
+                if len(lz) == 1 and 0 in lz:
+                    return True
+            elif isinstance(lz, str):
+                z_count = sum(1 for p in lz if p in ('Z', 'Y'))
+                if z_count == 1 and len(lz) > 0 and lz[0] in ('Z', 'Y'):
+                    return True
+        
+        return False
+
+    def get_ft_gadget_config(self):
+        """
+        Return FT gadget configuration for QLDPC codes.
+        
+        QLDPC codes with placeholder logical operators are marked as
+        unsupported for FT gadget experiments. This prevents confusing
+        non-deterministic detector errors.
+        """
+        from qectostim.codes.abstract_code import FTGadgetCodeConfig, ScheduleMode
+        
+        return FTGadgetCodeConfig(
+            schedule_mode=ScheduleMode.GRAPH_COLORING,  # No geometric coords
+            first_round_x_detectors=True,
+            first_round_z_detectors=True,
+            enable_metachecks=False,
+            extra={
+                "has_placeholder_logicals": self.has_placeholder_logicals(),
+                "unsupported_reason": "QLDPC codes require proper logical operator computation" if self.has_placeholder_logicals() else None,
+            }
+        )
+
     def qubit_coords(self) -> Optional[List[Tuple[float, float]]]:
         """
         QLDPC codes typically don't have geometric embedding.

@@ -79,20 +79,35 @@ class RotatedSurfaceCode(TopologicalCSSCode):
             }
         )
 
-        # Stim-style 4-phase schedule for rotated surface code:
-        # each stabiliser interacts with its neighbours in 4 rounds, going
-        # roughly "clockwise" in the checkerboard.
+        # Stim-style 4-phase schedule for rotated surface code.
+        # The schedule must ensure that X and Z stabilizers touching the same
+        # data qubit do so in the correct order to avoid introducing unwanted
+        # correlations. Stim's convention is:
+        #   - For shared data qubits, Z-stabilizer should read BEFORE X-stabilizer writes
+        #   - This is achieved by the specific ordering below
+        #
+        # X-ancilla schedule (ancilla controls data):
+        #   Layer 1: (+1, +1) = SE neighbor
+        #   Layer 2: (-1, +1) = SW neighbor  
+        #   Layer 3: (+1, -1) = NE neighbor
+        #   Layer 4: (-1, -1) = NW neighbor
+        #
+        # Z-ancilla schedule (data controls ancilla):
+        #   Layer 1: (+1, +1) = SE neighbor
+        #   Layer 2: (+1, -1) = NE neighbor
+        #   Layer 3: (-1, +1) = SW neighbor
+        #   Layer 4: (-1, -1) = NW neighbor
         meta["x_schedule"] = [
-            (1.0, 1.0),
-            (-1.0, 1.0),
-            (-1.0, -1.0),
-            (1.0, -1.0),
+            (1.0, 1.0),    # SE
+            (-1.0, 1.0),   # SW
+            (1.0, -1.0),   # NE (was layer 4)
+            (-1.0, -1.0),  # NW (was layer 3)
         ]
         meta["z_schedule"] = [
-            (1.0, 1.0),
-            (1.0, -1.0),
-            (-1.0, -1.0),
-            (-1.0, 1.0),
+            (1.0, 1.0),    # SE
+            (1.0, -1.0),   # NE
+            (-1.0, 1.0),   # SW (was layer 4)
+            (-1.0, -1.0),  # NW (was layer 3)
         ]
 
         super().__init__(chain_complex, logical_x, logical_z, metadata=meta)
@@ -119,13 +134,14 @@ class RotatedSurfaceCode(TopologicalCSSCode):
             for y in range(1, 2 * d, 2):
                 q = (float(x), float(y))
                 data_coords.add(q)
-                # Track logical operator support for rotated surface code:
-                # - Logical X runs horizontally along top row (y=1)  
-                # - Logical Z runs vertically along left column (x=1)
+                # Track logical operator support for rotated surface code (Stim convention):
+                # - Logical Z runs horizontally along top row (y=1) - rough boundary
+                # - Logical X runs vertically along left column (x=1) - smooth boundary
+                # This matches Stim's surface_code:rotated_memory_z/x observables.
                 if y == 1:
-                    x_logical_coords.add(q)  # Top row for X
+                    z_logical_coords.add(q)  # Top row for Z (rough boundary)
                 if x == 1:
-                    z_logical_coords.add(q)  # Left column for Z
+                    x_logical_coords.add(q)  # Left column for X (smooth boundary)
 
         x_stab_coords: Set[Coord2D] = set()
         z_stab_coords: Set[Coord2D] = set()

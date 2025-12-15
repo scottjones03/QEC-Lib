@@ -482,7 +482,9 @@ def discover_all_codes(
         ("HypergraphProductCode", {"base_matrix": None}),  # Will fail, use factory
         # Bivariate bicycle codes - correct signature: l, m, A_terms, B_terms
         ("BBGrossCode", "factory"),
-        ("BivariateBicycleCode", {"l": 6, "m": 6, "A_terms": [(0, 0), (1, 2), (2, 1)], "B_terms": [(0, 0), (0, 3), (3, 0)]}),
+        # BB_6x6: Fixed parameters that produce k=8 (original terms gave k=0)
+        # A = x + x^2 + x^3 (pure x-powers), B = y + y^2 + y^3 (pure y-powers)
+        ("BivariateBicycleCode", {"l": 6, "m": 6, "A_terms": [(1, 0), (2, 0), (3, 0)], "B_terms": [(0, 1), (0, 2), (0, 3)]}),
         # HDX codes
         ("HDX_4", "factory"),
         ("HDX_6", "factory"),

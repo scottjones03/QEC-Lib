@@ -24,6 +24,7 @@ from itertools import product
 from qectostim.codes.generic.qldpc_base import QLDPCCode
 from qectostim.codes.abstract_css import Coord2D
 from qectostim.codes.abstract_code import PauliString
+from qectostim.codes.utils import compute_css_logicals, vectors_to_paulis_x, vectors_to_paulis_z
 
 
 class HDXCode(QLDPCCode):
@@ -63,8 +64,14 @@ class HDXCode(QLDPCCode):
         # Build HDX complex
         hx, hz, n_qubits, data_coords = self._build_hdx_complex(n)
         
-        # Logical operators
-        logical_x, logical_z = self._compute_logicals(n_qubits)
+        # Compute proper logical operators using CSS prescription
+        try:
+            log_x_vecs, log_z_vecs = compute_css_logicals(hx, hz)
+            logical_x = vectors_to_paulis_x(log_x_vecs) if log_x_vecs else [{0: 'X'}]
+            logical_z = vectors_to_paulis_z(log_z_vecs) if log_z_vecs else [{0: 'Z'}]
+        except Exception:
+            logical_x = [{0: 'X'}]
+            logical_z = [{0: 'Z'}]
         
         meta: Dict[str, Any] = dict(metadata or {})
         meta.update({
@@ -168,9 +175,19 @@ class HDXCode(QLDPCCode):
         
         return hx, hz, n_qubits, data_coords
     
+    def _compute_logicals_from_hx_hz(self) -> Tuple[List[PauliString], List[PauliString]]:
+        """Compute logical operators using CSS kernel/image prescription."""
+        try:
+            log_x_vecs, log_z_vecs = compute_css_logicals(self.hx, self.hz)
+            logical_x = vectors_to_paulis_x(log_x_vecs) if log_x_vecs else [{0: 'X'}]
+            logical_z = vectors_to_paulis_z(log_z_vecs) if log_z_vecs else [{0: 'Z'}]
+            return logical_x, logical_z
+        except Exception:
+            return [{0: 'X'}], [{0: 'Z'}]
+    
     @staticmethod
     def _compute_logicals(n_qubits: int) -> Tuple[List[PauliString], List[PauliString]]:
-        """Compute logical operators."""
+        """Compute logical operators (fallback for static use)."""
         logical_x: List[PauliString] = [{0: 'X'}]
         logical_z: List[PauliString] = [{0: 'Z'}]
         return logical_x, logical_z
@@ -205,8 +222,14 @@ class QuantumTannerCode(QLDPCCode):
         # Build Tanner code
         hx, hz, n_qubits = self._build_tanner_code(n, inner_code_distance)
         
-        logical_x: List[PauliString] = [{0: 'X'}]
-        logical_z: List[PauliString] = [{0: 'Z'}]
+        # Compute proper logical operators using CSS prescription
+        try:
+            log_x_vecs, log_z_vecs = compute_css_logicals(hx, hz)
+            logical_x: List[PauliString] = vectors_to_paulis_x(log_x_vecs) if log_x_vecs else [{0: 'X'}]
+            logical_z: List[PauliString] = vectors_to_paulis_z(log_z_vecs) if log_z_vecs else [{0: 'Z'}]
+        except Exception:
+            logical_x = [{0: 'X'}]
+            logical_z = [{0: 'Z'}]
         
         meta: Dict[str, Any] = dict(metadata or {})
         meta.update({
@@ -315,8 +338,14 @@ class DinurLinVidickCode(QLDPCCode):
         # Build DLV code using iterated tensor product
         hx, hz, n_qubits = self._build_dlv_code(n)
         
-        logical_x: List[PauliString] = [{0: 'X'}]
-        logical_z: List[PauliString] = [{0: 'Z'}]
+        # Compute proper logical operators using CSS prescription
+        try:
+            log_x_vecs, log_z_vecs = compute_css_logicals(hx, hz)
+            logical_x: List[PauliString] = vectors_to_paulis_x(log_x_vecs) if log_x_vecs else [{0: 'X'}]
+            logical_z: List[PauliString] = vectors_to_paulis_z(log_z_vecs) if log_z_vecs else [{0: 'Z'}]
+        except Exception:
+            logical_x = [{0: 'X'}]
+            logical_z = [{0: 'Z'}]
         
         meta: Dict[str, Any] = dict(metadata or {})
         meta.update({

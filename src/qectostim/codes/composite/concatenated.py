@@ -429,6 +429,12 @@ class ConcatenatedTopologicalCSSCode(ConcatenatedCSSCode, TopologicalCSSCode):
         else:
             inner_coords = inner.qubit_coords()
 
+        # Handle codes without coordinates - generate default grid coords
+        if outer_coords is None or len(outer_coords) == 0:
+            outer_coords = [(i, 0) for i in range(outer.n)]
+        if inner_coords is None or len(inner_coords) == 0:
+            inner_coords = [(i, 0) for i in range(inner.n)]
+
         # Compute optimal scale automatically if not provided
         if scale is None:
             scale = _compute_optimal_scale(outer_coords, inner_coords, margin)

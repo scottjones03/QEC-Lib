@@ -11,6 +11,8 @@ allowing for more efficient encoding in some regimes.
 from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 
+from qectostim.codes.utils import compute_css_logicals, vectors_to_paulis_x, vectors_to_paulis_z
+
 # Note: For true Galois-qudit codes, we would need GF(q) arithmetic.
 # Here we implement a simplified version that captures the essential structure
 # while working in standard binary/integer arithmetic.
@@ -118,12 +120,21 @@ class GaloisQuditSurfaceCode(GaloisQuditCode):
         
         hx, hz, n_qubits = self._build_galois_surface(Lx, Ly, q)
         
+        # Compute proper logical operators using CSS prescription
+        try:
+            log_x_vecs, log_z_vecs = compute_css_logicals(hx % 2, hz % 2)  # Use binary version for CSS computation
+            logical_x = vectors_to_paulis_x(log_x_vecs) if log_x_vecs else [{0: 'X'}]
+            logical_z = vectors_to_paulis_z(log_z_vecs) if log_z_vecs else [{0: 'Z'}]
+        except Exception:
+            logical_x = [{0: 'X'}]
+            logical_z = [{0: 'Z'}]
+        
         super().__init__(
             q=q,
             hx=hx,
             hz=hz,
-            logical_x=["Z" * n_qubits],
-            logical_z=["X" * n_qubits],
+            logical_x=logical_x,
+            logical_z=logical_z,
             metadata=metadata,
         )
     
@@ -227,12 +238,21 @@ class GaloisQuditHGPCode(GaloisQuditCode):
         
         hx, hz, n_qubits = self._build_galois_hgp(q, base_code_n)
         
+        # Compute proper logical operators using CSS prescription
+        try:
+            log_x_vecs, log_z_vecs = compute_css_logicals(hx % 2, hz % 2)  # Use binary version for CSS computation
+            logical_x = vectors_to_paulis_x(log_x_vecs) if log_x_vecs else [{0: 'X'}]
+            logical_z = vectors_to_paulis_z(log_z_vecs) if log_z_vecs else [{0: 'Z'}]
+        except Exception:
+            logical_x = [{0: 'X'}]
+            logical_z = [{0: 'Z'}]
+        
         super().__init__(
             q=q,
             hx=hx,
             hz=hz,
-            logical_x=["Z" * n_qubits],
-            logical_z=["X" * n_qubits],
+            logical_x=logical_x,
+            logical_z=logical_z,
             metadata=metadata,
         )
     
@@ -331,12 +351,21 @@ class GaloisQuditColorCode(GaloisQuditCode):
         
         hx, hz, n_qubits = self._build_galois_color(L, q)
         
+        # Compute proper logical operators using CSS prescription
+        try:
+            log_x_vecs, log_z_vecs = compute_css_logicals(hx % 2, hz % 2)  # Use binary version for CSS computation
+            logical_x = vectors_to_paulis_x(log_x_vecs) if log_x_vecs else [{0: 'X'}]
+            logical_z = vectors_to_paulis_z(log_z_vecs) if log_z_vecs else [{0: 'Z'}]
+        except Exception:
+            logical_x = [{0: 'X'}]
+            logical_z = [{0: 'Z'}]
+        
         super().__init__(
             q=q,
             hx=hx,
             hz=hz,
-            logical_x=["Z" * n_qubits],
-            logical_z=["X" * n_qubits],
+            logical_x=logical_x,
+            logical_z=logical_z,
             metadata=metadata,
         )
     
@@ -435,12 +464,21 @@ class GaloisQuditExpanderCode(GaloisQuditCode):
         
         hx, hz, n_qubits = self._build_galois_expander(n_vertices, q)
         
+        # Compute proper logical operators using CSS prescription
+        try:
+            log_x_vecs, log_z_vecs = compute_css_logicals(hx % 2, hz % 2)  # Use binary version for CSS computation
+            logical_x = vectors_to_paulis_x(log_x_vecs) if log_x_vecs else [{0: 'X'}]
+            logical_z = vectors_to_paulis_z(log_z_vecs) if log_z_vecs else [{0: 'Z'}]
+        except Exception:
+            logical_x = [{0: 'X'}]
+            logical_z = [{0: 'Z'}]
+        
         super().__init__(
             q=q,
             hx=hx,
             hz=hz,
-            logical_x=["Z" * n_qubits],
-            logical_z=["X" * n_qubits],
+            logical_x=logical_x,
+            logical_z=logical_z,
             metadata=metadata,
         )
     

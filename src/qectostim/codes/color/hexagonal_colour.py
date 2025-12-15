@@ -24,6 +24,7 @@ import math
 from qectostim.codes.abstract_css import TopologicalCSSCode, Coord2D
 from qectostim.codes.abstract_code import PauliString
 from qectostim.codes.complexes.css_complex import CSSChainComplex3
+from qectostim.codes.utils import validate_css_code
 
 
 def _compute_valid_3_coloring(hx: np.ndarray) -> Optional[List[int]]:
@@ -201,6 +202,9 @@ class HexagonalColourCode(TopologicalCSSCode):
         rank_hz = np.linalg.matrix_rank(hz)
         k = n_qubits - rank_hx - rank_hz
         
+        # Validate CSS code structure
+        is_valid, computed_k, validation_msg = validate_css_code(hx, hz, f"HexagonalColour_d{d}")
+        
         # Build chain complex
         # boundary_2: shape (n_qubits, n_x_stabs + n_z_stabs)
         boundary_2_x = hx.T.astype(np.uint8)  # shape (n_qubits, n_x_stabs)
@@ -217,7 +221,8 @@ class HexagonalColourCode(TopologicalCSSCode):
         meta = dict(metadata or {})
         meta["name"] = f"HexagonalColour_d{d}"
         meta["n"] = n_qubits
-        meta["k"] = max(1, k)
+        meta["k"] = computed_k if computed_k > 0 else 1  # Report actual k (min 1 for compatibility)
+        meta["actual_k"] = computed_k  # Store the true k value
         meta["distance"] = d
         meta["is_colour_code"] = True
         meta["tiling"] = "4.8.8"
@@ -227,6 +232,11 @@ class HexagonalColourCode(TopologicalCSSCode):
         meta["z_stab_coords"] = stab_coords  # Same for colour codes
         meta["stab_colors"] = stab_colors  # For Chromobius: 0=red, 1=green, 2=blue
         meta["is_chromobius_compatible"] = True  # Marker for color code experiments
+        
+        # Mark codes with k<=0 to skip standard testing
+        if not is_valid or computed_k <= 0:
+            meta["skip_standard_test"] = True
+            meta["validation_warning"] = validation_msg
         
         # NOTE: We deliberately omit x_schedule/z_schedule here.
         # The geometric schedule approach requires stabilizer coords + offsets to exactly

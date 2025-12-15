@@ -20,6 +20,7 @@ import numpy as np
 
 from qectostim.codes.abstract_css import CSSCode
 from qectostim.codes.abstract_code import PauliString
+from qectostim.codes.utils import compute_css_logicals, vectors_to_paulis_x, vectors_to_paulis_z
 
 
 class SubsystemSurfaceCode(CSSCode):
@@ -173,9 +174,14 @@ class GaugeColorCode(CSSCode):
             hz[0, 0:2] = 1
             hz[1, 2:4] = 1
         
-        # Logical operators
-        logical_x: List[PauliString] = [{0: 'X'}]
-        logical_z: List[PauliString] = [{0: 'Z'}]
+        # Compute logical operators using CSS prescription
+        try:
+            log_x_vecs, log_z_vecs = compute_css_logicals(hx, hz)
+            logical_x = vectors_to_paulis_x(log_x_vecs) if log_x_vecs else [{0: 'X'}]
+            logical_z = vectors_to_paulis_z(log_z_vecs) if log_z_vecs else [{0: 'Z'}]
+        except Exception:
+            logical_x = [{0: 'X'}]
+            logical_z = [{0: 'Z'}]
         
         meta = dict(metadata or {})
         meta["name"] = f"GaugeColor_{d}"

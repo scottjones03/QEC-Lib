@@ -164,6 +164,16 @@ def geometric_scheduling_cnots(
     If the code provides x_schedule or z_schedule metadata, use it for
     optimal parallelism based on the code's natural geometry.
     
+    NOTE: This function is typically used by CSSStabilizerRoundBuilder which
+    handles CNOT direction separately via the is_x_type parameter in 
+    _emit_graph_coloring_cnots. The correct CNOT direction convention is:
+    
+    - X-type stabilizers: CNOT(ancilla, data) - ancilla controls
+    - Z-type stabilizers: CNOT(data, ancilla) - data controls
+    
+    This function returns (data, ancilla) pairs which are then used by the
+    caller with appropriate direction handling.
+    
     Parameters
     ----------
     code : Code
@@ -182,8 +192,7 @@ def geometric_scheduling_cnots(
     Returns
     -------
     List[List[Tuple[int, int]]]
-        CNOT layers. For X basis, returns (ancilla, data) pairs.
-        For Z basis, returns (data, ancilla) pairs.
+        CNOT layers. Returns (data, ancilla) pairs - caller handles direction.
     """
     schedule = cache.x_schedule if basis == "X" else cache.z_schedule
     
@@ -199,10 +208,8 @@ def geometric_scheduling_cnots(
             for dq in data_qubits:
                 anc = ancilla_offset + stab_idx
                 data = data_offset + dq
-                if basis == "X":
-                    cnots.append((anc, data))  # X: CNOT from ancilla to data
-                else:
-                    cnots.append((data, anc))  # Z: CNOT from data to ancilla
+                # Return (data, ancilla) pairs - caller handles direction
+                cnots.append((data, anc))
         return graph_coloring_cnots(cnots)
     
     # Use geometric schedule
@@ -221,10 +228,8 @@ def geometric_scheduling_cnots(
                 if dq < len(row) and row[dq]:
                     anc = ancilla_offset + stab_idx
                     data = data_offset + dq
-                    if basis == "X":
-                        layer_cnots.append((anc, data))
-                    else:
-                        layer_cnots.append((data, anc))
+                    # Return (data, ancilla) pairs - caller handles direction
+                    layer_cnots.append((data, anc))
         
         if layer_cnots:
             layers.append(layer_cnots)
@@ -264,7 +269,8 @@ def schedule_stabilizer_cnots(
     Returns
     -------
     Tuple[List[List[Tuple[int, int]]], List[List[Tuple[int, int]]]]
-        (x_layers, z_layers) where each layer is a list of (ctrl, tgt) pairs.
+        (x_layers, z_layers) where each layer is a list of (data, ancilla) pairs.
+        Both X and Z stabilizers use data→ancilla direction.
     """
     cache = CodeMetadataCache.from_code(code)
     
@@ -277,7 +283,7 @@ def schedule_stabilizer_cnots(
                 code, cache, hx, x_anc_offset, data_offset, "X"
             )
         else:
-            # Fallback to graph coloring
+            # Fallback to graph coloring - both X and Z use data→ancilla
             cnots = []
             for stab_idx in range(hx.shape[0]):
                 row = hx[stab_idx]
@@ -285,7 +291,7 @@ def schedule_stabilizer_cnots(
                     row = row.toarray().flatten()
                 for dq, v in enumerate(row):
                     if v:
-                        cnots.append((x_anc_offset + stab_idx, data_offset + dq))
+                        cnots.append((data_offset + dq, x_anc_offset + stab_idx))
             x_layers = graph_coloring_cnots(cnots)
     
     if hz is not None and hz.shape[0] > 0:
@@ -294,7 +300,7 @@ def schedule_stabilizer_cnots(
                 code, cache, hz, z_anc_offset, data_offset, "Z"
             )
         else:
-            # Fallback to graph coloring
+            # Fallback to graph coloring - both X and Z use data→ancilla
             cnots = []
             for stab_idx in range(hz.shape[0]):
                 row = hz[stab_idx]

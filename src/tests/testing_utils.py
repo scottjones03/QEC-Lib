@@ -88,6 +88,8 @@ def test_decoder_on_code(
     p: float = 0.01,
     shots: int = 1000,
     rounds: int = 3,
+    enable_metachecks: bool = False,
+    single_shot_metachecks: bool = False,
 ) -> TestResult:
     """Test a decoder on a code and return results.
     
@@ -107,6 +109,10 @@ def test_decoder_on_code(
         Number of Monte Carlo samples.
     rounds : int
         Number of syndrome measurement rounds.
+    enable_metachecks : bool
+        Whether to enable metacheck detectors (for 4D/5D codes).
+    single_shot_metachecks : bool
+        If True, use spatial metacheck mode for true single-shot QEC.
         
     Returns
     -------
@@ -152,14 +158,13 @@ def test_decoder_on_code(
         circuit = noise.apply(exp.to_stim())
         
         # Try to build DEM - with fallback for decomposition failures
+        # 4D+ codes have hyperedge errors that can't be decomposed into 2-qubit errors
         try:
             dem = circuit.detector_error_model(decompose_errors=True)
         except Exception:
             try:
-                dem = circuit.detector_error_model(
-                    decompose_errors=True, 
-                    ignore_decomposition_failures=True
-                )
+                # Try with decompose_errors=False - needed for 4D codes with hyperedge errors
+                dem = circuit.detector_error_model(decompose_errors=False)
             except Exception as e2:
                 err_msg = str(e2)
                 if 'non-deterministic' in err_msg.lower():

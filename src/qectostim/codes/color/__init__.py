@@ -21,8 +21,19 @@ Hyperbolic Color Codes:
     HyperbolicColorCode: Color codes on hyperbolic tilings
 """
 
-# Import from local files (moved from base/)
-from .triangular_colour import TriangularColourCode
+# Import from local files
+from .triangular_colour import (
+    TriangularColourCode,
+    TriangularColour3,
+    TriangularColour5, 
+    TriangularColour7,
+)
+from .triangular_colour_xyz import (
+    TriangularColourCodeXYZ,
+    TriangularColourXYZ3,
+    TriangularColourXYZ5,
+    TriangularColourXYZ7,
+)
 from .hexagonal_colour import HexagonalColourCode
 from .colour_code import ColourCode488
 
@@ -70,6 +81,13 @@ from .pin_rainbow_codes import (
 __all__ = [
     # 2D
     "TriangularColourCode",
+    "TriangularColour3",
+    "TriangularColour5",
+    "TriangularColour7",
+    "TriangularColourCodeXYZ",
+    "TriangularColourXYZ3",
+    "TriangularColourXYZ5",
+    "TriangularColourXYZ7",
     "HexagonalColourCode",
     "ColourCode488",
     "TruncatedTrihexColorCode",

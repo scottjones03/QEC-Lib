@@ -16,7 +16,7 @@ from typing import Dict, Any, List, Optional, Tuple
 import numpy as np
 
 from qectostim.codes.abstract_css import TopologicalCSSCode, Coord2D
-from qectostim.codes.abstract_code import PauliString
+from qectostim.codes.abstract_code import PauliString, FTGadgetCodeConfig, ScheduleMode
 from qectostim.codes.complexes.css_complex import CSSChainComplex3
 
 
@@ -180,3 +180,18 @@ class ToricCode(TopologicalCSSCode):
     def qubit_coords(self) -> List[Coord2D]:
         """Return qubit coordinates for visualization."""
         return list(self.metadata.get("data_coords", []))
+
+    def get_ft_gadget_config(self) -> FTGadgetCodeConfig:
+        """
+        Return FT gadget configuration for toric codes.
+        
+        Toric codes have periodic boundary conditions which require special
+        handling for coordinate lookups. We use GRAPH_COLORING scheduling
+        to ensure robustness for all lattice sizes and gadget types.
+        """
+        return FTGadgetCodeConfig(
+            schedule_mode=ScheduleMode.GRAPH_COLORING,  # Robust for periodic BCs
+            first_round_x_detectors=True,
+            first_round_z_detectors=True,
+            enable_metachecks=False,
+        )

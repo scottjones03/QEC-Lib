@@ -79,3 +79,23 @@ try:
     __all__.extend(["ConcatenatedDecoder", "FlatConcatenatedDecoder", "ConcatenatedDecoderIncompatibleError"])
 except ImportError:
     pass
+
+# New hierarchical decoder for concatenated codes
+try:
+    from qectostim.decoders.concatenated_decoder_v2 import (
+        HierarchicalConcatenatedDecoder,
+        create_hierarchical_decoder,
+    )
+    __all__.extend(["HierarchicalConcatenatedDecoder", "create_hierarchical_decoder"])
+except ImportError:
+    pass
+
+# Single-shot decoder with syndrome repair for 4D codes
+try:
+    from qectostim.decoders.single_shot_decoder import (
+        SingleShotDecoder,
+        SingleShotDecoderIncompatibleError,
+    )
+    __all__.extend(["SingleShotDecoder", "SingleShotDecoderIncompatibleError"])
+except ImportError:
+    pass

@@ -22,6 +22,7 @@ from typing import Dict, Any, Optional, Tuple, List
 import numpy as np
 
 from ..generic.qldpc_base import QLDPCCode
+from ..utils import compute_css_logicals, vectors_to_paulis_x, vectors_to_paulis_z
 
 
 class QuantumPinCode(QLDPCCode):
@@ -58,8 +59,16 @@ class QuantumPinCode(QLDPCCode):
         
         hx, hz, n_qubits = self._build_pin_code(d, m)
         
-        k = m  # Number of logical qubits
-        logical_x, logical_z = self._build_logicals(n_qubits, k, d)
+        # Compute logical operators using CSS prescription
+        try:
+            log_x_vecs, log_z_vecs = compute_css_logicals(hx, hz)
+            logical_x = vectors_to_paulis_x(log_x_vecs) if log_x_vecs else [{0: 'X'}]
+            logical_z = vectors_to_paulis_z(log_z_vecs) if log_z_vecs else [{0: 'Z'}]
+            k = len(logical_x)
+        except Exception:
+            k = m
+            logical_x = [{0: 'X'}]
+            logical_z = [{0: 'Z'}]
         
         meta: Dict[str, Any] = dict(metadata or {})
         meta.update({
@@ -200,8 +209,16 @@ class DoublePinCode(QLDPCCode):
         
         hx, hz, n_qubits = self._build_double_pin(d)
         
-        k = d - 1
-        logical_x, logical_z = self._build_logicals(n_qubits, k)
+        # Compute logical operators using CSS prescription
+        try:
+            log_x_vecs, log_z_vecs = compute_css_logicals(hx, hz)
+            logical_x = vectors_to_paulis_x(log_x_vecs) if log_x_vecs else [{0: 'X'}]
+            logical_z = vectors_to_paulis_z(log_z_vecs) if log_z_vecs else [{0: 'Z'}]
+            k = len(logical_x)
+        except Exception:
+            k = d - 1
+            logical_x = [{0: 'X'}]
+            logical_z = [{0: 'Z'}]
         
         meta: Dict[str, Any] = dict(metadata or {})
         meta.update({
@@ -335,8 +352,16 @@ class RainbowCode(QLDPCCode):
         
         hx, hz, n_qubits = self._build_rainbow_code(L, r)
         
-        k = r
-        logical_x, logical_z = self._build_logicals(n_qubits, k, L)
+        # Compute logical operators using CSS prescription
+        try:
+            log_x_vecs, log_z_vecs = compute_css_logicals(hx, hz)
+            logical_x = vectors_to_paulis_x(log_x_vecs) if log_x_vecs else [{0: 'X'}]
+            logical_z = vectors_to_paulis_z(log_z_vecs) if log_z_vecs else [{0: 'Z'}]
+            k = len(logical_x)
+        except Exception:
+            k = r
+            logical_x = [{0: 'X'}]
+            logical_z = [{0: 'Z'}]
         
         meta: Dict[str, Any] = dict(metadata or {})
         meta.update({
@@ -481,8 +506,16 @@ class HolographicRainbowCode(QLDPCCode):
         
         hx, hz, n_qubits = self._build_holographic_code(L, bulk_depth)
         
-        k = bulk_depth
-        logical_x, logical_z = self._build_logicals(n_qubits, k)
+        # Compute logical operators using CSS prescription
+        try:
+            log_x_vecs, log_z_vecs = compute_css_logicals(hx, hz)
+            logical_x = vectors_to_paulis_x(log_x_vecs) if log_x_vecs else [{0: 'X'}]
+            logical_z = vectors_to_paulis_z(log_z_vecs) if log_z_vecs else [{0: 'Z'}]
+            k = len(logical_x)
+        except Exception:
+            k = bulk_depth
+            logical_x = [{0: 'X'}]
+            logical_z = [{0: 'Z'}]
         
         meta: Dict[str, Any] = dict(metadata or {})
         meta.update({

@@ -88,6 +88,8 @@ def test_decoder_on_code(
     p: float = 0.01,
     shots: int = 1000,
     rounds: int = 3,
+    enable_metachecks: bool = False,
+    single_shot_metachecks: bool = True,
 ) -> TestResult:
     """Test a decoder on a code and return results.
     
@@ -107,6 +109,14 @@ def test_decoder_on_code(
         Number of Monte Carlo samples.
     rounds : int
         Number of syndrome measurement rounds.
+    enable_metachecks : bool
+        Whether to enable metacheck detectors (for 4D/5D codes with single-shot
+        error correction capability). Metachecks detect measurement errors.
+    single_shot_metachecks : bool
+        If True (and enable_metachecks is True), use spatial metacheck mode
+        where detectors fire on syndrome constraint violations within a single
+        round (true single-shot QEC). If False, uses time-like mode comparing
+        consecutive rounds.
         
     Returns
     -------
@@ -119,6 +129,21 @@ def test_decoder_on_code(
         StabilizerMemoryExperiment,
     )
     from qectostim.noise.models import CircuitDepolarizingNoise
+    
+    # IMPORTANT: Spatial metachecks (single_shot_metachecks=True with rounds=1) are
+    # linearly dependent on regular stabilizer detectors due to the chain condition
+    # meta @ H.T = 0. Standard decoders (BPOSD, PyMatching) see this as redundant
+    # constraints that can hurt performance.
+    #
+    # Only SingleShotDecoder knows how to use spatial metachecks for syndrome repair.
+    # For other decoders with rounds=1, disable single_shot mode to avoid redundancy.
+    effective_single_shot_metachecks = single_shot_metachecks
+    if rounds == 1 and decoder_name != 'SingleShot' and enable_metachecks:
+        # With rounds=1:
+        # - Time-like metachecks: NONE (no previous round to compare)
+        # - Spatial metachecks: Only useful for SingleShotDecoder
+        # For standard decoders, metachecks provide NO benefit with rounds=1
+        effective_single_shot_metachecks = False
     
     # Try to import color code experiment
     try:
@@ -140,17 +165,30 @@ def test_decoder_on_code(
     except ImportError:
         ConcatenatedDecoderIncompatibleError = Exception
     
+    # Try to import SingleShotDecoder error
+    try:
+        from qectostim.decoders.single_shot_decoder import SingleShotDecoderIncompatibleError
+    except ImportError:
+        SingleShotDecoderIncompatibleError = Exception
+    
     result = TestResult()
     
-    # Check if code is marked as not decoder-compatible
-    # Some non-CSS codes have high "naked L0" error rates that make standard decoding ineffective
+    # Check if code is marked for skipping standard tests
+    # This is set for codes that don't satisfy standard CSS requirements (k=0, non-commuting ISG)
     code_meta = getattr(code, 'metadata', {}) if hasattr(code, 'metadata') else {}
+    if code_meta.get('skip_standard_test', False):
+        result.status = 'SKIP'
+        validation_warning = code_meta.get('validation_warning', 'Code marked for skip')
+        result.error = validation_warning
+        result.warnings.append(f"Skipped: {validation_warning}")
+        return result
+    
+    # Check if code is marked as not decoder-compatible
+    # Some non-CSS codes have high "naked L0" error rates - but still attempt decoding
     if not code_meta.get('decoder_compatible', True):
         naked_l0 = code_meta.get('naked_l0_percentage', 0)
-        result.status = 'SKIP'
-        result.error = f"Not decoder-compatible ({naked_l0}% naked L0)"
-        result.warnings.append(f"Code has {naked_l0}% naked L0 errors")
-        return result
+        # Don't skip - add warning and continue testing
+        result.warnings.append(f"Code has {naked_l0}% naked L0 errors (may affect decoding)")
     
     # Check if this is a ConcatenatedCode
     is_concatenated_code = False
@@ -163,29 +201,51 @@ def test_decoder_on_code(
     try:
         noise = CircuitDepolarizingNoise(p1=p, p2=p)
         
-        # Use appropriate experiment class based on code type
-        # ConcatenatedDecoder now uses PyMatching internally, so it works with
-        # standard CSSMemoryExperiment - no special experiment needed
+        # Use appropriate experiment class based on code type and decoder
+        # For hierarchical/concatenated decoders, use ConcatenatedMemoryExperiment
+        # which produces block-grouped detectors required for correct decoding.
         is_css_code = hasattr(code, 'hx') and hasattr(code, 'hz')
+        
+        # Check if decoder needs block-grouped detectors (ConcatenatedMemoryExperiment)
+        needs_block_grouped = decoder_name in ['Hierarchical', 'Concatenated', 'FlatConcat']
         
         if code_type == 'Color' and has_color_exp:
             exp = ColorCodeMemoryExperiment(code=code, rounds=rounds, noise_model=noise)
+        elif needs_block_grouped and is_concatenated_code:
+            # Use ConcatenatedMemoryExperiment for hierarchical/concatenated decoders
+            # This produces block-grouped detectors required by these decoders
+            try:
+                from qectostim.experiments.concatenated_memory import ConcatenatedMemoryExperiment
+                exp = ConcatenatedMemoryExperiment(
+                    code=code, rounds=rounds, noise_model=noise, basis="Z"
+                )
+            except Exception as e:
+                # Fall back to CSSMemoryExperiment if ConcatenatedMemoryExperiment fails
+                result.warnings.append(f"ConcatenatedMemoryExperiment failed: {str(e)[:30]}")
+                exp = CSSMemoryExperiment(
+                    code=code, rounds=rounds, noise_model=noise, 
+                    enable_metachecks=enable_metachecks,
+                    single_shot_metachecks=effective_single_shot_metachecks
+                )
         elif is_css_code:
-            exp = CSSMemoryExperiment(code=code, rounds=rounds, noise_model=noise)
+            exp = CSSMemoryExperiment(
+                code=code, rounds=rounds, noise_model=noise, 
+                enable_metachecks=enable_metachecks,
+                single_shot_metachecks=effective_single_shot_metachecks
+            )
         else:
             exp = StabilizerMemoryExperiment(code=code, rounds=rounds, noise_model=noise)
         
         circuit = noise.apply(exp.to_stim())
         
         # Try to build DEM - with fallback for decomposition failures
+        # 4D+ codes have hyperedge errors that can't be decomposed into 2-qubit errors
         try:
             dem = circuit.detector_error_model(decompose_errors=True)
         except Exception:
             try:
-                dem = circuit.detector_error_model(
-                    decompose_errors=True, 
-                    ignore_decomposition_failures=True
-                )
+                # Try with decompose_errors=False - needed for 4D codes with hyperedge errors
+                dem = circuit.detector_error_model(decompose_errors=False)
             except Exception as e2:
                 err_msg = str(e2)
                 if 'non-deterministic' in err_msg.lower():
@@ -212,6 +272,9 @@ def test_decoder_on_code(
         if obs_samples is not None and len(obs_samples.shape) > 1 and obs_samples.shape[1] > 0:
             result.ler_no_decode = float(obs_samples[:, 0].mean())
         
+        # Note: Some decoders (PyMatching, FusionBlossom) may fail on hyperedge DEMs
+        # (errors affecting >2 detectors). We let them try and fail naturally.
+        
         # Create decoder
         try:
             if decoder_name in ['PyMatching', 'FusionBlossom']:
@@ -229,6 +292,41 @@ def test_decoder_on_code(
                     pass  # Continue anyway if import fails
                 # Pass rounds to ensure metadata detector counts match the circuit
                 decoder = decoder_class(code=code, dem=dem, rounds=rounds)
+            elif decoder_name == 'Hierarchical':
+                # HierarchicalConcatenatedDecoder only works with ConcatenatedCode instances
+                try:
+                    from qectostim.codes.composite.concatenated import ConcatenatedCode
+                    if not isinstance(code, ConcatenatedCode):
+                        result.status = 'SKIP'
+                        result.error = "Not a concatenated code"
+                        result.warnings.append('Hierarchical: requires ConcatenatedCode')
+                        return result
+                except ImportError:
+                    pass  # Continue anyway if import fails
+                # Pass code, dem, rounds, and basis for hierarchical decoding
+                decoder = decoder_class(code=code, dem=dem, rounds=rounds, basis="Z")
+            elif decoder_name == 'SingleShot':
+                # SingleShotDecoder requires a code with metachecks (meta_x and/or meta_z)
+                # Must check for non-empty matrices, not just is not None
+                def _has_valid_meta(code, attr):
+                    if not hasattr(code, attr):
+                        return False
+                    m = getattr(code, attr)
+                    if m is None:
+                        return False
+                    if not hasattr(m, 'size') or not hasattr(m, 'shape'):
+                        return False
+                    return m.size > 0 and m.shape[0] > 0
+                
+                has_meta_x = _has_valid_meta(code, 'meta_x')
+                has_meta_z = _has_valid_meta(code, 'meta_z')
+                if not (has_meta_x or has_meta_z):
+                    result.status = 'SKIP'
+                    result.error = "No metachecks"
+                    result.warnings.append('SingleShot: requires code with non-empty meta_x/meta_z')
+                    return result
+                # Pass code, dem, rounds, and basis for single-shot decoding
+                decoder = decoder_class(code=code, dem=dem, rounds=rounds, basis="Z")
             else:
                 decoder = decoder_class(dem=dem)
         except ChromobiusIncompatibleError:
@@ -240,6 +338,11 @@ def test_decoder_on_code(
             result.status = 'SKIP'
             result.error = "Not a concatenated code"
             result.warnings.append('Concatenated: requires ConcatenatedCode')
+            return result
+        except SingleShotDecoderIncompatibleError:
+            result.status = 'SKIP'
+            result.error = "No metachecks"
+            result.warnings.append('SingleShot: requires code with meta_x/meta_z')
             return result
         except Exception as e:
             err_msg = str(e)
@@ -948,6 +1051,20 @@ def load_all_decoders() -> Dict[str, Type]:
     try:
         from qectostim.decoders.concatenated_decoder import FlatConcatenatedDecoder
         decoder_classes['FlatConcat'] = FlatConcatenatedDecoder
+    except ImportError:
+        pass
+    
+    # Hierarchical Concatenated Decoder (v2 - proper hierarchical algorithm)
+    try:
+        from qectostim.decoders.concatenated_decoder_v2 import HierarchicalConcatenatedDecoder
+        decoder_classes['Hierarchical'] = HierarchicalConcatenatedDecoder
+    except ImportError:
+        pass
+    
+    # Single-Shot Decoder with syndrome repair for 4D codes
+    try:
+        from qectostim.decoders.single_shot_decoder import SingleShotDecoder
+        decoder_classes['SingleShot'] = SingleShotDecoder
     except ImportError:
         pass
     

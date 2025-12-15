@@ -622,6 +622,63 @@ def css_intersection_check(hx: np.ndarray, hz: np.ndarray) -> bool:
     return np.all((hx @ hz.T) % 2 == 0)
 
 
+def validate_css_code(
+    hx: np.ndarray,
+    hz: np.ndarray,
+    code_name: str = "code",
+    raise_on_error: bool = False
+) -> Tuple[bool, int, str]:
+    """
+    Validate a CSS code and compute its logical qubit count k.
+    
+    Performs comprehensive validation:
+    1. Checks CSS constraint: hx @ hz.T = 0 (mod 2)
+    2. Computes k = n - rank(hx) - rank(hz) 
+    3. Verifies k > 0 (code encodes at least one logical qubit)
+    
+    Parameters
+    ----------
+    hx : np.ndarray
+        X-type parity check matrix.
+    hz : np.ndarray
+        Z-type parity check matrix.
+    code_name : str
+        Name of the code (for error messages).
+    raise_on_error : bool
+        If True, raise ValueError on invalid codes.
+        
+    Returns
+    -------
+    is_valid : bool
+        True if the code is valid for standard testing.
+    k : int
+        Number of logical qubits (may be 0 or negative for invalid codes).
+    message : str
+        Description of validation result.
+    """
+    n = hx.shape[1]
+    
+    # Check CSS constraint
+    if not css_intersection_check(hx, hz):
+        msg = f"{code_name}: CSS constraint violated (Hx @ Hz.T != 0 mod 2)"
+        if raise_on_error:
+            raise ValueError(msg)
+        return False, 0, msg
+    
+    # Compute k
+    rank_hx = gf2_rank(hx)
+    rank_hz = gf2_rank(hz)
+    k = n - rank_hx - rank_hz
+    
+    if k <= 0:
+        msg = f"{code_name}: k={k} (n={n}, rank_hx={rank_hx}, rank_hz={rank_hz}) - no logical qubits"
+        if raise_on_error:
+            raise ValueError(msg)
+        return False, k, msg
+    
+    return True, k, f"{code_name}: valid CSS code with k={k}"
+
+
 def compute_css_logicals(
     hx: np.ndarray,
     hz: np.ndarray,
@@ -727,6 +784,7 @@ __all__ = [
     'binary_row_to_z_stabilizer',
     # CSS utilities
     'css_intersection_check',
+    'validate_css_code',
     'compute_css_logicals',
     'vectors_to_paulis_x',
     'vectors_to_paulis_z',

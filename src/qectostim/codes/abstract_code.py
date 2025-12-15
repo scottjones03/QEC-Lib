@@ -18,7 +18,8 @@ Key Design Principles:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 import numpy as np
@@ -28,6 +29,68 @@ if TYPE_CHECKING:
 
 PauliString = Dict[int, str]  # e.g. {0: 'X', 3: 'Z'} means X on qubit0, Z on qubit3
 Coord = Tuple[float, ...]  # D-dimensional coordinates
+
+
+# =============================================================================
+# FT Gadget Experiment Configuration
+# =============================================================================
+
+class ScheduleMode(Enum):
+    """How to schedule CNOT gates in stabilizer measurement rounds."""
+    AUTO = "auto"           # Try geometric first, fall back to graph-coloring
+    GEOMETRIC = "geometric" # Coordinate-based scheduling (requires qubit coords)
+    GRAPH_COLORING = "graph_coloring"  # Conflict-free graph coloring (always works)
+
+
+@dataclass
+class FTGadgetCodeConfig:
+    """
+    Configuration for how a code should behave in FT gadget experiments.
+    
+    This allows codes to customize their behavior without modifying the
+    experiment or builder classes. Codes override get_ft_gadget_config()
+    to return their specific configuration.
+    
+    Attributes
+    ----------
+    schedule_mode : ScheduleMode
+        How to schedule CNOT gates in stabilizer rounds.
+        - AUTO: Try geometric scheduling first, fall back to graph-coloring
+        - GEOMETRIC: Require coordinate-based scheduling (fails if coords unavailable)
+        - GRAPH_COLORING: Always use graph coloring (robust but less efficient)
+        
+    first_round_x_detectors : bool
+        Whether to emit X stabilizer detectors on the first round.
+        True for codes where X stabilizers are deterministic from start.
+        False if initial state makes X stabilizers random.
+        
+    first_round_z_detectors : bool
+        Whether to emit Z stabilizer detectors on the first round.
+        True for codes where Z stabilizers are deterministic from start.
+        False if initial state makes Z stabilizers random.
+        
+    enable_metachecks : bool
+        Whether to use metachecks for single-shot error correction.
+        Only applies to codes with chain_length >= 4 (3D+ codes).
+        
+    project_coords_to_2d : bool
+        Whether to project higher-dimensional coordinates to 2D for visualization.
+        Useful for 3D/4D codes where Stim expects 2D detector coords.
+        
+    supports_transversal_h : bool
+        Whether the code supports transversal Hadamard naturally.
+        Some codes (like XZZX surface) have modified stabilizer structures.
+        
+    extra : Dict[str, Any]
+        Additional code-specific configuration.
+    """
+    schedule_mode: ScheduleMode = ScheduleMode.AUTO
+    first_round_x_detectors: bool = True
+    first_round_z_detectors: bool = True
+    enable_metachecks: bool = False
+    project_coords_to_2d: bool = False
+    supports_transversal_h: bool = True
+    extra: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -115,6 +178,83 @@ class Code(ABC):
     def extra_metadata(self) -> Dict[str, Any]:
         """Arbitrary metadata for advanced use."""
         return {}
+
+    # --- FT Gadget Experiment Interface ---
+    
+    def get_ft_gadget_config(self) -> FTGadgetCodeConfig:
+        """
+        Get configuration for FT gadget experiments.
+        
+        Override this method in subclasses to customize behavior.
+        The default configuration works for most standard CSS codes.
+        
+        Returns
+        -------
+        FTGadgetCodeConfig
+            Configuration for stabilizer rounds, scheduling, etc.
+            
+        Examples
+        --------
+        >>> # Default for most codes
+        >>> code.get_ft_gadget_config()
+        FTGadgetCodeConfig(schedule_mode=AUTO, ...)
+        
+        >>> # Override in subclass for special behavior
+        >>> class XZZXSurfaceCode(CSSCode):
+        ...     def get_ft_gadget_config(self):
+        ...         return FTGadgetCodeConfig(
+        ...             schedule_mode=ScheduleMode.GRAPH_COLORING,
+        ...         )
+        """
+        return FTGadgetCodeConfig()
+    
+    def validate_for_ft_experiment(self) -> Tuple[bool, str]:
+        """
+        Validate that this code can be used in FT gadget experiments.
+        
+        Override in subclasses to add code-specific validation.
+        
+        Returns
+        -------
+        Tuple[bool, str]
+            (is_valid, error_message) - is_valid is True if code is usable.
+        """
+        # Basic validation
+        if self.n <= 0:
+            return False, "Code must have at least 1 physical qubit"
+        if self.k <= 0:
+            return False, "Code must encode at least 1 logical qubit"
+        return True, ""
+    
+    def project_coords_to_2d(
+        self,
+        coords: List[Tuple[float, ...]],
+    ) -> List[Tuple[float, float]]:
+        """
+        Project higher-dimensional coordinates to 2D for visualization.
+        
+        Default implementation takes first two coordinates.
+        Override for codes that need custom projection (e.g., 3D toric).
+        
+        Parameters
+        ----------
+        coords : List[Tuple[float, ...]]
+            Original D-dimensional coordinates.
+            
+        Returns
+        -------
+        List[Tuple[float, float]]
+            Projected 2D coordinates.
+        """
+        result = []
+        for c in coords:
+            if len(c) >= 2:
+                result.append((float(c[0]), float(c[1])))
+            elif len(c) == 1:
+                result.append((float(c[0]), 0.0))
+            else:
+                result.append((0.0, 0.0))
+        return result
 
 
 class StabilizerCode(Code):
