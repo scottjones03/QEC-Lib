@@ -14,6 +14,7 @@ import numpy as np
 
 from ..generic.qldpc_base import QLDPCCode
 from ..abstract_css import CSSCode
+from ..utils import compute_css_logicals, vectors_to_paulis_x, vectors_to_paulis_z
 
 
 class ExpanderLPCode(QLDPCCode):
@@ -148,8 +149,14 @@ class ExpanderLPCode(QLDPCCode):
     def _compute_logicals(
         hx: np.ndarray, hz: np.ndarray, n_qubits: int
     ) -> Tuple[List[str], List[str]]:
-        """Compute logical operators."""
-        return (["Z" * n_qubits], ["X" * n_qubits])
+        """Compute logical operators using CSS kernel/image prescription."""
+        try:
+            log_x_vecs, log_z_vecs = compute_css_logicals(hx, hz)
+            logical_x = vectors_to_paulis_x(log_x_vecs) if log_x_vecs else [{0: 'X'}]
+            logical_z = vectors_to_paulis_z(log_z_vecs) if log_z_vecs else [{0: 'Z'}]
+            return logical_x, logical_z
+        except Exception:
+            return [{0: 'X'}], [{0: 'Z'}]
     
     def qubit_coords(self) -> List[Tuple[float, float]]:
         """
@@ -349,8 +356,14 @@ class DHLVCode(QLDPCCode):
     def _compute_logicals(
         hx: np.ndarray, hz: np.ndarray, n_qubits: int
     ) -> Tuple[List[str], List[str]]:
-        """Compute logical operators."""
-        return (["Z" * n_qubits], ["X" * n_qubits])
+        """Compute logical operators using CSS kernel/image prescription."""
+        try:
+            log_x_vecs, log_z_vecs = compute_css_logicals(hx, hz)
+            logical_x = vectors_to_paulis_x(log_x_vecs) if log_x_vecs else [{0: 'X'}]
+            logical_z = vectors_to_paulis_z(log_z_vecs) if log_z_vecs else [{0: 'Z'}]
+            return logical_x, logical_z
+        except Exception:
+            return [{0: 'X'}], [{0: 'Z'}]
     
     def qubit_coords(self) -> List[Tuple[float, float]]:
         """
@@ -477,8 +490,14 @@ class CampbellDoubleHGPCode(QLDPCCode):
     def _compute_logicals(
         hx: np.ndarray, hz: np.ndarray, n_qubits: int
     ) -> Tuple[List[str], List[str]]:
-        """Compute logical operators."""
-        return (["Z" * n_qubits], ["X" * n_qubits])
+        """Compute logical operators using CSS kernel/image prescription."""
+        try:
+            log_x_vecs, log_z_vecs = compute_css_logicals(hx, hz)
+            logical_x = vectors_to_paulis_x(log_x_vecs) if log_x_vecs else [{0: 'X'}]
+            logical_z = vectors_to_paulis_z(log_z_vecs) if log_z_vecs else [{0: 'Z'}]
+            return logical_x, logical_z
+        except Exception:
+            return [{0: 'X'}], [{0: 'Z'}]
     
     def qubit_coords(self) -> List[Tuple[float, float]]:
         """
@@ -643,8 +662,14 @@ class LosslessExpanderBPCode(QLDPCCode):
     def _compute_logicals(
         hx: np.ndarray, hz: np.ndarray, n_qubits: int
     ) -> Tuple[List[str], List[str]]:
-        """Compute logical operators."""
-        return (["Z" * n_qubits], ["X" * n_qubits])
+        """Compute logical operators using CSS kernel/image prescription."""
+        try:
+            log_x_vecs, log_z_vecs = compute_css_logicals(hx, hz)
+            logical_x = vectors_to_paulis_x(log_x_vecs) if log_x_vecs else [{0: 'X'}]
+            logical_z = vectors_to_paulis_z(log_z_vecs) if log_z_vecs else [{0: 'Z'}]
+            return logical_x, logical_z
+        except Exception:
+            return [{0: 'X'}], [{0: 'Z'}]
     
     def qubit_coords(self) -> List[Tuple[float, float]]:
         """
@@ -847,8 +872,14 @@ class HigherDimHomProductCode(QLDPCCode):
     def _compute_logicals(
         hx: np.ndarray, hz: np.ndarray, n_qubits: int
     ) -> Tuple[List[str], List[str]]:
-        """Compute logical operators."""
-        return (["Z" * n_qubits], ["X" * n_qubits])
+        """Compute logical operators using CSS kernel/image prescription."""
+        try:
+            log_x_vecs, log_z_vecs = compute_css_logicals(hx, hz)
+            logical_x = vectors_to_paulis_x(log_x_vecs) if log_x_vecs else [{0: 'X'}]
+            logical_z = vectors_to_paulis_z(log_z_vecs) if log_z_vecs else [{0: 'Z'}]
+            return logical_x, logical_z
+        except Exception:
+            return [{0: 'X'}], [{0: 'Z'}]
     
     def qubit_coords(self) -> List[Tuple[float, float]]:
         """

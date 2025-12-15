@@ -38,13 +38,24 @@ class CircuitDepolarizingNoise(NoiseModel):
         self.p2 = float(p2)
 
     def apply(self, circuit: stim.Circuit) -> stim.Circuit:
+        """Apply circuit depolarizing noise.
+        
+        Handles REPEAT blocks by recursively applying noise to their body.
+        """
+        return self._apply_impl(circuit)
+    
+    def _apply_impl(self, circuit: stim.Circuit) -> stim.Circuit:
+        """Implementation of noise application."""
         # First pass: find index of the last non-measurement/non-reset gate
         # acting on each qubit. We do *not* treat M/DETECTOR/OBSERVABLE_INCLUDE
         # as gates for this purpose.
         last_gate_on_qubit: Dict[int, int] = {}
 
-        instructions: List[stim.CircuitInstruction] = list(circuit)
+        instructions: List = list(circuit)
         for idx, inst in enumerate(instructions):
+            # Handle REPEAT blocks - don't track their internal structure for last_gate
+            if isinstance(inst, stim.CircuitRepeatBlock):
+                continue
             name = inst.name.upper()
             if name in {"M", "MR", "R", "MRX", "MX", "MY", "MZ",
                         "DETECTOR", "OBSERVABLE_INCLUDE",
@@ -59,6 +70,12 @@ class CircuitDepolarizingNoise(NoiseModel):
         noisy = stim.Circuit()
 
         for idx, inst in enumerate(instructions):
+            # Handle REPEAT blocks recursively
+            if isinstance(inst, stim.CircuitRepeatBlock):
+                noisy_body = self._apply_impl(inst.body_copy())
+                noisy.append(stim.CircuitRepeatBlock(inst.repeat_count, noisy_body))
+                continue
+            
             noisy.append(inst)
             name = inst.name.upper()
 
@@ -87,5 +104,72 @@ class CircuitDepolarizingNoise(NoiseModel):
                         f"Gate {name} has odd number of qubit targets: {qubit_targets}"
                     )
                 noisy.append("DEPOLARIZE2", qubit_targets, self.p2)
+
+        return noisy
+
+
+class StimStyleDepolarizingNoise(NoiseModel):
+    """Insert depolarizing noise after ALL Clifford gates.
+    
+    This exactly matches Stim's `after_clifford_depolarization` parameter behavior
+    in `stim.Circuit.generated()`. Unlike CircuitDepolarizingNoise, this does NOT
+    skip noise on the final gate touching each qubit.
+    
+    Use this noise model when comparing our circuits against Stim's reference
+    circuits to ensure fair comparison.
+    
+    Parameters
+    ----------
+    p : float
+        Depolarization probability. Applied as DEPOLARIZE1(p) after 1-qubit
+        Clifford gates and DEPOLARIZE2(p) after 2-qubit Clifford gates.
+    """
+
+    def __init__(self, p: float = 0.0):
+        self.p = float(p)
+
+    def apply(self, circuit: stim.Circuit) -> stim.Circuit:
+        """Apply Stim-style depolarizing noise after every Clifford gate.
+        
+        Handles REPEAT blocks by recursively applying noise to their body.
+        """
+        noisy = stim.Circuit()
+
+        for inst in circuit:
+            # Handle REPEAT blocks recursively
+            if isinstance(inst, stim.CircuitRepeatBlock):
+                noisy_body = self.apply(inst.body_copy())
+                noisy.append(stim.CircuitRepeatBlock(inst.repeat_count, noisy_body))
+                continue
+            
+            noisy.append(inst)
+            name = inst.name.upper()
+
+            # Extract only qubit targets.
+            qubit_targets = [t.value for t in inst.targets_copy() if t.is_qubit_target]
+            if not qubit_targets or self.p <= 0:
+                continue
+
+            # 1-qubit Clifford gates: add DEPOLARIZE1
+            # This matches the gates Stim adds noise after with after_clifford_depolarization
+            if name in {
+                "H", "X", "Y", "Z", "S", "S_DAG",
+                "SQRT_X", "SQRT_X_DAG",
+                "SQRT_Y", "SQRT_Y_DAG",
+                "C_XYZ", "C_ZYX",  # Additional Clifford gates
+                "H_XY", "H_XZ", "H_YZ",  # Hadamard variants
+            }:
+                noisy.append("DEPOLARIZE1", qubit_targets, self.p)
+
+            # 2-qubit Clifford gates: add DEPOLARIZE2
+            if name in {"CX", "CNOT", "CZ", "CY", "ISWAP", "ISWAP_DAG", 
+                        "SWAP", "XCX", "XCY", "XCZ", "YCX", "YCY", "YCZ",
+                        "ZCX", "ZCY", "ZCZ", "SQRT_XX", "SQRT_XX_DAG",
+                        "SQRT_YY", "SQRT_YY_DAG", "SQRT_ZZ", "SQRT_ZZ_DAG"}:
+                if len(qubit_targets) % 2 != 0:
+                    raise ValueError(
+                        f"Gate {name} has odd number of qubit targets: {qubit_targets}"
+                    )
+                noisy.append("DEPOLARIZE2", qubit_targets, self.p)
 
         return noisy

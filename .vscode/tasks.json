@@ -17,6 +17,60 @@
 			"label": "Test Transversal Refactor",
 			"type": "shell",
 			"command": "\"/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/my_venv/bin/python\" \"/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/test_transversal_refactor.py\""
+		},
+		{
+			"label": "Test Spatial Metachecks",
+			"type": "shell",
+			"command": "\"/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/my_venv/bin/python\" \"/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/test_spatial_metachecks.py\"",
+			"isBackground": false
+		},
+		{
+			"label": "Test Hierarchical Decoder",
+			"type": "shell",
+			"command": "\"/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/my_venv/bin/python\" \"/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/test_hierarchical_decoder.py\"",
+			"group": "test"
+		},
+		{
+			"label": "Test Single Shot Decoder",
+			"type": "shell",
+			"command": "\"/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/my_venv/bin/python\" \"/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/test_single_shot_decoder.py\"",
+			"group": "test"
+		},
+		{
+			"label": "Debug DET errors",
+			"type": "shell",
+			"command": "\"/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/my_venv/bin/python\" debug_det_errors.py",
+			"isBackground": false
+		},
+		{
+			"label": "Debug Hierarchical",
+			"type": "shell",
+			"command": "\"/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/my_venv/bin/python\" \"/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/debug_hierarchical.py\"",
+			"group": "test"
+		},
+		{
+			"label": "Debug Hierarchical Quick",
+			"type": "shell",
+			"command": "\"/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/my_venv/bin/python\" \"/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/debug_hierarchical_quick.py\"",
+			"isBackground": false
+		},
+		{
+			"label": "Test non-CSS code fix",
+			"type": "shell",
+			"command": "cd '/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim' && source my_venv/bin/activate && python test_non_css_fix.py",
+			"isBackground": false
+		},
+		{
+			"label": "Test Decoder Fixes",
+			"type": "shell",
+			"command": "\"/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/my_venv/bin/python\" \"/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/test_decoder_fixes.py\"",
+			"group": "test"
+		},
+		{
+			"label": "Debug SingleShot",
+			"type": "shell",
+			"command": "\"/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/my_venv/bin/python\" \"/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/debug_single_shot.py\"",
+			"isBackground": false
 		}
 	]
 }

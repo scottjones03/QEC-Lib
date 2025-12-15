@@ -8,10 +8,13 @@ decoding with ConcatenatedDecoder.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 import numpy as np
 import stim
+
+if TYPE_CHECKING:
+    from qectostim.codes.composite.concatenated import ConcatenatedCode
 
 from qectostim.experiments.memory import (
     CSSMemoryExperiment,
@@ -19,9 +22,88 @@ from qectostim.experiments.memory import (
     ops_valid,
     ops_len,
     pauli_at,
-    apply_stabilizer_cnots_with_ticks,
 )
+from qectostim.utils.scheduling_core import graph_coloring_cnots
 
+
+
+
+def apply_stabilizer_cnots_with_ticks(
+    circuit: stim.Circuit,
+    parity_check: np.ndarray,
+    data_qubits: List[int],
+    ancilla_qubits: List[int],
+    is_x_type: bool = False,
+) -> None:
+    """
+    Apply stabilizer CNOT gates for CSS codes with TICK scheduling.
+    
+    This function applies CNOTs for either X-type or Z-type stabilizers,
+    scheduling them into conflict-free layers using graph coloring.
+    
+    CNOT direction convention for CSS stabilizer measurement:
+    - X-type stabilizers: CNOT(data, ancilla) - data controls
+    - Z-type stabilizers: CNOT(data, ancilla) - data controls (SAME direction!)
+    
+    Why the same direction for both?
+    - X-type: H-CNOT(d→a)-H measures ⊗σ^x by propagating X from data to ancilla
+    - Z-type: CNOT(d→a) measures ⊗σ^z by propagating Z from data to ancilla
+    
+    The key insight is that CNOT propagates Z on control and X on target:
+    - CNOT|Z⊗I⟩ = |Z⊗Z⟩ (Z copies from control to target)
+    - CNOT|I⊗X⟩ = |X⊗X⟩ (X copies from target to control)
+    
+    Parameters
+    ----------
+    circuit : stim.Circuit
+        The Stim circuit to append gates to.
+    parity_check : np.ndarray
+        Parity check matrix (n_stabs x n_data) - either Hx or Hz.
+    data_qubits : List[int]
+        Global indices of data qubits.
+    ancilla_qubits : List[int]
+        Global indices of ancilla qubits.
+    is_x_type : bool
+        True for X-type stabilizers (H applied before/after), False for Z-type.
+        Note: Both use the same CNOT direction (data→ancilla).
+    """
+    if parity_check is None or parity_check.size == 0:
+        return
+    
+    n_stabs = parity_check.shape[0]
+    n = len(data_qubits)
+    
+    # Collect all CNOT pairs - both X and Z use data→ancilla direction
+    cnot_pairs: List[Tuple[int, int]] = []
+    
+    for s_idx in range(min(n_stabs, len(ancilla_qubits))):
+        anc = ancilla_qubits[s_idx]
+        row = parity_check[s_idx]
+        
+        for q in range(min(n, len(row))):
+            if row[q]:
+                dq = data_qubits[q]
+                # Both X-type and Z-type: CNOT from data to ancilla
+                cnot_pairs.append((dq, anc))
+    
+    if not cnot_pairs:
+        return
+    
+    # Schedule into conflict-free layers
+    layers = graph_coloring_cnots(cnot_pairs)
+    
+    # Apply each layer with TICK separation
+    # NOTE: We add TICK after every layer (not just between) for proper DEM error granularity
+    for layer_idx, layer_cnots in enumerate(layers):
+        if layer_idx > 0:
+            circuit.append("TICK")
+        
+        for ctrl, targ in layer_cnots:
+            circuit.append("CX", [ctrl, targ])
+    
+    # Add final TICK after all CNOT layers
+    if layers:
+        circuit.append("TICK")
 
 class ConcatenatedMemoryExperiment(CSSMemoryExperiment):
     """
@@ -78,8 +160,16 @@ class ConcatenatedMemoryExperiment(CSSMemoryExperiment):
         )
         
         # Store concatenation structure
-        self._inner_code = code._inner_code
-        self._outer_code = code._outer_code
+        # ConcatenatedCSSCode uses .outer and .inner, not ._inner_code/_outer_code
+        if hasattr(code, '_inner_code') and hasattr(code, '_outer_code'):
+            self._inner_code = code._inner_code
+            self._outer_code = code._outer_code
+        elif hasattr(code, 'inner') and hasattr(code, 'outer'):
+            self._inner_code = code.inner
+            self._outer_code = code.outer
+        else:
+            raise ValueError("Code must have inner/outer code attributes")
+        
         self._n_outer = code._n_outer  # Number of inner code blocks
         
         # Inner code stabilizer counts
@@ -111,6 +201,18 @@ class ConcatenatedMemoryExperiment(CSSMemoryExperiment):
         """
         from qectostim.codes.composite.concatenated import ConcatenatedCode
         
+        def _get_inner(code):
+            """Helper to get inner code from either attribute name."""
+            if hasattr(code, '_inner_code'):
+                return code._inner_code
+            return code.inner
+        
+        def _get_outer(code):
+            """Helper to get outer code from either attribute name."""
+            if hasattr(code, '_outer_code'):
+                return code._outer_code
+            return code.outer
+        
         def get_level_info(code, level=0):
             """Recursively extract level information."""
             if not isinstance(code, ConcatenatedCode):
@@ -128,8 +230,10 @@ class ConcatenatedMemoryExperiment(CSSMemoryExperiment):
                 }
             
             # Recursive case: concatenated code
-            inner_info = get_level_info(code._inner_code, level + 1)
-            outer_info = get_level_info(code._outer_code, level + 1)
+            inner_code = _get_inner(code)
+            outer_code = _get_outer(code)
+            inner_info = get_level_info(inner_code, level + 1)
+            outer_info = get_level_info(outer_code, level + 1)
             
             return {
                 'level': level,
@@ -141,8 +245,8 @@ class ConcatenatedMemoryExperiment(CSSMemoryExperiment):
                 'inner': inner_info,
                 'outer': outer_info,
                 'n_blocks': code._n_outer,
-                'inner_code': code._inner_code,
-                'outer_code': code._outer_code,
+                'inner_code': inner_code,
+                'outer_code': outer_code,
             }
         
         return get_level_info(self.code)
@@ -434,8 +538,223 @@ class ConcatenatedMemoryExperiment(CSSMemoryExperiment):
             lookbacks = [idx - m_index for idx in obs_rec_indices]
             c.append("OBSERVABLE_INCLUDE", [stim.target_rec(lb) for lb in lookbacks], 0)
         
+        # =====================================================================
+        # PHASE 3: Emit INNER LOGICAL OBSERVABLES for hierarchical decoding
+        # =====================================================================
+        # For each inner block, emit an observable that tracks whether an inner
+        # logical error occurred. This enables the hierarchical decoder to:
+        # 1. Decode each inner block's syndrome to get inner logical prediction
+        # 2. Use inner logical predictions to build effective outer syndrome
+        # 3. Decode outer code with corrected syndrome
+        #
+        # Observable 0: Main concatenated logical (already emitted above)
+        # Observable 1: Inner block 0's logical error
+        # Observable 2: Inner block 1's logical error
+        # ... etc.
+        self._emit_inner_logical_observables(c, data_meas, m_index, basis)
+        
         return c
     
+    def _emit_inner_logical_observables(
+        self,
+        circuit: stim.Circuit,
+        data_meas: Dict[int, int],
+        m_index: int,
+        basis: str
+    ) -> None:
+        """
+        Emit OBSERVABLE_INCLUDE for each inner block's logical operator.
+        
+        For hierarchical decoding, we need to track inner logical errors separately
+        from the main concatenated logical. Each inner block gets its own observable.
+        
+        Supports multi-level concatenation: if the inner code is itself concatenated,
+        recursively emit observables for nested inner blocks.
+        
+        Parameters
+        ----------
+        circuit : stim.Circuit
+            The circuit being built.
+        data_meas : dict
+            Mapping from data qubit index to measurement index.
+        m_index : int
+            Current measurement index (for computing rec lookbacks).
+        basis : str
+            Measurement basis ('X' or 'Z').
+        """
+        from qectostim.codes.composite.concatenated import ConcatenatedCode
+        
+        # Check if inner code is itself concatenated (multi-level)
+        inner_is_concatenated = isinstance(self._inner_code, ConcatenatedCode)
+        
+        # Get inner code's logical operator
+        inner_z_ops = get_logical_ops(self._inner_code, 'z')
+        inner_x_ops = get_logical_ops(self._inner_code, 'x')
+        
+        n_inner = self._inner_code.n
+        
+        # Determine which inner logical to use based on basis
+        if basis == "Z" and ops_valid(inner_z_ops) and ops_len(inner_z_ops) > 0:
+            inner_logical = inner_z_ops[0]  # First Z logical of inner code
+            pauli_type = ("Z", "Y")
+        elif basis == "X" and ops_valid(inner_x_ops) and ops_len(inner_x_ops) > 0:
+            inner_logical = inner_x_ops[0]  # First X logical of inner code
+            pauli_type = ("X", "Y")
+        else:
+            # Fallback: can't determine inner logical
+            return
+        
+        # Get the support of the inner logical operator
+        inner_logical_support = [
+            q for q in range(n_inner) 
+            if pauli_at(inner_logical, q) in pauli_type
+        ]
+        
+        if not inner_logical_support:
+            return
+        
+        # Observable counter starts at 1 (0 is main concatenated logical)
+        obs_counter = 1
+        
+        # Emit an observable for each inner block
+        for block_id in range(self._n_outer):
+            block_offset = block_id * n_inner
+            
+            # Map inner logical support to global qubit indices for this block
+            block_logical_qubits = [q + block_offset for q in inner_logical_support]
+            
+            # Get measurement indices
+            obs_rec_indices = [
+                data_meas[q] for q in block_logical_qubits 
+                if q in data_meas
+            ]
+            
+            if obs_rec_indices:
+                lookbacks = [idx - m_index for idx in obs_rec_indices]
+                # Observable obs_counter: inner logical for block block_id
+                circuit.append(
+                    "OBSERVABLE_INCLUDE", 
+                    [stim.target_rec(lb) for lb in lookbacks], 
+                    obs_counter
+                )
+            
+            obs_counter += 1
+            
+            # For multi-level concatenation, also emit nested inner logicals
+            if inner_is_concatenated:
+                obs_counter = self._emit_nested_inner_logicals(
+                    circuit, data_meas, m_index, basis,
+                    self._inner_code, block_offset, obs_counter
+                )
+    
+    def _emit_nested_inner_logicals(
+        self,
+        circuit: stim.Circuit,
+        data_meas: Dict[int, int],
+        m_index: int,
+        basis: str,
+        nested_code: 'ConcatenatedCode',
+        global_offset: int,
+        obs_counter: int
+    ) -> int:
+        """
+        Recursively emit observables for nested inner blocks in multi-level concatenation.
+        
+        For a 3-level code A ∘ (B ∘ C):
+        - Level 1: n_A blocks of (B ∘ C)
+        - Level 2: Each (B ∘ C) block has n_B sub-blocks of C
+        
+        This method handles level 2+ recursively.
+        
+        Parameters
+        ----------
+        circuit : stim.Circuit
+            The circuit being built.
+        data_meas : dict
+            Mapping from data qubit index to measurement index.
+        m_index : int
+            Current measurement index.
+        basis : str
+            Measurement basis.
+        nested_code : ConcatenatedCode
+            The nested concatenated code to emit observables for.
+        global_offset : int
+            Offset to add to qubit indices.
+        obs_counter : int
+            Current observable number to use.
+            
+        Returns
+        -------
+        int
+            Updated observable counter after emitting all nested observables.
+        """
+        from qectostim.codes.composite.concatenated import ConcatenatedCode
+        
+        # Get nested code's inner and outer
+        if hasattr(nested_code, '_inner_code') and hasattr(nested_code, '_outer_code'):
+            nested_inner = nested_code._inner_code
+            nested_outer = nested_code._outer_code
+        elif hasattr(nested_code, 'inner') and hasattr(nested_code, 'outer'):
+            nested_inner = nested_code.inner
+            nested_outer = nested_code.outer
+        else:
+            return obs_counter
+        
+        n_nested_outer = nested_outer.n
+        n_nested_inner = nested_inner.n
+        
+        # Get nested inner logical support
+        inner_z_ops = get_logical_ops(nested_inner, 'z')
+        inner_x_ops = get_logical_ops(nested_inner, 'x')
+        
+        if basis == "Z" and ops_valid(inner_z_ops) and ops_len(inner_z_ops) > 0:
+            inner_logical = inner_z_ops[0]
+            pauli_type = ("Z", "Y")
+        elif basis == "X" and ops_valid(inner_x_ops) and ops_len(inner_x_ops) > 0:
+            inner_logical = inner_x_ops[0]
+            pauli_type = ("X", "Y")
+        else:
+            return obs_counter
+        
+        inner_logical_support = [
+            q for q in range(n_nested_inner) 
+            if pauli_at(inner_logical, q) in pauli_type
+        ]
+        
+        if not inner_logical_support:
+            return obs_counter
+        
+        # Emit observables for each sub-block
+        for sub_block_id in range(n_nested_outer):
+            sub_block_offset = global_offset + sub_block_id * n_nested_inner
+            
+            # Map inner logical support to global qubit indices
+            block_logical_qubits = [q + sub_block_offset for q in inner_logical_support]
+            
+            obs_rec_indices = [
+                data_meas[q] for q in block_logical_qubits 
+                if q in data_meas
+            ]
+            
+            if obs_rec_indices:
+                lookbacks = [idx - m_index for idx in obs_rec_indices]
+                circuit.append(
+                    "OBSERVABLE_INCLUDE", 
+                    [stim.target_rec(lb) for lb in lookbacks], 
+                    obs_counter
+                )
+            
+            obs_counter += 1
+            
+            # Recurse if nested_inner is also concatenated
+            if isinstance(nested_inner, ConcatenatedCode):
+                obs_counter = self._emit_nested_inner_logicals(
+                    circuit, data_meas, m_index, basis,
+                    nested_inner, sub_block_offset, obs_counter
+                )
+        
+        return obs_counter
+
     def get_detector_slices(self) -> Dict[str, Any]:
         """
         Get detector slice information for ConcatenatedDecoder.

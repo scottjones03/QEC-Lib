@@ -27,6 +27,7 @@ from itertools import product
 
 from qectostim.codes.abstract_css import CSSCode, Coord2D
 from qectostim.codes.complexes.css_complex import CSSChainComplex3
+from qectostim.codes.utils import compute_css_logicals, vectors_to_paulis_x, vectors_to_paulis_z
 
 Coord3D = Tuple[float, float, float]
 

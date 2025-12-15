@@ -291,10 +291,13 @@ class SurgeryCNOT(Gadget, SurgeryGadgetMixin):
             
             circuit.append("TICK")
             
+            # CZ gates entangle the blocks, so we must clear measurement history
+            # to avoid comparing pre-CZ measurements with post-CZ measurements
             return PhaseResult(
                 phase_type=PhaseType.GATE,
                 is_final=False,
                 needs_stabilizer_rounds=self.num_merge_rounds,
+                stabilizer_transform=StabilizerTransform.identity(clear_history=True),
             )
         
         elif phase == 1:
@@ -324,10 +327,16 @@ class SurgeryCNOT(Gadget, SurgeryGadgetMixin):
         """
         Return how surgery CNOT transforms stabilizers.
         
-        CNOT doesn't change stabilizer types on individual blocks,
-        but creates correlations between them.
+        Surgery CNOT applies CZ and CNOT gates between blocks, which entangles them.
+        Measurements from before the gate cannot be compared to measurements after
+        because the entanglement changes stabilizer eigenvalues non-trivially.
+        We must clear the measurement history to avoid non-deterministic detectors.
+        
+        Since CNOT propagates X from control to target (X_ctrl → X_ctrl ⊗ X_tgt),
+        first-round detectors after the gate may be non-deterministic. We use
+        skip_first_round=True to avoid emitting these detectors.
         """
-        return StabilizerTransform.identity()
+        return StabilizerTransform.identity(clear_history=True, skip_first_round=True)
     
     def get_observable_transform(self) -> ObservableTransform:
         """
@@ -562,8 +571,15 @@ class LatticeZZMerge(Gadget, SurgeryGadgetMixin):
         )
     
     def get_stabilizer_transform(self) -> StabilizerTransform:
-        """ZZ merge doesn't change stabilizer types."""
-        return StabilizerTransform.identity()
+        """
+        Return how ZZ merge transforms stabilizers.
+        
+        ZZ merge applies CZ gates between blocks, which entangles them.
+        Measurements from before the gate cannot be compared to measurements after
+        because the entanglement changes stabilizer eigenvalues non-trivially.
+        We must clear the measurement history to avoid non-deterministic detectors.
+        """
+        return StabilizerTransform.identity(clear_history=True)
     
     def get_observable_transform(self) -> ObservableTransform:
         """ZZ merge couples Z observables but doesn't transform them."""
@@ -716,8 +732,21 @@ class LatticeXXMerge(Gadget, SurgeryGadgetMixin):
         )
     
     def get_stabilizer_transform(self) -> StabilizerTransform:
-        """XX merge doesn't change stabilizer types."""
-        return StabilizerTransform.identity()
+        """
+        Return how XX merge transforms stabilizers.
+        
+        XX merge applies CNOT gates between blocks, which entangles them.
+        Measurements from before the gate cannot be compared to measurements after
+        because the entanglement changes stabilizer eigenvalues non-trivially.
+        We must clear the measurement history to avoid non-deterministic detectors.
+        
+        Additionally, CNOT propagates X from control to target (X_ctrl → X_ctrl ⊗ X_tgt).
+        Since the target block is prepared in Z basis (|0⟩), X measurements on the
+        control block that touch boundary qubits will be non-deterministic even in
+        the first round after the gate. We use skip_first_round=True to avoid
+        emitting these non-deterministic first-round detectors.
+        """
+        return StabilizerTransform.identity(clear_history=True, skip_first_round=True)
     
     def get_observable_transform(self) -> ObservableTransform:
         """XX merge couples X observables but doesn't transform them."""

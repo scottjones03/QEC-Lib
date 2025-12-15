@@ -122,26 +122,59 @@ class StabilizerTransform:
         z_becomes: What Z stabilizers become ("X", "Z", or "Y")
         clear_history: Whether to clear stabilizer history (can't compare across gate)
         swap_xz: Whether to swap X and Z in the history (for H-like gates)
+        skip_first_round: Whether to skip first-round detectors (for teleportation)
     """
     x_becomes: str = "X"
     z_becomes: str = "Z"
     clear_history: bool = False
     swap_xz: bool = False
+    skip_first_round: bool = False
     
     @classmethod
-    def identity(cls) -> "StabilizerTransform":
-        """No transformation."""
-        return cls(x_becomes="X", z_becomes="Z")
+    def identity(cls, clear_history: bool = False, skip_first_round: bool = False) -> "StabilizerTransform":
+        """No transformation of stabilizer types.
+        
+        Parameters
+        ----------
+        clear_history : bool
+            If True, clear measurement history. This is needed for two-qubit gates
+            (CNOT, CZ, SWAP) where blocks become entangled and measurements from
+            before the gate cannot be compared to measurements after.
+        skip_first_round : bool
+            If True, skip emitting first-round detectors after the gate. This is
+            needed for partial entangling gates (like lattice surgery XX merge)
+            where the blocks become entangled such that individual stabilizer
+            measurements are non-deterministic.
+        """
+        return cls(x_becomes="X", z_becomes="Z", clear_history=clear_history, skip_first_round=skip_first_round)
     
     @classmethod
     def hadamard(cls) -> "StabilizerTransform":
-        """Hadamard swaps X and Z."""
-        return cls(x_becomes="Z", z_becomes="X", clear_history=True, swap_xz=True)
+        """Hadamard swaps X and Z.
+        
+        For CSS codes, Hadamard swaps X↔Z stabilizer types. After the gate:
+        - What were Z stabilizers become X stabilizers (and vice versa)
+        - The deterministic basis swaps: if measuring in Z basis before H,
+          Z stabilizers were deterministic. After H, X stabilizers are deterministic.
+        
+        We use swap_xz=True to swap the measurement_basis, which correctly:
+        - Emits first-round detectors for the now-deterministic type
+        - Skips first-round detectors for the now-random type
+        
+        We do NOT use skip_first_round=True because one stabilizer type IS
+        deterministic after the gate - the swapped measurement basis handles this.
+        """
+        return cls(x_becomes="Z", z_becomes="X", clear_history=True, swap_xz=True, skip_first_round=False)
     
     @classmethod
     def pauli(cls) -> "StabilizerTransform":
         """Pauli gates don't change stabilizer types."""
         return cls(x_becomes="X", z_becomes="Z")
+    
+    @classmethod
+    def teleportation(cls, swap_xz: bool = False) -> "StabilizerTransform":
+        """Teleportation: clear history and skip first-round detectors."""
+        return cls(clear_history=True, swap_xz=swap_xz, skip_first_round=True)
 
 
 @dataclass

@@ -212,6 +212,41 @@ class CSSChainComplex4(ChainComplex):
         else:
             raise ValueError(f"Unsupported qubit_grade {self.qubit_grade}")
 
+    @property
+    def meta_z(self) -> Optional[np.ndarray]:
+        """Z-type meta-checks for 3D codes.
+        
+        For a 4-chain with qubits on grade 1 (edges):
+        - X stabilizers come from ∂2^T (faces)
+        - Meta-Z checks come from ∂3^T (cubes checking faces)
+        - The metacheck constraint: ∂3 @ ∂2 = 0 ensures meta_z @ hx^T = 0
+        
+        This enables single-shot correction for the X-type syndrome.
+        """
+        if self.qubit_grade == 1:
+            # Cubes check faces: meta-Z from ∂3^T
+            return (self.boundary_3.T.astype(np.uint8) % 2)
+        elif self.qubit_grade == 2:
+            # No metachecks available for qubits on faces in 4-chain
+            return None
+        return None
+
+    @property
+    def meta_x(self) -> Optional[np.ndarray]:
+        """X-type meta-checks for 3D codes.
+        
+        For a 4-chain with qubits on grade 2 (faces):
+        - Z stabilizers come from ∂2 (faces → edges)
+        - Meta-X checks come from ∂1 (edges → vertices)
+        - The metacheck constraint: ∂1 @ ∂2 = 0 ensures meta_x @ hz^T = 0
+        
+        For qubits on grade 1 (edges), no meta-X checks exist.
+        """
+        if self.qubit_grade == 2:
+            # Vertices check edges: meta-X from ∂1
+            return (self.boundary_1.astype(np.uint8) % 2)
+        return None
+
 
 class FiveCSSChainComplex(ChainComplex):
     """

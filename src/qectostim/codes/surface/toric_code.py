@@ -23,7 +23,7 @@ from typing import Dict, Any, List, Optional, Tuple
 import numpy as np
 
 from qectostim.codes.abstract_css import TopologicalCSSCode, Coord2D
-from qectostim.codes.abstract_code import PauliString
+from qectostim.codes.abstract_code import PauliString, FTGadgetCodeConfig, ScheduleMode
 from qectostim.codes.complexes.css_complex import CSSChainComplex3
 
 
@@ -215,3 +215,22 @@ class ToricCode33(TopologicalCSSCode):
     def distance(self) -> int:
         """Code distance."""
         return self.metadata.get("distance", 3)
+
+    def get_ft_gadget_config(self) -> FTGadgetCodeConfig:
+        """
+        Return FT gadget configuration for 2D toric codes.
+        
+        Toric codes have periodic boundary conditions which can cause 
+        coordinate lookup issues with geometric scheduling. While we've
+        added periodic boundary wrapping support, graph coloring is more
+        robust for codes with non-trivial topology.
+        
+        Additionally, toric codes have 2 logical qubits, so gadget
+        experiments need to be aware of this.
+        """
+        return FTGadgetCodeConfig(
+            schedule_mode=ScheduleMode.GRAPH_COLORING,  # Robust for periodic BCs
+            first_round_x_detectors=True,
+            first_round_z_detectors=True,
+            enable_metachecks=False,
+        )

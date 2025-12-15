@@ -29,6 +29,7 @@ import numpy as np
 from itertools import product
 
 from qectostim.codes.abstract_css import TopologicalCSSCode4D, Coord2D
+from qectostim.codes.abstract_code import FTGadgetCodeConfig, ScheduleMode
 from qectostim.codes.complexes.css_complex import FiveCSSChainComplex
 
 Coord4D = Tuple[float, float, float, float]
@@ -349,7 +350,15 @@ class ToricCode4D(TopologicalCSSCode4D):
     
     @staticmethod
     def _build_logicals(L: int, n_qubits: int) -> Tuple[List[str], List[str]]:
-        """Build logical operators for 4D toric code."""
+        """Build logical operators for 4D toric code.
+        
+        For each face type (e.g., xy), both LX and LZ are defined on that face type:
+        - LX spans the face's primary coordinates (i,j for xy) at fixed complementary coords
+        - LZ spans the face's complementary coordinates (k,l for xy) at shifted primary coords
+        
+        The shift ensures exactly one overlap point between LX and LZ, giving
+        the required anti-commutation. Each logical operator is a 2-torus of L² faces.
+        """
         n_faces_per_orient = L**4
         face_offsets = {'xy': 0, 'xz': 1, 'xw': 2, 'yz': 3, 'yw': 4, 'zw': 5}
         
@@ -360,87 +369,98 @@ class ToricCode4D(TopologicalCSSCode4D):
         logical_x = []
         logical_z = []
         
-        # 6 pairs of logical operators corresponding to 6 independent 2-cycles
-        # Logical X: membrane operators (L² faces)
-        # Logical Z: membrane operators in dual direction
+        # 6 pairs of logical operators, one per face orientation
+        # Each pair uses the SAME face type for both X and Z operators
         
-        # X1 on xy-plane (at z=0, w=0), Z1 on zw-plane
-        lx1 = ['I'] * n_qubits
+        # Pair 0: xy faces
+        # LX: xy(i,j,0,0) spanning i,j at fixed k=0,l=0
+        # LZ: xy(1,1,k,l) spanning k,l at fixed i=1,j=1
+        lx0 = ['I'] * n_qubits
         for i in range(L):
             for j in range(L):
-                lx1[face_idx('xy', i, j, 0, 0)] = 'X'
+                lx0[face_idx('xy', i, j, 0, 0)] = 'X'
+        logical_x.append(''.join(lx0))
+        
+        lz0 = ['I'] * n_qubits
+        for k in range(L):
+            for l in range(L):
+                lz0[face_idx('xy', 1, 1, k, l)] = 'Z'
+        logical_z.append(''.join(lz0))
+        
+        # Pair 1: xz faces
+        # LX: xz(i,0,k,0) spanning i,k at fixed j=0,l=0
+        # LZ: xz(1,j,1,l) spanning j,l at fixed i=1,k=1
+        lx1 = ['I'] * n_qubits
+        for i in range(L):
+            for k in range(L):
+                lx1[face_idx('xz', i, 0, k, 0)] = 'X'
         logical_x.append(''.join(lx1))
         
         lz1 = ['I'] * n_qubits
-        for k in range(L):
+        for j in range(L):
             for l in range(L):
-                lz1[face_idx('zw', 0, 0, k, l)] = 'Z'
+                lz1[face_idx('xz', 1, j, 1, l)] = 'Z'
         logical_z.append(''.join(lz1))
         
-        # X2 on xz-plane, Z2 on yw-plane
+        # Pair 2: xw faces
+        # LX: xw(i,0,0,l) spanning i,l at fixed j=0,k=0
+        # LZ: xw(1,j,k,1) spanning j,k at fixed i=1,l=1
         lx2 = ['I'] * n_qubits
         for i in range(L):
-            for k in range(L):
-                lx2[face_idx('xz', i, 0, k, 0)] = 'X'
+            for l in range(L):
+                lx2[face_idx('xw', i, 0, 0, l)] = 'X'
         logical_x.append(''.join(lx2))
         
         lz2 = ['I'] * n_qubits
         for j in range(L):
-            for l in range(L):
-                lz2[face_idx('yw', 0, j, 0, l)] = 'Z'
+            for k in range(L):
+                lz2[face_idx('xw', 1, j, k, 1)] = 'Z'
         logical_z.append(''.join(lz2))
         
-        # X3 on xw-plane, Z3 on yz-plane
+        # Pair 3: yz faces
+        # LX: yz(0,j,k,0) spanning j,k at fixed i=0,l=0
+        # LZ: yz(i,1,1,l) spanning i,l at fixed j=1,k=1
         lx3 = ['I'] * n_qubits
-        for i in range(L):
-            for l in range(L):
-                lx3[face_idx('xw', i, 0, 0, l)] = 'X'
+        for j in range(L):
+            for k in range(L):
+                lx3[face_idx('yz', 0, j, k, 0)] = 'X'
         logical_x.append(''.join(lx3))
         
         lz3 = ['I'] * n_qubits
-        for j in range(L):
-            for k in range(L):
-                lz3[face_idx('yz', 0, j, k, 0)] = 'Z'
+        for i in range(L):
+            for l in range(L):
+                lz3[face_idx('yz', i, 1, 1, l)] = 'Z'
         logical_z.append(''.join(lz3))
         
-        # X4 on yz-plane, Z4 on xw-plane
+        # Pair 4: yw faces
+        # LX: yw(0,j,0,l) spanning j,l at fixed i=0,k=0
+        # LZ: yw(i,1,k,1) spanning i,k at fixed j=1,l=1
         lx4 = ['I'] * n_qubits
         for j in range(L):
-            for k in range(L):
-                lx4[face_idx('yz', 0, j, k, 0)] = 'X'
+            for l in range(L):
+                lx4[face_idx('yw', 0, j, 0, l)] = 'X'
         logical_x.append(''.join(lx4))
         
         lz4 = ['I'] * n_qubits
         for i in range(L):
-            for l in range(L):
-                lz4[face_idx('xw', i, 0, 0, l)] = 'Z'
+            for k in range(L):
+                lz4[face_idx('yw', i, 1, k, 1)] = 'Z'
         logical_z.append(''.join(lz4))
         
-        # X5 on yw-plane, Z5 on xz-plane
+        # Pair 5: zw faces
+        # LX: zw(0,0,k,l) spanning k,l at fixed i=0,j=0
+        # LZ: zw(i,j,1,1) spanning i,j at fixed k=1,l=1
         lx5 = ['I'] * n_qubits
-        for j in range(L):
+        for k in range(L):
             for l in range(L):
-                lx5[face_idx('yw', 0, j, 0, l)] = 'X'
+                lx5[face_idx('zw', 0, 0, k, l)] = 'X'
         logical_x.append(''.join(lx5))
         
         lz5 = ['I'] * n_qubits
         for i in range(L):
-            for k in range(L):
-                lz5[face_idx('xz', i, 0, k, 0)] = 'Z'
-        logical_z.append(''.join(lz5))
-        
-        # X6 on zw-plane, Z6 on xy-plane
-        lx6 = ['I'] * n_qubits
-        for k in range(L):
-            for l in range(L):
-                lx6[face_idx('zw', 0, 0, k, l)] = 'X'
-        logical_x.append(''.join(lx6))
-        
-        lz6 = ['I'] * n_qubits
-        for i in range(L):
             for j in range(L):
-                lz6[face_idx('xy', i, j, 0, 0)] = 'Z'
-        logical_z.append(''.join(lz6))
+                lz5[face_idx('zw', i, j, 1, 1)] = 'Z'
+        logical_z.append(''.join(lz5))
         
         return logical_x, logical_z
     
@@ -472,6 +492,23 @@ class ToricCode4D(TopologicalCSSCode4D):
                 row = (i // L) % L
                 coords.append((float(col + x_off), float(row + y_off)))
         return coords
+
+    def get_ft_gadget_config(self) -> FTGadgetCodeConfig:
+        """
+        Return FT gadget configuration for 4D toric codes.
+        
+        4D codes require:
+        - GRAPH_COLORING scheduling (4D geometry doesn't map to geometric patterns)
+        - Coordinate projection (already handled by qubit_coords)
+        - Metachecks for single-shot error correction (5-chain provides meta_x and meta_z)
+        """
+        return FTGadgetCodeConfig(
+            schedule_mode=ScheduleMode.GRAPH_COLORING,
+            first_round_x_detectors=True,
+            first_round_z_detectors=True,
+            enable_metachecks=True,  # 4D codes have full metachecks
+            project_coords_to_2d=True,
+        )
 
 
 # Pre-configured instances

@@ -54,6 +54,9 @@ from .abstract_code import (
     PauliString,
     Coord,
     CellEmbedding,
+    # FT Gadget experiment configuration
+    FTGadgetCodeConfig,
+    ScheduleMode,
 )
 
 from .abstract_css import (

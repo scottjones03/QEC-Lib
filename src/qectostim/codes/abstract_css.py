@@ -493,6 +493,91 @@ class CSSCode(HomologicalCode):
             # Unknown gate - assume identity
             return {'X': 'X', 'Z': 'Z', 'Y': 'Y'}
 
+    # =========================================================================
+    # FT Gadget Experiment Hooks (CSS-specific)
+    # =========================================================================
+    
+    def get_x_stabilizer_coords(self) -> Optional[List[Tuple[float, ...]]]:
+        """
+        Get coordinates for X stabilizer ancillas.
+        
+        Override in subclasses to provide custom coordinate layouts.
+        Default implementation checks metadata.
+        
+        Returns
+        -------
+        Optional[List[Tuple[float, ...]]]
+            Coordinates for each X stabilizer, or None if not available.
+        """
+        meta = self._metadata or {}
+        if 'x_stab_coords' in meta:
+            return [tuple(c) for c in meta['x_stab_coords']]
+        return None
+    
+    def get_z_stabilizer_coords(self) -> Optional[List[Tuple[float, ...]]]:
+        """
+        Get coordinates for Z stabilizer ancillas.
+        
+        Override in subclasses to provide custom coordinate layouts.
+        Default implementation checks metadata.
+        
+        Returns
+        -------
+        Optional[List[Tuple[float, ...]]]
+            Coordinates for each Z stabilizer, or None if not available.
+        """
+        meta = self._metadata or {}
+        if 'z_stab_coords' in meta:
+            return [tuple(c) for c in meta['z_stab_coords']]
+        return None
+    
+    def get_stabilizer_schedule(
+        self,
+        basis: str,
+    ) -> Optional[List[List[Tuple[int, int, int]]]]:
+        """
+        Get CNOT schedule for stabilizer measurements.
+        
+        Override in subclasses to provide custom schedules (e.g., XZZX codes
+        have diagonal patterns that require specific CNOT ordering).
+        
+        Parameters
+        ----------
+        basis : str
+            'x' or 'z' for X-type or Z-type stabilizers.
+            
+        Returns
+        -------
+        Optional[List[List[Tuple[int, int, int]]]]
+            Schedule as list of timesteps, each containing (stab_idx, data_qubit, step)
+            tuples. Returns None to use default scheduling.
+            
+        Notes
+        -----
+        When None is returned, the builder will use automatic scheduling based
+        on the code's FTGadgetCodeConfig.schedule_mode setting.
+        """
+        return None  # Use default scheduling
+    
+    def get_measurement_order(self, basis: str) -> Optional[List[int]]:
+        """
+        Get the order to measure stabilizers of given type.
+        
+        Override in subclasses that need specific measurement ordering
+        (e.g., to enable detector comparisons).
+        
+        Parameters
+        ----------
+        basis : str
+            'x' or 'z' for X-type or Z-type stabilizers.
+            
+        Returns
+        -------
+        Optional[List[int]]
+            Order of stabilizer indices, or None for default (0, 1, 2, ...).
+        """
+        return None  # Use default order
+
 
 class CSSCodeWithComplex(CSSCode):
     """
@@ -588,6 +673,80 @@ class CSSCodeWithComplex(CSSCode):
     def qubit_grade(self) -> int:
         """Grade of the chain group hosting qubits."""
         return self._chain_complex.qubit_grade
+
+    @property
+    def meta_x(self) -> Optional[np.ndarray]:
+        """X-type metacheck matrix if available.
+        
+        For 4D codes (5-chain): checks on Z syndrome measurements
+        For 3D codes (4-chain): checks on Z syndrome (if qubits on faces)
+        For 2D codes (3-chain): None (no metachecks)
+        
+        Metachecks satisfy: meta_x @ hz = 0 (checks Z syndrome parity)
+        Used for single-shot error correction.
+        
+        For a chain complex with qubits on grade q:
+        - Hz = boundary_q (qubits → grade q-1)
+        - meta_x = boundary_{q-1} (grade q-1 → grade q-2)
+        - Chain condition: boundary_{q-1} @ boundary_q = 0
+          ensures meta_x @ hz = 0
+        """
+        cc = self._chain_complex
+        # First check if the chain complex has explicit meta_x
+        if hasattr(cc, 'meta_x') and cc.meta_x is not None:
+            return cc.meta_x
+        
+        # Otherwise, derive from boundary maps for 4-chain or higher
+        # meta_x checks Z syndrome, which comes from boundary_q
+        # So meta_x = boundary_{q-1} (one grade below Hz source)
+        q = cc.qubit_grade
+        q_minus_1 = q - 1
+        
+        # Need boundary_{q-1} to exist (chain length >= 4)
+        if q_minus_1 >= 1 and q_minus_1 in cc.boundary_maps:
+            return (cc.boundary_maps[q_minus_1].astype(np.uint8) % 2)
+        
+        return None
+
+    @property
+    def meta_z(self) -> Optional[np.ndarray]:
+        """Z-type metacheck matrix if available.
+        
+        For 4D codes (5-chain): checks on X syndrome measurements
+        For 3D codes (4-chain): checks on X syndrome (if qubits on edges)
+        For 2D codes (3-chain): None (no metachecks)
+        
+        Metachecks satisfy: meta_z @ hx = 0 (checks X syndrome parity)
+        Used for single-shot error correction.
+        
+        For a chain complex with qubits on grade q:
+        - Hx = boundary_{q+1}^T (grade q+1 → qubits)
+        - meta_z = boundary_{q+2}^T (grade q+2 → grade q+1)
+        - Chain condition: boundary_{q+1} @ boundary_{q+2} = 0
+          ensures (boundary_{q+2}^T) @ (boundary_{q+1}^T) = 0
+          i.e., meta_z @ hx = 0
+        """
+        cc = self._chain_complex
+        # First check if the chain complex has explicit meta_z
+        if hasattr(cc, 'meta_z') and cc.meta_z is not None:
+            return cc.meta_z
+        
+        # Otherwise, derive from boundary maps for 5-chain or higher
+        # meta_z checks X syndrome, which comes from boundary_{q+1}^T
+        # So meta_z = boundary_{q+2}^T (one grade above Hx source)
+        q = cc.qubit_grade
+        q_plus_2 = q + 2
+        
+        # Need boundary_{q+2} to exist (chain length >= 5 for qubits on grade 2)
+        if q_plus_2 in cc.boundary_maps:
+            return (cc.boundary_maps[q_plus_2].T.astype(np.uint8) % 2)
+        
+        return None
+
+    @property
+    def has_metachecks(self) -> bool:
+        """Whether this code has metacheck structure for single-shot correction."""
+        return self.meta_x is not None or self.meta_z is not None
 
 
 class TopologicalCSSCode(CSSCodeWithComplex, TopologicalCode):

@@ -15,7 +15,7 @@ from typing import Dict, Any, List, Optional, Tuple, Set
 import numpy as np
 
 from qectostim.codes.abstract_css import TopologicalCSSCode, Coord2D
-from qectostim.codes.abstract_code import PauliString
+from qectostim.codes.abstract_code import PauliString, FTGadgetCodeConfig, ScheduleMode
 from qectostim.codes.complexes.css_complex import CSSChainComplex3
 
 
@@ -98,11 +98,15 @@ class XZZXSurfaceCode(TopologicalCSSCode):
         
         chain_complex = CSSChainComplex3(boundary_2=boundary_2, boundary_1=boundary_1)
         
-        # Logical operators
-        # X logical: string along top row (y=1)
-        x_logical_coords = {c for c in data_coords if c[1] == 1.0}
-        # Z logical: string along left column (x=1)
-        z_logical_coords = {c for c in data_coords if c[0] == 1.0}
+        # Logical operators - must satisfy CSS orthogonality:
+        # - Logical X must commute with all Z stabilizers (hz @ X_support = 0 mod 2)
+        # - Logical Z must commute with all X stabilizers (hx @ Z_support = 0 mod 2)
+        #
+        # For rotated surface code geometry:
+        # - Logical X: left column (x=1) - this is orthogonal to hz
+        # - Logical Z: top row (y=1) - this is orthogonal to hx
+        x_logical_coords = {c for c in data_coords if c[0] == 1.0}  # Left column
+        z_logical_coords = {c for c in data_coords if c[1] == 1.0}  # Top row
         
         x_support = sorted(coord_to_idx[c] for c in x_logical_coords)
         z_support = sorted(coord_to_idx[c] for c in z_logical_coords)
@@ -169,6 +173,23 @@ class XZZXSurfaceCode(TopologicalCSSCode):
     def qubit_coords(self) -> List[Coord2D]:
         """Return qubit coordinates for visualization."""
         return list(self.metadata.get("data_coords", []))
+    
+    def get_ft_gadget_config(self) -> FTGadgetCodeConfig:
+        """
+        Return FT gadget configuration for XZZX surface code.
+        
+        XZZX surface codes use diagonal neighbor patterns (±1, ±1) which
+        can have coordinate lookup issues with certain geometries.
+        We use GRAPH_COLORING scheduling to ensure all CNOTs are emitted
+        correctly, avoiding non-deterministic detector errors from
+        missed coordinate lookups.
+        """
+        return FTGadgetCodeConfig(
+            schedule_mode=ScheduleMode.GRAPH_COLORING,  # Force graph coloring for diagonal patterns
+            first_round_x_detectors=True,
+            first_round_z_detectors=True,
+            enable_metachecks=False,
+        )
 
 
 # Pre-built instances

@@ -377,9 +377,11 @@ def get_code_coords(code: Any) -> Tuple[List[CoordND], List[CoordND], List[Coord
     x_stab_coords: List[CoordND] = []
     z_stab_coords: List[CoordND] = []
     
-    # Try qubit_coords() method first
+    # Try qubit_coords() method first - but handle None return
     if hasattr(code, 'qubit_coords'):
-        data_coords = [tuple(c) for c in code.qubit_coords()]
+        coords = code.qubit_coords()
+        if coords is not None:
+            data_coords = [tuple(c) for c in coords]
     
     # Get stabilizer coords from metadata
     if hasattr(code, '_metadata'):
