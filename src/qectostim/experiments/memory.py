@@ -821,3 +821,337 @@ class XYZColorCodeMemoryExperiment(CSSMemoryExperiment):
                 layers.append([(data_q, anc_idx)])
         
         return layers
+
+
+class FloquetMemoryExperiment(MemoryExperiment):
+    """
+    Memory experiment for Floquet (dynamical) codes.
+    
+    Floquet codes have a periodic measurement schedule where different types
+    of checks are measured in different rounds. For example, the Honeycomb code
+    cycles through XX, YY, ZZ measurements with period 3.
+    
+    The circuit structure:
+    1. Initialize data qubits
+    2. For each period, measure checks according to the schedule
+    3. Detectors compare same-type measurements across periods
+    4. Final data measurement with observable declaration
+    
+    Parameters
+    ----------
+    code : FloquetCode
+        A Floquet code with measurement_schedule and period properties.
+    periods : int
+        Number of full periods to run (total rounds = periods * code.period).
+    noise_model : Dict[str, Any] | None
+        Noise model parameters.
+    basis : str
+        Final measurement basis ("Z" or "X").
+    metadata : Dict[str, Any] | None
+        Additional metadata.
+    """
+    
+    def __init__(
+        self,
+        code,  # FloquetCode
+        periods: int = 2,
+        noise_model: Dict[str, Any] | None = None,
+        basis: str = "Z",
+        metadata: Optional[Dict[str, Any]] = None,
+    ):
+        # Validate code has Floquet properties
+        if not hasattr(code, 'measurement_schedule') or not hasattr(code, 'period'):
+            raise TypeError(
+                "FloquetMemoryExperiment requires a Floquet code with "
+                "measurement_schedule and period properties"
+            )
+        
+        schedule = code.measurement_schedule
+        if schedule is None:
+            raise ValueError("Floquet code must have a non-None measurement_schedule")
+        
+        # Total rounds = periods * period_length
+        total_rounds = periods * code.period
+        
+        super().__init__(code, noise_model, total_rounds, metadata=metadata)
+        self.periods = periods
+        self.basis = basis
+        self._schedule = schedule
+    
+    def to_stim(self) -> stim.Circuit:
+        """
+        Build a Floquet memory experiment circuit.
+        
+        For Floquet codes, we:
+        1. Measure checks according to the measurement schedule each round
+        2. Emit detectors that compare same-type measurements across periods
+        3. Track the instantaneous stabilizer group (ISG) state
+        
+        The detector structure is more complex than CSS codes because:
+        - Different types of checks are measured in different rounds
+        - Detectors must XOR same-type measurements across periods
+        
+        Note: For Floquet codes with non-CSS structure (Hx @ Hz.T ≠ 0),
+        detector emission is more limited to avoid non-deterministic errors.
+        """
+        code = self.code
+        n = code.n  # Number of data qubits
+        basis = self.basis.upper()
+        period = code.period
+        schedule = self._schedule
+        
+        # Get check matrices
+        hx = code.hx if hasattr(code, 'hx') else code._hx
+        hz = code.hz if hasattr(code, 'hz') else code._hz
+        n_x_checks = hx.shape[0] if hx.size > 0 else 0
+        n_z_checks = hz.shape[0] if hz.size > 0 else 0
+        
+        # Check if code satisfies CSS commutativity (Hx @ Hz.T = 0)
+        # If not, we need to be more careful with detector emission
+        is_css_commuting = True
+        if hx.size > 0 and hz.size > 0:
+            comm = (hx @ hz.T) % 2
+            is_css_commuting = not np.any(comm)
+        
+        # Determine which checks to measure based on schedule type
+        # Schedule types: "XX" -> X checks, "ZZ" -> Z checks, "YY" -> special
+        def get_checks_for_round(round_type: str):
+            """Get check matrix and type for a round."""
+            if round_type in ("XX", "X"):
+                return hx, "X", n_x_checks
+            elif round_type in ("ZZ", "Z"):
+                return hz, "Z", n_z_checks
+            elif round_type in ("YY", "Y"):
+                # For YY measurements, use X checks but measure in Y basis
+                return hx, "Y", n_x_checks
+            else:
+                # Default to X checks
+                return hx, "X", n_x_checks
+        
+        c = stim.Circuit()
+        
+        # Emit qubit coordinates
+        coords = code.metadata.get("coords", code.metadata.get("data_coords", None))
+        if coords is not None:
+            for q, coord in enumerate(coords):
+                if len(coord) >= 2:
+                    c.append("QUBIT_COORDS", [q], [float(coord[0]), float(coord[1])])
+        
+        # For non-CSS-commuting codes, use a simpler circuit without mixed ancillas
+        if not is_css_commuting:
+            # Simpler approach: just measure X checks each period
+            # This avoids the non-deterministic issues from mixed ISG
+            n_checks = n_x_checks
+            ancilla_base = n
+            
+            # Reset data qubits
+            c.append("R", list(range(n)))
+            c.append("TICK")
+            
+            # Track measurements
+            measurement_history: List[int] = []
+            current_meas_idx = 0
+            
+            for period_idx in range(self.periods):
+                # Reset ancillas
+                ancillas = list(range(ancilla_base, ancilla_base + n_checks))
+                c.append("R", ancillas)
+                c.append("TICK")
+                
+                # Prepare ancillas in X basis
+                c.append("H", ancillas)
+                c.append("TICK")
+                
+                # Entangle
+                for check_idx in range(n_checks):
+                    ancilla = ancilla_base + check_idx
+                    for data_q in range(hx.shape[1]):
+                        if hx[check_idx, data_q]:
+                            c.append("CX", [ancilla, data_q])
+                c.append("TICK")
+                
+                # Measure in X basis
+                c.append("H", ancillas)
+                c.append("TICK")
+                c.append("M", ancillas)
+                
+                # Record measurements and emit detectors
+                start_idx = current_meas_idx
+                current_meas_idx += n_checks
+                measurement_history.append(start_idx)
+                
+                if period_idx > 0:
+                    prev_start = measurement_history[-2]
+                    curr_start = measurement_history[-1]
+                    for check_idx in range(n_checks):
+                        lookback_prev = (prev_start + check_idx) - current_meas_idx
+                        lookback_curr = (curr_start + check_idx) - current_meas_idx
+                        c.append(
+                            "DETECTOR",
+                            [stim.target_rec(lookback_curr), stim.target_rec(lookback_prev)],
+                            [float(check_idx), 0.0, float(period_idx)]
+                        )
+                
+                c.append("TICK")
+            
+            # Final measurement
+            c.append("M", list(range(n)))
+            
+            # Observable - use first qubit as fallback
+            obs_qubits = [0]
+            logical_z = get_logical_ops(code, 'z')
+            if ops_valid(logical_z):
+                L = logical_z[0]
+                obs_qubits = [q for q in range(n) if pauli_at(L, q) in ('Z', 'Y')]
+                if not obs_qubits:
+                    obs_qubits = [0]
+            
+            obs_recs = [stim.target_rec(-(n - q)) for q in obs_qubits]
+            c.append("OBSERVABLE_INCLUDE", obs_recs, [0])
+            
+            return c
+        
+        # CSS-commuting code: use full schedule with interleaved X/Z/Y measurements
+        # Allocate ancilla qubits (one per check)
+        n_ancilla = n_x_checks + n_z_checks
+        ancilla_base = n
+        x_ancilla_start = ancilla_base
+        z_ancilla_start = ancilla_base + n_x_checks
+        
+        # Reset all qubits
+        all_qubits = list(range(n + n_ancilla))
+        c.append("R", all_qubits)
+        
+        # Prepare logical state (basis state |0⟩ or |+⟩)
+        if basis == "X":
+            # Prepare |+⟩ state
+            logical_x = get_logical_ops(code, 'x')
+            if ops_valid(logical_x):
+                L = logical_x[0]
+                for q in range(n):
+                    if pauli_at(L, q) in ('X', 'Y'):
+                        c.append("H", [q])
+        
+        c.append("TICK")
+        
+        # Track measurement indices for detector generation
+        # Map: (round_type, check_idx) -> [list of measurement indices]
+        measurement_history: Dict[Tuple[str, int], List[int]] = {}
+        current_meas_idx = 0
+        
+        # Run measurement rounds
+        for period_idx in range(self.periods):
+            for round_in_period, round_type in enumerate(schedule):
+                check_matrix, meas_basis, n_checks = get_checks_for_round(round_type)
+                
+                if n_checks == 0:
+                    continue
+                
+                # Determine ancilla range for this type
+                if round_type in ("XX", "X", "YY", "Y"):
+                    ancilla_start = x_ancilla_start
+                else:
+                    ancilla_start = z_ancilla_start
+                
+                # Reset ancillas for this round
+                ancillas = list(range(ancilla_start, ancilla_start + n_checks))
+                c.append("R", ancillas)
+                c.append("TICK")
+                
+                # Prepare ancillas in correct basis
+                if meas_basis == "X":
+                    c.append("H", ancillas)
+                    c.append("TICK")
+                elif meas_basis == "Y":
+                    # Prepare in Y basis: |+i⟩ = H·S|0⟩
+                    c.append("H", ancillas)
+                    c.append("S", ancillas)
+                    c.append("TICK")
+                
+                # Entangle ancillas with data qubits
+                for check_idx in range(n_checks):
+                    ancilla = ancilla_start + check_idx
+                    for data_q in range(check_matrix.shape[1]):
+                        if check_matrix[check_idx, data_q]:
+                            if meas_basis in ("X", "Y"):
+                                c.append("CX", [ancilla, data_q])
+                            else:
+                                c.append("CX", [data_q, ancilla])
+                
+                c.append("TICK")
+                
+                # Measure ancillas
+                if meas_basis == "X":
+                    c.append("H", ancillas)
+                    c.append("TICK")
+                elif meas_basis == "Y":
+                    # Measure in Y basis
+                    c.append("S_DAG", ancillas)
+                    c.append("H", ancillas)
+                    c.append("TICK")
+                
+                c.append("M", ancillas)
+                
+                # Record measurement indices
+                for check_idx in range(n_checks):
+                    key = (round_type, check_idx)
+                    if key not in measurement_history:
+                        measurement_history[key] = []
+                    measurement_history[key].append(current_meas_idx + check_idx)
+                
+                current_meas_idx += n_checks
+                
+                # Emit detectors comparing to previous period's same-type measurement
+                if period_idx > 0:
+                    # Compare with measurement from previous period
+                    for check_idx in range(n_checks):
+                        key = (round_type, check_idx)
+                        meas_list = measurement_history[key]
+                        if len(meas_list) >= 2:
+                            # XOR current with previous
+                            prev_idx = meas_list[-2]
+                            curr_idx = meas_list[-1]
+                            lookback_prev = prev_idx - current_meas_idx
+                            lookback_curr = curr_idx - current_meas_idx
+                            
+                            # Detector coordinate
+                            t = period_idx * period + round_in_period
+                            c.append(
+                                "DETECTOR",
+                                [stim.target_rec(lookback_curr), stim.target_rec(lookback_prev)],
+                                [float(check_idx), 0.0, float(t)]
+                            )
+                
+                c.append("TICK")
+                c.append("SHIFT_COORDS", [], [0, 0, 1])
+        
+        # Final data qubit measurement
+        if basis == "Z":
+            c.append("M", list(range(n)))
+        else:
+            c.append("H", list(range(n)))
+            c.append("M", list(range(n)))
+        
+        # Emit observable
+        if basis == "Z":
+            logical_z = get_logical_ops(code, 'z')
+            if ops_valid(logical_z):
+                L = logical_z[0]
+                obs_qubits = [q for q in range(n) if pauli_at(L, q) in ('Z', 'Y')]
+            else:
+                obs_qubits = [0]
+        else:
+            logical_x = get_logical_ops(code, 'x')
+            if ops_valid(logical_x):
+                L = logical_x[0]
+                obs_qubits = [q for q in range(n) if pauli_at(L, q) in ('X', 'Y')]
+            else:
+                obs_qubits = [0]
+        
+        # Observable from final data measurements
+        n_final = n  # Number of final data measurements
+        obs_recs = [stim.target_rec(-(n_final - q)) for q in obs_qubits]
+        c.append("OBSERVABLE_INCLUDE", obs_recs, [0])
+        
+        return c
+

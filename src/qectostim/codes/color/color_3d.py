@@ -88,6 +88,8 @@ class ColorCode3D(TopologicalCSSCode3D):
             "data_coords": data_coords,
             "x_stab_coords": x_stab_coords,
             "z_stab_coords": z_stab_coords,
+            "is_colour_code": True,  # Marker for color code experiments and Chromobius
+            "is_self_dual": True,  # hx = hz for color codes
         })
         
         # Mark codes with k<=0 to skip standard testing
@@ -153,9 +155,11 @@ class ColorCode3D(TopologicalCSSCode3D):
                              np.sin(2*np.pi*i/4 + np.pi/4)) 
                             for i in range(hz.shape[0])]
             
-            # Logical operators
-            logical_x = [{0: 'X', 1: 'X', 2: 'X'}]
-            logical_z = [{0: 'Z', 4: 'Z', 8: 'Z'}]
+            # Logical operators for [[15,1,3]] Reed-Muller code
+            # The code is self-dual, so L_X and L_Z have the same support
+            # Support [0, 1, 14] commutes with all stabilizers and anti-commutes with itself
+            logical_x = [{0: 'X', 1: 'X', 14: 'X'}]
+            logical_z = [{0: 'Z', 1: 'Z', 14: 'Z'}]
             
         else:
             # For larger distances, build a scaled tetrahedral lattice

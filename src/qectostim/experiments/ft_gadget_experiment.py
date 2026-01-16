@@ -1042,17 +1042,20 @@ class FaultTolerantGadgetExperiment(Experiment):
     
     def run_decode(
         self,
-        decoder_name: str = "pymatching",
+        decoder_name: Optional[str] = None,
         num_shots: int = 10000,
         **kwargs,
     ) -> FTGadgetExperimentResult:
         """
         Run the experiment and decode results.
         
+        Uses the base class `Experiment.run_decode()` for the core decoding logic,
+        then wraps the result in `FTGadgetExperimentResult` for gadget-specific metadata.
+        
         Parameters
         ----------
-        decoder_name : str
-            Decoder to use ("pymatching", "beliefmatching", etc.)
+        decoder_name : Optional[str]
+            Decoder to use. If None, uses intelligent selection from `select_decoder`.
         num_shots : int
             Number of shots to sample.
         **kwargs
@@ -1063,32 +1066,11 @@ class FaultTolerantGadgetExperiment(Experiment):
         FTGadgetExperimentResult
             Experiment results including logical error rate.
         """
-        from qectostim.decoders.decoder_selector import select_decoder
-        
-        # Generate circuit
-        circuit = self.to_stim()
-        
-        # Build DEM and get decoder
-        dem = circuit.detector_error_model(decompose_errors=True)
-        decoder = select_decoder(dem, preferred=decoder_name)
-        
-        # Sample and decode
-        sampler = circuit.compile_detector_sampler()
-        samples = sampler.sample(num_shots, append_observables=True)
-        
-        # Extract detectors and observables
-        num_detectors = circuit.num_detectors
-        num_observables = circuit.num_observables
-        
-        detector_shots = samples[:, :num_detectors]
-        observable_shots = samples[:, num_detectors:num_detectors + num_observables]
-        
-        # Decode
-        predictions = decoder.decode_batch(detector_shots)
-        
-        # Count errors
-        num_errors = int(np.sum(predictions != observable_shots))
-        logical_error_rate = num_errors / num_shots
+        # Use base class run_decode which handles:
+        # - Distance-aware routing (detection vs correction)
+        # - Intelligent decoder selection via select_decoder
+        # - Hypergraph DEM handling
+        base_result = super().run_decode(shots=num_shots, decoder_name=decoder_name)
         
         # Get gadget metadata if available
         gadget_metadata = None
@@ -1098,17 +1080,22 @@ class FaultTolerantGadgetExperiment(Experiment):
             except RuntimeError:
                 pass
         
+        # Get circuit info for extra metadata
+        circuit = self.to_stim()
+        
         return FTGadgetExperimentResult(
-            logical_error_rate=logical_error_rate,
-            num_shots=num_shots,
-            num_errors=num_errors,
+            logical_error_rate=base_result['logical_error_rate'],
+            num_shots=base_result['shots'],
+            num_errors=int(np.sum(base_result['logical_errors'])),
             gadget_metadata=gadget_metadata,
-            decoder_used=decoder_name,
+            decoder_used=decoder_name or "auto",
             extra={
-                "num_detectors": num_detectors,
-                "num_observables": num_observables,
+                "num_detectors": circuit.num_detectors,
+                "num_observables": circuit.num_observables,
                 "rounds_before": self.num_rounds_before,
                 "rounds_after": self.num_rounds_after,
+                **{k: v for k, v in base_result.items() 
+                   if k not in ('logical_error_rate', 'shots', 'logical_errors')},
             },
         )
     

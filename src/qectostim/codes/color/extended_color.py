@@ -655,12 +655,21 @@ class TetrahedralColorCode(CSSCode):
         # Validate CSS code structure
         is_valid, computed_k, validation_msg = validate_css_code(hx, hz, f"{name}_L{L}")
         
+        # Generate coordinates for circuit construction
+        data_coords = self._compute_qubit_coords(n_qubits)
+        x_stab_coords = self._compute_stab_coords(n_qubits, hx, data_coords)
+        z_stab_coords = self._compute_stab_coords(n_qubits, hz, data_coords)
+        
         meta = {
             "name": name,
             "n": n_qubits,
             "L": L,
             "k": computed_k if computed_k > 0 else 1,  # Report actual k (min 1 for compatibility)
             "actual_k": computed_k,  # Store the true k value
+            "data_coords": data_coords,
+            "x_stab_coords": x_stab_coords,
+            "z_stab_coords": z_stab_coords,
+            "is_colour_code": True,  # For Chromobius compatibility
         }
         
         # Mark codes with k<=0 to skip standard testing
@@ -693,9 +702,11 @@ class TetrahedralColorCode(CSSCode):
             ], dtype=np.uint8)
             hz = hx.copy()  # Self-dual
             
-            # Weight-3 logical operators (minimum weight)
-            logical_x = ["IIIXXXX"]  # Support on qubits 3,4,5,6
-            logical_z = ["IIIZZZZ"]
+            # Valid weight-3 logical operators that commute with all stabilizers
+            # and anti-commute with each other
+            # Support [0, 1, 6] commutes with all X and Z stabilizers
+            logical_x = ["XX" + "I" * 4 + "X"]  # Support on qubits 0, 1, 6
+            logical_z = ["ZZ" + "I" * 4 + "Z"]  # Support on qubits 0, 1, 6
             
         else:
             # For L >= 3, use [[15,1,3]] Reed-Muller code structure
@@ -716,20 +727,37 @@ class TetrahedralColorCode(CSSCode):
         
         return hx, hz, n_qubits, logical_x, logical_z
     
+    @staticmethod
+    def _compute_qubit_coords(n: int) -> List[Tuple[float, float]]:
+        """Compute circular layout coordinates for qubits."""
+        coords = []
+        for i in range(n):
+            angle = 2 * np.pi * i / n
+            r = 1.0 + 0.2 * (i % 3)
+            coords.append((r * np.cos(angle), r * np.sin(angle)))
+        return coords
+
+    @staticmethod
+    def _compute_stab_coords(n_qubits: int, h_matrix: np.ndarray, qubit_coords: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
+        """Compute stabilizer coordinates as centroid of qubit coords in support."""
+        stab_coords = []
+        for row in h_matrix:
+            support = np.where(row)[0]
+            if len(support) > 0:
+                cx = np.mean([qubit_coords[q][0] for q in support if q < len(qubit_coords)])
+                cy = np.mean([qubit_coords[q][1] for q in support if q < len(qubit_coords)])
+                stab_coords.append((float(cx), float(cy)))
+            else:
+                stab_coords.append((0.0, 0.0))
+        return stab_coords
+
     def qubit_coords(self) -> List[Tuple[float, float]]:
         """
         Return 2D coordinates for visualization.
         
         Uses circular layout for the tetrahedral structure.
         """
-        coords: List[Tuple[float, float]] = []
-        
-        for i in range(self.n):
-            angle = 2 * np.pi * i / self.n
-            r = 1.0 + 0.2 * (i % 3)
-            coords.append((r * np.cos(angle), r * np.sin(angle)))
-        
-        return coords
+        return self._metadata.get("data_coords", self._compute_qubit_coords(self.n))
     
     def description(self) -> str:
         return f"Tetrahedral Color Code L={self.L}, n={self.n}"
