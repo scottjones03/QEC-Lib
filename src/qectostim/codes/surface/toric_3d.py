@@ -100,9 +100,7 @@ class ToricCode3D(TopologicalCSSCode3D):
             "data_coords": data_coords,
             "x_stab_coords": x_stab_coords,
             "z_stab_coords": z_stab_coords,
-            # 3D codes require specialized circuit generation with 3D coordinates
-            # Standard memory experiment uses 2D geometric scheduling which fails
-            "skip_standard_test": True,
+            # 3D codes use graph coloring scheduling for proper 3D coord handling
             "requires_3d_support": True,
         })
         
@@ -301,11 +299,21 @@ class ToricCode3D(TopologicalCSSCode3D):
         
         For 3D toric code with qubits on edges:
         - Logical X_i: string (1-chain) wrapping around direction i
-        - Logical Z_i: membrane (2-cocycle) perpendicular to direction i
+        - Logical Z_i: sheet of edges perpendicular to that direction
         
-        Anti-commutation requirement: X_i and Z_i must overlap on exactly 1 qubit.
-        X_i uses edges in direction i, Z_i uses edges perpendicular to direction i
-        that pierce the plane where X_i lives.
+        The key insight is that L_Z should be a "sheet" of edges that:
+        1. Commutes with all X stabilizers (lies in kernel of Hx)
+        2. Anti-commutes with exactly its paired L_X (overlap = 1 mod 2)
+        
+        Correct construction:
+        - L_X0: x-edges at (i, 0, 0) for all i → wraps in x-direction
+        - L_Z0: x-edges at (0, j, k) for all j,k → sheet in yz-plane
+        
+        - L_X1: y-edges at (0, j, 0) for all j → wraps in y-direction  
+        - L_Z1: y-edges at (i, 0, k) for all i,k → sheet in xz-plane
+        
+        - L_X2: z-edges at (0, 0, k) for all k → wraps in z-direction
+        - L_Z2: z-edges at (i, j, 0) for all i,j → sheet in xy-plane
         """
         def edge_x(i, j, k):
             return ((i % L) * L + (j % L)) * L + (k % L)
@@ -319,50 +327,50 @@ class ToricCode3D(TopologicalCSSCode3D):
         logical_x = []
         logical_z = []
         
-        # Logical pair 1: X1 wraps in x-direction, Z1 is a yz-membrane at x=0
-        # X1: string of edges along x at (y=0, z=0)
-        lx1 = ['I'] * n_qubits
+        # Logical pair 0: X wraps in x-direction, Z is sheet of x-edges in yz-plane
+        # L_X0: string of x-edges at (i, 0, 0) for all i
+        lx0 = ['I'] * n_qubits
         for i in range(L):
-            lx1[edge_x(i, 0, 0)] = 'X'
+            lx0[edge_x(i, 0, 0)] = 'X'
+        logical_x.append(''.join(lx0))
+        
+        # L_Z0: sheet of x-edges at i=0 (yz-plane)
+        # This has L² x-edges and overlaps L_X0 at exactly edge_x(0,0,0)
+        lz0 = ['I'] * n_qubits
+        for j in range(L):
+            for k in range(L):
+                lz0[edge_x(0, j, k)] = 'Z'
+        logical_z.append(''.join(lz0))
+        
+        # Logical pair 1: X wraps in y-direction, Z is sheet of y-edges in xz-plane
+        # L_X1: string of y-edges at (0, j, 0) for all j
+        lx1 = ['I'] * n_qubits
+        for j in range(L):
+            lx1[edge_y(0, j, 0)] = 'X'
         logical_x.append(''.join(lx1))
         
-        # Z1: membrane in yz-plane at x=0, using y-edges and z-edges
-        # This membrane has L² y-edges and L² z-edges at x=0
-        # It anti-commutes with X1 because X1 pierces this membrane once
+        # L_Z1: sheet of y-edges at j=0 (xz-plane)
+        # This has L² y-edges and overlaps L_X1 at exactly edge_y(0,0,0)
         lz1 = ['I'] * n_qubits
-        for j in range(L):
+        for i in range(L):
             for k in range(L):
-                lz1[edge_y(0, j, k)] = 'Z'  # All y-edges at x=0
-                lz1[edge_z(0, j, k)] = 'Z'  # All z-edges at x=0
+                lz1[edge_y(i, 0, k)] = 'Z'
         logical_z.append(''.join(lz1))
         
-        # Logical pair 2: X2 wraps in y-direction, Z2 is an xz-membrane at y=0
+        # Logical pair 2: X wraps in z-direction, Z is sheet of z-edges in xy-plane
+        # L_X2: string of z-edges at (0, 0, k) for all k
         lx2 = ['I'] * n_qubits
-        for j in range(L):
-            lx2[edge_y(0, j, 0)] = 'X'
+        for k in range(L):
+            lx2[edge_z(0, 0, k)] = 'X'
         logical_x.append(''.join(lx2))
         
-        # Z2: membrane in xz-plane at y=0
+        # L_Z2: sheet of z-edges at k=0 (xy-plane)
+        # This has L² z-edges and overlaps L_X2 at exactly edge_z(0,0,0)
         lz2 = ['I'] * n_qubits
         for i in range(L):
-            for k in range(L):
-                lz2[edge_x(i, 0, k)] = 'Z'
-                lz2[edge_z(i, 0, k)] = 'Z'
-        logical_z.append(''.join(lz2))
-        
-        # Logical pair 3: X3 wraps in z-direction, Z3 is an xy-membrane at z=0
-        lx3 = ['I'] * n_qubits
-        for k in range(L):
-            lx3[edge_z(0, 0, k)] = 'X'
-        logical_x.append(''.join(lx3))
-        
-        # Z3: membrane in xy-plane at z=0
-        lz3 = ['I'] * n_qubits
-        for i in range(L):
             for j in range(L):
-                lz3[edge_x(i, j, 0)] = 'Z'
-                lz3[edge_y(i, j, 0)] = 'Z'
-        logical_z.append(''.join(lz3))
+                lz2[edge_z(i, j, 0)] = 'Z'
+        logical_z.append(''.join(lz2))
         
         return logical_x, logical_z
     
@@ -472,9 +480,7 @@ class ToricCode3DFaces(TopologicalCSSCode3D):
             "data_coords": data_coords,
             "x_stab_coords": x_stab_coords,
             "z_stab_coords": z_stab_coords,
-            # 3D codes require specialized circuit generation with 3D coordinates
-            # Standard memory experiment uses 2D geometric scheduling which fails
-            "skip_standard_test": True,
+            # 3D codes use graph coloring scheduling for proper 3D coord handling
             "requires_3d_support": True,
         })
         
@@ -591,7 +597,25 @@ class ToricCode3DFaces(TopologicalCSSCode3D):
     
     @staticmethod
     def _build_logicals(L: int, n_qubits: int) -> Tuple[List[str], List[str]]:
-        """Build logical operators."""
+        """Build logical operators for 3D toric code with qubits on faces.
+        
+        For 3D toric code with qubits on faces (2-cells):
+        - Logical X_i: membrane (2-chain) wrapping around direction i
+        - Logical Z_i: string of faces perpendicular to the membrane
+        
+        The key insight is that L_Z should be a line of faces of a single type
+        that commutes with all X stabilizers and anti-commutes with its paired L_X.
+        
+        Correct construction:
+        - L_X0: xy-faces at z=0 (all i,j) → membrane in xy-plane
+        - L_Z0: xy-faces at i=0,j=0 (all k) → string in z-direction
+        
+        - L_X1: xz-faces at y=0 (all i,k) → membrane in xz-plane
+        - L_Z1: xz-faces at i=0,k=0 (all j) → string in y-direction
+        
+        - L_X2: yz-faces at x=0 (all j,k) → membrane in yz-plane
+        - L_Z2: yz-faces at j=0,k=0 (all i) → string in x-direction
+        """
         def face_xy(i, j, k):
             return ((i % L) * L + (j % L)) * L + (k % L)
         
@@ -604,56 +628,50 @@ class ToricCode3DFaces(TopologicalCSSCode3D):
         logical_x = []
         logical_z = []
         
-        # For 3D toric code with qubits on faces:
-        # - Logical X: membrane (2-chain) wrapping around torus
-        # - Logical Z: string (1-cocycle) perpendicular to membrane, dual representation
-        
-        # Logical pair 1: X1 is xy-membrane at z=0, Z1 is z-string
-        # X1 uses all xy-faces at z=0
-        lx1 = ['I'] * n_qubits
+        # Logical pair 0: X is xy-membrane at z=0, Z is xy-string at (0,0,k)
+        # L_X0: all xy-faces at z=0
+        lx0 = ['I'] * n_qubits
         for i in range(L):
             for j in range(L):
-                lx1[face_xy(i, j, 0)] = 'X'
+                lx0[face_xy(i, j, 0)] = 'X'
+        logical_x.append(''.join(lx0))
+        
+        # L_Z0: xy-faces at (0,0,k) for all k - string in z-direction
+        # Overlaps L_X0 at face_xy(0,0,0)
+        lz0 = ['I'] * n_qubits
+        for k in range(L):
+            lz0[face_xy(0, 0, k)] = 'Z'
+        logical_z.append(''.join(lz0))
+        
+        # Logical pair 1: X is xz-membrane at y=0, Z is xz-string at (0,j,0)
+        # L_X1: all xz-faces at y=0
+        lx1 = ['I'] * n_qubits
+        for i in range(L):
+            for k in range(L):
+                lx1[face_xz(i, 0, k)] = 'X'
         logical_x.append(''.join(lx1))
         
-        # Z1: must anti-commute with X1 - use xz and yz faces along a z-string
-        # A string in z-direction at (x=0, y=0) uses faces that bound this string
-        # Actually, for qubits on faces, Z logical is the boundary of a dual volume
-        # Z1 pierces xy-membrane once: use yz-face and xz-face at fixed point
+        # L_Z1: xz-faces at (0,j,0) for all j - string in y-direction
+        # Overlaps L_X1 at face_xz(0,0,0)
         lz1 = ['I'] * n_qubits
-        for k in range(L):
-            # String along z at (x=0, y=0): use xz-face and yz-face
-            lz1[face_xz(0, 0, k)] = 'Z'
-            lz1[face_yz(0, 0, k)] = 'Z'
+        for j in range(L):
+            lz1[face_xz(0, j, 0)] = 'Z'
         logical_z.append(''.join(lz1))
         
-        # Logical pair 2: X2 is xz-membrane at y=0, Z2 is y-string  
+        # Logical pair 2: X is yz-membrane at x=0, Z is yz-string at (i,0,0)
+        # L_X2: all yz-faces at x=0
         lx2 = ['I'] * n_qubits
-        for i in range(L):
+        for j in range(L):
             for k in range(L):
-                lx2[face_xz(i, 0, k)] = 'X'
+                lx2[face_yz(0, j, k)] = 'X'
         logical_x.append(''.join(lx2))
         
-        # Z2: string along y at (x=0, z=0)
+        # L_Z2: yz-faces at (i,0,0) for all i - string in x-direction
+        # Overlaps L_X2 at face_yz(0,0,0)
         lz2 = ['I'] * n_qubits
-        for j in range(L):
-            lz2[face_xy(0, j, 0)] = 'Z'
-            lz2[face_yz(0, j, 0)] = 'Z'
-        logical_z.append(''.join(lz2))
-        
-        # Logical pair 3: X3 is yz-membrane at x=0, Z3 is x-string
-        lx3 = ['I'] * n_qubits
-        for j in range(L):
-            for k in range(L):
-                lx3[face_yz(0, j, k)] = 'X'
-        logical_x.append(''.join(lx3))
-        
-        # Z3: string along x at (y=0, z=0)
-        lz3 = ['I'] * n_qubits
         for i in range(L):
-            lz3[face_xy(i, 0, 0)] = 'Z'
-            lz3[face_xz(i, 0, 0)] = 'Z'
-        logical_z.append(''.join(lz3))
+            lz2[face_yz(i, 0, 0)] = 'Z'
+        logical_z.append(''.join(lz2))
         
         return logical_x, logical_z
 

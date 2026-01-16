@@ -150,6 +150,16 @@ class HomologicalProductCode(CSSCodeWithComplex):
         meta["product_chain_length"] = product_complex.max_grade + 1
         meta["qubit_grade"] = qg
         
+        # Homological product metadata for decoder compatibility
+        chain_len = product_complex.max_grade + 1
+        meta["is_homological_product"] = True
+        meta["chain_length"] = chain_len
+        # 5-chain and higher (4D+ codes) have hyperedge errors that can't be decomposed
+        # Standard MWPM decoders (PyMatching, FusionBlossom) cannot handle these
+        meta["has_hyperedges"] = chain_len >= 5
+        meta["requires_hyperedge_decoder"] = chain_len >= 5
+        meta["supports_standard_decoders"] = chain_len < 5
+        
         super().__init__(
             chain_complex=product_complex,
             logical_x=logical_x,
@@ -172,6 +182,34 @@ class HomologicalProductCode(CSSCodeWithComplex):
     @property
     def name(self) -> str:
         return f"HomologicalProduct({self.code_a.name}, {self.code_b.name})"
+    
+    # =========================================================================
+    # Decoder compatibility properties
+    # =========================================================================
+    @property
+    def is_homological_product(self) -> bool:
+        """True for homological product codes."""
+        return self._metadata.get("is_homological_product", True)
+    
+    @property
+    def chain_length(self) -> int:
+        """Length of the product chain complex."""
+        return self._metadata.get("chain_length", 5)
+    
+    @property
+    def has_hyperedges(self) -> bool:
+        """True if code has hyperedge errors (>2 detectors per error)."""
+        return self._metadata.get("has_hyperedges", self.chain_length >= 5)
+    
+    @property
+    def requires_hyperedge_decoder(self) -> bool:
+        """True if code requires a hyperedge-capable decoder (BPOSD, Tesseract)."""
+        return self._metadata.get("requires_hyperedge_decoder", self.has_hyperedges)
+    
+    @property
+    def supports_standard_decoders(self) -> bool:
+        """True if standard MWPM decoders (PyMatching, FusionBlossom) can handle this code."""
+        return self._metadata.get("supports_standard_decoders", not self.has_hyperedges)
 
 
 # Backward-compatible alias (deprecated)

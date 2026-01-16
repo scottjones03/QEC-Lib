@@ -117,13 +117,22 @@ class Experiment(ABC):
         """Extract distance from code. Defaults to 3 if not available."""
         # Try metadata first
         if hasattr(self.code, 'metadata') and isinstance(self.code.metadata, dict):
-            if 'distance' in self.code.metadata:
-                return self.code.metadata['distance']
+            d = self.code.metadata.get('distance')
+            if d is not None and isinstance(d, (int, float)):
+                return int(d)
         # Try distance property
         if hasattr(self.code, 'distance'):
-            return self.code.distance
+            d = self.code.distance
+            if d is not None and isinstance(d, (int, float)):
+                return int(d)
+        # Try 'd' attribute directly (some codes use this)
+        if hasattr(self.code, 'd'):
+            d = self.code.d
+            if d is not None and isinstance(d, (int, float)):
+                return int(d)
         # Default to 3 (assume can correct)
         return 3
+
 
     def run_decode(
         self,
@@ -295,7 +304,7 @@ class Experiment(ABC):
             }
 
         # 4) Build decoder from DEM.
-        decoder = select_decoder(dem, preferred=decoder_name)
+        decoder = select_decoder(dem, preferred=decoder_name, code=self.code)
         logger.debug("Decoder type: %s", type(decoder).__name__)
 
         # 5) Sample from the DEM directly.

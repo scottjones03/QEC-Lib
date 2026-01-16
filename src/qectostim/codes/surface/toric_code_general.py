@@ -112,22 +112,30 @@ class ToricCode(TopologicalCSSCode):
         chain_complex = CSSChainComplex3(boundary_2=boundary_2, boundary_1=boundary_1)
         
         # Logical operators (2 logical qubits)
-        # Logical X1: horizontal string (all horizontal edges in row 0)
+        # Torus has two non-contractible cycles: around horizontal and vertical directions
+        # Valid logical Z ops must be cycles that commute with all X stabilizers (plaquettes)
+        # Analysis shows:
+        #   - Vertical edges in a horizontal cycle (fixed row, all cols) commute with X stabs
+        #   - Horizontal edges in a vertical cycle (all rows, fixed col) commute with X stabs
+        
+        # Logical X1: horizontal edges in row 0 (anti-commutes with L_Z1)
         lx1 = ['I'] * n_qubits
         for j in range(Ly):
             lx1[h_edge(0, j)] = 'X'
         
-        # Logical Z1: vertical string (all vertical edges in column 0)
+        # Logical Z1: vertical edges in row 0 (horizontal cycle around torus)
+        # This is a cycle of vertical edges going "around" the horizontal direction
         lz1 = ['I'] * n_qubits
-        for i in range(Lx):
-            lz1[v_edge(i, 0)] = 'Z'
+        for j in range(Ly):
+            lz1[v_edge(0, j)] = 'Z'
         
-        # Logical X2: vertical string (all vertical edges in row 0)
+        # Logical X2: vertical edges in row 0 (anti-commutes with L_Z2)
         lx2 = ['I'] * n_qubits
         for j in range(Ly):
             lx2[v_edge(0, j)] = 'X'
         
-        # Logical Z2: horizontal string (all horizontal edges in column 0)
+        # Logical Z2: horizontal edges in column 0 (vertical cycle around torus)
+        # This is a cycle of horizontal edges going "around" the vertical direction
         lz2 = ['I'] * n_qubits
         for i in range(Lx):
             lz2[h_edge(i, 0)] = 'Z'
@@ -156,6 +164,12 @@ class ToricCode(TopologicalCSSCode):
         meta["data_coords"] = data_coords
         meta["x_stab_coords"] = x_stab_coords[:-1]  # Match independent stabilizers
         meta["z_stab_coords"] = z_stab_coords[:-1]
+        # Lattice size for periodic boundary wrapping in stabilizer rounds
+        # For square lattices, lattice_size is sufficient
+        # For non-square, we provide both dimensions
+        meta["lattice_size"] = Lx if Lx == Ly else None
+        meta["lattice_size_x"] = Lx
+        meta["lattice_size_y"] = Ly
         
         # Measurement schedule for toric code (4-phase for weight-4 stabilizers)
         meta["x_schedule"] = [

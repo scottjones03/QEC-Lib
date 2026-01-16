@@ -632,3 +632,15 @@ class GadgetLayout:
     def global_to_local(self, global_idx: int) -> Optional[Tuple[str, int, str]]:
         """Convert global qubit index to (block_name, local_idx, qubit_type)."""
         return self.qubit_map.get_local(global_idx)
+
+    def get_qubit_index_map(self) -> QubitIndexMap:
+        """
+        Get the qubit index mapping object.
+        
+        Returns
+        -------
+        QubitIndexMap
+            The mapping between local and global qubit indices.
+        """
+        return self.qubit_map
+

@@ -310,6 +310,8 @@ class ISGFloquetCode(FloquetCode):
         meta["k"] = 1
         meta["distance"] = d
         meta["type"] = "floquet_isg"
+        # ISG codes typically alternate between X and Z check measurements
+        meta["measurement_schedule"] = ["XX", "ZZ"]
         
         super().__init__(hx=hx, hz=hz, logical_x=logical_x, logical_z=logical_z, metadata=meta)
 

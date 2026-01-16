@@ -37,7 +37,7 @@ from qectostim.codes.abstract_code import PauliString
 from qectostim.codes.complexes.css_complex import CSSChainComplex3
 
 
-class SteanCode713(TopologicalCSSCode):
+class SteaneCode713(TopologicalCSSCode):
     """
     [[7,1,3]] Steane code (triangular color code).
 
