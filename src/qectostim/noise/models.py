@@ -26,21 +26,38 @@ class NoiseModel(ABC):
 
 
 class CircuitDepolarizingNoise(NoiseModel):
-    """Insert depolarizing noise after 1q/2q gates, *except* on final data gates.
+    """Insert depolarizing noise after 1q/2q gates and before measurements.
 
-    This avoids some DEM error mechanisms that flip only the logical observable
-    L0 with no detectors (pure logical faults at the readout layer), by not
-    injecting noise on the last gate touching each qubit.
+    By default, includes noise on all gates including the final gate touching
+    each qubit, plus X_ERROR before measurements. This is required for proper 
+    decoding since the DEM needs error mechanisms that can flip the observable.
+    
+    Parameters
+    ----------
+    p1 : float
+        Single-qubit depolarization probability after 1q Clifford gates.
+    p2 : float  
+        Two-qubit depolarization probability after 2q Clifford gates.
+    include_final_noise : bool
+        If True (default), include noise on final gates (before measurement).
+    before_measure_flip : float
+        Probability of X_ERROR before each measurement (default=p1). 
+        This is critical for proper decoding as it creates error mechanisms
+        that can flip the logical observable.
     """
 
-    def __init__(self, p1: float = 0.0, p2: float = 0.0):
+    def __init__(self, p1: float = 0.0, p2: float = 0.0, include_final_noise: bool = True,
+                 before_measure_flip: float = None):
         self.p1 = float(p1)
         self.p2 = float(p2)
+        self.include_final_noise = include_final_noise
+        self.before_measure_flip = before_measure_flip if before_measure_flip is not None else p1
 
     def apply(self, circuit: stim.Circuit) -> stim.Circuit:
         """Apply circuit depolarizing noise.
         
         Handles REPEAT blocks by recursively applying noise to their body.
+        Also adds X_ERROR before measurements if before_measure_flip > 0.
         """
         return self._apply_impl(circuit)
     
@@ -57,9 +74,12 @@ class CircuitDepolarizingNoise(NoiseModel):
             if isinstance(inst, stim.CircuitRepeatBlock):
                 continue
             name = inst.name.upper()
-            if name in {"M", "MR", "R", "MRX", "MX", "MY", "MZ",
+            if name in {"R", "MRX", "MX", "MY", "MZ",
                         "DETECTOR", "OBSERVABLE_INCLUDE",
                         "TICK", "SHIFT_COORDS"}:
+                continue
+            # Skip MR for last_gate tracking but we'll handle M specially
+            if name == "MR":
                 continue
 
             for t in inst.targets_copy():
@@ -76,8 +96,18 @@ class CircuitDepolarizingNoise(NoiseModel):
                 noisy.append(stim.CircuitRepeatBlock(inst.repeat_count, noisy_body))
                 continue
             
-            noisy.append(inst)
             name = inst.name.upper()
+            
+            # Add X_ERROR before ALL measurement instructions (measurement noise)
+            # This includes M, MR (measure-reset), and basis-specific variants
+            # CRITICAL: MR is used for syndrome measurements, so missing this
+            # means no measurement errors on ancilla qubits!
+            if name in {"M", "MR", "MX", "MY", "MZ", "MRX", "MRY", "MRZ"} and self.before_measure_flip > 0:
+                qubit_targets = [t.value for t in inst.targets_copy() if t.is_qubit_target]
+                if qubit_targets:
+                    noisy.append("X_ERROR", qubit_targets, self.before_measure_flip)
+            
+            noisy.append(inst)
 
             # Extract only qubit targets.
             qubit_targets = [t.value for t in inst.targets_copy() if t.is_qubit_target]
@@ -85,20 +115,20 @@ class CircuitDepolarizingNoise(NoiseModel):
                 continue
 
             # If this is the last gate touching *all* of these qubits,
-            # skip injecting noise here. This suppresses many "naked L0"
-            # error terms that correspond to pure logical readout faults.
+            # optionally skip injecting noise here.
             is_final_touch = all(last_gate_on_qubit.get(q, -1) == idx for q in qubit_targets)
+            skip_noise = is_final_touch and not self.include_final_noise
 
-            # 1-qubit gates: add DEPOLARIZE1 on each target unless it's the last touch.
+            # 1-qubit gates: add DEPOLARIZE1 on each target unless skipped.
             if name in {
                 "H", "X", "Y", "Z", "S", "S_DAG",
                 "SQRT_X", "SQRT_X_DAG",
                 "SQRT_Y", "SQRT_Y_DAG",
-            } and self.p1 > 0 and not is_final_touch:
+            } and self.p1 > 0 and not skip_noise:
                 noisy.append("DEPOLARIZE1", qubit_targets, self.p1)
 
-            # 2-qubit gates: add DEPOLARIZE2 in pairs unless they're all final touches.
-            if name in {"CX", "CNOT", "CZ", "ISWAP", "SWAP"} and self.p2 > 0 and not is_final_touch:
+            # 2-qubit gates: add DEPOLARIZE2 in pairs unless skipped.
+            if name in {"CX", "CNOT", "CZ", "ISWAP", "SWAP"} and self.p2 > 0 and not skip_noise:
                 if len(qubit_targets) % 2 != 0:
                     raise ValueError(
                         f"Gate {name} has odd number of qubit targets: {qubit_targets}"

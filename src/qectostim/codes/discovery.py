@@ -348,7 +348,7 @@ def discover_all_codes(
         # Standard small CSS codes (no args needed)
         ("FourQubit422Code", {}),
         ("SixQubit622Code", {}),
-        ("SteanCode713", {}),
+        ("SteaneCode713", {}),
         ("ShorCode91", {}),
         ("ReedMullerCode151", {}),
         ("HammingCSSCode", {}),

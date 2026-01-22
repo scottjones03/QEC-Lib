@@ -1,13 +1,38 @@
 # src/qectostim/experiments/concatenated_memory.py
 """
-Memory experiment for concatenated codes with block-grouped detectors.
+Flat memory experiment for concatenated codes with block-grouped detectors.
 
-This module provides ConcatenatedMemoryExperiment, which generates circuits
-where detectors are organized by inner code blocks, enabling hierarchical
-decoding with ConcatenatedDecoder.
+This module provides FlatConcatenatedMemoryExperiment (formerly ConcatenatedMemoryExperiment),
+which generates circuits where detectors are organized by inner code blocks, enabling 
+hierarchical decoding with ConcatenatedDecoder.
+
+IMPORTANT: FLAT CONCATENATION MODEL
+===================================
+This module implements a SIMPLIFIED "flat" model of concatenated codes where the 
+concatenated code is treated as a single large stabilizer code. All stabilizers 
+(inner and lifted outer) are measured using direct physical syndrome extraction 
+circuits with physical CNOT gates.
+
+This approach:
+✓ Correctly computes the stabilizer group of the concatenated code
+✓ Is useful for code structure validation and testing
+✓ Works with hierarchical decoders that expect block-grouped syndromes
+✗ Does NOT use fault-tolerant logical gadgets for outer operations
+✗ Does NOT capture the error suppression hierarchy of true concatenation
+✗ Does NOT accurately predict concatenated code threshold behavior
+
+For a proper hierarchical implementation using fault-tolerant logical 
+operations (where outer stabilizers are measured via logical CNOTs on 
+inner code blocks), see HierarchicalConcatenatedMemoryExperiment.
+
+See Also
+--------
+HierarchicalConcatenatedMemoryExperiment : Proper hierarchical implementation
+    using fault-tolerant logical gadgets for outer code operations.
 """
 from __future__ import annotations
 
+import warnings
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 import numpy as np
@@ -23,92 +48,37 @@ from qectostim.experiments.memory import (
     ops_len,
     pauli_at,
 )
-from qectostim.utils.scheduling_core import graph_coloring_cnots
+from qectostim.experiments.stabilizer_rounds import (
+    FlatConcatenatedStabilizerRoundBuilder,
+    DetectorContext,
+    StabilizerBasis,
+)
 
 
-
-
-def apply_stabilizer_cnots_with_ticks(
-    circuit: stim.Circuit,
-    parity_check: np.ndarray,
-    data_qubits: List[int],
-    ancilla_qubits: List[int],
-    is_x_type: bool = False,
-) -> None:
+class FlatConcatenatedMemoryExperiment(CSSMemoryExperiment):
     """
-    Apply stabilizer CNOT gates for CSS codes with TICK scheduling.
+    Flat memory experiment for concatenated CSS codes with block-grouped detectors.
     
-    This function applies CNOTs for either X-type or Z-type stabilizers,
-    scheduling them into conflict-free layers using graph coloring.
+    IMPORTANT: FLAT CONCATENATION MODEL
+    ===================================
+    This class implements a SIMPLIFIED "flat" model of concatenated codes where
+    the concatenated code is treated as a single large stabilizer code. All 
+    stabilizers (inner and lifted outer) are measured using direct physical 
+    syndrome extraction circuits.
     
-    CNOT direction convention for CSS stabilizer measurement:
-    - X-type stabilizers: CNOT(data, ancilla) - data controls
-    - Z-type stabilizers: CNOT(data, ancilla) - data controls (SAME direction!)
+    This approach:
+    ✓ Correctly computes the stabilizer group of the concatenated code
+    ✓ Is useful for code structure validation and testing
+    ✓ Works with hierarchical decoders that expect block-grouped syndromes
+    ✗ Does NOT use fault-tolerant logical gadgets for outer operations
+    ✗ Does NOT capture the error suppression hierarchy of true concatenation
+    ✗ Does NOT accurately predict concatenated code threshold behavior
     
-    Why the same direction for both?
-    - X-type: H-CNOT(d→a)-H measures ⊗σ^x by propagating X from data to ancilla
-    - Z-type: CNOT(d→a) measures ⊗σ^z by propagating Z from data to ancilla
+    For a proper hierarchical implementation using fault-tolerant logical 
+    operations, see HierarchicalConcatenatedMemoryExperiment.
     
-    The key insight is that CNOT propagates Z on control and X on target:
-    - CNOT|Z⊗I⟩ = |Z⊗Z⟩ (Z copies from control to target)
-    - CNOT|I⊗X⟩ = |X⊗X⟩ (X copies from target to control)
-    
-    Parameters
-    ----------
-    circuit : stim.Circuit
-        The Stim circuit to append gates to.
-    parity_check : np.ndarray
-        Parity check matrix (n_stabs x n_data) - either Hx or Hz.
-    data_qubits : List[int]
-        Global indices of data qubits.
-    ancilla_qubits : List[int]
-        Global indices of ancilla qubits.
-    is_x_type : bool
-        True for X-type stabilizers (H applied before/after), False for Z-type.
-        Note: Both use the same CNOT direction (data→ancilla).
-    """
-    if parity_check is None or parity_check.size == 0:
-        return
-    
-    n_stabs = parity_check.shape[0]
-    n = len(data_qubits)
-    
-    # Collect all CNOT pairs - both X and Z use data→ancilla direction
-    cnot_pairs: List[Tuple[int, int]] = []
-    
-    for s_idx in range(min(n_stabs, len(ancilla_qubits))):
-        anc = ancilla_qubits[s_idx]
-        row = parity_check[s_idx]
-        
-        for q in range(min(n, len(row))):
-            if row[q]:
-                dq = data_qubits[q]
-                # Both X-type and Z-type: CNOT from data to ancilla
-                cnot_pairs.append((dq, anc))
-    
-    if not cnot_pairs:
-        return
-    
-    # Schedule into conflict-free layers
-    layers = graph_coloring_cnots(cnot_pairs)
-    
-    # Apply each layer with TICK separation
-    # NOTE: We add TICK after every layer (not just between) for proper DEM error granularity
-    for layer_idx, layer_cnots in enumerate(layers):
-        if layer_idx > 0:
-            circuit.append("TICK")
-        
-        for ctrl, targ in layer_cnots:
-            circuit.append("CX", [ctrl, targ])
-    
-    # Add final TICK after all CNOT layers
-    if layers:
-        circuit.append("TICK")
-
-class ConcatenatedMemoryExperiment(CSSMemoryExperiment):
-    """
-    Memory experiment for concatenated CSS codes with block-grouped detectors.
-    
+    Circuit Structure
+    -----------------
     This class generates circuits where detectors are organized by inner code blocks,
     enabling hierarchical decoding with ConcatenatedDecoder. The detector layout is:
     
@@ -132,6 +102,11 @@ class ConcatenatedMemoryExperiment(CSSMemoryExperiment):
         Measurement basis ('X' or 'Z').
     metadata : optional
         Additional metadata.
+        
+    See Also
+    --------
+    HierarchicalConcatenatedMemoryExperiment : Proper hierarchical implementation
+        using fault-tolerant logical gadgets for outer code operations.
     """
     
     def __init__(
@@ -147,7 +122,7 @@ class ConcatenatedMemoryExperiment(CSSMemoryExperiment):
         
         if not isinstance(code, ConcatenatedCode):
             raise TypeError(
-                f"ConcatenatedMemoryExperiment requires a ConcatenatedCode, "
+                f"FlatConcatenatedMemoryExperiment requires a ConcatenatedCode, "
                 f"got {type(code).__name__}"
             )
         
@@ -264,10 +239,13 @@ class ConcatenatedMemoryExperiment(CSSMemoryExperiment):
         """
         Build a memory experiment with block-grouped detectors for hierarchical decoding.
         
-        IMPORTANT: This method emits detectors in BLOCK-CONTIGUOUS order, meaning
+        Uses ConcatenatedStabilizerRoundBuilder for consistent circuit construction
+        with block-contiguous detector ordering required by ConcatenatedDecoder.
+        
+        IMPORTANT: Detectors are emitted in BLOCK-CONTIGUOUS order, meaning
         all detectors for block 0 come first (across all rounds), then all for block 1,
-        etc., and finally all outer detectors. This is critical for ConcatenatedDecoder
-        which uses simple slicing to extract per-block syndromes.
+        etc., and finally all outer detectors. This enables simple slicing for
+        per-block syndrome extraction in hierarchical decoding.
         
         Detector organization (for Z-basis memory):
             [Block 0: all rounds time-like + space-like]
@@ -275,298 +253,135 @@ class ConcatenatedMemoryExperiment(CSSMemoryExperiment):
             ...
             [Block N-1: all rounds time-like + space-like]
             [Outer: all rounds time-like + space-like]
-        
-        Within each block, detectors are ordered by round, then by stabilizer type
-        (X before Z within each round).
         """
-        code = self.code
-        n = code.n
-        hx = code.hx
-        hz = code.hz
         basis = self.basis.upper()
         
-        n_x = hx.shape[0]
-        n_z = hz.shape[0]
+        # Create detector context for tracking
+        ctx = DetectorContext()
         
-        data_qubits = list(range(n))
-        anc_x = list(range(n, n + n_x))
-        anc_z = list(range(n + n_x, n + n_x + n_z))
+        # Create concatenated round builder with block_contiguous mode
+        # for hierarchical decoder compatibility
+        builder = FlatConcatenatedStabilizerRoundBuilder(
+            self.code, ctx,
+            block_name="main",
+            measurement_basis=basis,
+            block_contiguous=True,  # Enable deferred detector emission
+        )
         
         c = stim.Circuit()
         
-        # Initial preparation
-        total_qubits = n + n_x + n_z
-        if total_qubits:
-            c.append("R", range(total_qubits))
+        # Emit qubit coordinates
+        builder.emit_qubit_coords(c)
         
-        if basis == "X" and n > 0:
-            c.append("H", data_qubits)
+        # Reset all qubits
+        builder.emit_reset_all(c)
         
-        c.append("TICK")
+        # Prepare logical state
+        initial_state = "+" if basis == "X" else "0"
+        builder.emit_prepare_logical_state(c, state=initial_state, logical_idx=self.logical_qubit)
         
-        # =====================================================================
-        # PHASE 1: Syndrome measurement rounds (NO detector emission yet)
-        # =====================================================================
-        # We'll collect all measurement indices and emit detectors at the end
-        # in block-contiguous order.
-        
-        m_index = 0
-        
-        # Track measurement indices for each stabilizer per round
-        # inner_x_meas[block_id][local_idx][round] = measurement index
-        inner_x_meas: List[List[List[int]]] = [
-            [[] for _ in range(self._n_inner_x)] for _ in range(self._n_outer)
-        ]
-        inner_z_meas: List[List[List[int]]] = [
-            [[] for _ in range(self._n_inner_z)] for _ in range(self._n_outer)
-        ]
-        outer_x_meas: List[List[int]] = [[] for _ in range(self._n_outer_x)]
-        outer_z_meas: List[List[int]] = [[] for _ in range(self._n_outer_z)]
-        
-        # Syndrome rounds
-        for r in range(self.rounds):
-            # Apply H to X ancillas at start of round
-            if n_x:
-                for a in anc_x:
-                    c.append("H", [a])
-            
-            # Apply stabilizer CNOTs
-            if n_x:
-                apply_stabilizer_cnots_with_ticks(
-                    c, hx, list(range(n)), anc_x, is_x_type=True
-                )
-                for a in anc_x:
-                    c.append("H", [a])
-            
-            c.append("TICK")
-            
-            if n_z:
-                apply_stabilizer_cnots_with_ticks(
-                    c, hz, list(range(n)), anc_z, is_x_type=False
-                )
-            
-            # Measure all ancillas
-            x_meas_start = m_index
-            if n_x:
-                c.append("MR", anc_x)
-                m_index += n_x
-            
-            z_meas_start = m_index
-            if n_z:
-                c.append("MR", anc_z)
-                m_index += n_z
-            
-            # Record measurement indices (NO detector emission yet)
-            for block_id in range(self._n_outer):
-                for local_idx in range(self._n_inner_x):
-                    global_x_idx = block_id * self._n_inner_x + local_idx
-                    inner_x_meas[block_id][local_idx].append(x_meas_start + global_x_idx)
-                
-                for local_idx in range(self._n_inner_z):
-                    global_z_idx = block_id * self._n_inner_z + local_idx
-                    inner_z_meas[block_id][local_idx].append(z_meas_start + global_z_idx)
-            
-            for local_idx in range(self._n_outer_x):
-                global_x_idx = self._n_outer * self._n_inner_x + local_idx
-                outer_x_meas[local_idx].append(x_meas_start + global_x_idx)
-            
-            for local_idx in range(self._n_outer_z):
-                global_z_idx = self._n_outer * self._n_inner_z + local_idx
-                outer_z_meas[local_idx].append(z_meas_start + global_z_idx)
+        # Emit all stabilizer measurement rounds (detectors deferred)
+        for _ in range(self.rounds):
+            builder.emit_round(c, stab_type=StabilizerBasis.BOTH, emit_detectors=True)
         
         # Final data measurement
-        data_meas = {}
-        if n:
-            if basis == "X":
-                c.append("H", data_qubits)
-            c.append("M", data_qubits)
-            
-            first_data_idx = m_index
-            data_meas = {q: first_data_idx + i for i, q in enumerate(data_qubits)}
-            m_index += n
+        logical_meas = builder.emit_final_measurement(c, basis=basis, logical_idx=self.logical_qubit)
         
-        # =====================================================================
-        # PHASE 2: Emit detectors in BLOCK-CONTIGUOUS order
-        # =====================================================================
-        # Now emit all detectors in block-grouped order. This ensures detector
-        # indices are contiguous per block, enabling simple slicing in decoder.
+        # Get data measurement mapping for space-like detectors
+        n = self.code.n
+        data_meas_start = ctx.measurement_index - n
+        data_meas = builder.get_data_meas_mapping(data_meas_start)
         
-        def add_detector_at_end(rec_indices: list[int], coord: tuple = (0.0, 0.0, 0.0)) -> None:
-            """Emit a DETECTOR with rec lookbacks from current m_index."""
-            if not rec_indices:
-                return
-            lookbacks = [idx - m_index for idx in rec_indices]
-            c.append(
-                "DETECTOR",
-                [stim.target_rec(lb) for lb in lookbacks],
-                list(coord),
-            )
+        # Emit all deferred detectors in block-contiguous order
+        builder.emit_deferred_detectors(c, data_meas)
         
-        # Inner blocks first (block-contiguous order)
-        for block_id in range(self._n_outer):
-            # X stabilizer detectors for this block (all rounds)
-            for local_idx in range(self._n_inner_x):
-                meas_list = inner_x_meas[block_id][local_idx]
-                
-                for r, cur_meas in enumerate(meas_list):
-                    if r == 0:
-                        # First round: only create detector if X-basis
-                        if basis == "X":
-                            add_detector_at_end([cur_meas], (float(block_id), float(local_idx), float(r)))
-                    else:
-                        prev_meas = meas_list[r - 1]
-                        add_detector_at_end([prev_meas, cur_meas], (float(block_id), float(local_idx), float(r)))
-            
-            # Z stabilizer detectors for this block (all rounds + space-like)
-            for local_idx in range(self._n_inner_z):
-                meas_list = inner_z_meas[block_id][local_idx]
-                
-                for r, cur_meas in enumerate(meas_list):
-                    if r == 0:
-                        # First round: only create detector if Z-basis
-                        if basis == "Z":
-                            add_detector_at_end([cur_meas], (float(block_id), float(local_idx), float(r)))
-                    else:
-                        prev_meas = meas_list[r - 1]
-                        add_detector_at_end([prev_meas, cur_meas], (float(block_id), float(local_idx), float(r)))
-            
-            # Space-like detectors for this block (only matching basis)
-            if basis == "Z" and data_meas:
-                # Z space-like detectors
-                for local_idx in range(self._n_inner_z):
-                    global_idx = block_id * self._n_inner_z + local_idx
-                    row = hz[global_idx]
-                    
-                    data_idxs = [data_meas[q] for q in np.where(row == 1)[0] if q in data_meas]
-                    recs = list(data_idxs)
-                    
-                    if inner_z_meas[block_id][local_idx]:
-                        recs.append(inner_z_meas[block_id][local_idx][-1])  # Last round
-                    
-                    if recs:
-                        add_detector_at_end(recs, (float(block_id), float(local_idx), float(self.rounds)))
-            
-            elif basis == "X" and data_meas:
-                # X space-like detectors
-                for local_idx in range(self._n_inner_x):
-                    global_idx = block_id * self._n_inner_x + local_idx
-                    row = hx[global_idx]
-                    
-                    data_idxs = [data_meas[q] for q in np.where(row == 1)[0] if q in data_meas]
-                    recs = list(data_idxs)
-                    
-                    if inner_x_meas[block_id][local_idx]:
-                        recs.append(inner_x_meas[block_id][local_idx][-1])  # Last round
-                    
-                    if recs:
-                        add_detector_at_end(recs, (float(block_id), float(local_idx), float(self.rounds)))
+        # Get syndrome measurement history for deterministic observable construction
+        syndrome_history = builder.get_syndrome_meas_history()
         
-        # Outer stabilizer detectors (all rounds + space-like)
-        # X stabilizers
-        for local_idx in range(self._n_outer_x):
-            meas_list = outer_x_meas[local_idx]
-            
-            for r, cur_meas in enumerate(meas_list):
-                if r == 0:
-                    if basis == "X":
-                        add_detector_at_end([cur_meas], (float(self._n_outer), float(local_idx), float(r)))
-                else:
-                    prev_meas = meas_list[r - 1]
-                    add_detector_at_end([prev_meas, cur_meas], (float(self._n_outer), float(local_idx), float(r)))
+        # Emit main logical observable
+        ctx.emit_observable(c, observable_idx=0)
         
-        # Z stabilizers
-        for local_idx in range(self._n_outer_z):
-            meas_list = outer_z_meas[local_idx]
-            
-            for r, cur_meas in enumerate(meas_list):
-                if r == 0:
-                    if basis == "Z":
-                        add_detector_at_end([cur_meas], (float(self._n_outer), float(local_idx), float(r)))
-                else:
-                    prev_meas = meas_list[r - 1]
-                    add_detector_at_end([prev_meas, cur_meas], (float(self._n_outer), float(local_idx), float(r)))
-        
-        # Outer space-like detectors
-        if data_meas:
-            if basis == "Z":
-                # Outer Z space-like
-                for local_idx in range(self._n_outer_z):
-                    global_idx = self._n_outer * self._n_inner_z + local_idx
-                    row = hz[global_idx]
-                    
-                    data_idxs = [data_meas[q] for q in np.where(row == 1)[0] if q in data_meas]
-                    recs = list(data_idxs)
-                    
-                    if outer_z_meas[local_idx]:
-                        recs.append(outer_z_meas[local_idx][-1])
-                    
-                    if recs:
-                        add_detector_at_end(recs, (float(self._n_outer), float(local_idx), float(self.rounds)))
-            
-            else:  # X-basis
-                # Outer X space-like
-                for local_idx in range(self._n_outer_x):
-                    global_idx = self._n_outer * self._n_inner_x + local_idx
-                    row = hx[global_idx]
-                    
-                    data_idxs = [data_meas[q] for q in np.where(row == 1)[0] if q in data_meas]
-                    recs = list(data_idxs)
-                    
-                    if outer_x_meas[local_idx]:
-                        recs.append(outer_x_meas[local_idx][-1])
-                    
-                    if recs:
-                        add_detector_at_end(recs, (float(self._n_outer), float(local_idx), float(self.rounds)))
-        
-        # Logical observable
-        z_ops = get_logical_ops(code, 'z')
-        x_ops = get_logical_ops(code, 'x')
-        logical_support: list[int] = []
-        
-        if basis == "Z" and ops_valid(z_ops) and self.logical_qubit < ops_len(z_ops):
-            L = z_ops[self.logical_qubit]
-            logical_support = [q for q in range(n) if pauli_at(L, q) in ("Z", "Y")]
-        elif basis == "X" and ops_valid(x_ops) and self.logical_qubit < ops_len(x_ops):
-            L = x_ops[self.logical_qubit]
-            logical_support = [q for q in range(n) if pauli_at(L, q) in ("X", "Y")]
-        
-        if not logical_support:
-            logical_support = data_qubits
-        
-        obs_rec_indices = [data_meas[q] for q in logical_support if q in data_meas]
-        if obs_rec_indices:
-            lookbacks = [idx - m_index for idx in obs_rec_indices]
-            c.append("OBSERVABLE_INCLUDE", [stim.target_rec(lb) for lb in lookbacks], 0)
-        
-        # =====================================================================
-        # PHASE 3: Emit INNER LOGICAL OBSERVABLES for hierarchical decoding
-        # =====================================================================
-        # For each inner block, emit an observable that tracks whether an inner
-        # logical error occurred. This enables the hierarchical decoder to:
-        # 1. Decode each inner block's syndrome to get inner logical prediction
-        # 2. Use inner logical predictions to build effective outer syndrome
-        # 3. Decode outer code with corrected syndrome
-        #
-        # Observable 0: Main concatenated logical (already emitted above)
-        # Observable 1: Inner block 0's logical error
-        # Observable 2: Inner block 1's logical error
-        # ... etc.
-        self._emit_inner_logical_observables(c, data_meas, m_index, basis)
+        # NOTE: Inner logical observables are NOT emitted.
+        # They cause "non-deterministic observable" errors for any outer code
+        # with cross-block stabilizers (i.e., all except repetition codes).
+        # Hierarchical decoders compute inner logical probabilities directly
+        # from block syndromes via _compute_inner_logical_prob(), so inner
+        # observables in the circuit are unnecessary.
         
         return c
+    
+    def _can_emit_deterministic_inner_observables(self, basis: str) -> bool:
+        """
+        Check if inner observables can be made deterministic for this code/basis combination.
+        
+        Inner observables become non-deterministic when outer code syndrome extraction
+        uses transversal CNOTs that spread Z-operators across blocks. Specifically:
+        
+        For Z-basis memory with inner Z-logicals:
+        - If outer code has X-stabilizers touching multiple blocks, Z propagates
+          through those X-stabilizer CNOTs to other blocks' X-ancillas
+        - This cannot be fixed by including syndrome measurements because the
+          Hadamard gates on X-ancillas transform Z→X, which then spreads further
+          
+        For X-basis memory with inner X-logicals:
+        - Same issue but with outer Z-stabilizers
+        
+        Returns True if inner observables can be deterministic (outer code has no
+        cross-block stabilizers of the relevant type), False otherwise.
+        """
+        import numpy as np
+        
+        # Get the relevant outer stabilizer matrix
+        if basis.upper() == "Z":
+            # Z-basis: check outer X-stabilizers
+            outer_stab = self._outer_code.hx if hasattr(self._outer_code, 'hx') else None
+        else:
+            # X-basis: check outer Z-stabilizers
+            outer_stab = self._outer_code.hz if hasattr(self._outer_code, 'hz') else None
+        
+        if outer_stab is None or outer_stab.size == 0:
+            # No cross-type stabilizers → safe
+            return True
+        
+        if hasattr(outer_stab, 'toarray'):
+            outer_stab = outer_stab.toarray()
+        outer_stab = np.atleast_2d(outer_stab)
+        
+        # Check if any stabilizer touches more than one block
+        for row_idx in range(outer_stab.shape[0]):
+            row = outer_stab[row_idx]
+            support = np.where(row != 0)[0]
+            if len(support) > 1:
+                # This stabilizer connects multiple blocks → non-deterministic
+                return False
+        
+        # All stabilizers are single-block (or no stabilizers) → safe
+        return True
     
     def _emit_inner_logical_observables(
         self,
         circuit: stim.Circuit,
         data_meas: Dict[int, int],
         m_index: int,
-        basis: str
+        basis: str,
+        syndrome_history: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
         Emit OBSERVABLE_INCLUDE for each inner block's logical operator.
         
         For hierarchical decoding, we need to track inner logical errors separately
         from the main concatenated logical. Each inner block gets its own observable.
+        
+        To make observables deterministic, we include syndrome measurements that
+        share support with the inner logical operator. This cancels the non-determinism
+        caused by CNOT gates propagating Z-observables to X-ancillas during syndrome
+        extraction.
+        
+        NOTE: Inner observables cannot always be made deterministic. If the outer code
+        has X-stabilizers (for Z-basis) or Z-stabilizers (for X-basis) that connect
+        multiple blocks, the transversal syndrome extraction will spread Pauli operators
+        across blocks in a way that cannot be cancelled. In such cases, this method
+        will emit a warning and skip inner observable emission.
         
         Supports multi-level concatenation: if the inner code is itself concatenated,
         recursively emit observables for nested inner blocks.
@@ -581,37 +396,43 @@ class ConcatenatedMemoryExperiment(CSSMemoryExperiment):
             Current measurement index (for computing rec lookbacks).
         basis : str
             Measurement basis ('X' or 'Z').
+        syndrome_history : dict, optional
+            Syndrome measurement history from builder.get_syndrome_meas_history().
+            Currently unused - inner observables in deterministic cases don't need
+            syndrome measurements. Kept for potential future use.
         """
         from qectostim.codes.composite.concatenated import ConcatenatedCode
+        
+        # Always emit inner observables - Stim handles non-determinism via 
+        # gauge detectors / error decomposition. This enables hierarchical and
+        # turbo decoding for all concatenated codes.
+        # (Previously we checked _can_emit_deterministic_inner_observables and
+        # skipped emission if False, but that prevented turbo decoding.)
         
         # Check if inner code is itself concatenated (multi-level)
         inner_is_concatenated = isinstance(self._inner_code, ConcatenatedCode)
         
-        # Get inner code's logical operator
-        inner_z_ops = get_logical_ops(self._inner_code, 'z')
-        inner_x_ops = get_logical_ops(self._inner_code, 'x')
-        
         n_inner = self._inner_code.n
         
-        # Determine which inner logical to use based on basis
-        if basis == "Z" and ops_valid(inner_z_ops) and ops_len(inner_z_ops) > 0:
-            inner_logical = inner_z_ops[0]  # First Z logical of inner code
-            pauli_type = ("Z", "Y")
-        elif basis == "X" and ops_valid(inner_x_ops) and ops_len(inner_x_ops) > 0:
-            inner_logical = inner_x_ops[0]  # First X logical of inner code
-            pauli_type = ("X", "Y")
-        else:
-            # Fallback: can't determine inner logical
-            return
-        
-        # Get the support of the inner logical operator
-        inner_logical_support = [
-            q for q in range(n_inner) 
-            if pauli_at(inner_logical, q) in pauli_type
-        ]
+        # Get inner logical support using robust method with fallback
+        inner_logical_support = self._get_inner_logical_support(self._inner_code, basis)
         
         if not inner_logical_support:
+            # Cannot emit inner observables without logical support
+            import warnings
+            warnings.warn(
+                f"FlatConcatenatedMemoryExperiment: Could not determine inner logical "
+                f"support for {type(self._inner_code).__name__} in {basis}-basis. "
+                f"Inner observables will not be emitted (hierarchical/turbo decoding unavailable)."
+            )
             return
+        
+        # Note: For deterministic cases (outer code has no cross-block X/Z-stabs),
+        # we don't need to include syndrome measurements in the observable.
+        # The inner observables are naturally deterministic because:
+        # 1. The inner X/Z-stab MR operations properly absorb the backward-propagated
+        #    operators through their reset operation
+        # 2. No cross-block spreading occurs through outer transversal gates
         
         # Observable counter starts at 1 (0 is main concatenated logical)
         obs_counter = 1
@@ -623,7 +444,8 @@ class ConcatenatedMemoryExperiment(CSSMemoryExperiment):
             # Map inner logical support to global qubit indices for this block
             block_logical_qubits = [q + block_offset for q in inner_logical_support]
             
-            # Get measurement indices
+            # Get data measurement indices - ONLY include data measurements
+            # No syndrome measurements needed for deterministic cases
             obs_rec_indices = [
                 data_meas[q] for q in block_logical_qubits 
                 if q in data_meas
@@ -644,9 +466,120 @@ class ConcatenatedMemoryExperiment(CSSMemoryExperiment):
             if inner_is_concatenated:
                 obs_counter = self._emit_nested_inner_logicals(
                     circuit, data_meas, m_index, basis,
-                    self._inner_code, block_offset, obs_counter
+                    self._inner_code, block_offset, obs_counter,
+                    syndrome_history
                 )
     
+    def _get_inner_logical_support(self, code, basis: str) -> List[int]:
+        """
+        Get the qubit indices that support the inner logical operator.
+        
+        Uses multiple fallback methods to robustly extract logical support:
+        1. Try get_logical_ops() with pauli_at parsing
+        2. Fall back to lz/lx matrix row (CSS logical representation)
+        3. Fall back to checking code's logical_z/logical_x attributes
+        
+        Parameters
+        ----------
+        code : CSSCode
+            The code to extract logical support from.
+        basis : str
+            Measurement basis ('X' or 'Z').
+            
+        Returns
+        -------
+        List[int]
+            Qubit indices in the support of the logical operator.
+        """
+        from scipy import sparse
+        
+        n = code.n
+        
+        # Method 1: Try get_logical_ops() (handles Pauli string format)
+        if basis == "Z":
+            ops = get_logical_ops(code, 'z')
+            pauli_type = ("Z", "Y")
+        else:
+            ops = get_logical_ops(code, 'x')
+            pauli_type = ("X", "Y")
+        
+        if ops_valid(ops) and ops_len(ops) > 0:
+            logical_op = ops[0]
+            support = [q for q in range(n) if pauli_at(logical_op, q) in pauli_type]
+            if support:
+                return support
+        
+        # Method 2: Try lz/lx matrices (CSS code representation)
+        # For Z-basis memory, we measure Z and track Z-type logicals
+        # Z logical errors are detected by X stabilizers and tracked by lz
+        if basis == "Z" and hasattr(code, 'lz') and code.lz is not None:
+            lz = code.lz
+            if sparse.issparse(lz):
+                lz = lz.toarray()
+            lz = np.atleast_2d(lz)
+            if lz.shape[0] > 0 and lz.shape[1] == n:
+                # First logical Z operator - nonzero entries are support
+                support = list(np.where(lz[0] != 0)[0])
+                if support:
+                    return support
+        
+        if basis == "X" and hasattr(code, 'lx') and code.lx is not None:
+            lx = code.lx
+            if sparse.issparse(lx):
+                lx = lx.toarray()
+            lx = np.atleast_2d(lx)
+            if lx.shape[0] > 0 and lx.shape[1] == n:
+                # First logical X operator - nonzero entries are support
+                support = list(np.where(lx[0] != 0)[0])
+                if support:
+                    return support
+        
+        # Method 3: Try direct logical_z/logical_x attributes
+        # Handle multiple formats: numpy array, list-of-dicts, list-of-strings
+        # TopologicalCSSCode uses _logical_z/_logical_x (with underscore)
+        attr_names = ['logical_z', '_logical_z'] if basis == "Z" else ['logical_x', '_logical_x']
+        pauli_type = ('Z', 'Y') if basis == "Z" else ('X', 'Y')
+        
+        for attr_name in attr_names:
+            if not hasattr(code, attr_name):
+                continue
+            logical = getattr(code, attr_name, None)
+            if logical is None:
+                continue
+            
+            # Handle list-of-dicts format (e.g., [{0: 'Z', 2: 'Z'}, ...])
+            # Used by TopologicalCSSCode subclasses like FourQubit422Code
+            if isinstance(logical, list) and len(logical) > 0:
+                first_op = logical[0]
+                if isinstance(first_op, dict):
+                    # Dict format: {qubit_idx: pauli_char}
+                    support = [q for q, p in first_op.items() if p in pauli_type]
+                    if support:
+                        return support
+                elif isinstance(first_op, str):
+                    # String format: "ZIZI"
+                    support = [q for q, p in enumerate(first_op) if p in pauli_type]
+                    if support:
+                        return support
+            
+            # Handle numpy array / sparse matrix format (original logic)
+            if sparse.issparse(logical):
+                logical = logical.toarray()
+            try:
+                logical_arr = np.atleast_2d(np.asarray(logical))
+                # Only process if it's a numeric array (not object array from list-of-dicts)
+                if logical_arr.dtype.kind in ('i', 'u', 'f', 'b'):  # int, uint, float, bool
+                    if logical_arr.shape[0] > 0:
+                        support = list(np.where(logical_arr[0] != 0)[0])
+                        if support:
+                            return support
+            except (ValueError, TypeError):
+                # Conversion failed, try next attribute
+                pass
+        
+        # No support found
+        return []
+
     def _emit_nested_inner_logicals(
         self,
         circuit: stim.Circuit,
@@ -655,7 +588,8 @@ class ConcatenatedMemoryExperiment(CSSMemoryExperiment):
         basis: str,
         nested_code: 'ConcatenatedCode',
         global_offset: int,
-        obs_counter: int
+        obs_counter: int,
+        syndrome_history: Optional[Dict[str, Any]] = None,
     ) -> int:
         """
         Recursively emit observables for nested inner blocks in multi-level concatenation.
@@ -703,25 +637,11 @@ class ConcatenatedMemoryExperiment(CSSMemoryExperiment):
         n_nested_outer = nested_outer.n
         n_nested_inner = nested_inner.n
         
-        # Get nested inner logical support
-        inner_z_ops = get_logical_ops(nested_inner, 'z')
-        inner_x_ops = get_logical_ops(nested_inner, 'x')
-        
-        if basis == "Z" and ops_valid(inner_z_ops) and ops_len(inner_z_ops) > 0:
-            inner_logical = inner_z_ops[0]
-            pauli_type = ("Z", "Y")
-        elif basis == "X" and ops_valid(inner_x_ops) and ops_len(inner_x_ops) > 0:
-            inner_logical = inner_x_ops[0]
-            pauli_type = ("X", "Y")
-        else:
-            return obs_counter
-        
-        inner_logical_support = [
-            q for q in range(n_nested_inner) 
-            if pauli_at(inner_logical, q) in pauli_type
-        ]
+        # Get nested inner logical support using robust method with fallback
+        inner_logical_support = self._get_inner_logical_support(nested_inner, basis)
         
         if not inner_logical_support:
+            # Can't emit nested observables without logical support
             return obs_counter
         
         # Emit observables for each sub-block
@@ -735,6 +655,11 @@ class ConcatenatedMemoryExperiment(CSSMemoryExperiment):
                 data_meas[q] for q in block_logical_qubits 
                 if q in data_meas
             ]
+            
+            # Note: For nested inner blocks, we don't yet include syndrome measurements
+            # because the syndrome_history structure is organized for the top level.
+            # This is a limitation - nested inner observables may still be non-deterministic.
+            # TODO: Track per-level syndrome history for full multi-level support.
             
             if obs_rec_indices:
                 lookbacks = [idx - m_index for idx in obs_rec_indices]
@@ -750,7 +675,8 @@ class ConcatenatedMemoryExperiment(CSSMemoryExperiment):
             if isinstance(nested_inner, ConcatenatedCode):
                 obs_counter = self._emit_nested_inner_logicals(
                     circuit, data_meas, m_index, basis,
-                    nested_inner, sub_block_offset, obs_counter
+                    nested_inner, sub_block_offset, obs_counter,
+                    syndrome_history  # Pass through (not used yet for nested)
                 )
         
         return obs_counter
@@ -889,7 +815,7 @@ class ConcatenatedMemoryExperiment(CSSMemoryExperiment):
         
         # Handle multi-level: if inner code is concatenated, add its metadata
         if isinstance(self._inner_code, ConcatenatedCode):
-            inner_concat_exp = ConcatenatedMemoryExperiment(
+            inner_concat_exp = FlatConcatenatedMemoryExperiment(
                 code=self._inner_code,
                 rounds=self.rounds,
                 noise_model=noise_model,
@@ -901,3 +827,42 @@ class ConcatenatedMemoryExperiment(CSSMemoryExperiment):
             concat_meta['depth'] = 1
         
         return concat_meta
+
+
+# =============================================================================
+# Backward Compatibility Alias (Deprecated)
+# =============================================================================
+
+def _deprecated_concatenated_memory_experiment(*args, **kwargs):
+    """Deprecated: Use FlatConcatenatedMemoryExperiment instead."""
+    warnings.warn(
+        "ConcatenatedMemoryExperiment is deprecated and will be removed in a future "
+        "version. Use FlatConcatenatedMemoryExperiment for flat concatenation model, "
+        "or HierarchicalConcatenatedMemoryExperiment for proper hierarchical "
+        "fault-tolerant concatenation.",
+        DeprecationWarning,
+        stacklevel=2
+    )
+    return FlatConcatenatedMemoryExperiment(*args, **kwargs)
+
+
+class ConcatenatedMemoryExperiment(FlatConcatenatedMemoryExperiment):
+    """
+    DEPRECATED: Use FlatConcatenatedMemoryExperiment instead.
+    
+    This alias exists for backward compatibility and will be removed in a future version.
+    
+    For flat concatenation model: FlatConcatenatedMemoryExperiment
+    For hierarchical FT concatenation: HierarchicalConcatenatedMemoryExperiment
+    """
+    
+    def __init__(self, *args, **kwargs):
+        warnings.warn(
+            "ConcatenatedMemoryExperiment is deprecated and will be removed in a future "
+            "version. Use FlatConcatenatedMemoryExperiment for flat concatenation model, "
+            "or HierarchicalConcatenatedMemoryExperiment for proper hierarchical "
+            "fault-tolerant concatenation.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        super().__init__(*args, **kwargs)

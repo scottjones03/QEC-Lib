@@ -48,7 +48,7 @@ See `INSTALLATION.md` for more platform-specific tips and troubleshooting.
 Generate a memory experiment for a concatenated surface-steane code and run a quick simulation:
 
 ```python
-from qectostim.codes.small.steane_713 import SteanCode713
+from qectostim.codes.small.steane_713 import SteaneCode713
 from qectostim.codes.surface.rotated_surface import RotatedSurfaceCode
 from qectostim.codes.composite.concatenated import ConcatenatedTopologicalCSSCode
 from qectostim.experiments.memory import CSSMemoryExperiment
@@ -56,7 +56,7 @@ from qectostim.noise.models import CircuitDepolarizingNoise
 
 # Build a memory experiment for a concatenated code.
 outer_exp = RotatedSurfaceCode(distance=3)
-inner_exp = SteanCode713()
+inner_exp = SteaneCode713()
 concat_exp = ConcatenatedTopologicalCSSCode(outer_exp, inner_exp)
 
 noise = CircuitDepolarizingNoise(p1=0.001, p2=0.001)
