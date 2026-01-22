@@ -7,7 +7,7 @@ correction codes often used for testing and as building blocks.
 CSS Codes:
     FourQubit422Code: [[4,2,2]] detection code
     SixQubit622Code: [[6,2,2]] CSS code
-    SteanCode713: [[7,1,3]] Steane code
+    SteaneCode713: [[7,1,3]] Steane code
     ShorCode91: [[9,1,3]] Shor code
     HammingCSSCode: [[7,4,3]] Hamming-based CSS code
     ReedMullerCode151: [[15,1,3]] quantum Reed-Muller code
@@ -27,7 +27,7 @@ Repetition Codes:
 # CSS codes (now local)
 from .four_two_two import FourQubit422Code
 from .six_two_two import SixQubit622Code
-from .steane_713 import SteanCode713
+from .steane_713 import SteaneCode713
 from .shor_code import ShorCode91
 from .hamming_css import HammingCSSCode, HammingCSS7, HammingCSS15, HammingCSS31
 from .reed_muller_code import ReedMullerCode151
@@ -59,7 +59,7 @@ __all__ = [
     # CSS
     "FourQubit422Code",
     "SixQubit622Code",
-    "SteanCode713",
+    "SteaneCode713",
     "ShorCode91",
     "HammingCSSCode",
     "HammingCSS7",

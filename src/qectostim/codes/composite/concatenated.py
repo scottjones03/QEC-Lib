@@ -6,6 +6,29 @@ This module provides concatenated code constructions where each physical qubit
 of the outer code is encoded using the inner code. The total number of physical 
 qubits is n_outer * n_inner.
 
+Naming Convention
+-----------------
+The terms "outer" and "inner" follow the mathematical composition notation:
+    concatenated = outer ∘ inner
+
+This means:
+- **outer**: The code whose logical qubits are protected. Each physical qubit
+  of the outer code becomes a logical qubit of the inner code.
+- **inner**: The code that provides the physical layer. Each outer physical 
+  qubit is encoded into n_inner physical qubits.
+
+For hierarchical decoding, the perspective is reversed:
+- **physical_code** (= inner): The physical-level code, closest to hardware.
+  This has n_inner physical qubits per block.
+- **logical_code** (= outer): The logical-level code, providing the outer 
+  error correction. This has n_outer blocks.
+
+Example: Rep(3) ∘ [[4,2,2]]
+    - outer = Rep(3): 3 logical qubits, provides majority vote
+    - inner = [[4,2,2]]: 4 physical qubits, encodes 2 logical qubits
+    - physical_code = [[4,2,2]] (4 qubits per block)
+    - logical_code = Rep(3) (3 blocks for error correction)
+
 For CSS codes, the parity check matrices are constructed as:
 - Inner checks: Block-diagonal copies of inner Hx/Hz for each outer qubit
 - Outer checks: Each outer stabilizer lifted through inner logical operators
@@ -135,12 +158,22 @@ class ConcatenatedCode(Code):
     It just remembers the outer and inner code objects and basic sizing;
     CSS-specific stuff lives in ConcatenatedCSSCode.
     
+    Naming Convention
+    -----------------
+    The attributes `outer` and `inner` follow mathematical notation:
+    - outer: The logical-level code (its physical qubits become inner's logicals)
+    - inner: The physical-level code (provides the actual physical qubits)
+    
+    For decoder implementations, use the aliases:
+    - physical_code: Same as inner (the code at the physical level)
+    - logical_code: Same as outer (the code at the logical level)
+    
     Parameters
     ----------
     outer : Code
-        The outer code whose physical qubits are encoded.
+        The outer (logical-level) code whose physical qubits are encoded.
     inner : Code  
-        The inner code used to encode each outer qubit.
+        The inner (physical-level) code used to encode each outer qubit.
     depth : int, optional
         Concatenation depth. depth=1 means single concatenation (default).
         depth=2 means (outer ∘ inner) ∘ inner, etc.
@@ -148,9 +181,13 @@ class ConcatenatedCode(Code):
     Attributes
     ----------
     outer : Code
-        The outer code.
+        The outer (logical-level) code.
     inner : Code
-        The inner code.
+        The inner (physical-level) code.
+    physical_code : Code
+        Alias for inner - the physical-level code.
+    logical_code : Code
+        Alias for outer - the logical-level code.
     depth : int
         Concatenation depth (1 for single concatenation).
     """
@@ -175,6 +212,40 @@ class ConcatenatedCode(Code):
         return self._n_inner
     
     @property
+    def physical_code(self) -> Code:
+        """
+        The physical-level code (alias for inner).
+        
+        This is the code that provides the actual physical qubits.
+        For Rep(3) ∘ [[4,2,2]], this returns the [[4,2,2]] code.
+        
+        Use this property in decoder implementations for clarity.
+        """
+        return self.inner
+    
+    @property
+    def logical_code(self) -> Code:
+        """
+        The logical-level code (alias for outer).
+        
+        This is the code that provides the outer error correction layer.
+        For Rep(3) ∘ [[4,2,2]], this returns the Rep(3) code.
+        
+        Use this property in decoder implementations for clarity.
+        """
+        return self.outer
+    
+    @property
+    def n_blocks(self) -> int:
+        """
+        Number of physical blocks in the concatenation.
+        
+        This equals n_outer (the number of physical qubits in the outer code),
+        since each outer physical qubit becomes one encoded block.
+        """
+        return self._n_outer
+    
+    @property
     def effective_n_inner(self) -> int:
         """
         Effective inner block size accounting for depth.
@@ -190,6 +261,34 @@ class ConcatenatedCode(Code):
         if self.depth == 1:
             return f"Concatenated({outer_name}, {inner_name})"
         return f"Concatenated({outer_name}, {inner_name}, depth={self.depth})"
+
+    # =========================================================================
+    # Decoder compatibility properties
+    # =========================================================================
+    @property
+    def is_concatenated(self) -> bool:
+        """True for concatenated codes."""
+        return self._metadata.get("is_concatenated", True)
+    
+    @property
+    def inner_k(self) -> int:
+        """Number of logical qubits in inner code."""
+        return self._metadata.get("inner_k", getattr(self.inner, "k", 1))
+    
+    @property
+    def outer_k(self) -> int:
+        """Number of logical qubits in outer code."""
+        return self._metadata.get("outer_k", getattr(self.outer, "k", 1))
+    
+    @property
+    def supports_standard_decoders(self) -> bool:
+        """True if standard MWPM decoders work via CSSMemoryExperiment."""
+        return self._metadata.get("supports_standard_decoders", True)
+    
+    @property
+    def supports_hierarchical_decoder(self) -> bool:
+        """True if hierarchical concatenated decoder can be used."""
+        return self._metadata.get("supports_hierarchical_decoder", True)
 
     def outer_block_indices(self, outer_q: int) -> List[int]:
         """
@@ -354,6 +453,13 @@ class ConcatenatedCSSCode(CSSCode, ConcatenatedCode):
         meta.setdefault("n_inner", self._n_inner)
         meta.setdefault("depth", depth)
         meta.setdefault("effective_n_inner", n_eff_inner)
+        
+        # Concatenated code metadata for decoder compatibility
+        meta["is_concatenated"] = True
+        meta["supports_standard_decoders"] = True  # Standard decoders work via CSSMemoryExperiment
+        meta["supports_hierarchical_decoder"] = True
+        meta["inner_k"] = inner.k  # Number of logical qubits in inner code
+        meta["outer_k"] = outer.k  # Number of logical qubits in outer code
 
         # Let CSSCode set up n, k, stabilizers, etc.
         CSSCode.__init__(
@@ -367,6 +473,92 @@ class ConcatenatedCSSCode(CSSCode, ConcatenatedCode):
         
         # Store effective inner for reference
         self._effective_inner = effective_inner
+        
+        # Build metachecks from inner code (if available)
+        # Concatenated metachecks are block-diagonal copies of inner metachecks
+        self._meta_x: Optional[np.ndarray] = None
+        self._meta_z: Optional[np.ndarray] = None
+        self._build_concatenated_metachecks(effective_inner)
+
+    def _build_concatenated_metachecks(self, effective_inner: CSSCode) -> None:
+        """
+        Build concatenated metachecks from inner code metachecks.
+        
+        For a concatenated code with n_outer blocks, each using an inner code
+        with metachecks, the concatenated metachecks are block-diagonal:
+        
+            meta_concat = diag(meta_inner, meta_inner, ..., meta_inner)
+                                └── n_outer copies ──┘
+        
+        This preserves the metacheck property: meta @ H = 0 (mod 2)
+        since each block's metachecks check only that block's syndrome.
+        """
+        # Check if inner code has metachecks
+        inner_meta_x = getattr(effective_inner, 'meta_x', None)
+        inner_meta_z = getattr(effective_inner, 'meta_z', None)
+        
+        n_blocks = self._n_outer
+        n_inner = effective_inner.n
+        n_concat = self.n
+        
+        # Build block-diagonal meta_x (checks Z syndrome)
+        if inner_meta_x is not None and inner_meta_x.size > 0:
+            num_meta_rows = inner_meta_x.shape[0]
+            # Concatenated meta_x acts on hz rows (Z stabilizers)
+            # Inner meta_x has shape (num_meta, num_inner_z_stabs)
+            # We need to map to the concatenated Z stabilizer structure
+            
+            # For simplicity, build meta_x that checks inner Z syndromes block-by-block
+            # Total meta rows = n_blocks * num_meta_rows
+            # Acts on inner Z stabilizers (first part of concatenated hz)
+            num_inner_z_stabs = effective_inner.hz.shape[0]
+            total_inner_z_stabs = n_blocks * num_inner_z_stabs
+            
+            meta_x_rows = []
+            for block_idx in range(n_blocks):
+                offset = block_idx * num_inner_z_stabs
+                for meta_row in inner_meta_x:
+                    new_row = np.zeros(total_inner_z_stabs, dtype=np.uint8)
+                    new_row[offset:offset + len(meta_row)] = meta_row
+                    meta_x_rows.append(new_row)
+            
+            if meta_x_rows:
+                self._meta_x = np.vstack(meta_x_rows)
+        
+        # Build block-diagonal meta_z (checks X syndrome)
+        if inner_meta_z is not None and inner_meta_z.size > 0:
+            num_meta_rows = inner_meta_z.shape[0]
+            num_inner_x_stabs = effective_inner.hx.shape[0]
+            total_inner_x_stabs = n_blocks * num_inner_x_stabs
+            
+            meta_z_rows = []
+            for block_idx in range(n_blocks):
+                offset = block_idx * num_inner_x_stabs
+                for meta_row in inner_meta_z:
+                    new_row = np.zeros(total_inner_x_stabs, dtype=np.uint8)
+                    new_row[offset:offset + len(meta_row)] = meta_row
+                    meta_z_rows.append(new_row)
+            
+            if meta_z_rows:
+                self._meta_z = np.vstack(meta_z_rows)
+
+    @property
+    def meta_x(self) -> Optional[np.ndarray]:
+        """X-type metacheck matrix for concatenated code.
+        
+        Built from block-diagonal copies of inner code's meta_x.
+        Checks Z syndrome parity within each inner block.
+        """
+        return self._meta_x
+    
+    @property
+    def meta_z(self) -> Optional[np.ndarray]:
+        """Z-type metacheck matrix for concatenated code.
+        
+        Built from block-diagonal copies of inner code's meta_z.
+        Checks X syndrome parity within each inner block.
+        """
+        return self._meta_z
 
     @property
     def name(self) -> str:

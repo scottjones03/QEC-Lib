@@ -33,6 +33,256 @@ STATUS_FAIL = "✗"
 
 
 # =============================================================================
+# Decoder-Code Compatibility
+# =============================================================================
+
+def _check_code_self_duality(code) -> bool:
+    """
+    Check if a CSS code is self-dual (hx == hz up to permutation).
+    
+    Self-dual codes have the property that H gates swap X and Z stabilizers
+    bijectively. Non-self-dual codes (e.g., toric codes) may have issues
+    with transversal H/S gates because the stabilizer structure changes.
+    
+    Returns
+    -------
+    bool
+        True if code is self-dual, False otherwise.
+    """
+    # First check if code has is_self_dual attribute
+    if hasattr(code, 'is_self_dual'):
+        return code.is_self_dual
+    if hasattr(code, '_is_self_dual'):
+        return code._is_self_dual
+    
+    # Check via SelfDualCode if available
+    try:
+        from qectostim.codes.composite.dual import SelfDualCode
+        return SelfDualCode.is_self_dual(code, tolerance=True)
+    except (ImportError, Exception):
+        pass
+    
+    # Manual check: compare hx and hz shapes and content
+    hx = getattr(code, 'hx', None)
+    hz = getattr(code, 'hz', None)
+    if hx is None or hz is None:
+        return True  # Can't check, assume self-dual
+    
+    # Check shape first
+    if hx.shape != hz.shape:
+        return False
+    
+    # Check content (exact equality)
+    return np.array_equal(hx, hz)
+
+
+def _has_hyperedge_errors(code) -> bool:
+    """
+    Check if a code produces hyperedge DEMs (errors affecting >2 detectors).
+    
+    Hyperedge codes include:
+    - Homological product codes (5-chain structure)
+    - QLDPC codes with high-weight stabilizers
+    - Some concatenated codes with correlated errors
+    
+    Returns
+    -------
+    bool
+        True if code likely produces hyperedge DEMs.
+    """
+    # Check metadata
+    meta = getattr(code, 'metadata', {})
+    if meta.get('has_hyperedges', False):
+        return True
+    if meta.get('chain_length', 3) >= 5:
+        return True
+    if meta.get('is_homological_product', False):
+        return True
+    
+    # Check code type
+    code_type = type(code).__name__
+    if 'HomProduct' in code_type or 'Homological' in code_type:
+        return True
+    if 'HGP' in code_type:  # Hypergraph product
+        return True
+    
+    # Check stabilizer weight (high weight often means hyperedges)
+    hx = getattr(code, 'hx', None)
+    hz = getattr(code, 'hz', None)
+    if hx is not None and hz is not None:
+        # If any stabilizer has weight > 6, likely produces hyperedges
+        max_weight_x = np.max(np.sum(hx, axis=1)) if hx.size > 0 else 0
+        max_weight_z = np.max(np.sum(hz, axis=1)) if hz.size > 0 else 0
+        if max_weight_x > 6 or max_weight_z > 6:
+            return True
+    
+    return False
+
+
+def should_skip_decoder_for_code(
+    code,
+    decoder_name: str,
+    code_meta: Optional[Dict[str, Any]] = None,
+    gadget_name: Optional[str] = None,
+) -> Optional[Tuple[str, str]]:
+    """
+    Check if decoder should be skipped for this code type.
+    
+    This pre-check allows early skip BEFORE attempting DEM generation,
+    avoiding expensive circuit simulation for known-incompatible combinations.
+    
+    Parameters
+    ----------
+    code : CSSCode or similar
+        The quantum error-correcting code.
+    decoder_name : str
+        Name of the decoder.
+    code_meta : dict, optional
+        Code metadata. If None, extracted from code.metadata.
+    gadget_name : str, optional
+        Name of the gadget being tested. Used for gadget-specific compatibility.
+        
+    Returns
+    -------
+    Optional[Tuple[str, str]]
+        (error_msg, warning_msg) if should skip, None otherwise.
+    """
+    if code_meta is None:
+        code_meta = getattr(code, 'metadata', {}) if hasattr(code, 'metadata') else {}
+    
+    # Check code properties
+    is_concat = code_meta.get('is_concatenated', False)
+    is_hom_product = code_meta.get('is_homological_product', False)
+    has_hyperedges = code_meta.get('has_hyperedges', False) or _has_hyperedge_errors(code)
+    chain_length = code_meta.get('chain_length', 3)
+    
+    # Check for metachecks (for SingleShot decoder)
+    def _has_valid_meta(code, attr):
+        if not hasattr(code, attr):
+            return False
+        m = getattr(code, attr)
+        if m is None:
+            return False
+        if not hasattr(m, 'size') or not hasattr(m, 'shape'):
+            return False
+        return m.size > 0 and m.shape[0] > 0
+    
+    has_metachecks = _has_valid_meta(code, 'meta_x') or _has_valid_meta(code, 'meta_z')
+    
+    # =========================================================================
+    # Hierarchical/SingleShot: Always skip for gadget experiments (not memory)
+    # =========================================================================
+    # Hierarchical decoder requires ConcatenatedMemoryExperiment with inner logical
+    # observables. FT gadget experiments use FaultTolerantGadgetExperiment which
+    # doesn't emit inner logical observables, causing 100% failure.
+    # 
+    # SingleShot requires measured metachecks which are typically not enabled
+    # in gadget experiments (they use standard CSSStabilizerRoundBuilder).
+    if decoder_name == 'Hierarchical':
+        # Hierarchical decoder needs block-grouped DEMs with inner observables
+        # These are ONLY available from ConcatenatedMemoryExperiment
+        if gadget_name is not None:
+            return (
+                "Gadget incompatible",
+                "Hierarchical: requires ConcatenatedMemoryExperiment (not supported for gadgets)"
+            )
+        # Also check if code is actually concatenated
+        try:
+            from qectostim.codes.composite.concatenated import ConcatenatedCode
+            if not isinstance(code, ConcatenatedCode):
+                return ("Not concatenated", "Hierarchical: requires ConcatenatedCode")
+        except ImportError:
+            pass
+    
+    if decoder_name == 'ConcatenatedTurbo':
+        # ConcatenatedTurbo decoder needs block-grouped DEMs with inner observables
+        # These are ONLY available from ConcatenatedMemoryExperiment
+        if gadget_name is not None:
+            return (
+                "Gadget incompatible",
+                "ConcatenatedTurbo: requires ConcatenatedMemoryExperiment (not supported for gadgets)"
+            )
+        # Also check if code is actually concatenated
+        try:
+            from qectostim.codes.composite.concatenated import ConcatenatedCode
+            if not isinstance(code, ConcatenatedCode):
+                return ("Not concatenated", "ConcatenatedTurbo: requires ConcatenatedCode")
+        except ImportError:
+            pass
+    
+    if decoder_name in ['SoftHierarchical', 'HardHierarchical']:
+        # Soft/Hard Hierarchical decoders need block-grouped DEMs with inner observables
+        # These are ONLY available from ConcatenatedMemoryExperiment
+        if gadget_name is not None:
+            return (
+                "Gadget incompatible",
+                f"{decoder_name}: requires ConcatenatedMemoryExperiment (not supported for gadgets)"
+            )
+        # Also check if code is actually concatenated
+        try:
+            from qectostim.codes.composite.concatenated import ConcatenatedCode
+            if not isinstance(code, ConcatenatedCode):
+                return ("Not concatenated", f"{decoder_name}: requires ConcatenatedCode")
+        except ImportError:
+            pass
+    
+    if decoder_name == 'SingleShot':
+        # SingleShot requires measured metachecks in the DEM
+        if not has_metachecks:
+            return ("No metachecks", "SingleShot: requires code with non-empty meta_x/meta_z")
+        # For gadget experiments, metachecks are typically not enabled
+        if gadget_name is not None:
+            return (
+                "Gadget incompatible",
+                "SingleShot: requires enable_metachecks=True (not enabled in gadget experiments)"
+            )
+    
+    # =========================================================================
+    # TransversalH/S gadgets: Require self-dual codes
+    # =========================================================================
+    # H gate swaps X↔Z stabilizers. For non-self-dual codes (hx ≠ hz),
+    # this creates a mismatch in detector structure that breaks DEM generation.
+    # S gate similarly requires X/Z symmetry in the stabilizer structure.
+    # Self-dual codes (e.g., color codes with hx=hz) handle this correctly.
+    if gadget_name in ('TransversalH', 'TransversalS'):
+        if not _check_code_self_duality(code):
+            code_name = type(code).__name__
+            return (
+                "Non-self-dual code",
+                f"{gadget_name}: requires self-dual code (hx=hz). {code_name} is not self-dual."
+            )
+    
+    # =========================================================================
+    # Hyperedge codes: Skip graph-based decoders
+    # =========================================================================
+    # Standard MWPM decoders: can't handle hyperedge codes (4D+ chain complexes)
+    # These decoders require edge-decomposable DEMs (≤2 detectors per error)
+    if decoder_name in ['PyMatching', 'FusionBlossom', 'UnionFind']:
+        if has_hyperedges or chain_length >= 5:
+            return (
+                "Hyperedge code",
+                f"{decoder_name}: incompatible with {chain_length}-chain codes (hyperedge errors)"
+            )
+    
+    # Concatenated/FlatConcat: requires ConcatenatedCode
+    if decoder_name in ['Concatenated', 'FlatConcat']:
+        try:
+            from qectostim.codes.composite.concatenated import ConcatenatedCode
+            if not isinstance(code, ConcatenatedCode):
+                return ("Not concatenated", f"{decoder_name}: requires ConcatenatedCode")
+        except ImportError:
+            pass
+    
+    # MLE: impractical for large codes due to exponential complexity
+    if decoder_name == 'MLE':
+        n = getattr(code, 'n', 0)
+        if n > 30:  # Conservative limit for exponential decoder
+            return ("Too large", f"MLE: impractical for n={n} > 30")
+    
+    return None  # No skip needed
+
+
+# =============================================================================
 # Module Management
 # =============================================================================
 
@@ -127,6 +377,7 @@ def test_decoder_on_code(
     from qectostim.experiments.memory import (
         CSSMemoryExperiment,
         StabilizerMemoryExperiment,
+        FloquetMemoryExperiment,
     )
     from qectostim.noise.models import CircuitDepolarizingNoise
     
@@ -144,6 +395,21 @@ def test_decoder_on_code(
         # - Spatial metachecks: Only useful for SingleShotDecoder
         # For standard decoders, metachecks provide NO benefit with rounds=1
         effective_single_shot_metachecks = False
+    
+    # CRITICAL: SingleShotDecoder requires MEASURED metachecks in the DEM
+    # Per Quintavalle et al. [8], the two-stage decoder needs independently measured
+    # metasyndrome to detect measurement errors. If enable_metachecks=False, the
+    # circuit has no metacheck detectors and SingleShot cannot work.
+    if decoder_name == 'SingleShot' and not enable_metachecks:
+        result = TestResult()
+        result.status = 'SKIP'
+        result.error = "No measured metachecks"
+        result.warnings.append(
+            'SingleShot: requires enable_metachecks=True (measured metacheck detectors). '
+            'Without measured metachecks, computing metasyndrome from syndrome provides '
+            'no additional information for syndrome repair.'
+        )
+        return result
     
     # Try to import color code experiment
     try:
@@ -171,12 +437,34 @@ def test_decoder_on_code(
     except ImportError:
         SingleShotDecoderIncompatibleError = Exception
     
+    # Try to import SoftHierarchicalDecoder error
+    try:
+        from qectostim.decoders.soft_hierarchical_decoder import SoftHierarchicalDecoderIncompatibleError
+    except ImportError:
+        SoftHierarchicalDecoderIncompatibleError = Exception
+    
+    # Try to import BeliefMatching error
+    try:
+        from qectostim.decoders.belief_matching import BeliefMatchingIncompatibleError
+    except ImportError:
+        BeliefMatchingIncompatibleError = Exception
+    
+    # Try to import TurboDecoder error
+    try:
+        from qectostim.decoders.concatenated_turbo_decoder import TurboDecoderIncompatibleError
+    except ImportError:
+        TurboDecoderIncompatibleError = Exception
+    
     result = TestResult()
     
     # Check if code is marked for skipping standard tests
     # This is set for codes that don't satisfy standard CSS requirements (k=0, non-commuting ISG)
+    # But Floquet codes with measurement_schedule can use FloquetMemoryExperiment
     code_meta = getattr(code, 'metadata', {}) if hasattr(code, 'metadata') else {}
-    if code_meta.get('skip_standard_test', False):
+    is_floquet = code_meta.get('is_floquet', False)
+    has_schedule = hasattr(code, 'measurement_schedule') and code.measurement_schedule is not None
+    
+    if code_meta.get('skip_standard_test', False) and not (is_floquet and has_schedule):
         result.status = 'SKIP'
         validation_warning = code_meta.get('validation_warning', 'Code marked for skip')
         result.error = validation_warning
@@ -189,6 +477,19 @@ def test_decoder_on_code(
         naked_l0 = code_meta.get('naked_l0_percentage', 0)
         # Don't skip - add warning and continue testing
         result.warnings.append(f"Code has {naked_l0}% naked L0 errors (may affect decoding)")
+    
+    # =========================================================================
+    # Pre-DEM Decoder Compatibility Check
+    # =========================================================================
+    # Check code-decoder compatibility BEFORE attempting DEM generation.
+    # This saves expensive circuit simulation for known-incompatible combinations.
+    skip_reason = should_skip_decoder_for_code(code, decoder_name, code_meta)
+    if skip_reason is not None:
+        error_msg, warning_msg = skip_reason
+        result.status = 'SKIP'
+        result.error = error_msg
+        result.warnings.append(warning_msg)
+        return result
     
     # Check if this is a ConcatenatedCode
     is_concatenated_code = False
@@ -207,9 +508,21 @@ def test_decoder_on_code(
         is_css_code = hasattr(code, 'hx') and hasattr(code, 'hz')
         
         # Check if decoder needs block-grouped detectors (ConcatenatedMemoryExperiment)
-        needs_block_grouped = decoder_name in ['Hierarchical', 'Concatenated', 'FlatConcat']
+        needs_block_grouped = decoder_name in [
+            'Hierarchical', 'Concatenated', 'FlatConcat', 'ConcatenatedTurbo',
+            'SoftHierarchical', 'HardHierarchical'
+        ]
+        used_concat_exp = False  # Track if we used ConcatenatedMemoryExperiment
+        used_floquet_exp = False  # Track if we used FloquetMemoryExperiment
         
-        if code_type == 'Color' and has_color_exp:
+        if is_floquet and has_schedule:
+            # Use FloquetMemoryExperiment for Floquet codes with measurement schedule
+            # periods = ceil(rounds / period) to get approximately 'rounds' measurements
+            floquet_period = code.period
+            periods = max(1, (rounds + floquet_period - 1) // floquet_period)
+            exp = FloquetMemoryExperiment(code=code, periods=periods, basis="Z")
+            used_floquet_exp = True
+        elif code_type == 'Color' and has_color_exp:
             exp = ColorCodeMemoryExperiment(code=code, rounds=rounds, noise_model=noise)
         elif needs_block_grouped and is_concatenated_code:
             # Use ConcatenatedMemoryExperiment for hierarchical/concatenated decoders
@@ -219,6 +532,7 @@ def test_decoder_on_code(
                 exp = ConcatenatedMemoryExperiment(
                     code=code, rounds=rounds, noise_model=noise, basis="Z"
                 )
+                used_concat_exp = True
             except Exception as e:
                 # Fall back to CSSMemoryExperiment if ConcatenatedMemoryExperiment fails
                 result.warnings.append(f"ConcatenatedMemoryExperiment failed: {str(e)[:30]}")
@@ -238,23 +552,120 @@ def test_decoder_on_code(
         
         circuit = noise.apply(exp.to_stim())
         
-        # Try to build DEM - with fallback for decomposition failures
-        # 4D+ codes have hyperedge errors that can't be decomposed into 2-qubit errors
+        # =====================================================================
+        # DEM Generation with Smart Fallback
+        # =====================================================================
+        # Strategy:
+        # 1. Try decompose_errors=True (standard, edge-decomposable DEM)
+        # 2. If "decompose" error → try ignore_decomposition_failures=True (hyperedge DEM)
+        # 3. If "non-deterministic" + concatenated → fall back to CSSMemoryExperiment
+        # 4. Last resort: decompose_errors=False
+        #
+        # 4D+ codes (5-chain complexes) have hyperedge errors that affect >2 detectors.
+        # Standard MWPM decoders can't handle these, but BPOSD/Tesseract can.
+        
+        dem = None
+        dem_mode = 'standard'
+        is_hyperedge_code = code_meta.get('has_hyperedges', False) or code_meta.get('chain_length', 3) >= 5
+        
         try:
+            # Attempt 1: Standard decompose_errors=True
             dem = circuit.detector_error_model(decompose_errors=True)
-        except Exception:
-            try:
-                # Try with decompose_errors=False - needed for 4D codes with hyperedge errors
-                dem = circuit.detector_error_model(decompose_errors=False)
-            except Exception as e2:
-                err_msg = str(e2)
-                if 'non-deterministic' in err_msg.lower():
+            dem_mode = 'decomposed'
+        except Exception as e1:
+            err1 = str(e1).lower()
+            
+            if 'decompose' in err1 or 'failed to decompose' in err1:
+                # Hyperedge errors - try with ignore_decomposition_failures
+                try:
+                    dem = circuit.detector_error_model(
+                        decompose_errors=True,
+                        ignore_decomposition_failures=True
+                    )
+                    dem_mode = 'hyperedge'
+                    result.warnings.append('DEM has hyperedges (4D+ code)')
+                except Exception:
+                    try:
+                        dem = circuit.detector_error_model(decompose_errors=False)
+                        dem_mode = 'undecomposed'
+                        result.warnings.append('Using undecomposed DEM')
+                    except Exception as e_final:
+                        result.status = 'FAIL'
+                        result.error = f"DEM: {str(e_final)[:30]}"
+                        return result
+                        
+            elif 'non-deterministic' in err1:
+                # Observable tracking issue
+                if used_concat_exp:
+                    # Fallback: Use CSSMemoryExperiment instead of ConcatenatedMemoryExperiment
+                    result.warnings.append('ConcatExp inner logicals failed, using CSS fallback')
+                    used_concat_exp = False
+                    exp = CSSMemoryExperiment(
+                        code=code, rounds=rounds, noise_model=noise, 
+                        enable_metachecks=enable_metachecks,
+                        single_shot_metachecks=effective_single_shot_metachecks
+                    )
+                    circuit = noise.apply(exp.to_stim())
+                    try:
+                        dem = circuit.detector_error_model(decompose_errors=True)
+                        dem_mode = 'css_fallback'
+                    except Exception:
+                        try:
+                            dem = circuit.detector_error_model(
+                                decompose_errors=True,
+                                ignore_decomposition_failures=True
+                            )
+                            dem_mode = 'css_fallback_hyperedge'
+                            result.warnings.append('CSS fallback with hyperedge DEM')
+                        except Exception:
+                            try:
+                                dem = circuit.detector_error_model(decompose_errors=False)
+                                dem_mode = 'css_fallback_undecomposed'
+                            except Exception as e3:
+                                err_msg3 = str(e3)
+                                if 'non-deterministic' in err_msg3.lower():
+                                    result.status = 'WARN'
+                                    result.error = "Mixed logical ops"
+                                    result.warnings.append('Mixed logical ops')
+                                else:
+                                    result.status = 'FAIL'
+                                    result.error = f"DEM: {err_msg3[:30]}"
+                                return result
+                else:
                     result.status = 'WARN'
                     result.error = "Mixed logical ops"
-                    result.warnings.append('Mixed logical ops')
-                else:
-                    result.status = 'FAIL'
-                    result.error = f"DEM: {err_msg[:30]}"
+                    result.warnings.append('Non-deterministic observable (mixed logical ops)')
+                    return result
+            else:
+                # Unknown error - try fallback cascade
+                try:
+                    dem = circuit.detector_error_model(
+                        decompose_errors=True,
+                        ignore_decomposition_failures=True
+                    )
+                    dem_mode = 'ignore_failures'
+                except Exception:
+                    try:
+                        dem = circuit.detector_error_model(decompose_errors=False)
+                        dem_mode = 'undecomposed'
+                    except Exception:
+                        result.status = 'FAIL'
+                        result.error = f"DEM: {str(e1)[:30]}"
+                        return result
+        
+        # Validate DEM
+        if dem is None or dem.num_detectors == 0:
+            result.status = 'FAIL'
+            result.error = "DEM has no detectors"
+            return result
+        
+        # Post-DEM decoder compatibility check for hyperedge DEMs
+        # Standard MWPM decoders can't handle DEMs with hyperedges (>2 detector errors)
+        if dem_mode in ('hyperedge', 'css_fallback_hyperedge', 'ignore_failures'):
+            if decoder_name in ['PyMatching', 'FusionBlossom', 'UnionFind']:
+                result.status = 'SKIP'
+                result.error = "Hyperedge DEM"
+                result.warnings.append(f'{decoder_name}: cannot decode hyperedge DEM (use BPOSD/Tesseract)')
                 return result
         
         # Sample
@@ -305,6 +716,58 @@ def test_decoder_on_code(
                     pass  # Continue anyway if import fails
                 # Pass code, dem, rounds, and basis for hierarchical decoding
                 decoder = decoder_class(code=code, dem=dem, rounds=rounds, basis="Z")
+            elif decoder_name in ['SoftHierarchical', 'HardHierarchical', 'SoftMVP']:
+                # Soft/Hard Hierarchical decoders require ConcatenatedCode instances
+                try:
+                    from qectostim.codes.composite.concatenated import ConcatenatedCode
+                    if not isinstance(code, ConcatenatedCode):
+                        result.status = 'SKIP'
+                        result.error = "Not a concatenated code"
+                        result.warnings.append(f'{decoder_name}: requires ConcatenatedCode')
+                        return result
+                except ImportError:
+                    pass  # Continue anyway if import fails
+                # Pass code, dem, rounds, and basis for hierarchical decoding
+                decoder = decoder_class(code=code, dem=dem, rounds=rounds, basis="Z")
+            elif decoder_name in ['ConcatenatedTurbo', 'TurboConcatenatedTurbo']:
+                # Turbo decoders require ConcatenatedCode instances
+                try:
+                    from qectostim.codes.composite.concatenated import ConcatenatedCode
+                    if not isinstance(code, ConcatenatedCode):
+                        result.status = 'SKIP'
+                        result.error = "Not a concatenated code"
+                        result.warnings.append(f'{decoder_name}: requires ConcatenatedCode')
+                        return result
+                except ImportError:
+                    pass
+                # Pass code, dem, rounds, and basis for turbo decoding
+                decoder = decoder_class(code=code, dem=dem, rounds=rounds, basis="Z")
+            elif decoder_name in ['TurboV2', 'ExtrinsicTurbo']:
+                # TurboV2 and ExtrinsicTurbo decoders require ConcatenatedCode instances
+                try:
+                    from qectostim.codes.composite.concatenated import ConcatenatedCode
+                    if not isinstance(code, ConcatenatedCode):
+                        result.status = 'SKIP'
+                        result.error = "Not a concatenated code"
+                        result.warnings.append(f'{decoder_name}: requires ConcatenatedCode')
+                        return result
+                except ImportError:
+                    pass
+                # Pass code, dem, rounds, and basis for turbo decoding
+                decoder = decoder_class(code=code, dem=dem, rounds=rounds, basis="Z")
+            elif decoder_name == 'SoftMP':
+                # SoftMessagePassingDecoder - hierarchical decoder using code-based soft information
+                # Does NOT require inner observables - infers P(logical) from syndrome + code structure
+                try:
+                    from qectostim.codes.composite.concatenated import ConcatenatedCode
+                    if not isinstance(code, ConcatenatedCode):
+                        result.status = 'SKIP'
+                        result.error = "Not a concatenated code"
+                        result.warnings.append('SoftMP: requires ConcatenatedCode')
+                        return result
+                except ImportError:
+                    pass
+                decoder = decoder_class(code=code, dem=dem, rounds=rounds, basis="Z")
             elif decoder_name == 'SingleShot':
                 # SingleShotDecoder requires a code with metachecks (meta_x and/or meta_z)
                 # Must check for non-empty matrices, not just is not None
@@ -344,6 +807,21 @@ def test_decoder_on_code(
             result.error = "No metachecks"
             result.warnings.append('SingleShot: requires code with meta_x/meta_z')
             return result
+        except SoftHierarchicalDecoderIncompatibleError:
+            result.status = 'SKIP'
+            result.error = "No inner observables"
+            result.warnings.append('SoftHierarchical: requires inner logical observables (outer code with trivial Hx for Z-basis)')
+            return result
+        except BeliefMatchingIncompatibleError:
+            result.status = 'SKIP'
+            result.error = "Hyperedge incompatible"
+            result.warnings.append('BeliefMatching: BP incompatible with code structure')
+            return result
+        except TurboDecoderIncompatibleError:
+            result.status = 'SKIP'
+            result.error = "Turbo incompatible"
+            result.warnings.append('ConcatenatedTurbo: missing required dependency (ldpc/stimbposd)')
+            return result
         except Exception as e:
             err_msg = str(e)
             if 'chromobius' in err_msg.lower() or 'color' in err_msg.lower():
@@ -354,10 +832,18 @@ def test_decoder_on_code(
                 result.status = 'SKIP'
                 result.error = "Too many detectors"
                 result.warnings.append('MLE: too many detectors')
+            elif 'inner logical observables' in err_msg.lower() or 'softhierarchical' in err_msg.lower():
+                result.status = 'SKIP'
+                result.error = "No inner observables"
+                result.warnings.append('SoftHierarchical: requires inner logical observables')
             elif 'concatenated' in err_msg.lower() and 'requires' in err_msg.lower():
                 result.status = 'SKIP'
                 result.error = "Not a concatenated code"
                 result.warnings.append('Concatenated: requires ConcatenatedCode')
+            elif 'beliefmatching' in err_msg.lower() or 'bp incompatible' in err_msg.lower():
+                result.status = 'SKIP'
+                result.error = "Hyperedge incompatible"
+                result.warnings.append('BeliefMatching: BP incompatible with code structure')
             else:
                 result.status = 'FAIL'
                 result.error = f"Decoder init: {err_msg[:25]}"
@@ -1054,10 +1540,50 @@ def load_all_decoders() -> Dict[str, Type]:
     except ImportError:
         pass
     
-    # Hierarchical Concatenated Decoder (v2 - proper hierarchical algorithm)
+    # Hard Hierarchical Concatenated Decoder
     try:
-        from qectostim.decoders.concatenated_decoder_v2 import HierarchicalConcatenatedDecoder
-        decoder_classes['Hierarchical'] = HierarchicalConcatenatedDecoder
+        from qectostim.decoders.hard_hierarchical_decoder import HierarchicalConcatenatedDecoder
+        decoder_classes['HardHierarchical'] = HierarchicalConcatenatedDecoder
+    except ImportError:
+        pass
+
+    try:
+        from qectostim.decoders.concatenated_turbo_decoder import ConcatenatedTurboDecoder
+        decoder_classes['TurboConcatenatedTurbo'] = ConcatenatedTurboDecoder
+    except ImportError:
+        pass
+
+    # Soft Hierarchical Concatenated Decoder
+    try:
+        from qectostim.decoders.soft_hierarchical_decoder import SoftHierarchicalDecoder
+        decoder_classes['SoftHierarchical'] = SoftHierarchicalDecoder
+    except ImportError:
+        pass
+    
+    # Soft Hierarchical MVP Decoder (code-based, rounds=1)
+    try:
+        from qectostim.decoders.soft_hierarchical_mvp import SoftHierarchicalMVP
+        decoder_classes['SoftMVP'] = SoftHierarchicalMVP
+    except ImportError:
+        pass
+
+    try:
+        from qectostim.decoders.turbo_decoder_v2 import TurboDecoderV2
+        decoder_classes['TurboV2'] = TurboDecoderV2 
+    except ImportError:
+        pass
+    
+    # Extrinsic Turbo Decoder with proper turbo iteration
+    try:
+        from qectostim.decoders.extrinsic_turbo_decoder import ExtrinsicTurboDecoder
+        decoder_classes['ExtrinsicTurbo'] = ExtrinsicTurboDecoder
+    except ImportError:
+        pass
+    
+    # Soft Message-Passing Decoder (proper hierarchical without inner observables)
+    try:
+        from qectostim.decoders.soft_message_passing_decoder import SoftMessagePassingDecoder
+        decoder_classes['SoftMP'] = SoftMessagePassingDecoder
     except ImportError:
         pass
     

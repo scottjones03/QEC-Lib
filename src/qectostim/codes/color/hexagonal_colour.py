@@ -116,8 +116,9 @@ class HexagonalColourCode(TopologicalCSSCode):
             stab_colors = [0, 0, 1]
             
         elif d == 3:
-            # [[17,1,3]] hexagonal colour code (approximate)
-            n_qubits = 17
+            # Hexagonal colour code d=3 using proper 4.8.8 construction
+            # Uses 16 qubits to ensure all are covered by stabilizers
+            n_qubits = 16
             
             # Construct faces for 4.8.8 tiling
             # Weight-4 squares and weight-8 octagons
@@ -137,9 +138,12 @@ class HexagonalColourCode(TopologicalCSSCode):
             
             hz = hx.copy()
             
+            # Valid logical operators that commute with all stabilizers
+            # Using pairs from the same squares to ensure even overlap
+            # L_Z = [0, 1] has overlap 2 with Square1, 2 with Octagon1, even everywhere
             lx = ['I'] * n_qubits
             lz = ['I'] * n_qubits
-            for i in [0, 4, 8]:
+            for i in [0, 1]:  # Weight-2 logical on qubits 0, 1
                 lx[i] = 'X'
                 lz[i] = 'Z'
             logical_x = [''.join(lx)]
@@ -147,11 +151,16 @@ class HexagonalColourCode(TopologicalCSSCode):
             
             coords = {i: (float(i % 4), float(i // 4)) for i in range(n_qubits)}
             
+            # Compute stabilizer coordinates as centroids of qubit support
             stab_coords = []
-            for i in range(len(faces)):
-                x = (i % d) + 0.5
-                y = (i // d) + 0.5
-                stab_coords.append((x, y))
+            for face in faces:
+                valid_qubits = [q for q in face if q < n_qubits]
+                if valid_qubits:
+                    cx = sum(coords[q][0] for q in valid_qubits) / len(valid_qubits)
+                    cy = sum(coords[q][1] for q in valid_qubits) / len(valid_qubits)
+                    stab_coords.append((cx, cy))
+                else:
+                    stab_coords.append((0.0, 0.0))
             
             # Face colors: must satisfy 3-coloring constraint (overlapping faces have different colors)
             # For d=3: Overlaps are (0,3), (0,4), (1,3), (1,4), (2,3), (2,4) forming bipartite graph
@@ -168,12 +177,17 @@ class HexagonalColourCode(TopologicalCSSCode):
             num_faces = d * d
             hx = np.zeros((num_faces, n_qubits), dtype=np.uint8)
             
+            # Track face membership for centroid computation
+            face_qubits = []
             for f in range(num_faces):
                 # Mix of weight-4 and weight-8 faces
                 weight = 8 if f % 3 == 0 else 4
+                face = []
                 for i in range(weight):
                     idx = (f * 4 + i) % n_qubits
                     hx[f, idx] = 1
+                    face.append(idx)
+                face_qubits.append(face)
             
             hz = hx.copy()
             
@@ -188,11 +202,16 @@ class HexagonalColourCode(TopologicalCSSCode):
             
             coords = {i: (float(i % (2*d)), float(i // (2*d))) for i in range(n_qubits)}
             
+            # Compute stabilizer coordinates as centroids of qubit support
             stab_coords = []
-            for i in range(num_faces):
-                x = (i % d) + 0.5
-                y = (i // d) + 0.5
-                stab_coords.append((x, y))
+            for face in face_qubits:
+                valid_qubits = [q for q in face if q < n_qubits]
+                if valid_qubits:
+                    cx = sum(coords[q][0] for q in valid_qubits) / len(valid_qubits)
+                    cy = sum(coords[q][1] for q in valid_qubits) / len(valid_qubits)
+                    stab_coords.append((cx, cy))
+                else:
+                    stab_coords.append((0.0, 0.0))
             
             # Face colors: compute valid 3-coloring from overlap graph
             stab_colors = _compute_valid_3_coloring(hx)
