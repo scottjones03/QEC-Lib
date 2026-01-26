@@ -240,23 +240,12 @@ class CSSCode(HomologicalCode):
         """
         Get logical Z operator as a binary numpy array.
         
-        Parameters
-        ----------
-        logical_idx : int
-            Index of the logical qubit (default 0).
-            
-        Returns
-        -------
-        np.ndarray
-            Binary array where 1 indicates Z (or Y) support.
-        """
-        if logical_idx >= len(self._logical_z):
-            return np.zeros(self.n, dtype=np.int64)
-        return self._pauli_string_to_binary_array(self._logical_z[logical_idx], 'Z')
-    
-    def logical_x_array(self, logical_idx: int = 0) -> np.ndarray:
-        """
-        Get logical X operator as a binary numpy array.
+        Returns the SUPPORT of the logical Z operator - all qubits where
+        the operator has a non-identity Pauli (X, Y, or Z).
+        
+        NOTE: The logical Z operator may be X-type (like Shor code) or Z-type
+        (like Steane code). This method returns the support regardless of the
+        Pauli type. Use lz_pauli_type property to determine the actual type.
         
         Parameters
         ----------
@@ -266,11 +255,61 @@ class CSSCode(HomologicalCode):
         Returns
         -------
         np.ndarray
-            Binary array where 1 indicates X (or Y) support.
+            Binary array where 1 indicates the logical Z operator has support.
+        """
+        if logical_idx >= len(self._logical_z):
+            return np.zeros(self.n, dtype=np.int64)
+        return self._pauli_string_to_support_array(self._logical_z[logical_idx])
+    
+    def logical_x_array(self, logical_idx: int = 0) -> np.ndarray:
+        """
+        Get logical X operator as a binary numpy array.
+        
+        Returns the SUPPORT of the logical X operator - all qubits where
+        the operator has a non-identity Pauli (X, Y, or Z).
+        
+        NOTE: The logical X operator may be Z-type (like Shor code) or X-type
+        (like Steane code). This method returns the support regardless of the
+        Pauli type. Use lx_pauli_type property to determine the actual type.
+        
+        Parameters
+        ----------
+        logical_idx : int
+            Index of the logical qubit (default 0).
+            
+        Returns
+        -------
+        np.ndarray
+            Binary array where 1 indicates the logical X operator has support.
         """
         if logical_idx >= len(self._logical_x):
             return np.zeros(self.n, dtype=np.int64)
-        return self._pauli_string_to_binary_array(self._logical_x[logical_idx], 'X')
+        return self._pauli_string_to_support_array(self._logical_x[logical_idx])
+    
+    def _pauli_string_to_support_array(self, pauli: PauliString) -> np.ndarray:
+        """
+        Convert a PauliString to a binary numpy array indicating support.
+        
+        Parameters
+        ----------
+        pauli : PauliString
+            Dict mapping qubit indices to Pauli operators, or string format.
+            
+        Returns
+        -------
+        np.ndarray
+            Binary array where 1 indicates any non-identity Pauli (X, Y, or Z).
+        """
+        arr = np.zeros(self.n, dtype=np.int64)
+        if isinstance(pauli, str):
+            for i, op in enumerate(pauli):
+                if i < self.n and op in ('X', 'Y', 'Z'):
+                    arr[i] = 1
+        elif isinstance(pauli, dict):
+            for i, op in pauli.items():
+                if op in ('X', 'Y', 'Z'):
+                    arr[i] = 1
+        return arr
     
     def _pauli_string_to_binary_array(self, pauli: PauliString, pauli_type: str) -> np.ndarray:
         """
@@ -323,6 +362,66 @@ class CSSCode(HomologicalCode):
             return None
         return self.logical_x_array(1)
     
+    @property
+    def lz_pauli_type(self) -> str:
+        """
+        Get the Pauli type of the logical Z operator ('Z' or 'X').
+        
+        For standard CSS codes like Steane [[7,1,3]], Lz is Z-type (ZZZIIII).
+        For codes like Shor [[9,1,3]], Lz is X-type (XXXIIIIII).
+        
+        The Pauli type determines which check matrix to use for decoding:
+        - Z-type Lz: X errors anti-commute → use Hz (detects X errors)
+        - X-type Lz: Z errors anti-commute → use Hx (detects Z errors)
+        
+        Returns 'Z' by default, or from metadata['lz_pauli_type'] if set.
+        """
+        if 'lz_pauli_type' in self._metadata:
+            return self._metadata['lz_pauli_type']
+        
+        # Infer from logical_z string
+        if self._logical_z:
+            lz_str = self._logical_z[0]
+            if isinstance(lz_str, str):
+                has_x = 'X' in lz_str or 'Y' in lz_str
+                has_z = 'Z' in lz_str or 'Y' in lz_str
+                if has_x and not has_z:
+                    return 'X'
+                elif has_z and not has_x:
+                    return 'Z'
+        
+        return 'Z'  # Default for standard CSS codes
+    
+    @property
+    def lx_pauli_type(self) -> str:
+        """
+        Get the Pauli type of the logical X operator ('X' or 'Z').
+        
+        For standard CSS codes like Steane [[7,1,3]], Lx is X-type (XXXIIII).
+        For codes like Shor [[9,1,3]], Lx is Z-type (ZIIZIIZII).
+        
+        The Pauli type determines which check matrix to use for decoding:
+        - X-type Lx: Z errors anti-commute → use Hx (detects Z errors)
+        - Z-type Lx: X errors anti-commute → use Hz (detects X errors)
+        
+        Returns 'X' by default, or from metadata['lx_pauli_type'] if set.
+        """
+        if 'lx_pauli_type' in self._metadata:
+            return self._metadata['lx_pauli_type']
+        
+        # Infer from logical_x string
+        if self._logical_x:
+            lx_str = self._logical_x[0]
+            if isinstance(lx_str, str):
+                has_x = 'X' in lx_str or 'Y' in lx_str
+                has_z = 'Z' in lx_str or 'Y' in lx_str
+                if has_z and not has_x:
+                    return 'Z'
+                elif has_x and not has_z:
+                    return 'X'
+        
+        return 'X'  # Default for standard CSS codes
+
     @property
     def num_x_stabilizers(self) -> int:
         """Number of X stabilizer generators."""
