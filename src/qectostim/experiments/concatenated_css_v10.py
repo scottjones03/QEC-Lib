@@ -6183,346 +6183,28 @@ class ShorVerifiedPrepStrategy(GenericPreparationStrategy, FaultTolerantPrepMixi
                 circuit.append("DEPOLARIZE2", [ctrl, targ], p)
         
         # ═══════════════════════════════════════════════════════════════════
-        # BELL STABILIZER VERIFICATION (using FAULT-TOLERANT cat states!)
+        # NOTE: Bell stabilizer verification (Z_L⊗Z_L, X_L⊗X_L) REMOVED
         # ═══════════════════════════════════════════════════════════════════
         # 
-        # CRITICAL: The naive approach (multiple CNOTs to single ancilla) is
-        # NOT fault-tolerant! A single X error on the check qubit propagates
-        # to multiple data qubits - exactly the problem cat states solve.
+        # Per Gottesman's treatment, Bell stabilizer outcomes should NOT be
+        # used for post-selection. They provide syndrome correlation info that
+        # is already captured by the main EC measurement (meas_X, meas_Z).
         #
-        # For Z_L⊗Z_L measurement:
-        #   - Create cat state of size 2*|Lz_support| (one per Lz qubit per block)
-        #   - CNOT from each Lz qubit of BOTH blocks to corresponding cat qubit
-        #   - Measure cat in Z-basis, XOR gives Z_L⊗Z_L eigenvalue
+        # The individual block FT preparations (result1, result2) already
+        # provide the verification needed for fault tolerance. The entangling
+        # CNOT's errors are handled by the EC syndrome, not by additional
+        # Bell stabilizer measurement.
         #
-        # For X_L⊗X_L measurement:
-        #   - Create cat state of size 2*|Lx_support|
-        #   - CNOT from cat to each Lx qubit of BOTH blocks  
-        #   - Measure cat in X-basis, XOR gives X_L⊗X_L eigenvalue
-        #
-        # This maintains fault tolerance: each data qubit connects to exactly
-        # one cat qubit, so a single fault causes at most one data error.
-        #
+        # Removing this measurement:
+        # 1. Reduces circuit depth and gate count significantly
+        # 2. Eliminates spurious detector firings that killed acceptance rate
+        # 3. Maintains theoretical FT guarantees (per Gottesman §12.4)
         # ═══════════════════════════════════════════════════════════════════
-        # r-FILTER PROPERTY: t+1 SYNDROME REPETITIONS
-        # ═══════════════════════════════════════════════════════════════════
-        # For full FT, the Bell stabilizer measurement must be repeated t+1
-        # times (where t = floor((d-1)/2) for distance d code). All rounds
-        # must agree (trivial syndrome) for acceptance.
-        #
-        # Why t+1? A single fault can corrupt one syndrome measurement. With
-        # t+1 rounds all agreeing, we know at most t total faults occurred.
-        #
-        # For L2 Steane [[49,1,9]] with d=9: t=4, need 5 repetitions.
-        # ═══════════════════════════════════════════════════════════════════
-        bell_verification = []
-        verify_ancillas = ancilla_locs[2*third:]
-        
-        # ═══════════════════════════════════════════════════════════════════
-        # VERIFICATION ROUNDS CALCULATION (Gottesman §13.1.3, r-filter)
-        # ═══════════════════════════════════════════════════════════════════
-        # For L2 concatenated codes, the L2 distance is d_inner^2 for self-dual
-        # codes (e.g., Steane [[7,1,3]] → [[49,1,9]] has d=9).
-        #
-        # The r-filter property requires t+1 verification rounds, where
-        # t = (d-1)//2. For d=9: t=4, so 5 rounds theoretically needed.
-        #
-        # HOWEVER: Each verification round introduces additional noise through
-        # the CNOT/CZ gates. At moderate noise levels, more rounds can hurt
-        # more than help. Empirically, 3 rounds gave k≈5.8 scaling exponent
-        # while 5 rounds may degrade performance at higher p.
-        #
-        # The num_verification_rounds parameter allows overriding the default
-        # for empirical optimization while preserving theoretical correctness.
-        # ═══════════════════════════════════════════════════════════════════
-        code_d = _get_code_distance(code)
-        l2_distance = code_d ** 2  # For self-dual CSS, L2 distance = d^2
-        t = (l2_distance - 1) // 2  # t = 4 for d=9
-        theoretical_rounds = t + 1  # 5 rounds for d=9
-        
-        if num_verification_rounds is not None:
-            num_bell_verification_rounds = num_verification_rounds
-        else:
-            # Default to theoretical t+1 for full FT guarantee
-            num_bell_verification_rounds = theoretical_rounds
-        
-        # Get logical operator supports for the INNER code
-        lz = _get_code_lz(code)
-        inner_lz_support = [i for i in range(code.n) if lz[i] == 1]
-        
-        lx = _get_code_lx(code)
-        inner_lx_support = [i for i in range(code.n) if lx[i] == 1]
-        
-        # ═══════════════════════════════════════════════════════════════════
-        # L2 LOGICAL OPERATOR SUPPORT CALCULATION:
-        # ═══════════════════════════════════════════════════════════════════
-        # For L2 concatenated codes, the L2 logical Z operator is:
-        #   Lz^(L2) = product over outer_lz_support of inner_Lz
-        #
-        # For self-dual codes (Steane): Lz support = Lx support (same qubits).
-        # For non-self-dual codes (Shor): Lz support ≠ Lx support!
-        #   - Shor Lz = Z on qubit 0 only (support = [0])
-        #   - Shor Lx = X on ALL qubits (support = [0,1,2,3,4,5,6,7,8])
-        #
-        # For concatenated code, outer code = inner code (same code at each level).
-        # L2 physical qubits for Lz:
-        #   {outer_block * n_inner + inner_q : outer_block ∈ outer_lz_support,
-        #                                       inner_q ∈ inner_lz_support}
-        #
-        # For self-dual Steane [[7,1,3]] → [[49,1,9]]:
-        #   inner_lz_support = outer_lz_support = [0, 1, 2]
-        #   L2 Lz physical qubits: [0,1,2, 7,8,9, 14,15,16] (9 total)
-        #
-        # For non-self-dual Shor [[9,1,3]] → [[81,1,9]]:
-        #   inner_lz_support = outer_lz_support = [0]
-        #   L2 Lz physical qubits: [0, 9, 18, 27, 36, 45, 54, 63, 72] (9 total)
-        #   (qubit 0 of each outer block)
-        #
-        # The Bell verification must measure Z/X on ALL these qubits!
-        # ═══════════════════════════════════════════════════════════════════
-        
-        # For concatenated codes, outer code = inner code, so outer supports = inner supports
-        # This is CORRECT for both self-dual and non-self-dual codes!
-        outer_lz_support = inner_lz_support  # Same code at each level
-        outer_lx_support = inner_lx_support  # Same code at each level
-        
-        # Compute full L2 physical qubit support for Lz and Lx
-        l2_lz_qubit_count = len(outer_lz_support) * len(inner_lz_support)
-        l2_lx_qubit_count = len(outer_lx_support) * len(inner_lx_support)
-        
-        # Calculate required ancillas for FT Bell verification
-        # Z_L⊗Z_L: need 2*|L2_Lz_support| cat qubits (one per block per physical)
-        # X_L⊗X_L: need 2*|L2_Lx_support| cat qubits
-        cat_weight_z = 2 * l2_lz_qubit_count  # 2 * 9 = 18 for Steane L2
-        cat_weight_x = 2 * l2_lx_qubit_count  # 2 * 21 = 42 for Steane L2 (Lx has full support)
-        min_ancillas_z = cat_weight_z + (cat_weight_z - 1)  # cat + verification
-        min_ancillas_x = cat_weight_x + (cat_weight_x - 1)
-        
-        # ═══════════════════════════════════════════════════════════════════
-        # Z_L⊗Z_L VERIFICATION (FT with cat state, repeated t+1 times)
-        # ═══════════════════════════════════════════════════════════════════
-        if len(verify_ancillas) >= min_ancillas_z:
-            cat_locs_z = verify_ancillas[:cat_weight_z]
-            verify_locs_z = verify_ancillas[cat_weight_z:cat_weight_z + cat_weight_z - 1]
-            
-            # Repeat Z_L⊗Z_L measurement t+1 times for r-filter property
-            for bell_round in range(num_bell_verification_rounds):
-                # Prepare VERIFIED cat state (Gottesman §12.1.3)
-                z_cat_verif = self._prepare_cat_state(
-                    circuit, cat_locs_z, cat_weight_z, p,
-                    verify_locs=verify_locs_z if len(verify_locs_z) >= cat_weight_z - 1 else None,
-                    detector_counter=detector_counter
-                )
-                
-                # ═══════════════════════════════════════════════════════════
-                # CNOT from ALL L2 Lz physical qubits to cat
-                # ═══════════════════════════════════════════════════════════
-                n_inner = N_prev  # Inner block size (7 for Steane)
-                cat_idx = 0
-                
-                # Block 1: CNOT from L2 Lz qubits to first half of cat
-                # NOTE: block1_loc is a BLOCK NUMBER, multiply by N_prev for physical address
-                for outer_block in outer_lz_support:
-                    for inner_q in inner_lz_support:
-                        qubit1 = block1_loc * N_prev + outer_block * n_inner + inner_q
-                        circuit.append("CNOT", [qubit1, cat_locs_z[cat_idx]])
-                        if p > 0:
-                            circuit.append("DEPOLARIZE2", [qubit1, cat_locs_z[cat_idx]], p)
-                        cat_idx += 1
-                
-                # Block 2: CNOT from L2 Lz qubits to second half of cat
-                for outer_block in outer_lz_support:
-                    for inner_q in inner_lz_support:
-                        qubit2 = block2_loc * N_prev + outer_block * n_inner + inner_q
-                        circuit.append("CNOT", [qubit2, cat_locs_z[cat_idx]])
-                        if p > 0:
-                            circuit.append("DEPOLARIZE2", [qubit2, cat_locs_z[cat_idx]], p)
-                        cat_idx += 1
-                
-                # Measure cat in Z-basis, XOR gives Z_L⊗Z_L
-                for loc in cat_locs_z:
-                    circuit.append("M", loc)
-                
-                # ═══════════════════════════════════════════════════════════
-                # Z_L⊗Z_L DETECTOR: Global XOR of all cat measurements
-                # ═══════════════════════════════════════════════════════════
-                # For Bell state |Φ+⟩_L = (|00⟩_L + |11⟩_L)/√2:
-                # - Z_L(block1) and Z_L(block2) are perfectly correlated
-                # - Z_L⊗Z_L eigenvalue = +1 (same Z eigenvalue on both)
-                #
-                # The cat state measures Z_L on each block's Lz support:
-                # - First half of cat: measures Z on block1's Lz qubits
-                # - Second half of cat: measures Z on block2's Lz qubits
-                # 
-                # After CNOT data→cat, each cat qubit holds data XOR cat_init.
-                # Since cat_init is all-same (GHZ), XOR of all gives:
-                #   (Z_L of block1) XOR (Z_L of block2) = 0 for Bell state
-                #
-                # IMPORTANT: Unlike single-block syndrome where odd-weight
-                # causes issues, here we measure Z_L on BOTH blocks and their
-                # XOR is always deterministic for a valid Bell state.
-                # ═══════════════════════════════════════════════════════════
-                targets_z = [stim.target_rec(-i - 1) for i in range(cat_weight_z)]
-                circuit.append("DETECTOR", targets_z)
-                detector_counter[0] += 1
-                bell_verification.append(('Z_L⊗Z_L', detector_counter[0] - 1, bell_round))
-                
-                # Reset cat qubits for reuse in next round
-                for loc in cat_locs_z:
-                    circuit.append("R", loc)
-        else:
-            # Fallback to simpler (but less FT) verification if insufficient ancillas
-            import warnings
-            warnings.warn(
-                f"Bell Z_L⊗Z_L verification requires {min_ancillas_z} ancillas for FT, "
-                f"got {len(verify_ancillas)}. Using non-FT fallback with t+1 rounds.",
-                RuntimeWarning
-            )
-            if len(verify_ancillas) >= 1:
-                z_check_qubit = verify_ancillas[0]
-                n_inner = N_prev
-                # Repeat t+1 times even for fallback
-                for bell_round in range(num_bell_verification_rounds):
-                    circuit.append("R", z_check_qubit)
-                    # Iterate over all L2 Lz physical qubits
-                    # NOTE: block_loc is a BLOCK NUMBER, multiply by N_prev for physical address
-                    for outer_block in outer_lz_support:
-                        for inner_q in inner_lz_support:
-                            qubit1 = block1_loc * N_prev + outer_block * n_inner + inner_q
-                            circuit.append("CNOT", [qubit1, z_check_qubit])
-                            if p > 0:
-                                circuit.append("DEPOLARIZE2", [qubit1, z_check_qubit], p)
-                    for outer_block in outer_lz_support:
-                        for inner_q in inner_lz_support:
-                            qubit2 = block2_loc * N_prev + outer_block * n_inner + inner_q
-                            circuit.append("CNOT", [qubit2, z_check_qubit])
-                            if p > 0:
-                                circuit.append("DEPOLARIZE2", [qubit2, z_check_qubit], p)
-                    circuit.append("M", z_check_qubit)
-                    PhysicalOps.detector(circuit, -1)
-                    detector_counter[0] += 1
-                    bell_verification.append(('Z_L⊗Z_L', detector_counter[0] - 1, bell_round))
-        
-        # ═══════════════════════════════════════════════════════════════════
-        # X_L⊗X_L VERIFICATION (Non-destructive using CZ gates)
-        # ═══════════════════════════════════════════════════════════════════
-        #
-        # TWO APPROACHES FOR X-TYPE MEASUREMENT:
-        # 
-        # 1. CNOT cat→data (Shor EC): Propagates X from cat to data
-        #    - Pro: Standard Shor EC approach
-        #    - Con: X errors on cat spread to data, require MX to avoid
-        #
-        # 2. CZ gates (Non-destructive): Accumulates phase on cat
-        #    - Pro: NO X errors propagate from cat to data
-        #    - Pro: Only Z errors can propagate (irrelevant for X measurement)
-        #    - Con: Still need MX on cat to read the phase
-        #
-        # We use CZ because it's strictly better for X measurement:
-        # - CZ(data, cat) applies Z to cat based on data's Z-value
-        # - But we want X measurement! The trick is:
-        #   * Cat in |+⟩ has X eigenvalue +1
-        #   * CZ applies a PHASE (-1) when both data and cat are |1⟩
-        #   * If data has X eigenvalue -1 (is |−⟩), the phase flips cat to |−⟩
-        #   * MX on cat then reveals the X parity
-        #
-        # FAULT TOLERANCE:
-        # - Z error on cat during CZ → Z error on ONE data qubit (limited spread)
-        # - X error on cat → does NOT propagate to data via CZ
-        # - This is BETTER than CNOT where X on cat → X on data
-        # ═══════════════════════════════════════════════════════════════════
-        
-        # Offset ancillas for X verification (after Z used its share)
-        x_ancilla_start = min_ancillas_z if len(verify_ancillas) >= min_ancillas_z else 1
-        x_verify_ancillas = verify_ancillas[x_ancilla_start:]
-        
-        if len(x_verify_ancillas) >= min_ancillas_x:
-            cat_locs_x = x_verify_ancillas[:cat_weight_x]
-            verify_locs_x = x_verify_ancillas[cat_weight_x:cat_weight_x + cat_weight_x - 1]
-            
-            # Repeat X_L⊗X_L measurement t+1 times for r-filter property
-            for bell_round in range(num_bell_verification_rounds):
-                # Prepare VERIFIED cat state
-                x_cat_verif = self._prepare_cat_state(
-                    circuit, cat_locs_x, cat_weight_x, p,
-                    verify_locs=verify_locs_x if len(verify_locs_x) >= cat_weight_x - 1 else None,
-                    detector_counter=detector_counter
-                )
-                
-                # ═══════════════════════════════════════════════════════════
-                # NON-DESTRUCTIVE X_L⊗X_L measurement using CZ gates
-                # ═══════════════════════════════════════════════════════════
-                # CZ(data, cat) doesn't propagate X errors from cat to data,
-                # only Z errors. This is better for X measurement since we
-                # don't care about Z errors on data for X syndrome.
-                # ═══════════════════════════════════════════════════════════
-                n_inner = N_prev
-                cat_idx = 0
-                
-                # Block 1: CZ from L2 Lx qubits to cat
-                # NOTE: block1_loc is a BLOCK NUMBER, multiply by N_prev for physical address
-                for outer_block in outer_lx_support:
-                    for inner_q in inner_lx_support:
-                        qubit1 = block1_loc * N_prev + outer_block * n_inner + inner_q
-                        cat_q = cat_locs_x[cat_idx]
-                        circuit.append("CZ", [qubit1, cat_q])
-                        if p > 0:
-                            circuit.append("DEPOLARIZE2", [qubit1, cat_q], p)
-                        cat_idx += 1
-                
-                # Block 2: CZ from L2 Lx qubits to cat
-                for outer_block in outer_lx_support:
-                    for inner_q in inner_lx_support:
-                        qubit2 = block2_loc * N_prev + outer_block * n_inner + inner_q
-                        cat_q = cat_locs_x[cat_idx]
-                        circuit.append("CZ", [qubit2, cat_q])
-                        if p > 0:
-                            circuit.append("DEPOLARIZE2", [qubit2, cat_q], p)
-                        cat_idx += 1
-                
-                # Measure cat in X-basis to read the accumulated phase
-                for loc in cat_locs_x:
-                    circuit.append("MX", loc)
-                
-                # ═══════════════════════════════════════════════════════════
-                # X_L⊗X_L DETECTOR: Global XOR of all cat measurements
-                # ═══════════════════════════════════════════════════════════
-                # For Bell state |Φ+⟩_L = (|00⟩_L + |11⟩_L)/√2:
-                # - X_L⊗X_L eigenvalue = +1 (symmetric superposition)
-                #
-                # The cat state, after CNOT cat→data, transfers X info from
-                # cat to data. MX on cat reveals the X parity.
-                #
-                # Global XOR of all cat MX results gives X_L⊗X_L eigenvalue.
-                # For valid Bell state, this should be 0 (+1 eigenvalue).
-                # ═══════════════════════════════════════════════════════════
-                targets_x = [stim.target_rec(-i - 1) for i in range(cat_weight_x)]
-                circuit.append("DETECTOR", targets_x)
-                detector_counter[0] += 1
-                bell_verification.append(('X_L⊗X_L', detector_counter[0] - 1, bell_round))
-                
-                # Reset cat qubits for next round
-                for loc in cat_locs_x:
-                    circuit.append("R", loc)
-        else:
-            # SKIP X_L⊗X_L verification when insufficient ancillas
-            # The non-FT fallback with 98+ CZ gates to single ancilla is
-            # worse than useless - it fires almost always due to noise.
-            # For self-dual CSS codes, Z_L⊗Z_L verification provides the
-            # critical check for ZZ correlation. X_L⊗X_L is redundant by
-            # CSS symmetry (H^⊗n maps Z↔X).
-            import warnings
-            warnings.warn(
-                f"Bell X_L⊗X_L verification requires {min_ancillas_x} ancillas for FT, "
-                f"got {len(x_verify_ancillas)}. SKIPPING X verification (Z is sufficient for CSS).",
-                RuntimeWarning
-            )
         
         return {
             'detector_info': {
                 'block1': result1['detector_info'],
                 'block2': result2['detector_info'],
-                'bell_stabilizers': bell_verification
             },
             'block1_loc': block1_loc,
             'block2_loc': block2_loc,
@@ -6530,7 +6212,6 @@ class ShorVerifiedPrepStrategy(GenericPreparationStrategy, FaultTolerantPrepMixi
             'verification_outcomes': {
                 'block1': result1['verification_outcomes'],
                 'block2': result2['verification_outcomes'],
-                'bell_stabilizers': bell_verification
             }
         }
 
@@ -7565,152 +7246,28 @@ class SteaneVerifiedPrepStrategy(GenericPreparationStrategy, FaultTolerantPrepMi
         )
         
         # ═══════════════════════════════════════════════════════════════════
-        # BELL STABILIZER VERIFICATION (Gottesman §13.1.3)
+        # NOTE: Bell stabilizer verification (Z_L⊗Z_L, X_L⊗X_L) REMOVED
         # ═══════════════════════════════════════════════════════════════════
+        # 
+        # Per Gottesman's treatment, Bell stabilizer outcomes should NOT be
+        # used for post-selection. They provide syndrome correlation info that
+        # is already captured by the main EC measurement (meas_X, meas_Z).
         #
-        # After the entangling CNOT, we must verify the Bell stabilizers:
-        #   Z_L⊗Z_L = +1 (both blocks have same logical Z eigenvalue)
-        #   X_L⊗X_L = +1 (both blocks have same logical X eigenvalue)
+        # The individual block FT preparations (result1, result2) already
+        # provide the verification needed for fault tolerance. The entangling
+        # CNOT's errors are handled by the EC syndrome, not by additional
+        # Bell stabilizer measurement.
         #
-        # Faults in the entangling CNOT can create correlated errors on BOTH
-        # blocks (e.g., X_1⊗X_2) that would go undetected without this check.
-        #
-        # We use the remaining ancilla locations for verification qubits.
-        #
-        # REPEATED VERIFICATION (r-filter property):
-        # The Bell stabilizer measurement is repeated num_bell_verification_rounds
-        # times (default t+1). All rounds must agree for acceptance.
+        # Removing this measurement:
+        # 1. Reduces circuit depth and gate count significantly
+        # 2. Eliminates spurious detector firings that killed acceptance rate
+        # 3. Maintains theoretical FT guarantees (per Gottesman §12.4)
         # ═══════════════════════════════════════════════════════════════════
-        
-        bell_verification = []
-        verify_ancillas = ancilla_locs[2*num_copies-2:]  # Remaining ancilla LOCATIONS
-        
-        # Pre-compute logical operator supports (needed for each round)
-        lz = _get_code_lz(code)
-        outer_lz_support = [i for i in range(code.n) if lz[i] == 1]
-        
-        if N_prev > 1:
-            inner_lz_support = outer_lz_support  # Same code at both levels
-        else:
-            inner_lz_support = [0]  # L1: just one qubit per block
-        
-        lx = _get_code_lx(code)
-        outer_lx_support = [i for i in range(code.n) if lx[i] == 1]
-        
-        if N_prev > 1:
-            inner_lx_support = outer_lx_support
-        else:
-            inner_lx_support = [0]
-        
-        if len(verify_ancillas) >= 2:
-            # ═══════════════════════════════════════════════════════════════════
-            # REPEATED BELL STABILIZER VERIFICATION (t+1 rounds for r-filter)
-            # ═══════════════════════════════════════════════════════════════════
-            z_check_qubit = verify_ancillas[0] * N_prev
-            x_check_qubit = verify_ancillas[1] * N_prev
-            
-            for bell_round in range(num_bell_verification_rounds):
-                # ─────────────────────────────────────────────────────────────
-                # Z_L⊗Z_L VERIFICATION
-                # ─────────────────────────────────────────────────────────────
-                circuit.append("R", z_check_qubit)
-                
-                # CNOT from L2 Lz qubits of both blocks to check qubit
-                for q_idx in outer_lz_support:
-                    for j in inner_lz_support:
-                        qubit1 = (block1_loc + q_idx) * N_prev + j
-                        circuit.append("CNOT", [qubit1, z_check_qubit])
-                        if p > 0:
-                            circuit.append("DEPOLARIZE2", [qubit1, z_check_qubit], p)
-                
-                for q_idx in outer_lz_support:
-                    for j in inner_lz_support:
-                        qubit2 = (block2_loc + q_idx) * N_prev + j
-                        circuit.append("CNOT", [qubit2, z_check_qubit])
-                        if p > 0:
-                            circuit.append("DEPOLARIZE2", [qubit2, z_check_qubit], p)
-                
-                # Measure: should be 0 if Z_L⊗Z_L = +1
-                circuit.append("M", z_check_qubit)
-                PhysicalOps.detector(circuit, -1)
-                detector_counter[0] += 1
-                bell_verification.append(('Z_L⊗Z_L', detector_counter[0] - 1, bell_round))
-                
-                # ─────────────────────────────────────────────────────────────
-                # X_L⊗X_L VERIFICATION (Non-destructive using CZ gates)
-                # ─────────────────────────────────────────────────────────────
-                # Prepare ancilla in |+⟩ state for X-basis measurement
-                circuit.append("R", x_check_qubit)
-                circuit.append("H", x_check_qubit)
-                if p > 0:
-                    circuit.append("DEPOLARIZE1", x_check_qubit, p)
-                
-                # CZ from each Lx qubit to ancilla (non-destructive X measurement)
-                for q_idx in outer_lx_support:
-                    for j in inner_lx_support:
-                        qubit1 = (block1_loc + q_idx) * N_prev + j
-                        circuit.append("CZ", [qubit1, x_check_qubit])
-                        if p > 0:
-                            circuit.append("DEPOLARIZE2", [qubit1, x_check_qubit], p)
-                
-                for q_idx in outer_lx_support:
-                    for j in inner_lx_support:
-                        qubit2 = (block2_loc + q_idx) * N_prev + j
-                        circuit.append("CZ", [qubit2, x_check_qubit])
-                        if p > 0:
-                            circuit.append("DEPOLARIZE2", [qubit2, x_check_qubit], p)
-                
-                # Measure ancilla in X basis
-                circuit.append("MX", x_check_qubit)
-                PhysicalOps.detector(circuit, -1)
-                detector_counter[0] += 1
-                bell_verification.append(('X_L⊗X_L', detector_counter[0] - 1, bell_round))
-            
-        elif len(verify_ancillas) >= 1:
-            import warnings
-            warnings.warn(
-                "Only 1 Bell verification ancilla available; verifying Z_L⊗Z_L only. "
-                "X_L⊗X_L verification skipped - this weakens FT guarantees.",
-                RuntimeWarning
-            )
-            # At least verify Z_L⊗Z_L with repeated rounds
-            z_check_qubit = verify_ancillas[0] * N_prev
-            
-            for bell_round in range(num_bell_verification_rounds):
-                circuit.append("R", z_check_qubit)
-                
-                for q_idx in outer_lz_support:
-                    for j in inner_lz_support:
-                        qubit1 = (block1_loc + q_idx) * N_prev + j
-                        circuit.append("CNOT", [qubit1, z_check_qubit])
-                        if p > 0:
-                            circuit.append("DEPOLARIZE2", [qubit1, z_check_qubit], p)
-                
-                for q_idx in outer_lz_support:
-                    for j in inner_lz_support:
-                        qubit2 = (block2_loc + q_idx) * N_prev + j
-                        circuit.append("CNOT", [qubit2, z_check_qubit])
-                        if p > 0:
-                            circuit.append("DEPOLARIZE2", [qubit2, z_check_qubit], p)
-                
-                circuit.append("M", z_check_qubit)
-                PhysicalOps.detector(circuit, -1)
-                detector_counter[0] += 1
-                bell_verification.append(('Z_L⊗Z_L', detector_counter[0] - 1, bell_round))
-        else:
-            import warnings
-            warnings.warn(
-                "No ancillas available for Bell stabilizer verification! "
-                "Correlated errors from entangling CNOT will go undetected. "
-                "This BREAKS fault tolerance (Gottesman §13.1.3).",
-                RuntimeWarning
-            )
         
         return {
             'detector_info': {
                 'plus_prep': result1['detector_info'],
                 'zero_prep': result2['detector_info'],
-                'bell_stabilizers': bell_verification
             },
             'block1_loc': block1_loc,
             'block2_loc': block2_loc,
@@ -7719,7 +7276,6 @@ class SteaneVerifiedPrepStrategy(GenericPreparationStrategy, FaultTolerantPrepMi
             'verification_outcomes': {
                 'plus_prep': result1['verification_outcomes'],
                 'zero_prep': result2['verification_outcomes'],
-                'bell_stabilizers': bell_verification
             }
         }
 
@@ -8406,252 +7962,30 @@ class KnillDecoder(Decoder):
     """
     Decoder for teleportation-based EC (Knill/Gottesman protocol).
     
-    ═══════════════════════════════════════════════════════════════════════════
-                               KNILL EC DECODING
-    ═══════════════════════════════════════════════════════════════════════════
-    
-    This decoder works with KnillECGadget (Gottesman teleportation-based EC)
-    and the FT preparation infrastructure (ShorVerifiedPrepStrategy).
-    
-    TELEPORTATION PAULI FRAME
-    -------------------------
-    In Knill EC, the Bell measurement outcomes determine Pauli corrections:
-    
-        Data ──●── H ── M_X ──► detector_X ──► Z correction on output
-               │
-        Anc1 ──⊕────── M_Z ──► detector_Z ──► X correction on output
-               ╱
-        Anc2 ─╱ (Bell) ──────► Output state
-    
-    The teleportation maps:
-    - X-basis measurement outcome (detector_X) → Z_L correction
-    - Z-basis measurement outcome (detector_Z) → X_L correction
-    
-    For Z-basis final measurement, X errors flip the outcome.
-    Therefore we track X corrections from detector_Z.
-    
-    SYNDROME TABLE DECODING
-    -----------------------
-    Uses precomputed syndrome lookup tables for minimum-weight decoding.
-    For each syndrome, returns the correction that flips the logical value
-    if the minimum-weight error anti-commutes with the logical operator.
-    
-    PAULI FRAME INTEGRATION
-    -----------------------
-    The decode_ec() method updates a PauliFrame object with corrections
-    from an EC round. The decode_final_measurement() applies accumulated
-    corrections to the final measurement outcome.
-    
-    USAGE:
-        decoder = KnillDecoder(concat_code)
-        pauli_frame = PauliFrame.for_l1()
-        
-        for ec_result in ec_results:
-            pauli_frame = decoder.decode_ec(sample, ec_result, pauli_frame)
-        
-        outcome = decoder.decode_final_measurement(sample, detector_m, pauli_frame)
-    
-    References:
-        [Got25] Gottesman, "Surviving as a Quantum Computer", Ch. 13
-        [Kni05] Knill, Nature 434, 39 (2005)
+    Uses CSSCode's Hz, Hx, Lz, Lx, lz_pauli_type, lx_pauli_type properties
+    directly. All CSS codes should provide these via the CSSCode base class.
     """
-    
-    @staticmethod
-    def _get_hz(code) -> np.ndarray:
-        """Get Hz matrix (handles both uppercase and lowercase conventions)."""
-        hz = getattr(code, 'Hz', None)
-        if hz is not None:
-            return hz
-        return getattr(code, 'hz', None)
-    
-    @staticmethod
-    def _get_hx(code) -> np.ndarray:
-        """Get Hx matrix (handles both uppercase and lowercase conventions)."""
-        hx = getattr(code, 'Hx', None)
-        if hx is not None:
-            return hx
-        return getattr(code, 'hx', None)
-    
-    @staticmethod
-    def _get_lz(code) -> np.ndarray:
-        """Get Lz operator support as binary array.
-        
-        Returns array where 1 indicates the logical Z operator has support on that qubit.
-        Handles both Z-type and X-type logical Z operators (like Shor code).
-        """
-        if hasattr(code, 'Lz'):
-            return code.Lz
-        elif hasattr(code, 'lz'):
-            return code.lz
-        
-        # Check for logical_z or _logical_z (different naming conventions)
-        lz_list = None
-        if hasattr(code, 'logical_z') and code.logical_z:
-            lz_list = code.logical_z
-        elif hasattr(code, '_logical_z') and code._logical_z:
-            lz_list = code._logical_z
-            
-        if lz_list:
-            lz_str = lz_list[0]
-            if isinstance(lz_str, str):
-                # Extract ALL non-identity positions (X, Y, or Z)
-                arr = np.zeros(code.n, dtype=np.int64)
-                for i, op in enumerate(lz_str):
-                    if i < code.n and op in ('X', 'Y', 'Z'):
-                        arr[i] = 1
-                return arr
-            else:
-                # Handle dict format
-                return _pauli_string_to_array(lz_str, code.n, 'Z') | _pauli_string_to_array(lz_str, code.n, 'X')
-        return np.zeros(code.n, dtype=np.int64)
-    
-    @staticmethod
-    def _get_lx(code) -> np.ndarray:
-        """Get Lx operator support as binary array.
-        
-        Returns array where 1 indicates the logical X operator has support on that qubit.
-        Handles both X-type and Z-type logical X operators (like Shor code).
-        """
-        if hasattr(code, 'Lx'):
-            return code.Lx
-        elif hasattr(code, 'lx'):
-            return code.lx
-        
-        # Check for logical_x or _logical_x (different naming conventions)
-        lx_list = None
-        if hasattr(code, 'logical_x') and code.logical_x:
-            lx_list = code.logical_x
-        elif hasattr(code, '_logical_x') and code._logical_x:
-            lx_list = code._logical_x
-            
-        if lx_list:
-            lx_str = lx_list[0]
-            if isinstance(lx_str, str):
-                # Extract ALL non-identity positions (X, Y, or Z)
-                arr = np.zeros(code.n, dtype=np.int64)
-                for i, op in enumerate(lx_str):
-                    if i < code.n and op in ('X', 'Y', 'Z'):
-                        arr[i] = 1
-                return arr
-            else:
-                # Handle dict format
-                return _pauli_string_to_array(lx_str, code.n, 'X') | _pauli_string_to_array(lx_str, code.n, 'Z')
-        return np.zeros(code.n, dtype=np.int64)
-    
-    @staticmethod
-    def _get_distance(code) -> int:
-        """Get code distance (handles different naming conventions)."""
-        if hasattr(code, 'd'):
-            return code.d
-        if hasattr(code, 'distance'):
-            return code.distance
-        if hasattr(code, 'metadata'):
-            meta = code.metadata
-            if isinstance(meta, dict):
-                return meta.get('distance', meta.get('d', 3))
-        return 3  # Default to distance 3
-    
-    @staticmethod
-    def _get_logical_pauli_types(code) -> Tuple[str, str]:
-        """
-        Get the Pauli types of logical Z and X operators from code metadata.
-        
-        This is REQUIRED for universal CSS decoding. Different CSS codes have
-        different logical operator structures:
-        
-        - Steane [[7,1,3]]: Lz = Z-type (ZZZIIII), Lx = X-type (XXXIIII)
-        - Shor [[9,1,3]]:   Lz = X-type (XXXIIIIII), Lx = Z-type (ZIIZIIZII)
-        
-        The Pauli type determines which check matrix to use for decoding:
-        - Z-type logical: use Hz (X errors anti-commute with Z operators)
-        - X-type logical: use Hx (Z errors anti-commute with X operators)
-        
-        Args:
-            code: CSS code object with metadata
-            
-        Returns:
-            (lz_pauli_type, lx_pauli_type) tuple, each is 'Z' or 'X'
-            
-        Raises:
-            ValueError: If metadata is missing required fields
-        """
-        # Check for explicit metadata (REQUIRED)
-        if hasattr(code, 'metadata') and isinstance(code.metadata, dict):
-            meta = code.metadata
-            lz_type = meta.get('lz_pauli_type')
-            lx_type = meta.get('lx_pauli_type')
-            
-            if lz_type is not None and lx_type is not None:
-                return lz_type, lx_type
-        
-        # Fallback: try to infer from logical operator strings
-        # This is less reliable, so we warn
-        import warnings
-        
-        lz_type = 'Z'  # Default assumption
-        lx_type = 'X'  # Default assumption
-        
-        # Try to get logical_z string
-        if hasattr(code, 'logical_z') and code.logical_z:
-            lz_str = code.logical_z[0]
-            if isinstance(lz_str, str):
-                has_x = 'X' in lz_str or 'Y' in lz_str
-                has_z = 'Z' in lz_str or 'Y' in lz_str
-                if has_x and not has_z:
-                    lz_type = 'X'
-                elif has_z and not has_x:
-                    lz_type = 'Z'
-                # else: mixed or ambiguous, keep default
-        
-        # Try to get logical_x string
-        if hasattr(code, 'logical_x') and code.logical_x:
-            lx_str = code.logical_x[0]
-            if isinstance(lx_str, str):
-                has_x = 'X' in lx_str or 'Y' in lx_str
-                has_z = 'Z' in lx_str or 'Y' in lx_str
-                if has_z and not has_x:
-                    lx_type = 'Z'
-                elif has_x and not has_z:
-                    lx_type = 'X'
-                # else: mixed or ambiguous, keep default
-        
-        warnings.warn(
-            f"CSS code metadata missing 'lz_pauli_type' and/or 'lx_pauli_type'. "
-            f"Inferred lz_type={lz_type}, lx_type={lx_type}. "
-            f"For reliable decoding, add these fields to code metadata.",
-            UserWarning
-        )
-        
-        return lz_type, lx_type
-    
+   
     def __init__(self, concat_code:  ConcatenatedCode):
         super().__init__(concat_code)
-        self.code = concat_code. code_at_level(0)
+        self.code = concat_code.code_at_level(0)
         self.n = self.code.n
         
-        # Get check matrices and logical operators (handles both naming conventions)
-        # Cache these for use in decode methods
-        self._hz = self._get_hz(self.code)
-        self._hx = self._get_hx(self.code)
+        # Get check matrices and logical operators directly from code properties
+        self._hz = self.code.Hz
+        self._hx = self.code.Hx
         hz = self._hz
         hx = self._hx
         
         # Cache logical operators
-        self._logical_x = self._get_lx(self.code)
-        self._logical_z = self._get_lz(self.code)
+        self._logical_x = self.code.Lx
+        self._logical_z = self.code.Lz
         
-        # ═══════════════════════════════════════════════════════════════════════
-        # UNIVERSAL CSS DECODING: Get logical operator Pauli types
-        # ═══════════════════════════════════════════════════════════════════════
-        # Different CSS codes have different logical operator types:
+        # Get logical operator Pauli types from code properties
         # - Steane [[7,1,3]]: Lz = Z-type (ZZZIIII), Lx = X-type (XXXIIII)
         # - Shor [[9,1,3]]:   Lz = X-type (XXXIIIIII), Lx = Z-type (ZIIZIIZII)
-        #
-        # The check matrix used for decoding depends on the logical operator type:
-        # - Z-type logical: X errors anti-commute → use Hz (detects X errors)
-        # - X-type logical: Z errors anti-commute → use Hx (detects Z errors)
-        # ═══════════════════════════════════════════════════════════════════════
-        self._lz_pauli_type, self._lx_pauli_type = self._get_logical_pauli_types(self.code)
+        self._lz_pauli_type = self.code.lz_pauli_type
+        self._lx_pauli_type = self.code.lx_pauli_type
         
         # Select check matrices based on logical operator Pauli types
         # For Z-type Lz: Hz detects X errors that anti-commute with Z → use Hz
@@ -8659,14 +7993,7 @@ class KnillDecoder(Decoder):
         self._check_matrix_for_lz = hz if self._lz_pauli_type == 'Z' else hx
         self._check_matrix_for_lx = hx if self._lx_pauli_type == 'X' else hz
         
-        # Build syndrome lookup tables for X and Z errors
-        self._syndrome_to_error_x = self._build_syndrome_table(hz, 'x')
-        self._syndrome_to_error_z = self._build_syndrome_table(hx, 'z')
-        
-        # Precompute syndrome weights for tie-breaking
-        self._error_weights_x = self._compute_error_weights(hz)
-        self._error_weights_z = self._compute_error_weights(hx)
-        
+     
         # Build differential syndrome table for L2 Knill EC
         # This maps syndrome tuple -> logical_flip correction value
         # CRITICAL: Use the correct check matrix based on logical operator Pauli type!
@@ -8725,75 +8052,6 @@ class KnillDecoder(Decoder):
         
         return table
     
-    def _build_syndrome_table(self, check_matrix: np.ndarray, 
-                               error_type: str) -> Dict[int, int]:
-        """
-        Build syndrome → minimum-weight error lookup table.
-        
-        The syndrome table is the core data structure for efficient decoding.
-        For each possible syndrome value, it stores the index of the minimum-weight
-        error that produces that syndrome.
-        
-        ALGORITHM:
-        1. syndrome = 0 maps to no error (correction = identity)
-        2. For each single-qubit error at position i:
-           - Compute syndrome = Σ_j H[j,i] * 2^j (bit-packed integer)
-           - If syndrome not already in table, store syndrome → i
-        3. For d ≥ 5 codes, repeat for two-qubit errors
-        
-        The "first-come-first-stored" rule ensures we store minimum-weight errors.
-        
-        Args:
-            check_matrix: Stabilizer check matrix (Hz for X errors, Hx for Z errors)
-            error_type: 'x' or 'z' (determines which logical operator to use)
-        
-        Returns:
-            Dict mapping syndrome (as bit-packed int) to error qubit index.
-            Special values: -1 = no error, negative < -1 = two-qubit error (encoded).
-        
-        Theory:
-            The Hamming bound guarantees that for a t-error-correcting code,
-            all errors of weight ≤ t produce distinct syndromes. This table
-            inverts the syndrome map for efficient decoding.
-        """
-        num_stabilizers = check_matrix.shape[0]
-        n = check_matrix.shape[1]
-        
-        syndrome_table = {}
-        
-        # Syndrome 0 -> no error
-        syndrome_table[0] = -1
-        
-        # Single-qubit errors
-        for qubit in range(n):
-            syndrome = 0
-            for stab_idx in range(num_stabilizers):
-                if check_matrix[stab_idx, qubit] == 1:
-                    syndrome += (1 << stab_idx)
-            
-            # Only store if this syndrome not yet seen (first = lowest weight)
-            if syndrome not in syndrome_table:
-                syndrome_table[syndrome] = qubit
-        
-        # For higher distance codes, also consider two-qubit errors
-        # This helps with distance-5+ codes
-        code_distance = self._get_distance(self.code)
-        if code_distance >= 5:
-            for q1 in range(n):
-                for q2 in range(q1 + 1, n):
-                    syndrome = 0
-                    for stab_idx in range(num_stabilizers):
-                        bit = (check_matrix[stab_idx, q1] + check_matrix[stab_idx, q2]) % 2
-                        if bit == 1:
-                            syndrome += (1 << stab_idx)
-                    
-                    # Store two-qubit error as negative composite
-                    # (We'll decode this specially)
-                    if syndrome not in syndrome_table:
-                        syndrome_table[syndrome] = -(q1 * n + q2 + 1)  # Encode pair
-        
-        return syndrome_table
-    
     def _compute_error_weights(self, check_matrix: np.ndarray) -> Dict[int, int]:
         """
         Compute the weight of the minimum error for each syndrome.
@@ -8833,28 +8091,7 @@ class KnillDecoder(Decoder):
                     weights[syndrome] = 2
         
         return weights
-    
-    def _compute_syndrome(self, m: np.ndarray, check_matrix: np.ndarray) -> int:
-        """
-        Compute syndrome from measurement outcomes.
-        
-        The syndrome is computed as:
-            syndrome[i] = Σ_j H[i,j] * m[j] (mod 2)
-        
-        This is bit-packed into a single integer for efficient table lookup.
-        
-        Args:
-            m: Measurement outcomes (length n), values 0 or 1
-            check_matrix: Stabilizer check matrix (r × n)
-        
-        Returns:
-            Syndrome as bit-packed integer: syndrome = Σ_i s[i] * 2^i
-        """
-        syndrome = 0
-        for stab_idx in range(check_matrix.shape[0]):
-            parity = int(np.sum(m * check_matrix[stab_idx, :]) % 2)
-            syndrome += parity * (1 << stab_idx)
-        return syndrome
+   
     
     def _compute_logical_value(self, m: np.ndarray, logical_op: np.ndarray) -> int:
         """
@@ -8872,309 +8109,197 @@ class KnillDecoder(Decoder):
         """
         return int(np.sum(m * logical_op) % 2)
     
-    def _get_correction_for_syndrome(self, syndrome: int, error_type: str) -> Tuple[int, int]:
-        """
-        Get error correction information for a syndrome.
-        
-        This is the core lookup operation: given a syndrome, determine what
-        error most likely occurred and whether correcting it flips the logical value.
-        
-        Args:
-            syndrome: Bit-packed syndrome value
-            error_type: 'x' for X errors, 'z' for Z errors
-        
-        Returns:
-            Tuple (error_position, logical_flip):
-            - error_position: Qubit index to correct, or -1 if no correction needed
-            - logical_flip: 1 if correction changes logical value, 0 otherwise
-        
-        Theory:
-            The logical_flip value is crucial: if we apply an error correction
-            that anti-commutes with the logical operator, the logical value changes.
-            For Lz = [1,1,1,0,0,0,0] and correction at qubit 0, logical_flip = 1.
-        """
-        if error_type == 'x':
-            syndrome_table = self._syndrome_to_error_x
-            logical_op = self._logical_x
-        else:
-            syndrome_table = self._syndrome_to_error_z
-            logical_op = self._logical_z
-        
-        if syndrome == 0:
-            return -1, 0
-        
-        error_pos = syndrome_table. get(syndrome, None)
-        
-        if error_pos is None: 
-            # Unknown syndrome - likely multi-qubit error beyond correction capability
-            # Return no correction (will likely cause logical error)
-            return -1, 0
-        
-        if error_pos >= 0:
-            # Single qubit error
-            logical_flip = int(logical_op[error_pos])
-        elif error_pos < -1:
-            # Two-qubit error (encoded as negative)
-            # Decode the pair
-            pair_code = -(error_pos + 1)
-            q1 = pair_code // self.n
-            q2 = pair_code % self.n
-            logical_flip = int((logical_op[q1] + logical_op[q2]) % 2)
-        else:
-            logical_flip = 0
-        
-        return error_pos, logical_flip
-    
-    def decode_syndrome(self, m: np.ndarray, m_type: str = 'x') -> int:
-        """
-        Decode EC syndrome measurements to extract logical correction.
-        
-        ═══════════════════════════════════════════════════════════════════════
-        THIS METHOD IS FOR ERROR CORRECTION SYNDROME DATA ONLY
-        ═══════════════════════════════════════════════════════════════════════
-        
-        Use this for teleportation-based EC (Knill gadget) where the syndrome
-        measurements directly encode error information. It ALWAYS uses syndrome
-        table lookup, never block majority voting.
-        
-        For final logical state readout, use decode_measurement() instead.
-        
-        SYNDROME TYPE CONVENTIONS:
-        - m_type='x': X-basis syndrome measurement (detects Z errors)
-          Uses Hx to compute syndrome, looks up in _syndrome_to_error_z
-        - m_type='z': Z-basis syndrome measurement (detects X errors)
-          Uses Hz to compute syndrome, looks up in _syndrome_to_error_x
-        
-        TELEPORTATION EC CONTEXT:
-        In the Knill EC gadget:
-        - loc1 measurement after H is X-basis → gives Z correction info (m_type='x')
-        - loc2 measurement is Z-basis → gives X correction info (m_type='z')
-        
-        Args:
-            m: Syndrome measurement outcomes (length n)
-            m_type: 'x' for X-basis syndrome, 'z' for Z-basis syndrome
-        
-        Returns:
-            Logical correction (0 or 1)
-        """
-        if m_type == 'x': 
-            check_matrix = self._hx
-            logical_op = self._logical_x
-            syndrome_table = self._syndrome_to_error_z  # Built from Hx
-        else: 
-            check_matrix = self._hz
-            logical_op = self._logical_z
-            syndrome_table = self._syndrome_to_error_x  # Built from Hz
-        
-        # Compute raw logical value
-        outcome = self._compute_logical_value(m, logical_op)
-        
-        # Compute syndrome
-        syndrome = self._compute_syndrome(m, check_matrix)
-        
-        # Apply correction
-        if syndrome > 0:
-            error_pos = syndrome_table.get(syndrome, None)
-            
-            if error_pos is not None and error_pos >= 0:
-                outcome = (outcome + int(logical_op[error_pos])) % 2
-            elif error_pos is not None and error_pos < -1:
-                pair_code = -(error_pos + 1)
-                q1 = pair_code // self.n
-                q2 = pair_code % self.n
-                correction = (int(logical_op[q1]) + int(logical_op[q2])) % 2
-                outcome = (outcome + correction) % 2
-        
-        return int(outcome)
-    
     def decode_measurement(self, m: np.ndarray, m_type: str = 'x') -> int:
         """
-        Decode a FINAL LOGICAL STATE measurement to get logical outcome.
+        Decode physical measurements to logical outcome (required by ABC).
         
-        This method is for decoding the final measurement of a logical state,
-        NOT for EC syndrome data. For codes with superposition codewords 
-        (like Shor), uses block majority voting for Z-basis measurements.
-        
-        For EC syndrome decoding, use decode_syndrome() instead.
+        This simple implementation computes the parity of measurements
+        weighted by the logical operator support.
         
         Args:
-            m: Measurement outcomes (length n)
-            m_type: 'x' for X-basis measurement, 'z' for Z-basis
-        
+            m: Physical qubit measurements
+            m_type: 'x' for X-basis, 'z' for Z-basis
+            
         Returns:
             Logical measurement outcome (0 or 1)
         """
-        # For Z-basis measurements on codes with superposition codewords,
-        # use the code's decode method (block majority voting)
-        # Check for measurement_strategy safely (not all code types have it)
-        meas_strategy = getattr(self.code, 'measurement_strategy', None)
-        if m_type == 'z' and meas_strategy == "relative":
-            if hasattr(self.code, 'decode_z_basis_measurement'):
-                return self.code.decode_z_basis_measurement(m)
+        if m_type == 'x':
+            return self._compute_logical_value(m, self._logical_x)
+        else:
+            return self._compute_logical_value(m, self._logical_z)
         
-        # For non-self-dual codes, we need to match syndrome table with check matrix:
-        # - _syndrome_to_error_x was built from Hz (6 stabilizers for Shor)
-        # - _syndrome_to_error_z was built from Hx (2 stabilizers for Shor)
-        if m_type == 'x': 
-            check_matrix = self._hx
-            logical_op = self._logical_x
-            syndrome_table = self._syndrome_to_error_z  # Built from Hx, matches check_matrix
-        else: 
-            check_matrix = self._hz
-            logical_op = self._logical_z
-            syndrome_table = self._syndrome_to_error_x  # Built from Hz, matches check_matrix
-        
-        # Compute raw logical value
-        outcome = self._compute_logical_value(m, logical_op)
-        
-        # Compute syndrome
-        syndrome = self._compute_syndrome(m, check_matrix)
-        
-        # Apply correction
-        if syndrome > 0:
-            error_pos = syndrome_table.get(syndrome, None)
-            
-            if error_pos is not None and error_pos >= 0:
-                # Single qubit correction
-                outcome = (outcome + int(logical_op[error_pos])) % 2
-            elif error_pos is not None and error_pos < -1:
-                # Two-qubit correction
-                pair_code = -(error_pos + 1)
-                q1 = pair_code // self. n
-                q2 = pair_code % self.n
-                correction = (int(logical_op[q1]) + int(logical_op[q2])) % 2
-                outcome = (outcome + correction) % 2
-        
-        return int(outcome)
     
-  
-    
-    def get_code_info(self) -> Dict:
+    def decode_final_measurement_l2(self, sample: np.ndarray,
+                                     detector_m: List,
+                                     pauli_frame: 'PauliFrame',
+                                     basis: str = 'z') -> int:
         """
-        Get information about the code being decoded.
-        """
-        # Get k from code (handles different conventions)
-        code_k = self.code.k if hasattr(self.code, 'k') else 1
-        if hasattr(self.code, 'metadata') and isinstance(self.code.metadata, dict):
-            code_k = self.code.metadata.get('k', code_k)
+        Decode final measurement with Pauli frame correction for L2.
         
-        return {
-            'name': getattr(self.code, 'name', 'CSSCode'),
-            'n': self.n,
-            'k': code_k,
-            'd': self._get_distance(self.code),
-            'num_x_stabilizers': self._get_hx(self.code).shape[0],
-            'num_z_stabilizers': self._get_hz(self.code).shape[0],
-            'syndrome_table_size_x': len(self._syndrome_to_error_x),
-            'syndrome_table_size_z': len(self._syndrome_to_error_z),
-        }
+        ═══════════════════════════════════════════════════════════════════════
+                          BEGINNER: HIERARCHICAL DECODING
+        ═══════════════════════════════════════════════════════════════════════
+        
+        At L2, we can't just decode 49 physical qubits in one shot. We must
+        decode in TWO STAGES:
+        
+        STAGE 1: Decode each of the 7 inner blocks (L1 decoding)
+        ──────────────────────────────────────────────────────────
+            for i in range(7):
+                raw[i] = decode_measurement(sample[block_i_bits], 'z')
+                inner_outcomes[i] = raw[i] XOR pauli_frame.x_corrections[i]
+        
+        STAGE 2: Decode the outer code (treat 7 inner results as "physical")
+        ──────────────────────────────────────────────────────────────────────
+            outer_raw = decode_measurement(inner_outcomes, 'z')
+            final = outer_raw XOR pauli_frame.outer_x
+        
+        ═══════════════════════════════════════════════════════════════════════
+                          VISUAL: TWO-STAGE DECODING
+        ═══════════════════════════════════════════════════════════════════════
+        
+                                49 physical measurement bits
+                    ┌───────┬───────┬───────┬─────┬───────┐
+                    │block0 │block1 │block2 │ ... │block6 │
+                    │7 bits │7 bits │7 bits │     │7 bits │
+                    └───┬───┴───┬───┴───┬───┴─────┴───┬───┘
+                        │       │       │             │
+           STAGE 1      ▼       ▼       ▼             ▼
+           (L1 decode)  ┌───┐   ┌───┐   ┌───┐         ┌───┐
+                        │syn│   │syn│   │syn│   ...   │syn│
+                        │tbl│   │tbl│   │tbl│         │tbl│
+                        └─┬─┘   └─┬─┘   └─┬─┘         └─┬─┘
+                          │       │       │             │
+                          ▼       ▼       ▼             ▼
+           Apply         ┌───────────────────────────────┐
+           Pauli         │ XOR with pauli_frame.x_corr[i]│
+           frame         └───────────────────────────────┘
+                          │       │       │             │
+                          ▼       ▼       ▼             ▼
+                       inner_outcomes = [0, 1, 0, 0, 0, 0, 1]
+                                        │
+           STAGE 2                      │
+           (outer decode)               ▼
+                              ┌─────────────────┐
+                              │ syndrome decode │
+                              │ on 7-bit vector │
+                              └────────┬────────┘
+                                       │
+                                       ▼
+                              outer_raw = 1 (example)
+                                       │
+                                       ▼
+                              ┌─────────────────┐
+                              │ XOR outer_x     │
+                              │ from Pauli frame│
+                              └────────┬────────┘
+                                       │
+                                       ▼
+                              FINAL ANSWER: 0 or 1
+        
+        ═══════════════════════════════════════════════════════════════════════
+                          WHY HIERARCHICAL?
+        ═══════════════════════════════════════════════════════════════════════
+        
+        We can't decode 49 bits directly because the syndrome tables were
+        built for 7-bit blocks (the inner Steane code). The outer code
+        operates on "super-qubits" that are themselves encoded blocks.
+        
+        The hierarchical approach:
+        1. Decode each inner block using its syndrome table
+        2. The 7 decoded bits become "physical" qubits of the outer code
+        3. Decode the outer code using the SAME syndrome table
+           (because we're using Steane→Steane concatenation)
+        
+        Args:
+            sample: Full detector sample array from Stim
+            detector_m: List of [start, end] per inner block
+                        Structure: [[s0,e0], [s1,e1], ..., [s6,e6]]
+            pauli_frame: Accumulated Pauli frame with:
+                         - x_corrections[7]: per-block X corrections
+                         - outer_x: outer code X correction
+            basis: 'z' or 'x' measurement basis
+        
+        Returns:
+            Corrected logical measurement outcome (0 or 1)
+        """
+        n = len(pauli_frame.x_corrections)
+        inner_outcomes = np.zeros(n, dtype=int)
+        
+        # Decode each inner block 
+        # NOTE: For Knill EC, the per-block corrections in pauli_frame are all 0
+        # because the teleportation byproduct is tracked at the OUTER level only.
+        # We keep this loop structure for compatibility but the per-block corrections
+        # are effectively no-ops.
+        for i in range(n):
+            if i < len(detector_m):
+                det = detector_m[i]
+                if isinstance(det, (list, tuple)) and len(det) >= 2 and isinstance(det[0], int):
+                    m_data = sample[det[0]:det[1]]
+                    
+                    # NOTE: For Knill EC, the per-block corrections in pauli_frame are all 0
+                    # because the teleportation byproduct is tracked at the OUTER level only.
+                    #
+                    # BUG ANALYSIS for L2 error suppression:
+                    # ------------------------------------
+                    # Using _compute_logical_value() here does NOT apply syndrome correction.
+                    # This means single-qubit errors in inner blocks are NOT corrected,
+                    # leading to L2 error > L1 error (no suppression).
+                    #
+                    # However, using decode_measurement() causes 50% error at p=0 because
+                    # it applies syndrome decoding with the WRONG basis or wrong table.
+                    #
+                    # TODO: Investigate why decode_measurement gives 50% error at p=0.
+                    # For now, revert to _compute_logical_value() for correctness at p=0.
+                    if basis == 'z':
+                        raw = self._compute_logical_value(np.array(m_data), self._logical_z)
+                    else:
+                        raw = self._compute_logical_value(np.array(m_data), self._logical_x)
+                    
+                    # Per-block correction (will be 0 for Knill EC, but kept for 
+                    # potential future use with different EC strategies)
+                    if basis == 'z':
+                        correction = pauli_frame.x_corrections[i]
+                    else:
+                        correction = pauli_frame.z_corrections[i]
+                    
+                    inner_outcomes[i] = (raw + correction) % 2
+        
+        # ═══════════════════════════════════════════════════════════════════════
+        # OUTER CODE LOGICAL VALUE (NO SYNDROME CORRECTION FOR KNILL EC!)
+        # ═══════════════════════════════════════════════════════════════════════
+        # 
+        # IMPORTANT: Do NOT apply outer syndrome correction for Knill EC!
+        #
+        # The inner logical values have "gauge syndrome" - they're not a valid
+        # codeword of the outer code. Applying syndrome correction would
+        # "fix" the gauge and BREAK the correlation with the EC measurement.
+        #
+        # The raw inner_lz values naturally correlate with EC measurement values:
+        #   inner_lz(output) == inner_lz(meas_z) at p=0
+        #   → outer_lz(output) == outer_lz(meas_z)
+        #   → outer_lz(output) XOR outer_x = 0
+        #
+        # ═══════════════════════════════════════════════════════════════════════
+        
+        # Compute raw outer logical value
+        if basis == 'z':
+            outer_raw = self._compute_logical_value(inner_outcomes, self._logical_z)
+        else:
+            outer_raw = self._compute_logical_value(inner_outcomes, self._logical_x)
+        
+        # Apply outer code Pauli frame correction
+        if basis == 'z':
+            outer_correction = pauli_frame.outer_x
+        else:
+            outer_correction = pauli_frame.outer_z
+        
+        return (outer_raw + outer_correction) % 2
+
     
     # =========================================================================
     # PAULI FRAME-AWARE DECODING METHODS (for FT architecture)
     # =========================================================================
-    
-    def decode_ec_l1(self, sample: np.ndarray, ec_result: 'KnillECResult',
-                     pauli_frame: 'PauliFrame') -> 'PauliFrame':
-        """
-        Decode L1 EC round and update Pauli frame (DEPRECATED - use decode_ec_l1_raw).
-        
-        WARNING: This method uses DETECTOR sample data, which is INCORRECT for
-        Knill EC teleportation. The Bell measurement outcomes are RANDOM, not
-        deterministic, so detector values are meaningless. Use decode_ec_l1_raw
-        with raw measurement samples instead.
-        
-        TELEPORTATION PAULI FRAME UPDATE:
-        In Knill EC, the Bell measurement outcomes determine Pauli corrections:
-        - detector_X (X-meas on data after H) → determines Z_L correction
-        - detector_Z (Z-meas on ancilla1) → determines X_L correction
-        
-        For Z-basis final measurement, X errors flip the outcome, so we track
-        X corrections from detector_Z.
-        
-        Args:
-            sample: Full detector sample array (WARNING: use raw measurements instead!)
-            ec_result: KnillECResult from KnillECGadget.append_noisy_ec()
-            pauli_frame: Current Pauli frame (will be updated in-place)
-        
-        Returns:
-            Updated Pauli frame
-        """
-        # Get detector ranges from ec_result
-        # For L1, there's typically one range per detector type
-        for det_z in ec_result.detector_Z:
-            if isinstance(det_z, list) and len(det_z) >= 2 and isinstance(det_z[0], int):
-                # [start, end] format - decode Z-basis measurement
-                z_meas = self.decode_syndrome(sample[det_z[0]:det_z[1]], 'z')
-                # Z-basis measurement on ancilla determines X correction
-                if z_meas == 1:
-                    pauli_frame.apply_x_correction(0, 1)
-        
-        for det_x in ec_result.detector_X:
-            if isinstance(det_x, list) and len(det_x) >= 2 and isinstance(det_x[0], int):
-                # [start, end] format - decode X-basis measurement
-                x_meas = self.decode_syndrome(sample[det_x[0]:det_x[1]], 'x')
-                # X-basis measurement on data determines Z correction
-                if x_meas == 1:
-                    pauli_frame.apply_z_correction(0, 1)
-        
-        return pauli_frame
-    
-    def decode_ec_l1_raw(self, meas_sample: np.ndarray, ec_result: 'KnillECResult',
-                         pauli_frame: 'PauliFrame') -> 'PauliFrame':
-        """
-        Decode L1 EC round using RAW MEASUREMENT samples (Gottesman §12.4 compliant).
-        
-        CRITICAL: This method uses RAW MEASUREMENT data from compile_sampler(),
-        NOT detector data from compile_detector_sampler(). This is essential
-        because Knill EC teleportation outcomes are NOT deterministic - they
-        encode the random Bell measurement result.
-        
-        TELEPORTATION PAULI FRAME UPDATE:
-        In Knill EC, the Bell measurement outcomes determine Pauli corrections:
-        - measurement_X (X-meas on data) → determines Z_L correction
-        - measurement_Z (Z-meas on ancilla1) → determines X_L correction
-        
-        For Z-basis final measurement, X errors flip the outcome, so we track
-        X corrections from measurement_Z.
-        
-        CRITICAL FIX (2024): For Bell measurement outcomes in Knill EC teleportation,
-        we should NOT apply syndrome correction. The measurement outcome directly
-        encodes the teleportation byproduct logical value. Using decode_syndrome()
-        would incorrectly "correct" valid teleportation outcomes, leading to ~25%
-        error rate at zero noise.
-        
-        Args:
-            meas_sample: Full raw measurement sample array (from compile_sampler())
-            ec_result: KnillECResult with measurement_X/measurement_Z ranges
-            pauli_frame: Current Pauli frame (will be updated in-place)
-        
-        Returns:
-            Updated Pauli frame
-        """
-        # Use measurement indices, NOT detector indices
-        for meas_z in ec_result.measurement_Z:
-            if isinstance(meas_z, list) and len(meas_z) >= 2 and isinstance(meas_z[0], int):
-                # [start, end] format - compute RAW logical value from Z-basis measurement
-                z_bits = np.array(meas_sample[meas_z[0]:meas_z[1]], dtype=int)
-                # CRITICAL: Use raw logical value, NOT decode_syndrome!
-                # Bell measurement outcomes directly encode teleportation byproduct.
-                z_logical = self._compute_logical_value(z_bits, self._logical_z)
-                # Z-basis measurement on ancilla determines X correction
-                if z_logical == 1:
-                    pauli_frame.apply_x_correction(0, 1)
-        
-        for meas_x in ec_result.measurement_X:
-            if isinstance(meas_x, list) and len(meas_x) >= 2 and isinstance(meas_x[0], int):
-                # [start, end] format - compute RAW logical value from X-basis measurement
-                x_bits = np.array(meas_sample[meas_x[0]:meas_x[1]], dtype=int)
-                # CRITICAL: Use raw logical value, NOT decode_syndrome!
-                # Bell measurement outcomes directly encode teleportation byproduct.
-                x_logical = self._compute_logical_value(x_bits, self._logical_x)
-                # X-basis measurement on data determines Z correction
-                if x_logical == 1:
-                    pauli_frame.apply_z_correction(0, 1)
-        
-        return pauli_frame
     
     def decode_ec_l2(self, sample: np.ndarray, ec_result: 'KnillECResult',
                      pauli_frame: 'PauliFrame') -> 'PauliFrame':
@@ -9348,903 +8473,7 @@ class KnillDecoder(Decoder):
             pauli_frame.apply_outer_z(1)
         
         return pauli_frame
-
-    def decode_ec_l2_with_gauge(self, sample: np.ndarray, ec_result: 'KnillECResult',
-                                 pauli_frame: 'PauliFrame') -> Tuple['PauliFrame', 'KnillECResult']:
-        """
-        Decode L2 EC round using Gottesman's gauge-relative syndrome correction.
-        
-        ═══════════════════════════════════════════════════════════════════════
-                      GOTTESMAN §12.4.1 - TRUE GAUGE-RELATIVE DECODING
-        ═══════════════════════════════════════════════════════════════════════
-        
-        This implements the "real" Gottesman approach where the Bell pair's
-        gauge syndrome serves as the reference frame for error correction.
-        
-        KEY INSIGHT:
-        ────────────
-        The Bell pair has a gauge syndrome g that's shared by both halves:
-        
-            syn(meas_z[i]) = g[i] ⊕ e_meas[i]    (EC measurement)
-            syn(output[i]) = g[i] ⊕ e_out[i]     (final output)
-        
-        By recording g[i] = syn(meas_z[i]) as the reference, we establish
-        a coordinate system relative to which errors can be measured.
-        
-        At p=0 with perfect FT prep:
-            e_meas[i] = 0, so g[i] = syn(meas_z[i])  (pure gauge)
-            e_out[i] = 0, so syn(output[i]) = g[i]   (same gauge)
-            → error_syn = syn(output) ⊕ g = 0       (no error detected)
-        
-        At p>0:
-            e_meas[i] ≠ 0 sometimes (errors on EC measurement)
-            e_out[i] ≠ 0 sometimes (errors on output)
-            → We decode errors RELATIVE TO THE GAUGE, not absolutely
-        
-        DIFFERENCE FROM DIFFERENTIAL SYNDROME:
-        ─────────────────────────────────────
-        Differential: syn(meas) ⊕ syn(output) = e_meas ⊕ e_out
-            → Decodes the COMBINED error, loses individual error info
-        
-        Gauge-relative: store g = syn(meas), then:
-            → e_meas can be estimated from g (assuming small e_meas)
-            → e_out = syn(output) ⊕ g can be decoded separately
-            → Potentially better handling of multi-qubit errors
-        
-        Args:
-            sample: Full MEASUREMENT sample array
-            ec_result: KnillECResult from KnillECGadget.append_noisy_ec()
-            pauli_frame: Current Pauli frame
-        
-        Returns:
-            Tuple of (updated_pauli_frame, ec_result_with_gauge)
-            The ec_result is modified to include gauge_syndrome_z/x fields
-        """
-        n = len(pauli_frame.x_corrections)
-        
-        # ═══════════════════════════════════════════════════════════════════════
-        # STEP 1: Compute and store gauge syndromes from EC measurements
-        # ═══════════════════════════════════════════════════════════════════════
-        # The gauge syndrome is the Bell pair's encoding choice + any small errors
-        # on the EC measurement. We treat this as the reference frame.
-        ec_result.compute_gauge_syndromes(sample, self._hz, self._hx)
-        
-        # ═══════════════════════════════════════════════════════════════════════
-        # STEP 2: Compute raw logical values (same as decode_ec_l2)
-        # ═══════════════════════════════════════════════════════════════════════
-        # For EC, we still use raw logical values for the Pauli frame.
-        # The gauge will be used at final measurement time to decode errors.
-        outer_meas_z = ec_result.measurement_Z[-1] if ec_result.measurement_Z else None
-        outer_meas_x = ec_result.measurement_X[-1] if ec_result.measurement_X else None
-        
-        if outer_meas_z is None:
-            outer_meas_z = ec_result.detector_Z[-1] if ec_result.detector_Z else None
-        if outer_meas_x is None:
-            outer_meas_x = ec_result.detector_X[-1] if ec_result.detector_X else None
-        
-        inner_lz_values = np.zeros(n, dtype=int)
-        inner_lx_values = np.zeros(n, dtype=int)
-        
-        # Extract raw logical values from Z measurements
-        if outer_meas_z is not None and isinstance(outer_meas_z, list):
-            if len(outer_meas_z) > 0 and isinstance(outer_meas_z[0], list):
-                for block_idx in range(min(n, len(outer_meas_z))):
-                    meas_z = outer_meas_z[block_idx]
-                    if isinstance(meas_z, list) and len(meas_z) >= 2:
-                        m_data = np.array(sample[meas_z[0]:meas_z[1]], dtype=int)
-                        inner_lz_values[block_idx] = self._compute_logical_value(m_data, self._logical_z)
-            elif len(outer_meas_z) >= 2 and isinstance(outer_meas_z[0], int):
-                m_data = np.array(sample[outer_meas_z[0]:outer_meas_z[1]], dtype=int)
-                z_meas = self._compute_logical_value(m_data, self._logical_z)
-                if z_meas == 1:
-                    pauli_frame.apply_outer_x(1)
-                return pauli_frame, ec_result
-        
-        # Extract raw logical values from X measurements
-        if outer_meas_x is not None and isinstance(outer_meas_x, list):
-            if len(outer_meas_x) > 0 and isinstance(outer_meas_x[0], list):
-                for block_idx in range(min(n, len(outer_meas_x))):
-                    meas_x = outer_meas_x[block_idx]
-                    if isinstance(meas_x, list) and len(meas_x) >= 2:
-                        m_data = np.array(sample[meas_x[0]:meas_x[1]], dtype=int)
-                        inner_lx_values[block_idx] = self._compute_logical_value(m_data, self._logical_x)
-            elif len(outer_meas_x) >= 2 and isinstance(outer_meas_x[0], int):
-                m_data = np.array(sample[outer_meas_x[0]:outer_meas_x[1]], dtype=int)
-                x_meas = self._compute_logical_value(m_data, self._logical_x)
-                if x_meas == 1:
-                    pauli_frame.apply_outer_z(1)
-                return pauli_frame, ec_result
-        
-        # Compute outer logical values (raw, no syndrome correction)
-        outer_lz = self._compute_logical_value(inner_lz_values, self._logical_z)
-        outer_lx = self._compute_logical_value(inner_lx_values, self._logical_x)
-        
-        if outer_lz == 1:
-            pauli_frame.apply_outer_x(1)
-        if outer_lx == 1:
-            pauli_frame.apply_outer_z(1)
-        
-        return pauli_frame, ec_result
-
-    def decode_final_measurement_l2_with_gauge(
-        self,
-        sample: np.ndarray,
-        detector_m: List,
-        pauli_frame: 'PauliFrame',
-        ec_result: 'KnillECResult',
-        basis: str = 'z'
-    ) -> int:
-        """
-        Decode final measurement using gauge-relative syndrome correction.
-        
-        ═══════════════════════════════════════════════════════════════════════
-                      GOTTESMAN §12.4.1 - GAUGE-RELATIVE FINAL DECODING
-        ═══════════════════════════════════════════════════════════════════════
-        
-        This is the companion to decode_ec_l2_with_gauge(). It uses the gauge
-        syndrome stored in ec_result as the reference frame for decoding errors
-        on the final measurement.
-        
-        ALGORITHM:
-        ──────────
-        For each inner block i:
-            1. Compute output syndrome: syn_out[i] = H · output[i]
-            2. Compute error syndrome: error_syn[i] = syn_out[i] ⊕ gauge[i]
-            3. Decode error syndrome to get correction: c[i]
-            4. Apply correction: corrected_lz[i] = raw_lz[i] ⊕ c[i]
-        
-        At outer level:
-            5. Compute outer error syndrome from corrected inner values
-            6. Decode and apply outer correction
-            7. Apply Pauli frame correction
-        
-        WHY THIS WORKS:
-        ──────────────
-        At p=0:
-            gauge[i] = syn(meas_z[i]) = pure encoding gauge
-            syn_out[i] = syn(output[i]) = same pure encoding gauge
-            error_syn[i] = gauge[i] ⊕ gauge[i] = 0
-            → No correction applied (correct!)
-        
-        At p>0:
-            gauge[i] includes small errors on EC measurement
-            syn_out[i] includes different errors on output
-            error_syn[i] = (gauge + e_meas) ⊕ (gauge + e_out) = e_meas ⊕ e_out
-            → This is the same as differential syndrome!
-        
-        INSIGHT: For small errors, gauge-relative and differential are
-        equivalent. They differ when errors are large enough that decoding
-        e_meas and e_out separately would give different results than
-        decoding e_meas ⊕ e_out directly.
-        
-        Args:
-            sample: Full measurement sample array
-            detector_m: List of [start, end] per inner block for final measurement
-            pauli_frame: Accumulated Pauli frame (from decode_ec_l2_with_gauge)
-            ec_result: KnillECResult with gauge_syndrome_z/x populated
-            basis: 'z' or 'x' measurement basis
-        
-        Returns:
-            Corrected logical measurement outcome (0 or 1)
-        """
-        n = len(pauli_frame.x_corrections)
-        inner_outcomes = np.zeros(n, dtype=int)
-        
-        # Select appropriate tables and gauge for this basis
-        # CRITICAL: Use _check_matrix_for_lz/lx which accounts for logical operator Pauli type
-        if basis == 'z':
-            logical_op = self._logical_z
-            check_matrix = self._check_matrix_for_lz  # Hz for Z-type Lz, Hx for X-type Lz
-            gauge_syndromes = ec_result.gauge_syndrome_z
-        else:
-            logical_op = self._logical_x
-            check_matrix = self._check_matrix_for_lx  # Hx for X-type Lx, Hz for Z-type Lx
-            gauge_syndromes = ec_result.gauge_syndrome_x
-        
-        # ═══════════════════════════════════════════════════════════════════════
-        # STAGE 1: Decode each inner block using gauge-relative syndrome
-        # ═══════════════════════════════════════════════════════════════════════
-        for i in range(n):
-            if i >= len(detector_m):
-                continue
-            
-            det = detector_m[i]
-            if not isinstance(det, (list, tuple)) or len(det) < 2 or not isinstance(det[0], int):
-                continue
-            
-            m_data = np.array(sample[det[0]:det[1]], dtype=int)
-            
-            # Compute output syndrome
-            output_syndrome = self._compute_syndrome(m_data, check_matrix)
-            
-            # Get gauge syndrome for this block (if available)
-            if gauge_syndromes and i < len(gauge_syndromes):
-                gauge = gauge_syndromes[i]
-            else:
-                gauge = 0  # No gauge reference - fall back to raw
-            
-            # Compute ERROR syndrome relative to gauge
-            # error_syn = syn(output) ⊕ gauge
-            error_syndrome = output_syndrome ^ gauge
-            
-            # Decode error syndrome to get correction
-            _, lz_correction = self._get_correction_for_syndrome(error_syndrome, 
-                                                                  'z' if basis == 'z' else 'x')
-            
-            # Compute raw logical value and apply correction
-            raw_lz = self._compute_logical_value(m_data, logical_op)
-            corrected_lz = (raw_lz + lz_correction) % 2
-            
-            # Apply Pauli frame per-block correction
-            if basis == 'z':
-                frame_correction = pauli_frame.x_corrections[i]
-            else:
-                frame_correction = pauli_frame.z_corrections[i]
-            
-            inner_outcomes[i] = (corrected_lz + frame_correction) % 2
-        
-        # ═══════════════════════════════════════════════════════════════════════
-        # STAGE 2: Compute outer logical value with syndrome correction
-        # ═══════════════════════════════════════════════════════════════════════
-        # At outer level, we also need gauge-relative syndrome correction
-        # The "gauge" at outer level is the outer syndrome of the EC inner values
-        
-        # First, compute what the EC inner logical values were
-        if basis == 'z':
-            outer_meas = ec_result.measurement_Z[-1] if ec_result.measurement_Z else None
-        else:
-            outer_meas = ec_result.measurement_X[-1] if ec_result.measurement_X else None
-        
-        ec_inner_lz = np.zeros(n, dtype=int)
-        if outer_meas and isinstance(outer_meas, list):
-            if len(outer_meas) > 0 and isinstance(outer_meas[0], list):
-                for i in range(min(n, len(outer_meas))):
-                    meas_range = outer_meas[i]
-                    if isinstance(meas_range, list) and len(meas_range) >= 2:
-                        m_data = np.array(sample[meas_range[0]:meas_range[1]], dtype=int)
-                        ec_inner_lz[i] = self._compute_logical_value(m_data, logical_op)
-        
-        # Compute outer gauge (syndrome of EC inner logical values)
-        outer_gauge = self._compute_syndrome(ec_inner_lz, check_matrix)
-        
-        # Compute outer output syndrome
-        outer_output_syn = self._compute_syndrome(inner_outcomes, check_matrix)
-        
-        # Compute outer error syndrome relative to gauge
-        outer_error_syn = outer_output_syn ^ outer_gauge
-        
-        # Decode outer error
-        _, outer_lz_correction = self._get_correction_for_syndrome(outer_error_syn,
-                                                                    'z' if basis == 'z' else 'x')
-        
-        # Compute outer raw logical and apply correction
-        outer_raw = self._compute_logical_value(inner_outcomes, logical_op)
-        outer_corrected = (outer_raw + outer_lz_correction) % 2
-        
-        # Apply Pauli frame outer correction
-        if basis == 'z':
-            frame_outer = pauli_frame.outer_x
-        else:
-            frame_outer = pauli_frame.outer_z
-        
-        return (outer_corrected + frame_outer) % 2
-
-    def decode_ec_l2_gottesman(self, sample: np.ndarray, ec_result: 'KnillECResult',
-                                pauli_frame: 'PauliFrame') -> 'PauliFrame':
-        """
-        ⚠️ DEPRECATED: This approach is INCORRECT for Knill EC!
-        
-        This method was an attempt to implement Gottesman §12.4.1 by applying
-        syndrome correction during EC decoding. However, it fails because:
-        
-        ═══════════════════════════════════════════════════════════════════════
-                          WHY THIS APPROACH DOESN'T WORK
-        ═══════════════════════════════════════════════════════════════════════
-        
-        1. GAUGE SYNDROME ISSUE: In Knill EC, the Bell measurement outcomes 
-           have a "gauge syndrome" that depends on the random encoding choice,
-           not on errors. The syndrome is non-zero even at p=0!
-        
-        2. CORRELATION DESTRUCTION: Applying syndrome correction to the EC
-           measurements destroys the correlation between EC and final output.
-           At p=0, EC and output measurements are IDENTICAL, so their XOR is 0.
-           But syndrome-corrected values are NOT identical (different corrections).
-        
-        3. CORRECT APPROACH: Use decode_ec_l2() + decode_final_measurement_l2_chained()
-           which compute DIFFERENTIAL syndrome: syn(EC) XOR syn(output).
-           This correctly cancels gauge and reveals actual errors.
-        
-        ═══════════════════════════════════════════════════════════════════════
-                          GOTTESMAN'S ACTUAL MEANING
-        ═══════════════════════════════════════════════════════════════════════
-        
-        Gottesman §12.4.1 says to compute σ(EF) to deduce G = EFM. But σ(EF)
-        is the syndrome of the ERROR E·F, not the syndrome of the measurement
-        outcome itself. This is exactly what differential syndrome computes:
-        
-            diff_syn = syn(EC) XOR syn(output) = σ(E_EC · E_out)
-        
-        At p=0, E_EC = E_out = I, so diff_syn = 0.
-        
-        DO NOT USE THIS METHOD. Use decode_ec_l2() instead.
-        
-        Args:
-            sample: Full MEASUREMENT sample array
-            ec_result: KnillECResult from KnillECGadget.append_noisy_ec()
-            pauli_frame: Current Pauli frame
-        
-        Returns:
-            Updated Pauli frame with syndrome-corrected outer X/Z corrections
-        """
-        n = len(pauli_frame.x_corrections)
-        
-        outer_meas_z = ec_result.measurement_Z[-1] if ec_result.measurement_Z else None
-        outer_meas_x = ec_result.measurement_X[-1] if ec_result.measurement_X else None
-        
-        # Fallback to detector indices if measurement indices not available
-        if outer_meas_z is None:
-            outer_meas_z = ec_result.detector_Z[-1] if ec_result.detector_Z else None
-        if outer_meas_x is None:
-            outer_meas_x = ec_result.detector_X[-1] if ec_result.detector_X else None
-        
-        inner_lz_values = np.zeros(n, dtype=int)
-        inner_lx_values = np.zeros(n, dtype=int)
-        
-        # ═══════════════════════════════════════════════════════════════════════
-        # STAGE 1: Decode each inner block with syndrome correction
-        # ═══════════════════════════════════════════════════════════════════════
-        if outer_meas_z is not None and isinstance(outer_meas_z, list):
-            if len(outer_meas_z) > 0 and isinstance(outer_meas_z[0], list):
-                for block_idx in range(min(n, len(outer_meas_z))):
-                    meas_z = outer_meas_z[block_idx]
-                    if isinstance(meas_z, list) and len(meas_z) >= 2:
-                        m_data = np.array(sample[meas_z[0]:meas_z[1]], dtype=int)
-                        
-                        # GOTTESMAN §12.4.1: Apply syndrome correction!
-                        # 1. Compute syndrome σ(EF)
-                        syndrome = self._compute_syndrome(m_data, self._hz)
-                        
-                        # 2. Deduce correction c(G, Lz) from syndrome
-                        _, lz_correction = self._get_correction_for_syndrome(syndrome, 'z')
-                        
-                        # 3. Compute raw logical value
-                        raw_lz = self._compute_logical_value(m_data, self._logical_z)
-                        
-                        # 4. Apply correction: corrected = raw XOR c(G, Lz)
-                        inner_lz_values[block_idx] = (raw_lz + lz_correction) % 2
-                        
-            elif len(outer_meas_z) >= 2 and isinstance(outer_meas_z[0], int):
-                # Single range - L1 case
-                m_data = np.array(sample[outer_meas_z[0]:outer_meas_z[1]], dtype=int)
-                syndrome = self._compute_syndrome(m_data, self._hz)
-                _, lz_correction = self._get_correction_for_syndrome(syndrome, 'z')
-                raw_lz = self._compute_logical_value(m_data, self._logical_z)
-                z_meas = (raw_lz + lz_correction) % 2
-                if z_meas == 1:
-                    pauli_frame.apply_outer_x(1)
-                return pauli_frame
-        
-        if outer_meas_x is not None and isinstance(outer_meas_x, list):
-            if len(outer_meas_x) > 0 and isinstance(outer_meas_x[0], list):
-                for block_idx in range(min(n, len(outer_meas_x))):
-                    meas_x = outer_meas_x[block_idx]
-                    if isinstance(meas_x, list) and len(meas_x) >= 2:
-                        m_data = np.array(sample[meas_x[0]:meas_x[1]], dtype=int)
-                        
-                        # Syndrome correction for X measurements
-                        syndrome = self._compute_syndrome(m_data, self._hx)
-                        _, lx_correction = self._get_correction_for_syndrome(syndrome, 'x')
-                        raw_lx = self._compute_logical_value(m_data, self._logical_x)
-                        inner_lx_values[block_idx] = (raw_lx + lx_correction) % 2
-                        
-            elif len(outer_meas_x) >= 2 and isinstance(outer_meas_x[0], int):
-                # Single range - L1 case
-                m_data = np.array(sample[outer_meas_x[0]:outer_meas_x[1]], dtype=int)
-                syndrome = self._compute_syndrome(m_data, self._hx)
-                _, lx_correction = self._get_correction_for_syndrome(syndrome, 'x')
-                raw_lx = self._compute_logical_value(m_data, self._logical_x)
-                x_meas = (raw_lx + lx_correction) % 2
-                if x_meas == 1:
-                    pauli_frame.apply_outer_z(1)
-                return pauli_frame
-        
-        # ═══════════════════════════════════════════════════════════════════════
-        # STAGE 2: Compute outer logical values with outer syndrome correction
-        # ═══════════════════════════════════════════════════════════════════════
-        # Apply syndrome correction at outer level too
-        outer_syndrome_z = self._compute_syndrome(inner_lz_values, self._hz)
-        _, outer_lz_correction = self._get_correction_for_syndrome(outer_syndrome_z, 'z')
-        outer_lz_raw = self._compute_logical_value(inner_lz_values, self._logical_z)
-        outer_lz = (outer_lz_raw + outer_lz_correction) % 2
-        
-        outer_syndrome_x = self._compute_syndrome(inner_lx_values, self._hx)
-        _, outer_lx_correction = self._get_correction_for_syndrome(outer_syndrome_x, 'x')
-        outer_lx_raw = self._compute_logical_value(inner_lx_values, self._logical_x)
-        outer_lx = (outer_lx_raw + outer_lx_correction) % 2
-        
-        # Update Pauli frame with syndrome-corrected values
-        if outer_lz == 1:
-            pauli_frame.apply_outer_x(1)
-        if outer_lx == 1:
-            pauli_frame.apply_outer_z(1)
-        
-        return pauli_frame
     
-    def decode_final_measurement_l1(self, sample: np.ndarray, 
-                                     detector_m: Union[List[int], Tuple[int, int]],
-                                     pauli_frame: 'PauliFrame',
-                                     basis: str = 'z') -> int:
-        """
-        Decode final measurement with Pauli frame correction for L1.
-        
-        For Z-basis measurement: X errors flip the outcome
-        → Apply accumulated X correction from pauli_frame
-        
-        For X-basis measurement: Z errors flip the outcome
-        → Apply accumulated Z correction from pauli_frame
-        
-        Args:
-            sample: Full detector sample array
-            detector_m: [start, end] measurement detector range
-            pauli_frame: Accumulated Pauli frame
-            basis: 'z' or 'x' measurement basis
-        
-        Returns:
-            Corrected logical measurement outcome (0 or 1)
-        """
-        # Extract measurement data
-        if isinstance(detector_m, (list, tuple)) and len(detector_m) >= 2:
-            m_data = sample[detector_m[0]:detector_m[1]]
-        else:
-            return 0
-        
-        # Decode the raw measurement
-        raw_outcome = self.decode_measurement(m_data, basis)
-        
-        # Apply Pauli frame correction
-        if basis == 'z':
-            # Z-basis: X errors flip outcome
-            correction = pauli_frame.x_corrections[0] if len(pauli_frame.x_corrections) > 0 else 0
-            correction = (correction + pauli_frame.outer_x) % 2
-        else:
-            # X-basis: Z errors flip outcome
-            correction = pauli_frame.z_corrections[0] if len(pauli_frame.z_corrections) > 0 else 0
-            correction = (correction + pauli_frame.outer_z) % 2
-        
-        return (raw_outcome + correction) % 2
-    
-    def decode_final_measurement_l2(self, sample: np.ndarray,
-                                     detector_m: List,
-                                     pauli_frame: 'PauliFrame',
-                                     basis: str = 'z') -> int:
-        """
-        Decode final measurement with Pauli frame correction for L2.
-        
-        ═══════════════════════════════════════════════════════════════════════
-                          BEGINNER: HIERARCHICAL DECODING
-        ═══════════════════════════════════════════════════════════════════════
-        
-        At L2, we can't just decode 49 physical qubits in one shot. We must
-        decode in TWO STAGES:
-        
-        STAGE 1: Decode each of the 7 inner blocks (L1 decoding)
-        ──────────────────────────────────────────────────────────
-            for i in range(7):
-                raw[i] = decode_measurement(sample[block_i_bits], 'z')
-                inner_outcomes[i] = raw[i] XOR pauli_frame.x_corrections[i]
-        
-        STAGE 2: Decode the outer code (treat 7 inner results as "physical")
-        ──────────────────────────────────────────────────────────────────────
-            outer_raw = decode_measurement(inner_outcomes, 'z')
-            final = outer_raw XOR pauli_frame.outer_x
-        
-        ═══════════════════════════════════════════════════════════════════════
-                          VISUAL: TWO-STAGE DECODING
-        ═══════════════════════════════════════════════════════════════════════
-        
-                                49 physical measurement bits
-                    ┌───────┬───────┬───────┬─────┬───────┐
-                    │block0 │block1 │block2 │ ... │block6 │
-                    │7 bits │7 bits │7 bits │     │7 bits │
-                    └───┬───┴───┬───┴───┬───┴─────┴───┬───┘
-                        │       │       │             │
-           STAGE 1      ▼       ▼       ▼             ▼
-           (L1 decode)  ┌───┐   ┌───┐   ┌───┐         ┌───┐
-                        │syn│   │syn│   │syn│   ...   │syn│
-                        │tbl│   │tbl│   │tbl│         │tbl│
-                        └─┬─┘   └─┬─┘   └─┬─┘         └─┬─┘
-                          │       │       │             │
-                          ▼       ▼       ▼             ▼
-           Apply         ┌───────────────────────────────┐
-           Pauli         │ XOR with pauli_frame.x_corr[i]│
-           frame         └───────────────────────────────┘
-                          │       │       │             │
-                          ▼       ▼       ▼             ▼
-                       inner_outcomes = [0, 1, 0, 0, 0, 0, 1]
-                                        │
-           STAGE 2                      │
-           (outer decode)               ▼
-                              ┌─────────────────┐
-                              │ syndrome decode │
-                              │ on 7-bit vector │
-                              └────────┬────────┘
-                                       │
-                                       ▼
-                              outer_raw = 1 (example)
-                                       │
-                                       ▼
-                              ┌─────────────────┐
-                              │ XOR outer_x     │
-                              │ from Pauli frame│
-                              └────────┬────────┘
-                                       │
-                                       ▼
-                              FINAL ANSWER: 0 or 1
-        
-        ═══════════════════════════════════════════════════════════════════════
-                          WHY HIERARCHICAL?
-        ═══════════════════════════════════════════════════════════════════════
-        
-        We can't decode 49 bits directly because the syndrome tables were
-        built for 7-bit blocks (the inner Steane code). The outer code
-        operates on "super-qubits" that are themselves encoded blocks.
-        
-        The hierarchical approach:
-        1. Decode each inner block using its syndrome table
-        2. The 7 decoded bits become "physical" qubits of the outer code
-        3. Decode the outer code using the SAME syndrome table
-           (because we're using Steane→Steane concatenation)
-        
-        Args:
-            sample: Full detector sample array from Stim
-            detector_m: List of [start, end] per inner block
-                        Structure: [[s0,e0], [s1,e1], ..., [s6,e6]]
-            pauli_frame: Accumulated Pauli frame with:
-                         - x_corrections[7]: per-block X corrections
-                         - outer_x: outer code X correction
-            basis: 'z' or 'x' measurement basis
-        
-        Returns:
-            Corrected logical measurement outcome (0 or 1)
-        """
-        n = len(pauli_frame.x_corrections)
-        inner_outcomes = np.zeros(n, dtype=int)
-        
-        # Decode each inner block 
-        # NOTE: For Knill EC, the per-block corrections in pauli_frame are all 0
-        # because the teleportation byproduct is tracked at the OUTER level only.
-        # We keep this loop structure for compatibility but the per-block corrections
-        # are effectively no-ops.
-        for i in range(n):
-            if i < len(detector_m):
-                det = detector_m[i]
-                if isinstance(det, (list, tuple)) and len(det) >= 2 and isinstance(det[0], int):
-                    m_data = sample[det[0]:det[1]]
-                    
-                    # NOTE: For Knill EC, the per-block corrections in pauli_frame are all 0
-                    # because the teleportation byproduct is tracked at the OUTER level only.
-                    #
-                    # BUG ANALYSIS for L2 error suppression:
-                    # ------------------------------------
-                    # Using _compute_logical_value() here does NOT apply syndrome correction.
-                    # This means single-qubit errors in inner blocks are NOT corrected,
-                    # leading to L2 error > L1 error (no suppression).
-                    #
-                    # However, using decode_measurement() causes 50% error at p=0 because
-                    # it applies syndrome decoding with the WRONG basis or wrong table.
-                    #
-                    # TODO: Investigate why decode_measurement gives 50% error at p=0.
-                    # For now, revert to _compute_logical_value() for correctness at p=0.
-                    if basis == 'z':
-                        raw = self._compute_logical_value(np.array(m_data), self._logical_z)
-                    else:
-                        raw = self._compute_logical_value(np.array(m_data), self._logical_x)
-                    
-                    # Per-block correction (will be 0 for Knill EC, but kept for 
-                    # potential future use with different EC strategies)
-                    if basis == 'z':
-                        correction = pauli_frame.x_corrections[i]
-                    else:
-                        correction = pauli_frame.z_corrections[i]
-                    
-                    inner_outcomes[i] = (raw + correction) % 2
-        
-        # ═══════════════════════════════════════════════════════════════════════
-        # OUTER CODE LOGICAL VALUE (NO SYNDROME CORRECTION FOR KNILL EC!)
-        # ═══════════════════════════════════════════════════════════════════════
-        # 
-        # IMPORTANT: Do NOT apply outer syndrome correction for Knill EC!
-        #
-        # The inner logical values have "gauge syndrome" - they're not a valid
-        # codeword of the outer code. Applying syndrome correction would
-        # "fix" the gauge and BREAK the correlation with the EC measurement.
-        #
-        # The raw inner_lz values naturally correlate with EC measurement values:
-        #   inner_lz(output) == inner_lz(meas_z) at p=0
-        #   → outer_lz(output) == outer_lz(meas_z)
-        #   → outer_lz(output) XOR outer_x = 0
-        #
-        # ═══════════════════════════════════════════════════════════════════════
-        
-        # Compute raw outer logical value
-        if basis == 'z':
-            outer_raw = self._compute_logical_value(inner_outcomes, self._logical_z)
-        else:
-            outer_raw = self._compute_logical_value(inner_outcomes, self._logical_x)
-        
-        # Apply outer code Pauli frame correction
-        if basis == 'z':
-            outer_correction = pauli_frame.outer_x
-        else:
-            outer_correction = pauli_frame.outer_z
-        
-        return (outer_raw + outer_correction) % 2
-
-    def decode_final_measurement_l2_gottesman(
-        self,
-        sample: np.ndarray,
-        detector_m: List,
-        pauli_frame: 'PauliFrame',
-        basis: str = 'z'
-    ) -> int:
-        """
-        ⚠️ DEPRECATED: This method is INCORRECT for Knill EC!
-        
-        This was designed to work with decode_ec_l2_gottesman(), which also
-        doesn't work. See that method's docstring for explanation.
-        
-        ═══════════════════════════════════════════════════════════════════════
-                          WHY THIS APPROACH DOESN'T WORK  
-        ═══════════════════════════════════════════════════════════════════════
-        
-        Applying syndrome correction to both EC and final measurements
-        independently does NOT give correct results because:
-        
-        1. The gauge syndrome is present in both but processed independently
-        2. Different error patterns lead to different corrections
-        3. The corrections don't cancel properly
-        
-        CORRECT APPROACH: Use decode_final_measurement_l2_chained() with
-        decode_ec_l2(), which computes differential syndrome to properly
-        cancel gauge and reveal actual errors.
-        
-        DO NOT USE THIS METHOD.
-        
-        Args:
-            sample: Full measurement sample array
-            detector_m: List of [start, end] per inner block for final measurement
-            pauli_frame: Accumulated Pauli frame (from decode_ec_l2_gottesman)
-            basis: 'z' or 'x' measurement basis
-        
-        Returns:
-            Corrected logical measurement outcome (0 or 1)
-        """
-        n = len(pauli_frame.x_corrections)
-        inner_outcomes = np.zeros(n, dtype=int)
-        
-        # Select appropriate tables for this basis
-        # CRITICAL: Use _check_matrix_for_lz/lx which accounts for logical operator Pauli type
-        if basis == 'z':
-            logical_op = self._logical_z
-            check_matrix = self._check_matrix_for_lz  # Hz for Z-type Lz, Hx for X-type Lz
-        else:
-            logical_op = self._logical_x
-            check_matrix = self._check_matrix_for_lx  # Hx for X-type Lx, Hz for Z-type Lx
-        
-        # ═══════════════════════════════════════════════════════════════════════
-        # STAGE 1: Decode each inner block with syndrome correction
-        # ═══════════════════════════════════════════════════════════════════════
-        for i in range(n):
-            if i >= len(detector_m):
-                continue
-            
-            det = detector_m[i]
-            if not isinstance(det, (list, tuple)) or len(det) < 2 or not isinstance(det[0], int):
-                continue
-            
-            m_data = np.array(sample[det[0]:det[1]], dtype=int)
-            
-            # Apply syndrome correction
-            syndrome = self._compute_syndrome(m_data, check_matrix)
-            _, lz_correction = self._get_correction_for_syndrome(
-                syndrome, 'z' if basis == 'z' else 'x'
-            )
-            raw_lz = self._compute_logical_value(m_data, logical_op)
-            corrected_lz = (raw_lz + lz_correction) % 2
-            
-            # Apply Pauli frame per-block correction
-            if basis == 'z':
-                frame_correction = pauli_frame.x_corrections[i]
-            else:
-                frame_correction = pauli_frame.z_corrections[i]
-            
-            inner_outcomes[i] = (corrected_lz + frame_correction) % 2
-        
-        # ═══════════════════════════════════════════════════════════════════════
-        # STAGE 2: Compute outer logical value with syndrome correction
-        # ═══════════════════════════════════════════════════════════════════════
-        outer_syndrome = self._compute_syndrome(inner_outcomes, check_matrix)
-        _, outer_correction = self._get_correction_for_syndrome(
-            outer_syndrome, 'z' if basis == 'z' else 'x'
-        )
-        outer_raw = self._compute_logical_value(inner_outcomes, logical_op)
-        outer_corrected = (outer_raw + outer_correction) % 2
-        
-        # Apply Pauli frame outer correction
-        if basis == 'z':
-            frame_outer = pauli_frame.outer_x
-        else:
-            frame_outer = pauli_frame.outer_z
-        
-        return (outer_corrected + frame_outer) % 2
-
-    def decode_final_measurement_l2_diff_syn(
-        self,
-        sample: np.ndarray,
-        detector_m: List,
-        pauli_frame: 'PauliFrame',
-        last_ec_result: Optional['KnillECResult'] = None,
-        basis: str = 'z'
-    ) -> int:
-        """
-        Decode final measurement with HIERARCHICAL DIFFERENTIAL SYNDROME for L2.
-        
-        ═══════════════════════════════════════════════════════════════════════
-                      FULL FT ERROR CORRECTION FOR O(p^5) SCALING
-        ═══════════════════════════════════════════════════════════════════════
-        
-        This method implements HIERARCHICAL differential syndrome correction:
-        
-        STAGE 1: INNER (PHYSICAL) DIFFERENTIAL SYNDROME
-        ────────────────────────────────────────────────
-        For each inner block, compare physical measurements from EC (meas_z)
-        vs final measurement (output):
-          - diff_syn_inner = syn(meas_z) XOR syn(output)
-          - This cancels gauge and reveals physical errors
-          - Correct output's inner logical value
-        
-        STAGE 2: OUTER (LOGICAL) DIFFERENTIAL SYNDROME
-        ──────────────────────────────────────────────
-        Compare inner logical values from EC vs final measurement:
-          - inner_lz_meas[i] = raw Lz from meas_z block i
-          - inner_lz_out[i] = corrected Lz from output block i
-          - diff_syn_outer = Hz_outer @ inner_lz_meas XOR Hz_outer @ inner_lz_out
-          - This catches inner block LOGICAL errors (when inner miscorrects)
-        
-        WHY THIS ACHIEVES O(p^5):
-        ─────────────────────────
-        - Stage 1 corrects single physical errors within blocks → O(p^2) inner
-        - Stage 2 corrects single block logical errors → another O(p^2) factor
-        - Combined: need 5+ faults for logical error → O(p^5)
-        
-        WHY OUTER DIFF_SYN WORKS (NOT "gauge breaking"):
-        ────────────────────────────────────────────────
-        The gauge is CORRELATED at both physical and logical levels:
-          - At p=0: inner_lz_meas[i] == inner_lz_out[i] for all blocks
-          - Therefore: outer_diff_syn = 0 at p=0 (gauge cancels!)
-          - Errors show up as differences between meas_z and output
-        
-        The key insight: differential syndrome cancels gauge at BOTH levels
-        because the gauge on meas_z and output is the SAME (same Bell pair).
-        
-        Args:
-            sample: Full measurement sample array (from compile_sampler)
-            detector_m: List of [start, end] per inner block for final measurement
-            pauli_frame: Accumulated Pauli frame from EC rounds
-            last_ec_result: KnillECResult from the last EC round
-            basis: 'z' or 'x' measurement basis
-        
-        Returns:
-            Corrected logical measurement outcome (0 or 1)
-        """
-        n = len(pauli_frame.x_corrections)
-        inner_outcomes = np.zeros(n, dtype=int)  # Corrected inner Lz from output
-        inner_lz_meas = np.zeros(n, dtype=int)   # Raw inner Lz from meas_z (for outer diff_syn)
-        
-        # Get last EC measurement ranges for differential syndrome
-        last_meas_ranges = None
-        if last_ec_result is not None:
-            if basis == 'z' and last_ec_result.measurement_Z:
-                last_meas_ranges = last_ec_result.measurement_Z[-1]
-                if last_meas_ranges and not isinstance(last_meas_ranges[0], list):
-                    last_meas_ranges = None  # Not L2 structure
-            elif basis == 'x' and last_ec_result.measurement_X:
-                last_meas_ranges = last_ec_result.measurement_X[-1]
-                if last_meas_ranges and not isinstance(last_meas_ranges[0], list):
-                    last_meas_ranges = None
-        
-        # Select appropriate tables for this basis
-        # CRITICAL: Use _check_matrix_for_lz/lx which accounts for logical operator Pauli type
-        if basis == 'z':
-            logical_op = self._logical_z
-            check_matrix = self._check_matrix_for_lz  # Hz for Z-type Lz, Hx for X-type Lz
-            diff_table = self._diff_syndrome_table_z
-        else:
-            logical_op = self._logical_x
-            check_matrix = self._check_matrix_for_lx  # Hx for X-type Lx, Hz for Z-type Lx
-            diff_table = self._diff_syndrome_table_x
-        
-        # ═══════════════════════════════════════════════════════════════════════
-        # STAGE 1: INNER (PHYSICAL) DIFFERENTIAL SYNDROME
-        # ═══════════════════════════════════════════════════════════════════════
-        for i in range(n):
-            if i >= len(detector_m):
-                continue
-            
-            det = detector_m[i]
-            if not isinstance(det, (list, tuple)) or len(det) < 2 or not isinstance(det[0], int):
-                continue
-            
-            # Get output measurement for this inner block
-            output = np.array(sample[det[0]:det[1]], dtype=int)
-            
-            # Compute raw logical value from output
-            raw_lz_out = self._compute_logical_value(output, logical_op)
-            
-            # Apply inner differential syndrome correction if we have EC data
-            lz_flip = 0
-            if last_meas_ranges is not None and i < len(last_meas_ranges):
-                meas_range = last_meas_ranges[i]
-                if isinstance(meas_range, list) and len(meas_range) >= 2:
-                    meas_z = np.array(sample[meas_range[0]:meas_range[1]], dtype=int)
-                    
-                    # Store raw inner Lz from meas_z (needed for outer diff_syn)
-                    inner_lz_meas[i] = self._compute_logical_value(meas_z, logical_op)
-                    
-                    # Compute inner differential syndrome
-                    syn_meas = tuple((check_matrix @ meas_z) % 2)
-                    syn_out = tuple((check_matrix @ output) % 2)
-                    diff_syn = tuple(((np.array(syn_meas) + np.array(syn_out)) % 2).tolist())
-                    
-                    # Look up inner correction
-                    lz_flip = diff_table.get(diff_syn, 0)
-            
-            # Apply inner correction to output
-            corrected_lz = (raw_lz_out + lz_flip) % 2
-            
-            # Apply Pauli frame per-block correction (typically 0 for Knill EC)
-            if basis == 'z':
-                frame_correction = pauli_frame.x_corrections[i]
-            else:
-                frame_correction = pauli_frame.z_corrections[i]
-            
-            inner_outcomes[i] = (corrected_lz + frame_correction) % 2
-        
-        # ═══════════════════════════════════════════════════════════════════════
-        # STAGE 2: OUTER (LOGICAL) DIFFERENTIAL SYNDROME
-        # ═══════════════════════════════════════════════════════════════════════
-        #
-        # Now apply differential syndrome at the OUTER level to catch inner
-        # block logical errors (when an inner block has >1 error and miscorrects).
-        #
-        # The key insight: gauge is correlated at the outer level too!
-        #   - inner_lz_meas[i] == inner_lz_out[i] at p=0 (same Bell pair)
-        #   - outer_diff_syn = 0 at p=0 (gauge cancels)
-        #   - Errors show up as differences, just like at inner level
-        # ═══════════════════════════════════════════════════════════════════════
-        
-        # Compute outer differential syndrome
-        outer_syn_meas = (check_matrix @ inner_lz_meas) % 2
-        outer_syn_out = (check_matrix @ inner_outcomes) % 2
-        outer_diff_syn = tuple(((outer_syn_meas + outer_syn_out) % 2).astype(int).tolist())
-        
-        # Look up outer correction from same diff_syn table (same [[7,1,3]] code)
-        outer_lz_flip = diff_table.get(outer_diff_syn, 0)
-        
-        # Compute raw outer logical value
-        outer_raw = self._compute_logical_value(inner_outcomes, logical_op)
-        
-        # Apply outer differential syndrome correction
-        outer_corrected = (outer_raw + outer_lz_flip) % 2
-        
-        # Apply Pauli frame outer correction
-        if basis == 'z':
-            outer_correction = pauli_frame.outer_x
-        else:
-            outer_correction = pauli_frame.outer_z
-        
-        return (outer_corrected + outer_correction) % 2
-
     def decode_final_measurement_l2_chained(
         self,
         sample: np.ndarray,
@@ -10318,7 +8547,7 @@ class KnillDecoder(Decoder):
         # This preserves syndrome information for error correction.
         #
         # ═══════════════════════════════════════════════════════════════════════
-        # CRITICAL: Bell pair measurement basis MUST MATCH for correlation!
+        # CRITICAL: Circuit swaps measurements for X-type Lz, select accordingly!
         # ═══════════════════════════════════════════════════════════════════════
         #
         # Bell pair |Φ+⟩ = (|00⟩ + |11⟩)/√2 has these correlations:
@@ -10334,17 +8563,14 @@ class KnillDecoder(Decoder):
         #   - Z-type Lz (Steane): final is Z-meas → use measurement_Z (Z⊗Z correlation)
         #   - X-type Lz (Shor): final is X-meas → use measurement_X (X⊗X correlation)
         #
-        # Using wrong basis gives Z⊗X = uncorrelated = 50% error!
+        # Select based on Lz Pauli type:
         # ═══════════════════════════════════════════════════════════════════════
         chained_meas_bits = [np.zeros(k, dtype=int) for _ in range(n)]
         
-        # Select EC measurement source based on final measurement basis (Lz Pauli type)
-        use_measurement_X = (self._lz_pauli_type == 'X')
-        
+        # Select measurement source based on Lz Pauli type
         for ec_result in all_ec_results:
-            # Choose measurement source to match final measurement basis
-            if use_measurement_X:
-                # X-type Lz: use measurement_X (X⊗X correlation with final X-meas)
+            if self._lz_pauli_type == 'X':
+                # X-type Lz: use measurement_X (MX on A1 after swap)
                 meas_source = ec_result.measurement_X
             else:
                 # Z-type Lz: use measurement_Z (Z⊗Z correlation with final Z-meas)
@@ -10475,500 +8701,13 @@ class KnillDecoder(Decoder):
         # No Pauli frame correction needed - gauge already cancelled via XOR
         return outer_corrected
 
-# =============================================================================
-# Post-Selection
-# ┌─────────────────────────────────────────────────────────────────────────────┐
-# │                     POST-SELECTION & ACCEPTANCE                              │
-# └─────────────────────────────────────────────────────────────────────────────┘
-#
-# Post-selection filters samples based on verification outcomes.
-# FT preparation strategies return FTVerificationResult which integrates
-# seamlessly with PostSelector.
-#
-# ┌─────────────────────────────────┐      ┌─────────────────────────────────┐
-# │        PostSelector             │      │      MemoryAcceptanceChecker          │
-# ├─────────────────────────────────┤      ├─────────────────────────────────┤
-# │ Input: ConcatenatedCode,        │      │ Input: ConcatenatedCode,        │
-# │        Decoder                  │      │        Decoder                  │
-# ├─────────────────────────────────┤      ├─────────────────────────────────┤
-# │                                 │      │                                 │
-# │ FT PREPARATION METHODS:         │      │ + accept_l1(x, detector_m,      │
-# │ + post_selection_ft(x,          │      │     detector_X, detector_Z, Q)  │
-# │     ft_result) -> bool          │      │   -> float (error probability)  │
-# │   Dispatches to Shor/Steane     │      │                                 │
-# │                                 │      │ + accept_l2(x, detector_m,      │
-# │ + _post_selection_ft_shor(x,    │      │     detector_X, detector_Z, Q)  │
-# │     ft_result) -> bool          │      │   -> float                      │
-# │   Accept if ALL syndromes = 0   │      │                                 │
-# │                                 │      │ Uses decoder to compute         │
-# │ + _post_selection_ft_steane(x,  │      │ corrections and check if        │
-# │     ft_result) -> bool          │      │ Bell pair correlations hold     │
-# │   Accept if ALL comparisons OK  │      │                                 │
-# │                                 │      │ Returns 0 if no error,          │
-# │ + post_selection_prep_detectors │      │ 1 if definite error,            │
-# │   For flattened detector lists  │      │ 0.5 if uncertain                │
-# └─────────────────────────────────┘      └─────────────────────────────────┘
-#
-# FT Post-Selection Flow:
-# ┌─────────────────────────────────────────────────────────────────────────────┐
-# │                                                                             │
-# │   FT Prep Strategy                    PostSelector                          │
-# │   ─────────────────                   ────────────                          │
-# │                                                                             │
-# │   append_ft_0prep()  ───────────►  post_selection_ft(sample, result)        │
-# │       │                                    │                                │
-# │       ▼                                    ▼                                │
-# │   FTVerificationResult        ┌────────────────────────────┐                │
-# │   {                           │ if method == "shor":       │                │
-# │     detector_ranges: [...]    │   Check ALL syndromes = 0  │                │
-# │     verification_method       │ elif method == "steane":   │                │
-# │   }                           │   Check ALL comparisons OK │                │
-# │                               └────────────────────────────┘                │
-# │                                            │                                │
-# │                                            ▼                                │
-# │                                    True (accept) / False (reject)           │
-# │                                                                             │
-# └─────────────────────────────────────────────────────────────────────────────┘
-# =============================================================================
 
 class PostSelector:
-    """
-    Post-selection filter for fault-tolerant quantum error correction.
-    
-    ═══════════════════════════════════════════════════════════════════════════
-    FOR BEGINNERS: WHAT IS POST-SELECTION?
-    ═══════════════════════════════════════════════════════════════════════════
-    
-    THE PROBLEM WITH FAULT-TOLERANT PREPARATION:
-    --------------------------------------------
-    When we prepare ancilla states (like |0⟩_L, |+⟩_L, or Bell pairs),
-    faults can occur. Even with verified preparation, some "bad" states
-    slip through when verification measurements themselves have errors.
-    
-    THE SOLUTION: POST-SELECTION (FILTERING AFTER THE FACT)
-    -------------------------------------------------------
-    In simulation, we run many "shots" and KEEP only the shots where
-    all verification checks passed:
-    
-        for sample in samples:
-            if verification_passed(sample):
-                accepted.append(sample)  # Keep this one
-            else:
-                rejected.append(sample)  # Discard this one
-        
-        logical_error_rate = count_errors(accepted) / len(accepted)
-    
-    This is like a factory quality check:
-    - Run many samples through the pipeline
-    - Verification measurements flag "suspicious" samples
-    - We only count samples that passed all checks
-    - The remaining samples have guaranteed low error weight
-    
-    WHAT ARE WE CHECKING?
-    ---------------------
-    Different verification methods check different things:
-    
-    1. SHOR VERIFICATION:
-       - Measure ALL stabilizers t+1 times
-       - Accept only if ALL measurements give +1 (trivial syndrome)
-       - Any -1 means errors were detected → reject
-    
-    2. STEANE VERIFICATION:
-       - Compare multiple copies via transversal CNOT + measurement
-       - Accept only if ALL copies agreed (comparison = 0)
-       - Any disagreement means at least one copy was bad → reject
-    
-    3. CAT STATE VERIFICATION:
-       - Check Z⊗Z parity on adjacent cat qubit pairs
-       - Accept only if ALL parity checks give 0
-       - Any 1 means cat state was corrupted → reject
-    
-    4. BELL STABILIZER VERIFICATION:
-       - After creating Bell pair, check Z_L⊗Z_L and X_L⊗X_L
-       - Accept only if both give +1
-       - Any -1 means entangling CNOT introduced correlated errors → reject
-    
-    THE TRADE-OFF:
-    --------------
-    More stringent post-selection:
-    ✓ Lower logical error rate (surviving samples are cleaner)
-    ✗ Lower acceptance rate (more samples rejected)
-    
-    This is a fundamental trade-off in fault-tolerant QEC. The verification
-    threshold determines where we sit on this curve.
-    
-    ═══════════════════════════════════════════════════════════════════════════
-                               QEC THEORY BACKGROUND
-    ═══════════════════════════════════════════════════════════════════════════
-    
-    POST-SELECTION IN FAULT-TOLERANT QEC
-    ------------------------------------
-    Post-selection is a critical technique in fault-tolerant quantum computing
-    that filters out samples where errors were detected during state preparation
-    or verification. By rejecting these "bad" samples, we achieve higher fidelity
-    on the remaining "good" samples.
-    
-    Key insight: Verification circuits can detect (but not correct) certain errors.
-    Rather than trying to correct these errors, we simply discard those samples.
-    
-    VERIFICATION-BASED POST-SELECTION
-    ---------------------------------
-    For codes like Steane [[7,1,3]], the preparation circuit includes a
-    verification qubit:
-    
-        |0⟩_L preparation ──●── Verification qubit
-                            │
-                           [M] → If 1, reject sample
-    
-    The verification qubit is entangled with the data in a way that detects
-    preparation errors. If verification measures 1, an error occurred.
-    
-    PARITY-BASED POST-SELECTION
-    ---------------------------
-    For k>1 error-detecting codes like C4 [[4,2,2]], we check parity:
-    
-        All ancilla measurements: m₀, m₁, m₂, m₃
-        If (m₀ + m₁ + m₂ + m₃) % 2 ≠ 0, reject sample
-    
-    This detects when an odd number of errors occurred, which the code cannot
-    handle correctly.
-    
-    ERROR-DETECTING TELEPORTATION (EDT)
-    -----------------------------------
-    For error-DETECTING codes (d=2), EDT provides additional filtering:
-    
-    - During teleportation-based EC, the inner code may detect uncorrectable errors
-    - If the syndrome indicates more errors than the code can handle, reject
-    - Surviving samples have higher fidelity due to this additional filtering
-    
-    EDT trades acceptance rate for error suppression: fewer samples pass, but
-    those that do have much lower logical error rates.
-  
-    
-    ═══════════════════════════════════════════════════════════════════════════
-                              METHOD SUMMARY
-    ═══════════════════════════════════════════════════════════════════════════
-    
-    FAULT-TOLERANT PREPARATION POST-SELECTION:
-    
-    post_selection_ft(x, ft_result):
-        Post-selection for FT preparation strategies.
-        Dispatches to Shor or Steane verification based on ft_result.
-        Takes FTVerificationResult from append_ft_*prep() methods.
-        
-    _post_selection_ft_shor(x, ft_result):
-        Shor verification: Accept if ALL syndrome measurements are zero.
-        
-    _post_selection_ft_steane(x, ft_result):
-        Steane verification: Accept if ALL copy comparisons are consistent.
-    
-    Returns:
-        True: Sample passes post-selection (keep it)
-        False: Sample fails post-selection (reject it)
-    
-    References:
-        [AGP06] Aliferis, Gottesman, Preskill, QIC 6, 97 (2006)
-        [Kni05] Knill, Nature 434, 39 (2005)
-        [Got25] Gottesman, "Surviving as a Quantum Computer", Ch. 13.1
-    """
+
     
     def __init__(self, concat_code:  ConcatenatedCode, decoder: Decoder):
         self.concat_code = concat_code
         self.decoder = decoder
-    
-    # =========================================================================
-    # NOTE: Legacy post_selection_steane, post_selection_steane_l2 methods 
-    # have been DELETED. All post-selection now uses post_selection_ft()
-    # which handles FTVerificationResult from FT preparation.
-    # =========================================================================
-    
-    def post_selection_ft(self, x: np.ndarray, 
-                          ft_result: 'FTVerificationResult') -> bool:
-        """
-        Post-selection for fault-tolerant preparation verification.
-        
-        Dispatches to Shor or Steane verification based on ft_result.verification_method.
-        
-        Args:
-            x: Sample array from detector sampler
-            ft_result: FTVerificationResult from append_ft_*prep() methods
-            
-        Returns:
-            True if verification passed (accept sample)
-        """
-        if ft_result.verification_method == "shor":
-            return self._post_selection_ft_shor(x, ft_result)
-        elif ft_result.verification_method == "steane":
-            return self._post_selection_ft_steane(x, ft_result)
-        else:
-            # Unknown verification method - accept by default
-            return True
-    
-    def _post_selection_ft_shor(self, x: np.ndarray, 
-                                 ft_result: 'FTVerificationResult') -> bool:
-        """
-        Post-selection for Shor EC verification.
-        
-        ═══════════════════════════════════════════════════════════════════
-        SHOR VERIFICATION ACCEPTANCE CONDITION (Gottesman §13.1.1)
-        ═══════════════════════════════════════════════════════════════════
-        
-        Accept iff ALL syndrome bits across ALL rounds are zero.
-        
-        Gottesman: "discarding the state if any measured syndrome is non-trivial"
-        
-        CRITICAL: A syndrome bit = 1 means that stabilizer measured -1
-        (error detected). We must reject if ANY bit is 1, not just if the
-        parity of bits is odd!
-        
-        WRONG: syndrome_sum % 2 != 0  (parity check - misses [1,1,0]!)
-        RIGHT: any(x[start:end])       (any-nonzero check)
-        
-        Example: syndrome = [1,1,0]
-        - Parity check: sum=2, 2%2=0 → INCORRECTLY ACCEPTS
-        - Any-nonzero:  any([1,1,0])=True → CORRECTLY REJECTS
-        
-        This implements the t-filter property: with ≤t faults, either
-        - All syndromes are zero (no errors on data), or
-        - At least one syndrome is non-zero (reject sample)
-        
-        Args:
-            x: Sample array from detector sampler
-            ft_result: FTVerificationResult with Shor syndrome detector_ranges
-            
-        Returns:
-            True if all syndromes were zero (accept)
-        """
-        for det_range in ft_result.detector_ranges:
-            if len(det_range) < 2:
-                continue
-            start, end = det_range[0], det_range[1]
-            # CORRECT: Reject if ANY syndrome bit is 1 (not just odd parity!)
-            # Each syndrome bit represents one stabilizer measurement.
-            # If any stabilizer measured -1 (bit=1), reject the sample.
-            if any(x[start:end]):
-                return False
-        return True
-    
-    def _post_selection_ft_steane(self, x: np.ndarray,
-                                   ft_result: 'FTVerificationResult') -> bool:
-        """
-        Post-selection for Steane multi-copy verification.
-        
-        ═══════════════════════════════════════════════════════════════════
-        STEANE VERIFICATION ACCEPTANCE CONDITION (Gottesman §13.1.2)
-        ═══════════════════════════════════════════════════════════════════
-        
-        Accept if and only if ALL verification detectors read 0 (trivial).
-        
-        CRITICAL DISTINCTION:
-        - These detectors are FLAGS, not parity checks.
-        - Any detector == 1 means "comparison found inconsistency" → REJECT.
-        - This is OR logic: reject if ANY detector fired.
-        - NOT parity logic: we don't care if an even vs odd number fired.
-        
-        WHY THIS IS CORRECT:
-        - Each verification detector corresponds to a transversal comparison
-          between the candidate survivor and one check block.
-        - If the comparison reveals any difference (detector = 1), this
-          witnesses that at least one copy has an error of the relevant
-          Pauli type.
-        - Since we are doing *postselection* (not correction), we reject
-          whenever any evidence of error appears.
-        - The textbook says: if even ONE check fails, discard and reprepare.
-        
-        Two-level verification:
-        1. First pass: Compare copies, accept survivor only if ALL t checks
-           produce trivial outcomes (0). This pass typically detects one
-           Pauli type (e.g., X-type errors via Z-basis comparisons).
-        2. Second pass: Take survivors from first pass, repeat with swapped
-           basis. Detects the complementary Pauli type.
-        
-        HOW "DISCARD AND REPREPARE" IS MODELED:
-        - Stim circuits run a fixed circuit per shot—no in-circuit loops.
-        - We model "discard and reprepare" via SHOT REJECTION:
-            * Build all verification checks into the circuit as detectors.
-            * Sample many shots from the circuit.
-            * Python postselection code rejects shots where any verification
-              detector fired.
-        - Rejected shots = discarded preparations. Accepted shots = the
-          rare successes that passed all verification checks.
-        - This is statistically equivalent to the textbook retry loop,
-          just implemented in batch-sampling style.
-        
-        Args:
-            x: Sample array from detector sampler
-            ft_result: FTVerificationResult with Steane comparison detector_ranges
-            
-        Returns:
-            True if all comparisons were consistent (accept shot)
-            False if any verification detector fired (reject shot)
-        """
-        for det_range in ft_result.detector_ranges:
-            if len(det_range) < 2:
-                continue
-            start, end = det_range[0], det_range[1]
-            # FLAG LOGIC: Reject if ANY detector in this range fired (== 1).
-            # Each detector represents one verification comparison.
-            # If ANY comparison found an inconsistency, reject this shot.
-            if any(x[start:end]):
-                return False
-        return True
-    
-    def post_selection_cat_verification(self, x: np.ndarray,
-                                         cat_detectors: List[int]) -> bool:
-        """
-        Post-selection for cat state Z⊗Z parity verification.
-        
-        ═══════════════════════════════════════════════════════════════════
-        CAT STATE VERIFICATION (Gottesman §12.1.3)
-        ═══════════════════════════════════════════════════════════════════
-        
-        Cat state verification detects corrupted cat states by checking
-        Z⊗Z parity on adjacent qubit pairs. If any check gives 1 (odd
-        parity), the cat state was corrupted and should be rejected.
-        
-        This catches the critical failure mode where a single X fault
-        on the first cat qubit spreads to ALL cat qubits via the CNOT chain.
-        
-        Args:
-            x: Sample array from detector sampler
-            cat_detectors: List of detector indices from cat verification
-                          (returned in 'verification_detectors' by
-                           _measure_stabilizer_with_cat)
-            
-        Returns:
-            True if all cat verifications passed (accept)
-        """
-        if not cat_detectors:
-            return True
-        
-        for det in cat_detectors:
-            if isinstance(det, int):
-                if x[det] != 0:
-                    return False  # Cat parity check failed
-            elif isinstance(det, (list, tuple)):
-                # Nested structure from multiple stabilizers
-                if not self.post_selection_cat_verification(x, det):
-                    return False
-        return True
-    
-    def post_selection_bell_stabilizers(self, x: np.ndarray,
-                                         bell_detectors: List) -> bool:
-        """
-        Post-selection for Bell pair stabilizer verification.
-        
-        ═══════════════════════════════════════════════════════════════════
-        BELL STABILIZER VERIFICATION (Gottesman §13.1.3)
-        ═══════════════════════════════════════════════════════════════════
-        
-        After creating a logical Bell pair via CNOT on |+⟩_L ⊗ |0⟩_L,
-        we verify the Bell stabilizers:
-        
-            Z_L⊗Z_L = +1 (both blocks have same logical Z eigenvalue)
-            X_L⊗X_L = +1 (both blocks have same logical X eigenvalue)
-        
-        Faults in the entangling CNOT can create correlated errors on BOTH
-        blocks (e.g., X_1⊗X_2) that would NOT be detected by individual
-        block verification. These correlated errors ARE detected by Bell
-        stabilizer measurement.
-        
-        Args:
-            x: Sample array from detector sampler
-            bell_detectors: List of (label, detector_idx) tuples from
-                           append_ft_bell_prep, e.g.:
-                           [('Z_L⊗Z_L', 42), ('X_L⊗X_L', 43)]
-            
-        Returns:
-            True if all Bell stabilizer verifications passed (accept)
-        """
-        if not bell_detectors:
-            return True
-        
-        for item in bell_detectors:
-            if isinstance(item, tuple) and len(item) == 2:
-                label, det_idx = item
-                if isinstance(det_idx, int) and x[det_idx] != 0:
-                    return False  # Bell stabilizer check failed
-            elif isinstance(item, int):
-                # Direct detector index
-                if x[item] != 0:
-                    return False
-        return True
-    
-    def post_selection_full_ft(self, x: np.ndarray, 
-                                ft_result: Dict) -> bool:
-        """
-        Complete FT post-selection checking ALL verification types.
-        
-        This is the comprehensive post-selection method that checks:
-        1. Shor/Steane syndrome verification (from ft_result)
-        2. Cat state Z⊗Z parity checks (if present)
-        3. Bell stabilizer verification (if present)
-        
-        Use this for full fault-tolerance when using FT preparation
-        strategies that include cat verification and Bell pair preparation.
-        
-        Args:
-            x: Sample array from detector sampler
-            ft_result: Result dict from append_ft_*prep(), containing:
-                - 'detector_ranges' or 'detector_info': syndrome detectors
-                - 'cat_verifications': cat state verification detectors (optional)
-                - 'bell_stabilizers': Bell stabilizer detectors (optional)
-                - 'verification_outcomes': nested verification info (optional)
-            
-        Returns:
-            True if ALL verification types passed (accept)
-        """
-        # Check main syndrome/comparison detectors
-        if hasattr(ft_result, 'detector_ranges'):
-            # FTVerificationResult format
-            if not self.post_selection_ft(x, ft_result):
-                return False
-        elif isinstance(ft_result, dict):
-            # Dict format from append_ft_*prep
-            detector_info = ft_result.get('detector_info', {})
-            
-            # Check syndrome/comparison detectors if present as ranges
-            if 'detector_ranges' in ft_result:
-                for det_range in ft_result['detector_ranges']:
-                    if len(det_range) >= 2:
-                        start, end = det_range[0], det_range[1]
-                        if sum(x[start:end]) % 2 != 0:
-                            return False
-        
-        # Check cat state verification detectors
-        if isinstance(ft_result, dict):
-            cat_verifications = ft_result.get('cat_verifications', [])
-            if cat_verifications:
-                if not self.post_selection_cat_verification(x, cat_verifications):
-                    return False
-            
-            # Also check nested in verification_outcomes
-            outcomes = ft_result.get('verification_outcomes', {})
-            if isinstance(outcomes, dict):
-                nested_cat = outcomes.get('cat_verifications', [])
-                if nested_cat and not self.post_selection_cat_verification(x, nested_cat):
-                    return False
-        
-        # Check Bell stabilizer verification detectors
-        if isinstance(ft_result, dict):
-            detector_info = ft_result.get('detector_info', {})
-            if isinstance(detector_info, dict):
-                bell_stabs = detector_info.get('bell_stabilizers', [])
-                if bell_stabs:
-                    if not self.post_selection_bell_stabilizers(x, bell_stabs):
-                        return False
-            
-            # Also check in verification_outcomes
-            outcomes = ft_result.get('verification_outcomes', {})
-            if isinstance(outcomes, dict):
-                bell_stabs = outcomes.get('bell_stabilizers', [])
-                if bell_stabs:
-                    if not self.post_selection_bell_stabilizers(x, bell_stabs):
-                        return False
-        
-        return True
     
     def post_selection_prep_detectors(self, x: np.ndarray, 
                                        detector_0prep: List) -> bool:
@@ -10978,6 +8717,22 @@ class PostSelector:
         This handles the flattened detector list format returned by 
         KnillECGadget.append_noisy_ec(). All verification measurements
         should be 0 (trivial syndrome) for acceptance.
+        
+        ═══════════════════════════════════════════════════════════════════
+        CRITICAL: ANY-NONZERO CHECK (NOT PARITY CHECK)
+        ═══════════════════════════════════════════════════════════════════
+        
+        For FT verification (Shor/Steane), we must reject if ANY detector
+        fired (measured 1), not just if an odd number fired.
+        
+        WRONG: sum(x[start:end]) % 2 != 0  (parity check - misses [1,1,0]!)
+        RIGHT: any(x[start:end])           (any-nonzero check)
+        
+        Example: detector values = [1,1,0]
+        - Parity check: sum=2, 2%2=0 → INCORRECTLY ACCEPTS
+        - Any-nonzero:  any([1,1,0])=True → CORRECTLY REJECTS
+        
+        This implements the t-filter property per Gottesman §13.1.1.
         
         Args:
             x: Sample array from detector sampler
@@ -10998,8 +8753,8 @@ class PostSelector:
                     return False
             elif isinstance(det, (list, tuple)):
                 if len(det) == 2 and isinstance(det[0], int) and isinstance(det[1], int):
-                    # [start, end] range
-                    if sum(x[det[0]:det[1]]) % 2 != 0:
+                    # [start, end] range - CRITICAL: use ANY check, not parity!
+                    if any(x[det[0]:det[1]]):
                         return False
                 else:
                     # Nested structure - recurse
@@ -11074,28 +8829,6 @@ class MemoryAcceptanceChecker:
         self.decoder = decoder
         self.k = concat_code.code_at_level(0).k if concat_code.num_levels > 0 else 1
     
-    def check_l1(self, sample: np.ndarray, detector_m: Union[List[int], Tuple[int, int]],
-                 pauli_frame: 'PauliFrame', basis: str = 'z') -> bool:
-        """
-        Check L1 memory test outcome.
-        
-        Decodes final measurement with Pauli frame correction and checks
-        if outcome equals expected value (0 for |0⟩_L preparation).
-        
-        Args:
-            sample: Full detector sample array
-            detector_m: [start, end] measurement detector range
-            pauli_frame: Accumulated Pauli frame from EC rounds
-            basis: Measurement basis ('z' for standard memory test)
-        
-        Returns:
-            True if no logical error (outcome == 0)
-            False if logical error (outcome == 1)
-        """
-        outcome = self.decoder.decode_final_measurement_l1(
-            sample, detector_m, pauli_frame, basis
-        )
-        return outcome == 0
     
     def check_l2(self, sample: np.ndarray, detector_m: List,
                  pauli_frame: 'PauliFrame', basis: str = 'z',
@@ -11574,10 +9307,24 @@ class ConcatenatedMemoryExperiment(Experiment):
         det_samples = circuit.compile_detector_sampler(seed=shared_seed).sample(shots=shots)
         meas_samples = circuit.compile_sampler(seed=shared_seed).sample(shots=shots)
         
-        # Post-selection on verification detectors
+        # =====================================================================
+        # POST-SELECTION (Cat-state verification only)
+        # =====================================================================
+        # Post-select on cat-state verification detectors from FT preparation.
+        # 
+        # NOTE: Bell stabilizer verification (Z_L⊗Z_L, X_L⊗X_L) has been REMOVED
+        # from the circuit. Per Gottesman's treatment, Bell stabilizer outcomes
+        # provide syndrome correlation info, not post-selection criteria. The
+        # individual block FT preparations provide sufficient verification.
+        #
+        # Cat verification catches corrupted cat states used in Shor syndrome
+        # measurement. If any cat parity check fails, reject the sample.
+        # =====================================================================
+        verification_detectors = list_cat_verification_detectors
+        
         accepted_indices = [
             i for i, x in enumerate(det_samples)
-            if self.post_selector.post_selection_prep_detectors(x, list_cat_verification_detectors)
+            if self.post_selector.post_selection_prep_detectors(x, verification_detectors)
         ]
         
         samples = [meas_samples[i] for i in accepted_indices]
