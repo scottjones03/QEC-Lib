@@ -74,6 +74,7 @@ class CSSCode(HomologicalCode):
         logical_x: List[PauliString],
         logical_z: List[PauliString],
         metadata: Optional[Dict[str, Any]] = None,
+        skip_validation: bool = False,
     ):
         """
         Initialize a CSS code from parity check matrices.
@@ -90,16 +91,22 @@ class CSSCode(HomologicalCode):
             Logical Z operators (one per logical qubit).
         metadata : dict, optional
             Arbitrary metadata (distance, chain_complex, etc.).
+        skip_validation : bool, optional
+            If True, skip CSS commutativity validation. Useful for testing
+            or codes that may not be strictly valid CSS.
         """
         self._hx = np.array(hx, dtype=np.uint8)
         self._hz = np.array(hz, dtype=np.uint8)
         self._logical_x = logical_x
         self._logical_z = logical_z
         self._metadata = metadata or {}
+        self._skip_validation = skip_validation
         self._validate_css()
 
     def _validate_css(self) -> None:
         """Validate CSS constraints: Hx and Hz must commute (Hx @ Hz.T = 0 mod 2)."""
+        if self._skip_validation:
+            return
         if self._hx.size == 0 or self._hz.size == 0:
             return
         assert self._hx.shape[1] == self._hz.shape[1], \
@@ -121,7 +128,16 @@ class CSSCode(HomologicalCode):
 
     @property
     def k(self) -> int:
-        """Number of logical qubits: k = n - rank(Hx) - rank(Hz) over GF(2)."""
+        """
+        Number of logical qubits.
+        
+        Uses metadata['k'] if provided (needed for non-strict CSS codes),
+        otherwise computes as k = n - rank(Hx) - rank(Hz) over GF(2).
+        """
+        # Use metadata value if provided (needed for non-strict CSS codes)
+        if 'k' in self._metadata:
+            return self._metadata['k']
+        # Otherwise compute from parity check matrices
         if self.n == 0:
             return 0
         rank_hx = gf2_rank(self._hx) if self._hx.size > 0 else 0
@@ -201,6 +217,262 @@ class CSSCode(HomologicalCode):
         """Z-stabilizer parity check matrix."""
         return self._hz
 
+    # =========================================================================
+    # Uppercase Aliases and Array-Format Accessors
+    # =========================================================================
+    
+    @property
+    def Hz(self) -> np.ndarray:
+        """Z-stabilizer check matrix (uppercase alias for hz)."""
+        return self._hz
+    
+    @property
+    def Hx(self) -> np.ndarray:
+        """X-stabilizer check matrix (uppercase alias for hx)."""
+        return self._hx
+    
+    @property
+    def d(self) -> int:
+        """Code distance (alias for distance property, returns from metadata)."""
+        return self._metadata.get('d', self._metadata.get('distance', 3))
+    
+    def logical_z_array(self, logical_idx: int = 0) -> np.ndarray:
+        """
+        Get logical Z operator as a binary numpy array.
+        
+        Parameters
+        ----------
+        logical_idx : int
+            Index of the logical qubit (default 0).
+            
+        Returns
+        -------
+        np.ndarray
+            Binary array where 1 indicates Z (or Y) support.
+        """
+        if logical_idx >= len(self._logical_z):
+            return np.zeros(self.n, dtype=np.int64)
+        return self._pauli_string_to_binary_array(self._logical_z[logical_idx], 'Z')
+    
+    def logical_x_array(self, logical_idx: int = 0) -> np.ndarray:
+        """
+        Get logical X operator as a binary numpy array.
+        
+        Parameters
+        ----------
+        logical_idx : int
+            Index of the logical qubit (default 0).
+            
+        Returns
+        -------
+        np.ndarray
+            Binary array where 1 indicates X (or Y) support.
+        """
+        if logical_idx >= len(self._logical_x):
+            return np.zeros(self.n, dtype=np.int64)
+        return self._pauli_string_to_binary_array(self._logical_x[logical_idx], 'X')
+    
+    def _pauli_string_to_binary_array(self, pauli: PauliString, pauli_type: str) -> np.ndarray:
+        """
+        Convert a PauliString to a binary numpy array.
+        
+        Parameters
+        ----------
+        pauli : PauliString
+            Dict mapping qubit indices to Pauli operators, or string format.
+        pauli_type : str
+            The Pauli type to extract ('X' or 'Z').
+            
+        Returns
+        -------
+        np.ndarray
+            Binary array where 1 indicates the specified Pauli type.
+        """
+        arr = np.zeros(self.n, dtype=np.int64)
+        if isinstance(pauli, str):
+            for i, op in enumerate(pauli):
+                if i < self.n and (op == pauli_type or op == 'Y'):
+                    arr[i] = 1
+        elif isinstance(pauli, dict):
+            for i, op in pauli.items():
+                if op == pauli_type or op == 'Y':
+                    arr[i] = 1
+        return arr
+    
+    @property
+    def Lz(self) -> np.ndarray:
+        """Logical Z operator for first logical qubit as binary array."""
+        return self.logical_z_array(0)
+    
+    @property
+    def Lx(self) -> np.ndarray:
+        """Logical X operator for first logical qubit as binary array."""
+        return self.logical_x_array(0)
+    
+    @property
+    def Lz2(self) -> Optional[np.ndarray]:
+        """Logical Z operator for second logical qubit (None if k < 2)."""
+        if self.k < 2:
+            return None
+        return self.logical_z_array(1)
+    
+    @property
+    def Lx2(self) -> Optional[np.ndarray]:
+        """Logical X operator for second logical qubit (None if k < 2)."""
+        if self.k < 2:
+            return None
+        return self.logical_x_array(1)
+    
+    @property
+    def num_x_stabilizers(self) -> int:
+        """Number of X stabilizer generators."""
+        return self._hx.shape[0] if self._hx.size > 0 else 0
+    
+    @property
+    def num_z_stabilizers(self) -> int:
+        """Number of Z stabilizer generators."""
+        return self._hz.shape[0] if self._hz.size > 0 else 0
+    
+    def get_stabilizer_support(self, stab_type: str, index: int) -> List[int]:
+        """
+        Get qubit indices in the support of a stabilizer.
+        
+        Parameters
+        ----------
+        stab_type : str
+            'x' for X-type stabilizer, 'z' for Z-type stabilizer.
+        index : int
+            Index of the stabilizer generator.
+            
+        Returns
+        -------
+        List[int]
+            List of qubit indices where the stabilizer has support.
+        """
+        matrix = self._hx if stab_type == 'x' else self._hz
+        return [i for i, v in enumerate(matrix[index]) if v == 1]
+
+    # =========================================================================
+    # Stabilizer Block Structure Analysis
+    # =========================================================================
+    
+    def _find_block_structure(self, check_matrix: np.ndarray) -> List[List[int]]:
+        """
+        Find disjoint blocks from check matrix structure using union-find.
+        
+        Parameters
+        ----------
+        check_matrix : np.ndarray
+            Parity check matrix (Hx or Hz).
+            
+        Returns
+        -------
+        List[List[int]]
+            List of blocks (each block is a list of qubit indices), or empty
+            if all qubits are in a single connected component.
+        """
+        if check_matrix.shape[0] == 0:
+            return []
+        
+        n = check_matrix.shape[1]
+        from collections import defaultdict
+        
+        parent = list(range(n))
+        def find(x):
+            if parent[x] != x:
+                parent[x] = find(parent[x])
+            return parent[x]
+        def union(x, y):
+            px, py = find(x), find(y)
+            if px != py:
+                parent[px] = py
+        
+        for stab_idx in range(check_matrix.shape[0]):
+            support = [i for i in range(n) if check_matrix[stab_idx, i] == 1]
+            for i in range(len(support) - 1):
+                union(support[i], support[i+1])
+        
+        blocks_dict = defaultdict(list)
+        for q in range(n):
+            blocks_dict[find(q)].append(q)
+        
+        blocks = sorted(blocks_dict.values(), key=lambda b: min(b))
+        return blocks if len(blocks) > 1 else []
+    
+    @property
+    def stabilizer_block_structure(self) -> Optional[Dict[str, List[List[int]]]]:
+        """
+        Detect block structure in stabilizers.
+        
+        Returns
+        -------
+        Dict or None
+            Dictionary with 'z_blocks' and 'x_blocks' if structure exists,
+            otherwise None.
+        """
+        z_blocks = self._find_block_structure(self._hz)
+        x_blocks = self._find_block_structure(self._hx)
+        if z_blocks or x_blocks:
+            return {'z_blocks': z_blocks, 'x_blocks': x_blocks}
+        return None
+    
+    @property
+    def has_superposition_codewords(self) -> bool:
+        """
+        Check if code has superposition structure in |0⟩_L.
+        
+        Returns True if the code has block structure indicating superposition
+        codewords (like Shor code).
+        """
+        blocks = self.stabilizer_block_structure
+        if blocks and blocks.get('z_blocks') and len(blocks['z_blocks']) > 1:
+            return True
+        return False
+    
+    @property
+    def measurement_strategy(self) -> str:
+        """
+        Determine measurement/detector strategy for this code.
+        
+        Returns
+        -------
+        str
+            'parity' for k>=2 codes, 'relative' for superposition codes,
+            'absolute' otherwise.
+        """
+        if self.k >= 2:
+            return 'parity'
+        if self.has_superposition_codewords:
+            return 'relative'
+        return 'absolute'
+    
+    def decode_z_basis_measurement(self, m: np.ndarray) -> int:
+        """
+        Decode a Z-basis measurement to logical value.
+        
+        Parameters
+        ----------
+        m : np.ndarray
+            Measurement outcomes as binary array.
+            
+        Returns
+        -------
+        int
+            Logical value (0 or 1).
+        """
+        m = np.array(m).flatten()
+        
+        if self.measurement_strategy == 'relative':
+            blocks = self.stabilizer_block_structure
+            if blocks and blocks.get('z_blocks'):
+                block_values = []
+                for block in blocks['z_blocks']:
+                    block_bits = [m[q] for q in block]
+                    block_values.append(int(sum(block_bits) > len(block_bits) / 2))
+                return sum(block_values) % 2
+        
+        return int(np.dot(self.Lz, m) % 2)
+
     @property
     def chain_complex(self) -> Optional["ChainComplex"]:
         """Return chain complex if stored in metadata, else None."""
@@ -233,6 +505,64 @@ class CSSCode(HomologicalCode):
     def extra_metadata(self) -> Dict[str, Any]:
         """Return additional metadata."""
         return dict(self._metadata)
+    
+    @property
+    def metadata(self) -> Dict[str, Any]:
+        """Return the metadata dictionary."""
+        return self._metadata
+
+    # =========================================================================
+    # Self-Duality and Transversal H Properties
+    # =========================================================================
+    
+    @property
+    def is_self_dual(self) -> bool:
+        """
+        Check if this CSS code is self-dual (Hx = Hz up to row permutation).
+        
+        For self-dual codes, transversal H implements logical H.
+        This is crucial for state preparation circuits.
+        """
+        if self._hx.shape != self._hz.shape:
+            return False
+        return np.array_equal(self._hx, self._hz)
+    
+    @property
+    def has_transversal_logical_h(self) -> bool:
+        """
+        Check if transversal H implements logical H.
+        
+        For CSS codes, this is true iff the code is self-dual (Hx = Hz).
+        Examples:
+        - Steane [[7,1,3]]: self-dual, transversal H = logical H ✓
+        - Shor [[9,1,3]]: NOT self-dual, transversal H ≠ logical H ✗
+        """
+        return self.is_self_dual
+    
+    @property
+    def plus_h_qubits(self) -> Optional[List[int]]:
+        """Qubits to apply H gates for direct |+⟩_L preparation (non-self-dual codes)."""
+        return self._metadata.get('plus_h_qubits')
+    
+    @property
+    def plus_encoding_cnots(self) -> Optional[List[Tuple[int, int]]]:
+        """CNOT gates for direct |+⟩_L preparation (non-self-dual codes)."""
+        return self._metadata.get('plus_encoding_cnots')
+    
+    @property
+    def requires_direct_plus_prep(self) -> bool:
+        """
+        Check if this code requires direct |+⟩_L preparation.
+        
+        Returns True if the code is NOT self-dual AND has plus_h_qubits defined.
+        For such codes, transversal H ≠ logical H, so we need explicit |+⟩_L encoding.
+        """
+        return not self.is_self_dual and self.plus_h_qubits is not None
+    
+    @property
+    def name(self) -> str:
+        """Return the code name from metadata."""
+        return self._metadata.get('name', f'CSS_[[{self.n},{self.k}]]')
 
     # =========================================================================
     # Logical Operator Support Methods (for gadgets and surgery)

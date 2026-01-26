@@ -8,7 +8,15 @@ import stim
 from qectostim.codes.composite.concatenated import ConcatenatedCode
 from qectostim.codes.composite.homological_product import HomologicalProductCode
 from qectostim.decoders.base import Decoder
-from qectostim.decoders._ignore.enhanced_concatenated_decoder import EnhancedConcatenatedDecoder as ConcatenatedDecoder
+
+# Try to import ConcatenatedDecoder, but it may be unavailable
+try:
+    from qectostim.decoders._ignore.enhanced_concatenated_decoder import EnhancedConcatenatedDecoder as ConcatenatedDecoder
+    HAS_CONCATENATED_DECODER = True
+except (ImportError, ModuleNotFoundError):
+    ConcatenatedDecoder = None
+    HAS_CONCATENATED_DECODER = False
+
 from qectostim.decoders.pymatching_decoder import PyMatchingDecoder
 from qectostim.decoders.fusion_blossom_decoder import FusionBlossomDecoder
 from qectostim.decoders.union_find_decoder import UnionFindDecoder
@@ -63,8 +71,8 @@ def select_decoder(
     # AUTO-DETECTION: Select decoder based on code type (if no preference given)
     # =========================================================================
     
-    # Concatenated codes -> dedicated wrapper
-    if isinstance(code, ConcatenatedCode):
+    # Concatenated codes -> dedicated wrapper (if available)
+    if isinstance(code, ConcatenatedCode) and HAS_CONCATENATED_DECODER and ConcatenatedDecoder is not None:
         return ConcatenatedDecoder(
             code=code,
             dem=dem,

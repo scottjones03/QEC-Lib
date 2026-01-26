@@ -42,32 +42,59 @@ from .memory import (
     XYZColorCodeMemoryExperiment,
     FloquetMemoryExperiment,
 )
-from .concatenated_memory import (
-    FlatConcatenatedMemoryExperiment,
-    ConcatenatedMemoryExperiment,  # Deprecated alias
-)
-# V2 Hierarchical Architecture (replaces old modules)
-from .unified_hierarchical_memory_v2 import (
-    UnifiedHierarchicalMemoryV2,
-    HierarchicalMemoryMetadataV2,
-)
-from .logical_block_manager_v2 import (
-    LogicalBlockManagerV2,
-    BlockInfoV2,
-    BlockType,
-)
-from .outer_stabilizer_engine_v3 import (
-    OuterStabilizerEngineV3,  # V3 - Current implementation with entanglement tracking
-    OuterStabInfo,
-    OuterStabSet,
-    OuterMeasResult,
-)
-from .logical_gate_dispatcher import (
-    LogicalGateDispatcher,
-    GateMethod,
-    GateType,
-    GateEmissionResult,
-)
+# Commented out missing module - concatenated_memory.py not found
+# from .concatenated_memory import (
+#     FlatConcatenatedMemoryExperiment,
+#     ConcatenatedMemoryExperiment,  # Deprecated alias
+# )
+
+# V2 Hierarchical Architecture - try to import if available
+try:
+    from .unified_hierarchical_memory_v2 import (
+        UnifiedHierarchicalMemoryV2,
+        HierarchicalMemoryMetadataV2,
+    )
+except (ImportError, ModuleNotFoundError):
+    UnifiedHierarchicalMemoryV2 = None
+    HierarchicalMemoryMetadataV2 = None
+
+try:
+    from .logical_block_manager_v2 import (
+        LogicalBlockManagerV2,
+        BlockInfoV2,
+        BlockType,
+    )
+except (ImportError, ModuleNotFoundError):
+    LogicalBlockManagerV2 = None
+    BlockInfoV2 = None
+    BlockType = None
+
+try:
+    from .outer_stabilizer_engine_v3 import (
+        OuterStabilizerEngineV3,  # V3 - Current implementation with entanglement tracking
+        OuterStabInfo,
+        OuterStabSet,
+        OuterMeasResult,
+    )
+except (ImportError, ModuleNotFoundError):
+    OuterStabilizerEngineV3 = None
+    OuterStabInfo = None
+    OuterStabSet = None
+    OuterMeasResult = None
+
+try:
+    from .logical_gate_dispatcher import (
+        LogicalGateDispatcher,
+        GateMethod,
+        GateType,
+        GateEmissionResult,
+    )
+except (ImportError, ModuleNotFoundError):
+    LogicalGateDispatcher = None
+    GateMethod = None
+    GateType = None
+    GateEmissionResult = None
+
 from .ft_gadget_experiment import (
     FaultTolerantGadgetExperiment,
     FTGadgetExperimentResult,
@@ -92,13 +119,20 @@ from .stabilizer_rounds import (
 )
 
 # Multi-level concatenated memory experiment
-from .multilevel_memory import (
-    MultiLevelMemoryExperiment,
-    MultiLevelMetadata,
-    ECMethod,
-    ECConfig,
-    run_multilevel_experiment,
-)
+try:
+    from .multilevel_memory import (
+        MultiLevelMemoryExperiment,
+        MultiLevelMetadata,
+        ECMethod,
+        ECConfig,
+        run_multilevel_experiment,
+    )
+except (ImportError, ModuleNotFoundError):
+    MultiLevelMemoryExperiment = None
+    MultiLevelMetadata = None
+    ECMethod = None
+    ECConfig = None
+    run_multilevel_experiment = None
 
 __all__ = [
     # Base
