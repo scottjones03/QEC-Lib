@@ -115,6 +115,18 @@ class SteaneCode713(TopologicalCSSCode):
         meta["logical_x_support"] = [0, 1, 2]
         meta["logical_z_support"] = [0, 1, 2]
         
+        # ═══════════════════════════════════════════════════════════════════
+        # LOGICAL OPERATOR PAULI TYPES (required for universal CSS decoding)
+        # ═══════════════════════════════════════════════════════════════════
+        # Steane code is standard CSS: Lz is Z-type, Lx is X-type
+        # This means:
+        # - To decode Z-basis measurement: use Hz (detects X errors that flip Z)
+        # - To decode X-basis measurement: use Hx (detects Z errors that flip X)
+        meta["lz_pauli_type"] = "Z"  # Lz = ZZZIIII is Z-type (standard)
+        meta["lz_support"] = [0, 1, 2]  # Z₀Z₁Z₂
+        meta["lx_pauli_type"] = "X"  # Lx = XXXIIII is X-type (standard)
+        meta["lx_support"] = [0, 1, 2]  # X₀X₁X₂
+        
         # NOTE: We deliberately omit x_schedule/z_schedule here.
         # The geometric schedule approach requires stabilizer coords + offsets to exactly
         # match data qubit coords, which is complex for colour codes. Instead, we use
