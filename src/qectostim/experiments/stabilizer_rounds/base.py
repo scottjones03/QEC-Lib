@@ -75,8 +75,8 @@ class BaseStabilizerRoundBuilder:
         else:
             self.ancilla_offset = ancilla_offset
         
-        # Cache metadata - try both _metadata and metadata attributes
-        self._meta = getattr(code, '_metadata', None) or getattr(code, 'metadata', None) or {}
+        # Cache metadata using Code ABC property
+        self._meta = code.metadata or {}
         self._data_coords = self._meta.get('data_coords', [])
         
         # Periodic boundary support for toric codes
@@ -96,6 +96,52 @@ class BaseStabilizerRoundBuilder:
                     self._coord_to_data[key_2d] = data_offset + local_idx
         
         # Track round number for detector emission
+        self._round_number = 0
+    
+    @property
+    def has_metachecks(self) -> bool:
+        """Whether this builder supports metacheck detectors.
+        
+        Default: False. CSSStabilizerRoundBuilder overrides when code
+        has meta_x/meta_z check matrices.
+        """
+        return False
+
+    @property
+    def x_ancillas(self) -> List[int]:
+        """X-type stabilizer ancilla qubit indices. Override in subclasses."""
+        return []
+
+    @property
+    def z_ancillas(self) -> List[int]:
+        """Z-type stabilizer ancilla qubit indices. Override in subclasses."""
+        return []
+
+    @property
+    def qubit_coords(self) -> Dict[int, Tuple[float, ...]]:
+        """Mapping of qubit index to coordinates. Override in subclasses."""
+        return {}
+
+    def reset_stabilizer_history(
+        self,
+        swap_xz: bool = False,
+        skip_first_round: bool = False,
+        clear_history: bool = False,
+    ) -> None:
+        """Reset stabilizer history after a gate transform.
+        
+        Override in subclasses for proper history management.
+        Default: reset round counter.
+        
+        Parameters
+        ----------
+        swap_xz : bool
+            If True, X and Z stabilizers were swapped by the gate.
+        skip_first_round : bool
+            If True, skip first-round anchor detectors after reset.
+        clear_history : bool
+            If True, clear all measurement history (teleportation).
+        """
         self._round_number = 0
     
     def _wrap_coord(self, coord: Tuple[float, ...]) -> Tuple[float, ...]:
@@ -213,6 +259,7 @@ class BaseStabilizerRoundBuilder:
         circuit: stim.Circuit,
         stab_type: StabilizerBasis = StabilizerBasis.BOTH,
         emit_detectors: bool = True,
+        **kwargs,
     ) -> None:
         """
         Emit one complete stabilizer measurement round.
@@ -225,8 +272,41 @@ class BaseStabilizerRoundBuilder:
             Which stabilizers to measure.
         emit_detectors : bool
             Whether to emit time-like detectors.
+        **kwargs
+            Additional parameters for subclass-specific features:
+            - emit_z_anchors: bool - Emit Z anchor detectors (CSS codes)
+            - emit_x_anchors: bool - Emit X anchor detectors (CSS codes)
+            - explicit_anchor_mode: bool - Only use explicit anchor flags
+            - first_basis: StabilizerBasis - Which basis to measure first
         """
         raise NotImplementedError("Subclass must implement emit_round")
+    
+    def emit_round_with_transform(
+        self,
+        circuit: stim.Circuit,
+        stab_type: StabilizerBasis = StabilizerBasis.BOTH,
+        emit_detectors: bool = True,
+        swap_xz: bool = False,
+    ) -> None:
+        """
+        Emit a stabilizer round with transform applied.
+        
+        Default implementation just calls emit_round. CSS codes override this
+        to handle stabilizer swapping after Hadamard gates.
+        
+        Parameters
+        ----------
+        circuit : stim.Circuit
+            Target circuit.
+        stab_type : StabilizerBasis
+            Which stabilizers to measure.
+        emit_detectors : bool
+            Whether to emit time-like detectors.
+        swap_xz : bool
+            If True, apply X↔Z swap transform (for Hadamard gates).
+        """
+        # Default: ignore transform and emit normally
+        self.emit_round(circuit, stab_type, emit_detectors)
     
     def emit_rounds(
         self,
@@ -238,6 +318,82 @@ class BaseStabilizerRoundBuilder:
         for _ in range(num_rounds):
             self.emit_round(circuit, stab_type, emit_detectors=True)
     
+    def emit_z_layer(
+        self,
+        circuit: stim.Circuit,
+        emit_detectors: bool = True,
+        emit_z_anchors: bool = False,
+    ) -> None:
+        """
+        Emit only Z stabilizer measurements (for parallel extraction).
+        
+        Default implementation falls back to emit_round with Z basis.
+        CSS codes override this for true layer-by-layer emission.
+        
+        Parameters
+        ----------
+        circuit : stim.Circuit
+            Target circuit.
+        emit_detectors : bool
+            Whether to emit detectors.
+        emit_z_anchors : bool
+            Whether to emit anchor detectors for Z stabilizers.
+        """
+        self.emit_round(
+            circuit,
+            StabilizerBasis.Z,
+            emit_detectors=emit_detectors,
+            emit_z_anchors=emit_z_anchors,
+            explicit_anchor_mode=True,
+        )
+    
+    def emit_x_layer(
+        self,
+        circuit: stim.Circuit,
+        emit_detectors: bool = True,
+        emit_x_anchors: bool = False,
+    ) -> None:
+        """
+        Emit only X stabilizer measurements (for parallel extraction).
+        
+        Default implementation falls back to emit_round with X basis.
+        CSS codes override this for true layer-by-layer emission.
+        
+        Parameters
+        ----------
+        circuit : stim.Circuit
+            Target circuit.
+        emit_detectors : bool
+            Whether to emit detectors.
+        emit_x_anchors : bool
+            Whether to emit anchor detectors for X stabilizers.
+        """
+        self.emit_round(
+            circuit,
+            StabilizerBasis.X,
+            emit_detectors=emit_detectors,
+            emit_x_anchors=emit_x_anchors,
+            explicit_anchor_mode=True,
+        )
+    
+    def finalize_parallel_round(self, circuit: stim.Circuit) -> None:
+        """
+        Finalize a round after parallel extraction of both layers.
+        
+        Called after both emit_z_layer and emit_x_layer to handle any
+        cleanup needed (e.g., emitting TICKs, advancing round counter).
+        
+        Default implementation does nothing. CSS codes override this
+        to emit final TICK and update round tracking.
+        
+        Parameters
+        ----------
+        circuit : stim.Circuit
+            Target circuit.
+        """
+        # Default: no finalization needed
+        pass
+
     def emit_final_measurement(
         self,
         circuit: stim.Circuit,
@@ -269,6 +425,30 @@ class BaseStabilizerRoundBuilder:
         if len(coord) >= 2:
             return (float(coord[0]), float(coord[1]), t)
         return (0.0, 0.0, t)
+    
+    def get_last_measurement_indices(self) -> Dict[str, List[int]]:
+        """
+        Get the measurement indices from the last round.
+        
+        Used for crossing detectors that need to compare pre-gate and
+        post-gate syndrome measurements.
+        
+        Returns
+        -------
+        Dict[str, List[int]]
+            Mapping from stabilizer type ("X" or "Z") to list of
+            absolute measurement indices from the last round.
+        """
+        # Default implementation returns empty - CSS codes override this
+        return {"X": [], "Z": []}
+    
+    def get_last_x_syndrome_indices(self) -> List[int]:
+        """Get X syndrome measurement indices from the last round."""
+        return self.get_last_measurement_indices().get("X", [])
+    
+    def get_last_z_syndrome_indices(self) -> List[int]:
+        """Get Z syndrome measurement indices from the last round."""
+        return self.get_last_measurement_indices().get("Z", [])
     
     def _emit_shift_coords(self, circuit: stim.Circuit) -> None:
         """Emit SHIFT_COORDS for time advancement."""

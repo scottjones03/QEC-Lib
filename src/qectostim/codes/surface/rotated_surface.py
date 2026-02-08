@@ -1,4 +1,99 @@
-# src/qectostim/codes/topological/rotated_surface.py
+"""Rotated Surface Code — [[d², 1, d]] Topological Stabiliser Code
+
+The rotated surface code is the workhorse topological code for near-term
+quantum error correction.  It encodes **1 logical qubit** in **d²** physical
+qubits with code distance **d**, achieving the best qubit-to-distance ratio
+among the surface-code family.
+
+Overview
+--------
+The standard (un-rotated) surface code places data qubits on edges of a
+square lattice and stabilisers on faces (X-type plaquettes) and vertices
+(Z-type stars).  Rotating the lattice 45° and discarding half the ancillas
+yields the *rotated* variant, which uses only d² data qubits instead of
+2d² − 2d + 1.  Despite this compression, the code distance remains d.
+
+Lattice geometry (Stim convention)
+----------------------------------
+Data qubits live at **odd-odd** integer coordinates (x, y) ∈ [1, 2d−1]².
+Stabiliser ancillas live at **even-even** coordinates.  A stabiliser at
+(sx, sy) acts on up to four data qubits at (sx ± 1, sy ± 1):
+
+    ○ — □ — ○        ○ = data qubit (odd, odd)
+    |   |   |        □ = Z-ancilla  (even, even, checkerboard rule A)
+    □ — ○ — ■        ■ = X-ancilla  (even, even, checkerboard rule B)
+    |   |   |
+    ○ — ■ — ○
+
+Boundary conditions determine which ancillas are present:
+
+* **Smooth boundaries** (left/right): truncate X-stabilisers → expose
+  X-type logical string along a column.
+* **Rough boundaries** (top/bottom): truncate Z-stabilisers → expose
+  Z-type logical string along a row.
+
+This means logical X̄ runs vertically (left column) and logical Z̄ runs
+horizontally (top row), matching Stim's observable convention.
+
+Code parameters
+---------------
+* **n** = d² physical data qubits
+* **k** = 1 logical qubit
+* **d** = code distance (minimum-weight logical operator)
+* **Rate** R = 1/d² → 0 as d → ∞ (overhead for topological protection)
+* **X-stabilisers**: (d² − 1)/2  weight-4 bulk + weight-2 boundary
+* **Z-stabilisers**: (d² − 1)/2  weight-4 bulk + weight-2 boundary
+
+Stabiliser measurement schedule
+--------------------------------
+Stim uses a **4-layer CNOT schedule** so that X-ancillas and Z-ancillas
+touching the *same* data qubit never interfere:
+
+* X-ancilla (ancilla controls data): SE → SW → NE → NW
+* Z-ancilla (data controls ancilla): SE → NE → SW → NW
+
+All stabilisers of the same type are measured in parallel within each
+layer — there is **no inter-stabiliser ordering dependency** within X
+or within Z.
+
+Connections to other codes
+--------------------------
+* **Toric code**: adding periodic boundary conditions yields the
+  [[2L², 2, L]] toric code; the rotated surface code is a single
+  *planar patch* with open boundaries.
+* **Un-rotated (planar) surface code**: the rotated layout is obtained
+  by a 45° rotation + boundary truncation, halving the qubit count.
+* **XZZX surface code**: replacing the uniform X/Z stabilisers with
+  alternating XZZX operators gives improved performance under biased noise.
+* **Colour codes**: the d = 3 rotated surface code is *not* a colour code,
+  but shares the same parameters [[9, 1, 3]] as the Shor code.
+
+Homological interpretation
+--------------------------
+The code arises from a **2-chain complex on a cellulation of the disk**:
+
+    C₂ (faces / stabilisers) —∂₂→ C₁ (edges / data qubits) —∂₁→ C₀ (vertices)
+
+* H_X = ∂₂ᵀ  (X-stabiliser parity-check matrix)
+* H_Z = ∂₁   (Z-stabiliser parity-check matrix)
+* ∂₂ ∘ ∂₁ = 0  guarantees CSS commutativity (H_X · H_Zᵀ = 0)
+* Logical operators correspond to non-trivial 1-cycles / 1-cocycles.
+
+For this implementation, ∂₁ is left as a dummy zero matrix because the
+boundary vertices are implicit in the planar patch.
+
+References
+----------
+* Kitaev, "Fault-tolerant quantum computation by anyons",
+  Ann. Phys. 303, 2–30 (2003).  arXiv:quant-ph/9707021
+* Horsman, Fowler, Devitt & Van Meter, "Surface code quantum computing
+  by lattice surgery", New J. Phys. 14, 123011 (2012).  arXiv:1111.4022
+* Tomita & Svore, "Low-distance surface codes under realistic quantum
+  noise", Phys. Rev. A 90, 062320 (2014).  arXiv:1404.3747
+* Error Correction Zoo: https://errorcorrectionzoo.org/c/surface
+* Wikipedia: https://en.wikipedia.org/wiki/Toric_code  (surface-code section)
+"""
+
 from __future__ import annotations
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -7,16 +102,74 @@ import numpy as np
 from ..abstract_css import TopologicalCSSCode, Coord2D
 from ..abstract_code import PauliString
 from ..complexes.css_complex import CSSChainComplex3
+from ..utils import validate_css_code
 
 
 class RotatedSurfaceCode(TopologicalCSSCode):
-    """Distance-d rotated surface code (planar patch, qubits on vertices).
+    """Distance-*d* rotated surface code on a planar patch.
 
-    Geometry + schedule is chosen to match Stim's `gen_surface_code` rotated
-    memory circuits as closely as possible.
+    Encodes 1 logical qubit in d² physical qubits with code distance d.
+    Geometry and measurement schedule match Stim's ``gen_surface_code``
+    rotated-memory circuits.
+
+    Parameters
+    ----------
+    distance : int
+        Code distance (must be ≥ 2).  The number of physical qubits is d².
+    metadata : dict, optional
+        Extra metadata merged into the code's metadata dictionary.
+
+    Attributes
+    ----------
+    n : int
+        Number of physical data qubits (= d²).
+    k : int
+        Number of logical qubits (= 1).
+    hx : np.ndarray
+        X-stabiliser parity-check matrix, shape ``(n_x_checks, n)``.
+    hz : np.ndarray
+        Z-stabiliser parity-check matrix, shape ``(n_z_checks, n)``.
+
+    Examples
+    --------
+    >>> code = RotatedSurfaceCode(distance=3)
+    >>> code.n, code.k, code.distance
+    (9, 1, 3)
+    >>> code.hx.shape   # 4 X-stabilisers
+    (4, 9)
+
+    Notes
+    -----
+    The rotated surface code is the most widely studied topological code for
+    superconducting-qubit architectures.  Google's 2023 *Nature* paper
+    demonstrated below-threshold operation with the d = 3 and d = 5
+    instances of this code.
+
+    See Also
+    --------
+    ToricCode33 : Periodic-boundary variant encoding 2 logical qubits.
+    XZZXSurfaceCode : Bias-tailored variant with XZZX stabilisers.
     """
 
     def __init__(self, distance: int, *, metadata: Optional[Dict[str, Any]] = None):
+        """Construct a distance-*d* rotated surface code.
+
+        Builds the planar lattice, derives the chain complex, parity-check
+        matrices, logical operators, and Stim-compatible measurement
+        schedules.
+
+        Parameters
+        ----------
+        distance : int
+            Code distance (≥ 2).  Physical qubit count = d².
+        metadata : dict, optional
+            User-supplied metadata merged into the code's metadata dict.
+
+        Raises
+        ------
+        ValueError
+            If ``distance < 2``.
+        """
         if distance < 2:
             raise ValueError("RotatedSurfaceCode distance must be >= 2")
         self._d = distance
@@ -65,9 +218,20 @@ class RotatedSurfaceCode(TopologicalCSSCode):
         )
 
         meta: Dict[str, Any] = dict(metadata or {})
+
+        n_x_stabs = hx.shape[0]
+        n_z_stabs = hz.shape[0]
+
         meta.update(
             {
+                # ── Code parameters ────────────────────────────────────
+                "code_family": "surface",
+                "code_type": "rotated_surface",
                 "distance": distance,
+                "n": len(data_coords_sorted),
+                "k": 1,
+                "rate": 1.0 / (distance * distance),
+                # ── Geometry ───────────────────────────────────────────
                 "data_qubits": list(range(len(data_coords_sorted))),
                 "data_coords": data_coords_sorted,
                 "x_stab_coords": sorted(list(x_stab_coords)),
@@ -76,6 +240,40 @@ class RotatedSurfaceCode(TopologicalCSSCode):
                 "z_logical_coords": sorted(list(z_logical_coords)),
                 "logical_x_support": x_support,
                 "logical_z_support": z_support,
+                # ── Logical operator Pauli types ───────────────────────
+                # Standard CSS convention: X̄ is X-type, Z̄ is Z-type.
+                "lx_pauli_type": "X",
+                "lx_support": x_support,
+                "lz_pauli_type": "Z",
+                "lz_support": z_support,
+                # ── Stabiliser scheduling ──────────────────────────────
+                # All X-stabilisers are measured in parallel (round 0),
+                # and all Z-stabilisers in parallel (round 0).  There is
+                # no inter-stabiliser ordering within a type.
+                "stabiliser_schedule": {
+                    "x_rounds": {i: 0 for i in range(n_x_stabs)},
+                    "z_rounds": {i: 0 for i in range(n_z_stabs)},
+                    "n_rounds": 1,
+                    "description": (
+                        "Fully parallel: every X-stabiliser in round 0, "
+                        "every Z-stabiliser in round 0."
+                    ),
+                },
+                # ── Literature / provenance ────────────────────────────
+                "error_correction_zoo_url": "https://errorcorrectionzoo.org/c/surface",
+                "wikipedia_url": "https://en.wikipedia.org/wiki/Toric_code",
+                "canonical_references": [
+                    "Kitaev, Ann. Phys. 303, 2–30 (2003). arXiv:quant-ph/9707021",
+                    "Horsman et al., New J. Phys. 14, 123011 (2012). arXiv:1111.4022",
+                    "Tomita & Svore, Phys. Rev. A 90, 062320 (2014). arXiv:1404.3747",
+                ],
+                "connections": [
+                    "Planar patch of the toric code with open boundaries",
+                    "Stim's default code (gen_surface_code rotated_memory)",
+                    "Basis for lattice surgery and logical CNOT",
+                    "45° rotation of the un-rotated surface code, halving qubit count",
+                    "Related: XZZX surface code (bias-tailored variant)",
+                ],
             }
         )
 
@@ -100,15 +298,18 @@ class RotatedSurfaceCode(TopologicalCSSCode):
         meta["x_schedule"] = [
             (1.0, 1.0),    # SE
             (-1.0, 1.0),   # SW
-            (1.0, -1.0),   # NE (was layer 4)
-            (-1.0, -1.0),  # NW (was layer 3)
+            (1.0, -1.0),   # NE
+            (-1.0, -1.0),  # NW
         ]
         meta["z_schedule"] = [
             (1.0, 1.0),    # SE
             (1.0, -1.0),   # NE
-            (-1.0, 1.0),   # SW (was layer 4)
-            (-1.0, -1.0),  # NW (was layer 3)
+            (-1.0, 1.0),   # SW
+            (-1.0, -1.0),  # NW
         ]
+
+        # ── Validate CSS structure ─────────────────────────────────
+        validate_css_code(hx, hz, f"RotatedSurface_d{distance}", raise_on_error=True)
 
         super().__init__(chain_complex, logical_x, logical_z, metadata=meta)
 
@@ -124,6 +325,29 @@ class RotatedSurfaceCode(TopologicalCSSCode):
     def _build_lattice(
         d: int,
     ) -> Tuple[Set[Coord2D], Set[Coord2D], Set[Coord2D], Set[Coord2D], Set[Coord2D]]:
+        """Build the rotated-surface-code lattice for distance *d*.
+
+        Returns five coordinate sets:
+
+        1. **data_coords** — d² data qubits at odd-odd positions.
+        2. **x_stab_coords** — X-ancillas at even-even positions
+           (checkerboard rule, smooth-boundary truncation).
+        3. **z_stab_coords** — Z-ancillas at even-even positions
+           (complementary checkerboard, rough-boundary truncation).
+        4. **x_logical_coords** — data qubits in the support of X̄
+           (left column, x = 1).
+        5. **z_logical_coords** — data qubits in the support of Z̄
+           (top row, y = 1).
+
+        Parameters
+        ----------
+        d : int
+            Code distance.
+
+        Returns
+        -------
+        tuple of five ``Set[Coord2D]``
+        """
         data_coords: Set[Coord2D] = set()
         x_logical_coords: Set[Coord2D] = set()
         z_logical_coords: Set[Coord2D] = set()
@@ -222,7 +446,26 @@ class RotatedSurfaceCode(TopologicalCSSCode):
         x_logical_coords: Set[Coord2D],
         z_logical_coords: Set[Coord2D],
     ) -> Tuple[List[PauliString], List[PauliString], List[int], List[int]]:
-        """Build logical X/Z operators and expose their supports."""
+        """Derive minimum-weight logical X̄ and Z̄ operators.
+
+        For the rotated surface code (Stim convention):
+
+        * **Z̄** = Z on every data qubit in the top row (y = 1).
+          This is a weight-*d* string connecting the two rough boundaries.
+        * **X̄** = X on every data qubit in the left column (x = 1).
+          This is a weight-*d* string connecting the two smooth boundaries.
+
+        Both are minimum-weight representatives of their homology classes.
+
+        Returns
+        -------
+        logical_x : list[PauliString]
+        logical_z : list[PauliString]
+        x_support : list[int]
+            Sorted data-qubit indices in the X̄ support.
+        z_support : list[int]
+            Sorted data-qubit indices in the Z̄ support.
+        """
 
         z_support = sorted(coord_to_index[c] for c in z_logical_coords if c in coord_to_index)
         x_support = sorted(coord_to_index[c] for c in x_logical_coords if c in coord_to_index)
@@ -236,7 +479,13 @@ class RotatedSurfaceCode(TopologicalCSSCode):
 
     @property
     def distance(self) -> int:
+        """Code distance *d*; the minimum weight of any logical operator."""
         return self._d
+
+    @property
+    def name(self) -> str:
+        """Human-readable name, e.g. ``'RotatedSurfaceCode(d=3)'``."""
+        return f"RotatedSurfaceCode(d={self._d})"
 
     def qubit_coords(self) -> List[Coord2D]:
         return list(self.metadata["data_coords"])

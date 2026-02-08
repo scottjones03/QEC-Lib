@@ -1,21 +1,58 @@
-"""Bacon-Shor Subsystem Code
+"""Bacon–Shor Subsystem Code
 
-The Bacon-Shor code is a subsystem code where some degrees of freedom
-are designated as "gauge qubits" that don't encode information. This
-allows for simplified syndrome measurement using only 2-body operators.
+The Bacon–Shor code is a **subsystem code** on an *m × n* grid of
+physical qubits encoding **1 logical qubit** with distance
+``d = min(m, n)``.
 
-For an m×n Bacon-Shor code:
-- n_physical = m × n qubits
-- k = 1 logical qubit
-- d = min(m, n) distance
-- Gauge operators are weight-2 XX and ZZ on adjacent pairs
-- Stabilizers are products of gauge operators
+Key advantage
+-------------
+All syndrome information can be extracted with **weight-2 gauge
+operators** (nearest-neighbour XX or ZZ), unlike surface codes
+which require weight-4 stabiliser measurements.
 
-Key advantage: Only weight-2 measurements needed, unlike surface codes
-which require weight-4.
+Construction
+------------
+* Physical qubits are arranged on an ``m × n`` grid
+  (``n_phys = m · n``).
+* **Gauge operators** (weight 2):
 
-Reference: Bacon, "Operator quantum error-correcting subsystems for 
-self-correcting quantum memories" (2006)
+  - X-type: ``XX`` on each horizontal pair in every row
+  - Z-type: ``ZZ`` on each vertical pair in every column
+
+* **Stabilisers** are *products* of gauge operators:
+
+  - X-stabiliser for row pair ``(r, r+1)``: X on all qubits in
+    rows *r* and *r+1*  → weight 2n
+  - Z-stabiliser for col pair ``(c, c+1)``: Z on all qubits in
+    cols *c* and *c+1*  → weight 2m
+
+Code parameters
+---------------
+* **n** = m · n  physical qubits
+* **k** = 1      logical qubit
+* **d** = min(m, n)
+* **Rate** R = 1 / (m · n)
+* **Gauge qubits**: ``m · n − 1 − (m − 1) − (n − 1)`` = ``(m−1)(n−1)``
+
+Logical operators
+-----------------
+* X̄ = X on every qubit in any single row   (weight n)
+* Z̄ = Z on every qubit in any single column (weight m)
+
+Connections
+-----------
+* **Shor code** [[9,1,3]] is the 3 × 3 Bacon–Shor code.
+* **Subsystem surface codes** generalise this idea to 2-D topologies.
+* **Compass codes** interpolate between Bacon–Shor and surface codes.
+
+References
+----------
+* Bacon, "Operator quantum error-correcting subsystems for
+  self-correcting quantum memories", Phys. Rev. A **73**, 012340
+  (2006).  arXiv:quant-ph/0506023
+* Aliferis & Cross, "Subsystem fault tolerance with the Bacon–Shor
+  code", Phys. Rev. Lett. **98**, 220502 (2007).  arXiv:quant-ph/0610063
+* Error Correction Zoo: https://errorcorrectionzoo.org/c/bacon_shor_classical
 """
 
 from __future__ import annotations
@@ -25,24 +62,77 @@ import numpy as np
 
 from qectostim.codes.abstract_css import CSSCode
 from qectostim.codes.abstract_code import PauliString
+from qectostim.codes.complexes.css_complex import CSSChainComplex3
+from qectostim.codes.utils import validate_css_code
 
 Coord2D = Tuple[float, float]
 
 
 class BaconShorCode(CSSCode):
-    """
-    Bacon-Shor subsystem code.
-    
+    """Bacon–Shor subsystem code on an *m × n* grid.
+
+    Encodes 1 logical qubit in ``m × n`` physical qubits with distance
+    ``min(m, n)``.  Syndrome extraction uses only **weight-2** gauge
+    operators, simplifying hardware requirements.
+
     Parameters
     ----------
     m : int
-        Number of rows (>= 2)
+        Number of rows (≥ 2).
     n : int
-        Number of columns (>= 2)
+        Number of columns (≥ 2).
+    metadata : dict, optional
+        Extra key/value pairs merged into the code's metadata dictionary.
+
+    Attributes
+    ----------
+    n : int
+        Number of physical qubits (``m × n``).
+    k : int
+        Number of logical qubits (1).
+    distance : int
+        Code distance (``min(m, n)``).
+    hx : np.ndarray
+        X-stabiliser parity-check matrix, shape ``(m-1, m*n)``.
+    hz : np.ndarray
+        Z-stabiliser parity-check matrix, shape ``(n-1, m*n)``.
+
+    Examples
+    --------
+    >>> code = BaconShorCode(3, 3)
+    >>> code.n, code.k, code.distance
+    (9, 1, 3)
+    >>> x_gauges, z_gauges = code.gauge_operators()
+    >>> len(x_gauges), len(z_gauges)  # weight-2 gauge ops
+    (6, 6)
+
+    Notes
+    -----
+    The 3 × 3 Bacon–Shor code is equivalent to Shor's [[9,1,3]] code
+    up to a local Clifford rotation.  The gauge structure allows single-
+    shot error correction with only 2-body measurements.
+
+    See Also
+    --------
+    ShorCode91 : The 3×3 Bacon–Shor code in CSS form.
     """
 
     def __init__(self, m: int = 3, n: int = 3, metadata: Optional[Dict[str, Any]] = None):
-        """Initialize Bacon-Shor code on m×n grid."""
+        """Initialise the Bacon–Shor code on an *m × n* grid.
+
+        Builds row-pair X-stabilisers, column-pair Z-stabilisers,
+        weight-2 gauge operators, logical operators, a chain complex,
+        and all standard metadata fields.
+
+        Parameters
+        ----------
+        m : int, optional
+            Number of rows (default 3, must be ≥ 2).
+        n : int, optional
+            Number of columns (default 3, must be ≥ 2).
+        metadata : dict, optional
+            Extra metadata merged into the code's metadata dictionary.
+        """
         if m < 2 or n < 2:
             raise ValueError(f"Grid must be at least 2×2, got {m}×{n}")
         

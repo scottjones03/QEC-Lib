@@ -1,20 +1,90 @@
-"""[[18,2,3]] Toric Code on 3×3 Torus
+"""Toric Code — [[2L², 2, L]] Topological Stabiliser Code on a Torus
 
-The toric code is a topological CSS code defined on a torus (periodic boundary conditions).
-For a 3x3 torus:
-- 18 qubits on the edges (9 horizontal + 9 vertical)
-- 9 X-type (plaquette/face) stabilizers
-- 9 Z-type (vertex/star) stabilizers
-- 2 logical qubits corresponding to the two non-contractible cycles
+The toric code is the foundational topological quantum error-correcting code,
+introduced by Kitaev (1997).  It encodes **2 logical qubits** in **2L² physical
+qubits** (edges of an L×L square lattice on a torus) with code distance **L**.
 
-The stabilizers are:
-- X plaquettes: 4-body operators on edges around each face
-- Z stars: 4-body operators on edges meeting at each vertex
+Overview
+--------
+The toric code places data qubits on the **edges** of a square lattice with
+*periodic boundary conditions* (i.e. a torus).  Two types of stabilisers
+act on these edges:
 
-Chain complex structure:
-- C2 (faces/plaquettes) --∂2--> C1 (edges/qubits) --∂1--> C0 (vertices)
-- X stabilizers come from ∂2 (plaquettes acting on boundary edges)
-- Z stabilizers come from ∂1^T (vertices acting on incident edges)
+* **X-type plaquette operators** (faces): the product of X on the 4 edges
+  bounding each face of the lattice.
+* **Z-type star operators** (vertices): the product of Z on the 4 edges
+  meeting at each vertex.
+
+Every plaquette commutes with every star because any pair shares exactly
+0 or 2 edges (even overlap → commutation).  The product of *all* plaquettes
+is the identity, and similarly for all stars, so one stabiliser of each type
+is dependent.  This gives:
+
+    #independent stabilisers = 2(L² − 1) = 2L² − 2
+    k = n − #stabilisers = 2L² − (2L² − 2) = 2
+
+Code parameters (L×L torus)
+---------------------------
+* **n** = 2L² physical qubits (L² horizontal edges + L² vertical edges)
+* **k** = 2 logical qubits (two non-contractible cycles on the torus)
+* **d** = L (minimum-weight non-contractible loop)
+* **Rate** R = 2/(2L²) = 1/L² → 0 as L → ∞
+
+Logical operators
+-----------------
+The two logical qubits correspond to the two independent non-contractible
+cycles on the torus (horizontal and vertical):
+
+* **X̄₁** : X on all horizontal edges in row 0 (horizontal cycle)
+* **Z̄₁** : Z on all vertical edges in column 0 (vertical cycle)
+* **X̄₂** : X on all vertical edges in column 0 (vertical cycle)
+* **Z̄₂** : Z on all horizontal edges in row 0 (horizontal cycle)
+
+Each X̄ᵢ anti-commutes with its paired Z̄ᵢ (odd overlap) and commutes
+with the other pair (zero overlap).
+
+Chain complex
+-------------
+The toric code has a natural **3-term chain complex**:
+
+    C₂ (faces/plaquettes) —∂₂→ C₁ (edges/qubits) —∂₁→ C₀ (vertices)
+
+* H_X = ∂₂ᵀ  (plaquettes → boundary edges)
+* H_Z = ∂₁    (vertices → incident edges)
+* ∂₂ ∘ ∂₁ = 0 ↔ CSS commutativity
+* Logical operators = non-trivial homology classes of H₁(T²; 𝔽₂)
+
+Homological interpretation
+--------------------------
+The toric code is the prototypical example of a **homological code**.
+Errors are 1-chains (sets of edges), syndromes are 0-chains (vertices)
+and 2-chains (faces), and decoding is equivalent to finding a minimum-
+weight 1-chain with the given boundary.
+
+Connections to other codes
+--------------------------
+* **Rotated surface code**: obtained by cutting the torus open (removing
+  periodic BCs) and rotating 45°, yielding [[d², 1, d]].
+* **Hypergraph product**: the toric code is the **HGP of two repetition
+  codes**: RepetitionCode ⊗ RepetitionCode → ToricCode.
+* **3D/4D toric codes**: higher-dimensional generalisations with
+  self-correction and single-shot properties.
+* **Colour codes**: the toric code is *not* a colour code (faces are not
+  3-colourable), but both are topological CSS codes.
+
+This implementation
+-------------------
+Currently implements the **L = 3** toric code as a concrete [[18, 2, 3]]
+instance.  The lattice size L is not yet parameterised.
+
+References
+----------
+* Kitaev, "Fault-tolerant quantum computation by anyons",
+  Ann. Phys. 303, 2–30 (2003).  arXiv:quant-ph/9707021
+* Dennis, Kitaev, Landahl & Preskill, "Topological quantum memory",
+  J. Math. Phys. 43, 4452 (2002).  arXiv:quant-ph/0110143
+* Error Correction Zoo: https://errorcorrectionzoo.org/c/surface
+* Wikipedia: https://en.wikipedia.org/wiki/Toric_code
 """
 
 from __future__ import annotations
@@ -25,17 +95,53 @@ import numpy as np
 from qectostim.codes.abstract_css import TopologicalCSSCode, Coord2D
 from qectostim.codes.abstract_code import PauliString, FTGadgetCodeConfig, ScheduleMode
 from qectostim.codes.complexes.css_complex import CSSChainComplex3
+from qectostim.codes.utils import validate_css_code
 
 
 class ToricCode33(TopologicalCSSCode):
-    """
-    [[18,2,3]] Toric code on a 3×3 torus.
+    """[[18, 2, 3]] Toric code on a 3×3 torus.
 
-    18 qubits (edges), 8 X-type plaquette checks, 8 Z-type vertex checks.
-    Encodes 2 logical qubits with distance 3.
-    
-    Inherits from TopologicalCSSCode with chain complex structure:
-    C2 (faces) --∂2--> C1 (edges/qubits) --∂1--> C0 (vertices)
+    18 data qubits (edges), 8 X-type plaquette stabilisers, 8 Z-type
+    vertex stabilisers.  Encodes 2 logical qubits with distance 3.
+
+    Parameters
+    ----------
+    metadata : dict, optional
+        Extra metadata merged into the code's metadata dictionary.
+
+    Attributes
+    ----------
+    n : int
+        Number of physical qubits (18).
+    k : int
+        Number of logical qubits (2).
+    distance : int
+        Code distance (3).
+    hx : np.ndarray
+        X-stabiliser parity-check matrix, shape ``(8, 18)``.
+    hz : np.ndarray
+        Z-stabiliser parity-check matrix, shape ``(8, 18)``.
+
+    Examples
+    --------
+    >>> code = ToricCode33()
+    >>> code.n, code.k, code.distance
+    (18, 2, 3)
+
+    Notes
+    -----
+    The toric code is the first topological code ever proposed (Kitaev 1997)
+    and remains the benchmark for topological QEC research.  Its periodic
+    boundary conditions make it impractical for physical devices but
+    invaluable for theoretical analysis.
+
+    The code is equivalent to the hypergraph product of two [[3,1,3]]
+    repetition codes.
+
+    See Also
+    --------
+    RotatedSurfaceCode : Open-boundary variant for physical devices.
+    ToricCode3D : Three-dimensional generalisation.
     """
 
     def __init__(self, metadata: Optional[Dict[str, Any]] = None):
@@ -68,16 +174,62 @@ class ToricCode33(TopologicalCSSCode):
         # Metadata
         meta: Dict[str, Any] = dict(metadata or {})
         meta.update({
+            # ── Code parameters ────────────────────────────────────
+            "code_family": "surface",
+            "code_type": "toric",
             "name": "ToricCode_3x3",
             "n": n_qubits,
             "k": 2,
             "distance": L,
+            "rate": 2.0 / n_qubits,
             "lattice_size": L,
+            # ── Geometry ───────────────────────────────────────────
             "data_coords": data_coords,
             "x_stab_coords": x_stab_coords,
             "z_stab_coords": z_stab_coords,
-            "logical_x_support": list(range(L)),
-            "logical_z_support": list(range(L * L, L * L + L)),
+            # ── Logical operator Pauli types ───────────────────────
+            "lx_pauli_type": "X",
+            "lz_pauli_type": "Z",
+            # ── Logical operator supports (k=2: list-of-lists) ────
+            "lx_support": [
+                list(range(L)),             # Lx₁: horizontal edges in row 0
+                list(range(L * L, L * L + L)),  # Lx₂: vertical edges in row 0
+            ],
+            "lz_support": [
+                list(range(L * L, L * L + L)),  # Lz₁: vertical edges in col 0
+                list(range(0, L * L, L)),       # Lz₂: horizontal edges in col 0
+            ],
+            "data_qubits": list(range(n_qubits)),
+            "x_logical_coords": [
+                [data_coords[i] for i in range(L)],
+                [data_coords[i] for i in range(L * L, L * L + L)],
+            ],
+            "z_logical_coords": [
+                [data_coords[i] for i in range(L * L, L * L + L)],
+                [data_coords[i] for i in range(0, L * L, L)],
+            ],
+            # ── Stabiliser scheduling ──────────────────────────────
+            "stabiliser_schedule": {
+                "x_rounds": {i: 0 for i in range(L * L - 1)},
+                "z_rounds": {i: 0 for i in range(L * L - 1)},
+                "n_rounds": 1,
+                "description": (
+                    "Fully parallel: all plaquette (X) stabilisers in "
+                    "round 0, all star (Z) stabilisers in round 0."
+                ),
+            },
+            # ── Literature / provenance ────────────────────────────
+            "error_correction_zoo_url": "https://errorcorrectionzoo.org/c/toric",
+            "wikipedia_url": "https://en.wikipedia.org/wiki/Toric_code",
+            "canonical_references": [
+                "Kitaev, Ann. Phys. 303, 2–30 (2003). arXiv:quant-ph/9707021",
+                "Dennis et al., J. Math. Phys. 43, 4452 (2002). arXiv:quant-ph/0110143",
+            ],
+            "connections": [
+                "HGP of two repetition codes: Rep(L) ⊗ Rep(L) = Toric(L)",
+                "Open boundaries → Rotated surface code [[d², 1, d]]",
+                "3D generalisation: ToricCode3D with qubits on edges",
+            ],
         })
         
         # Measurement schedules for toric code (4-phase schedule)
@@ -94,6 +246,9 @@ class ToricCode33(TopologicalCSSCode):
             (0.0, -0.5),   # up vertical edge
         ]
         
+        # ── Validate CSS structure ─────────────────────────────────
+        validate_css_code(hx, hz, "ToricCode33", raise_on_error=True)
+
         # Call TopologicalCSSCode constructor
         super().__init__(chain_complex, logical_x, logical_z, metadata=meta)
         
@@ -111,7 +266,34 @@ class ToricCode33(TopologicalCSSCode):
         np.ndarray,      # boundary_2
         np.ndarray,      # boundary_1
     ]:
-        """Build the toric code lattice, parity check matrices, and chain complex."""
+        """Build the L×L toric code lattice, parity-check matrices, and chain complex.
+
+        Constructs the periodic square lattice with:
+
+        * 2L² edges (qubits): L² horizontal + L² vertical.
+        * L² faces (plaquettes → X stabilisers, weight 4 each).
+        * L² vertices (stars → Z stabilisers, weight 4 each).
+
+        The last plaquette and the last vertex are linearly dependent
+        (product of all rows = 0), so the returned ``hx``/``hz`` have
+        L²−1 rows each.
+
+        Parameters
+        ----------
+        L : int
+            Linear lattice size.
+
+        Returns
+        -------
+        data_coords : list of (float, float)
+            2D coordinates for each data qubit.
+        x_stab_coords, z_stab_coords : list of (float, float)
+            Coordinates for X / Z stabiliser ancillas.
+        hx, hz : np.ndarray
+            Parity-check matrices, shapes ``(L²−1, 2L²)``.
+        boundary_2, boundary_1 : np.ndarray
+            Chain-complex boundary maps (``∂₂`` and ``∂₁``).
+        """
         n_qubits = 2 * L * L
         
         # Edge indexing functions
@@ -168,7 +350,32 @@ class ToricCode33(TopologicalCSSCode):
 
     @staticmethod
     def _build_logicals(L: int, n_qubits: int) -> Tuple[List[str], List[str]]:
-        """Build logical operators for toric code."""
+        """Build two pairs of logical operators for the L×L toric code.
+
+        The torus supports two non-contractible cycles, giving k = 2:
+
+        * **Pair 1**: X̄₁ on horizontal edges in row 0 (horizontal cycle);
+          Z̄₁ on vertical edges in column 0 (vertical cycle).
+        * **Pair 2**: X̄₂ on vertical edges in row 0;
+          Z̄₂ on horizontal edges in column 0.
+
+        Each pair anti-commutes internally (odd overlap = 1) and commutes
+        with the other pair (zero overlap).
+
+        Parameters
+        ----------
+        L : int
+            Lattice size.
+        n_qubits : int
+            Total number of qubits (= 2L²).
+
+        Returns
+        -------
+        logical_x : list of str
+            Two Pauli-string logical X operators.
+        logical_z : list of str
+            Two Pauli-string logical Z operators.
+        """
         def h_edge(row, col):
             return (row % L) * L + (col % L)
         
@@ -210,6 +417,11 @@ class ToricCode33(TopologicalCSSCode):
     def hz(self) -> np.ndarray:
         """Z stabilizers: shape (#Z-checks, #data)."""
         return self._hz
+
+    @property
+    def name(self) -> str:
+        """Human-readable name, e.g. ``'ToricCode(3x3)'``."""
+        return "ToricCode(3x3)"
 
     @property
     def distance(self) -> int:

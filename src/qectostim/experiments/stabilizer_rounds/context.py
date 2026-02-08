@@ -3,14 +3,18 @@
 Detector context for tracking measurements and emitting detectors.
 
 The DetectorContext is the central state object that tracks measurement indices,
-stabilizer history, and observable transformations throughout circuit construction.
+stabilizer history, observable transformations, and Pauli frame corrections
+throughout circuit construction.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 
 import stim
+
+if TYPE_CHECKING:
+    from qectostim.gadgets.pauli_frame import PauliTracker
 
 
 @dataclass
@@ -70,6 +74,24 @@ class DetectorContext:
     
     # Round counter for tracking which round measurements belong to
     current_round: int = 0
+    
+    # =========================================================================
+    # Pauli Frame Tracking
+    # =========================================================================
+    # Track measurement indices that determine Pauli frame corrections.
+    # These are XORed into OBSERVABLE_INCLUDE at the end.
+    #
+    # For Pauli frame approach:
+    # - Projection measurements have random ±1 outcomes
+    # - These outcomes define a "frame" that must be tracked
+    # - Final observable interpretation depends on frame XOR
+    #
+    # Key: block_name -> Dict with 'x_frame_meas' and 'z_frame_meas' lists
+    pauli_frame_measurements: Dict[str, Dict[str, List[int]]] = field(default_factory=dict)
+    
+    # Optional PauliTracker for full frame propagation through gates
+    # Lazily initialized when needed
+    _pauli_tracker: Optional["PauliTracker"] = field(default=None, repr=False)
     
     def add_measurement(self, count: int = 1) -> int:
         """
@@ -269,7 +291,7 @@ class DetectorContext:
     
     def clone(self) -> "DetectorContext":
         """Create a copy of the context."""
-        return DetectorContext(
+        ctx = DetectorContext(
             measurement_index=self.measurement_index,
             last_stabilizer_meas=dict(self.last_stabilizer_meas),
             current_time=self.current_time,
@@ -279,7 +301,376 @@ class DetectorContext:
             stabilizer_initialized=set(self.stabilizer_initialized),
             pending_x_transforms={k: list(v) for k, v in self.pending_x_transforms.items()},
             pending_z_transforms={k: list(v) for k, v in self.pending_z_transforms.items()},
+            pauli_frame_measurements={
+                k: {ik: list(iv) for ik, iv in v.items()}
+                for k, v in self.pauli_frame_measurements.items()
+            },
         )
+        # Copy pauli tracker if initialized
+        if self._pauli_tracker is not None:
+            ctx._pauli_tracker = self._pauli_tracker.get_frame().copy() if hasattr(self._pauli_tracker, 'get_frame') else None
+        return ctx
+    
+    @classmethod
+    def continue_from(
+        cls,
+        previous_ctx: "DetectorContext",
+        preserve_stabilizer_history: bool = True,
+        preserve_pauli_frame: bool = True,
+    ) -> "DetectorContext":
+        """
+        Create a new context that continues from a previous context's final state.
+        
+        This is the key method for gadget chaining. It creates a fresh context
+        that preserves measurement record continuity, allowing detectors in the
+        new gadget to reference measurements from the previous gadget.
+        
+        Parameters
+        ----------
+        previous_ctx : DetectorContext
+            The context from the previous gadget's final state.
+        preserve_stabilizer_history : bool
+            If True, preserve stabilizer measurement history for inter-gadget
+            crossing detectors. If False, start with fresh stabilizer history.
+        preserve_pauli_frame : bool
+            If True, preserve Pauli frame state for classical correction tracking.
+            If False, start with identity frame.
+            
+        Returns
+        -------
+        DetectorContext
+            New context initialized for the next gadget in the chain.
+            
+        Example
+        -------
+        >>> # After first gadget completes
+        >>> ctx1 = first_gadget_experiment.to_stim_with_ctx()
+        >>> 
+        >>> # Continue with second gadget
+        >>> ctx2 = DetectorContext.continue_from(ctx1)
+        >>> second_gadget_experiment.to_stim(ctx=ctx2)
+        """
+        ctx = cls(
+            # Continue measurement index - crucial for detector references
+            measurement_index=previous_ctx.measurement_index,
+            # Preserve time continuity
+            current_time=previous_ctx.current_time,
+            time_step=previous_ctx.time_step,
+            current_round=previous_ctx.current_round,
+        )
+        
+        if preserve_stabilizer_history:
+            # Copy last stabilizer measurements for inter-gadget crossing detectors
+            ctx.last_stabilizer_meas = dict(previous_ctx.last_stabilizer_meas)
+            ctx.stabilizer_initialized = set(previous_ctx.stabilizer_initialized)
+            ctx.stabilizer_measurement_history = {
+                k: list(v) for k, v in previous_ctx.stabilizer_measurement_history.items()
+            }
+        
+        if preserve_pauli_frame:
+            # Copy Pauli frame measurements for observable corrections
+            ctx.pauli_frame_measurements = {
+                k: {ik: list(iv) for ik, iv in v.items()}
+                for k, v in previous_ctx.pauli_frame_measurements.items()
+            }
+            # Copy observable state
+            ctx.observable_measurements = {
+                k: list(v) for k, v in previous_ctx.observable_measurements.items()
+            }
+            ctx.observable_transforms = {
+                k: dict(v) for k, v in previous_ctx.observable_transforms.items()
+            }
+            # Copy Pauli tracker if present
+            if previous_ctx._pauli_tracker is not None:
+                from qectostim.gadgets.pauli_frame import PauliTracker
+                ctx._pauli_tracker = PauliTracker(
+                    previous_ctx._pauli_tracker.num_qubits,
+                    track_history=previous_ctx._pauli_tracker.track_history,
+                )
+                ctx._pauli_tracker.frame = previous_ctx._pauli_tracker.frame.copy()
+        
+        return ctx
+    
+    def serialize_for_chaining(self) -> Dict:
+        """
+        Serialize context state for gadget chaining across processes/sessions.
+        
+        Returns a dictionary that can be JSON-serialized and used with
+        deserialize_for_chaining() to restore the context for continuing
+        a gadget chain.
+        
+        Returns
+        -------
+        Dict
+            Serialized context state.
+        """
+        data = {
+            "measurement_index": self.measurement_index,
+            "current_time": self.current_time,
+            "time_step": self.time_step,
+            "current_round": self.current_round,
+            "last_stabilizer_meas": {
+                f"{k[0]}:{k[1]}:{k[2]}": v
+                for k, v in self.last_stabilizer_meas.items()
+            },
+            "stabilizer_initialized": [
+                f"{k[0]}:{k[1]}:{k[2]}" for k in self.stabilizer_initialized
+            ],
+            "pauli_frame_measurements": self.pauli_frame_measurements,
+            "observable_measurements": self.observable_measurements,
+            "observable_transforms": self.observable_transforms,
+        }
+        return data
+    
+    @classmethod
+    def deserialize_for_chaining(cls, data: Dict) -> "DetectorContext":
+        """
+        Restore context from serialized data for gadget chaining.
+        
+        Parameters
+        ----------
+        data : Dict
+            Serialized context from serialize_for_chaining().
+            
+        Returns
+        -------
+        DetectorContext
+            Restored context ready for continuing the gadget chain.
+        """
+        ctx = cls(
+            measurement_index=data["measurement_index"],
+            current_time=data["current_time"],
+            time_step=data["time_step"],
+            current_round=data.get("current_round", 0),
+        )
+        
+        # Restore stabilizer state
+        ctx.last_stabilizer_meas = {
+            tuple(k.split(":")[:2]) + (int(k.split(":")[2]),): v
+            for k, v in data.get("last_stabilizer_meas", {}).items()
+        }
+        ctx.stabilizer_initialized = {
+            tuple(k.split(":")[:2]) + (int(k.split(":")[2]),)
+            for k in data.get("stabilizer_initialized", [])
+        }
+        
+        # Restore Pauli frame and observable state
+        ctx.pauli_frame_measurements = data.get("pauli_frame_measurements", {})
+        ctx.observable_measurements = {
+            int(k): v for k, v in data.get("observable_measurements", {}).items()
+        }
+        ctx.observable_transforms = {
+            int(k): v for k, v in data.get("observable_transforms", {}).items()
+        }
+        
+        return ctx
+
+    # =========================================================================
+    # Pauli Frame Tracking Methods
+    # =========================================================================
+    
+    def init_pauli_tracker(self, num_logical_qubits: int) -> "PauliTracker":
+        """
+        Initialize Pauli tracker for this experiment.
+        
+        Call this at the start of FT gadget experiments to enable
+        full frame propagation through gates.
+        
+        Parameters
+        ----------
+        num_logical_qubits : int
+            Number of logical qubits to track.
+            
+        Returns
+        -------
+        PauliTracker
+            The initialized tracker.
+        """
+        from qectostim.gadgets.pauli_frame import PauliTracker
+        self._pauli_tracker = PauliTracker(num_logical_qubits, track_history=False)
+        return self._pauli_tracker
+    
+    @property
+    def pauli_tracker(self) -> Optional["PauliTracker"]:
+        """Get the Pauli tracker, if initialized."""
+        return self._pauli_tracker
+    
+    def record_projection_frame(
+        self,
+        block_name: str,
+        x_stab_meas: List[int],
+        z_stab_meas: List[int],
+    ) -> None:
+        """
+        Record Pauli frame measurements from state projection.
+        
+        After projecting into the codespace via stabilizer measurement,
+        the outcomes determine a Pauli frame. This records those
+        measurement indices so they can be included in the final
+        observable interpretation.
+        
+        Parameters
+        ----------
+        block_name : str
+            Name of the code block.
+        x_stab_meas : List[int]
+            Measurement indices from X stabilizer projection.
+        z_stab_meas : List[int]
+            Measurement indices from Z stabilizer projection.
+        """
+        if block_name not in self.pauli_frame_measurements:
+            self.pauli_frame_measurements[block_name] = {
+                'x_frame_meas': [],
+                'z_frame_meas': [],
+            }
+        self.pauli_frame_measurements[block_name]['x_frame_meas'].extend(x_stab_meas)
+        self.pauli_frame_measurements[block_name]['z_frame_meas'].extend(z_stab_meas)
+    
+    def record_frame_from_teleportation(
+        self,
+        block_name: str,
+        x_meas_indices: List[int],
+        z_meas_indices: List[int],
+    ) -> None:
+        """
+        Record Pauli frame corrections from teleportation measurements.
+        
+        Teleportation produces measurement outcomes that determine
+        Pauli corrections on the output:
+        - X-basis measurements → Z corrections
+        - Z-basis measurements → X corrections
+        
+        Parameters
+        ----------
+        block_name : str
+            Name of the output code block.
+        x_meas_indices : List[int]
+            X-basis measurement indices (determine Z frame).
+        z_meas_indices : List[int]
+            Z-basis measurement indices (determine X frame).
+        """
+        if block_name not in self.pauli_frame_measurements:
+            self.pauli_frame_measurements[block_name] = {
+                'x_frame_meas': [],
+                'z_frame_meas': [],
+            }
+        # X measurements determine Z corrections, Z measurements determine X corrections
+        self.pauli_frame_measurements[block_name]['z_frame_meas'].extend(x_meas_indices)
+        self.pauli_frame_measurements[block_name]['x_frame_meas'].extend(z_meas_indices)
+    
+    def get_frame_correction_measurements(
+        self,
+        block_name: str,
+        measurement_basis: str,
+    ) -> List[int]:
+        """
+        Get measurement indices that contribute to frame correction.
+        
+        For final observable emission, we need to XOR the frame
+        measurements into the observable based on the measurement basis.
+        
+        Parameters
+        ----------
+        block_name : str
+            Name of the code block.
+        measurement_basis : str
+            "X" or "Z" - determines which frame corrections apply.
+            
+        Returns
+        -------
+        List[int]
+            Measurement indices to XOR into observable.
+        """
+        if block_name not in self.pauli_frame_measurements:
+            return []
+        
+        frame_data = self.pauli_frame_measurements[block_name]
+        
+        # Z-basis measurement: X errors flip the outcome → include X frame
+        # X-basis measurement: Z errors flip the outcome → include Z frame
+        if measurement_basis.upper() == "Z":
+            return frame_data.get('x_frame_meas', [])
+        else:
+            return frame_data.get('z_frame_meas', [])
+    
+    def propagate_frame_through_gate(
+        self,
+        gate_name: str,
+        qubit: int,
+        target_qubit: Optional[int] = None,
+    ) -> None:
+        """
+        Propagate Pauli frame through a logical gate.
+        
+        This updates the frame tracking for logical gates. For single-qubit
+        gates like H, the frame transforms (X↔Z). For two-qubit gates like
+        CNOT, the frame spreads between qubits.
+        
+        Parameters
+        ----------
+        gate_name : str
+            Name of the gate (H, S, CNOT, CZ, etc.)
+        qubit : int
+            Logical qubit index (or control for 2-qubit gates).
+        target_qubit : int, optional
+            Target qubit for 2-qubit gates.
+        """
+        if self._pauli_tracker is None:
+            return
+        
+        gate = gate_name.upper()
+        
+        if gate == "H":
+            self._pauli_tracker.propagate_h(qubit)
+        elif gate == "S":
+            self._pauli_tracker.propagate_s(qubit)
+        elif gate == "S_DAG":
+            self._pauli_tracker.propagate_s_dag(qubit)
+        elif gate in ("CNOT", "CX") and target_qubit is not None:
+            self._pauli_tracker.propagate_cnot(qubit, target_qubit)
+        elif gate == "CZ" and target_qubit is not None:
+            self._pauli_tracker.propagate_cz(qubit, target_qubit)
+        elif gate == "SWAP" and target_qubit is not None:
+            self._pauli_tracker.propagate_swap(qubit, target_qubit)
+    
+    def emit_observable_with_frame(
+        self,
+        circuit: stim.Circuit,
+        block_name: str,
+        observable_idx: int = 0,
+        measurement_basis: str = "Z",
+    ) -> None:
+        """
+        Emit OBSERVABLE_INCLUDE with Pauli frame corrections.
+        
+        This is the frame-aware version of emit_observable. It includes
+        both the logical measurement indices AND the frame correction
+        measurements so Stim correctly computes the logical observable.
+        
+        Parameters
+        ----------
+        circuit : stim.Circuit
+            Target circuit.
+        block_name : str
+            Name of the code block being measured.
+        observable_idx : int
+            Which logical observable.
+        measurement_basis : str
+            "X" or "Z" - the measurement basis.
+        """
+        # Get standard observable measurements
+        meas_indices = list(self.observable_measurements.get(observable_idx, []))
+        
+        # Add frame correction measurements
+        frame_meas = self.get_frame_correction_measurements(block_name, measurement_basis)
+        meas_indices.extend(frame_meas)
+        
+        if not meas_indices:
+            return
+        
+        lookbacks = [idx - self.measurement_index for idx in meas_indices]
+        targets = [stim.target_rec(lb) for lb in lookbacks]
+        circuit.append("OBSERVABLE_INCLUDE", targets, observable_idx)
     
     def update_for_gate(self, gate_name: str) -> None:
         """

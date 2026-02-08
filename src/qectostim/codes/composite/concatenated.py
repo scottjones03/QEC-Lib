@@ -394,6 +394,24 @@ class ConcatenatedCSSCode(CSSCode, ConcatenatedCode):
                 hz_rows.append(new_row)
 
         # --- 2. Outer checks lifted via inner logicals -----------------------
+        # IMPORTANT: Two interpretations of outer stabilizers:
+        #
+        # (A) FLAT MODEL (used here for hx/hz matrices):
+        #     Outer X-stabilizer on qubits {k: outer_hx[j,k]=1} is lifted by
+        #     replacing each X_k with inner logical X_L. This gives a stabilizer
+        #     supported only on the inner logical X support within each block.
+        #     This is the correct stabilizer for the concatenated code as a 
+        #     single large CSS code.
+        #
+        # (B) HIERARCHICAL MODEL (for FT measurement):
+        #     Outer stabilizers are measured via logical ancilla blocks and
+        #     TRANSVERSAL CNOTs that act on ALL physical qubits in each block,
+        #     not just the logical operator support. Use get_outer_x_stab_blocks()
+        #     and get_transversal_outer_x_support() for this interpretation.
+        #
+        # Both are valid - (A) is the mathematical stabilizer, (B) is how we
+        # measure it fault-tolerantly in the hierarchical scheme.
+        #
         # For each outer X-check, replace each X on qubit q with inner logical X
         for row in outer.hx:
             outer_pauli: PauliString = {i: 'X' for i, bit in enumerate(row) if bit}
@@ -574,6 +592,133 @@ class ConcatenatedCSSCode(CSSCode, ConcatenatedCode):
         For depth>1, this is the recursively concatenated inner code.
         """
         return self._effective_inner
+    
+    # =========================================================================
+    # Transversal Outer Stabilizer Methods (for Hierarchical Model)
+    # =========================================================================
+    
+    def get_outer_x_stab_blocks(self, stab_idx: int) -> List[int]:
+        """
+        Get the block indices where outer X-stabilizer acts.
+        
+        For hierarchical syndrome extraction, outer X-stabilizer j acts on
+        blocks where outer_hx[j, block] = 1. Transversal CNOTs are applied
+        to ALL physical qubits in those blocks.
+        
+        Parameters
+        ----------
+        stab_idx : int
+            Index of outer X-stabilizer (0 to r_x_out - 1).
+            
+        Returns
+        -------
+        List[int]
+            Block indices where this outer X-stabilizer acts.
+            
+        Notes
+        -----
+        This differs from the lifted stabilizer (hx rows after inner stabilizers)
+        which only touches qubits in the inner logical X support.
+        For transversal measurement, we use entire blocks.
+        """
+        row = self.outer.hx[stab_idx]
+        return [block_id for block_id, bit in enumerate(row) if bit]
+    
+    def get_outer_z_stab_blocks(self, stab_idx: int) -> List[int]:
+        """
+        Get the block indices where outer Z-stabilizer acts.
+        
+        Parameters
+        ----------
+        stab_idx : int
+            Index of outer Z-stabilizer (0 to r_z_out - 1).
+            
+        Returns
+        -------
+        List[int]
+            Block indices where this outer Z-stabilizer acts.
+        """
+        row = self.outer.hz[stab_idx]
+        return [block_id for block_id, bit in enumerate(row) if bit]
+    
+    def get_transversal_outer_x_support(self, stab_idx: int) -> List[int]:
+        """
+        Get ALL physical qubits where outer X-stabilizer acts transversally.
+        
+        For hierarchical measurement via |+_L⟩ ancilla blocks, outer X-stabilizer j
+        acts via transversal CNOTs on ALL physical qubits in the affected blocks,
+        not just the inner logical X support.
+        
+        Parameters
+        ----------
+        stab_idx : int
+            Index of outer X-stabilizer.
+            
+        Returns
+        -------
+        List[int]
+            All physical qubit indices in the affected blocks.
+        """
+        blocks = self.get_outer_x_stab_blocks(stab_idx)
+        n_inner = self._n_inner
+        support = []
+        for block_id in blocks:
+            offset = block_id * n_inner
+            support.extend(range(offset, offset + n_inner))
+        return support
+    
+    def get_transversal_outer_z_support(self, stab_idx: int) -> List[int]:
+        """
+        Get ALL physical qubits where outer Z-stabilizer acts transversally.
+        
+        Parameters
+        ----------
+        stab_idx : int
+            Index of outer Z-stabilizer.
+            
+        Returns
+        -------
+        List[int]
+            All physical qubit indices in the affected blocks.
+        """
+        blocks = self.get_outer_z_stab_blocks(stab_idx)
+        n_inner = self._n_inner
+        support = []
+        for block_id in blocks:
+            offset = block_id * n_inner
+            support.extend(range(offset, offset + n_inner))
+        return support
+    
+    @property
+    def outer_hx(self) -> np.ndarray:
+        """
+        Outer code's X parity check matrix.
+        
+        For hierarchical measurement, this tells which blocks each outer
+        X-stabilizer acts on. Entry [j, k] = 1 means outer X-stab j acts
+        on block k via transversal CNOTs.
+        """
+        return self.outer.hx
+    
+    @property
+    def outer_hz(self) -> np.ndarray:
+        """
+        Outer code's Z parity check matrix.
+        
+        Entry [j, k] = 1 means outer Z-stab j acts on block k.
+        """
+        return self.outer.hz
+    
+    @property
+    def inner_hx(self) -> np.ndarray:
+        """Inner code's X parity check matrix."""
+        return self._effective_inner.hx
+    
+    @property
+    def inner_hz(self) -> np.ndarray:
+        """Inner code's Z parity check matrix."""
+        return self._effective_inner.hz
+
 
 class ConcatenatedTopologicalCSSCode(ConcatenatedCSSCode, TopologicalCSSCode):
     """

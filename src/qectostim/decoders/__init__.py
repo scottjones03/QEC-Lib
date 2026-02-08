@@ -38,6 +38,10 @@ try:
         soft_xor_over_support,
         prob_to_llr,
         llr_to_prob,
+        build_detector_block_map,
+        extract_inner_sub_dems,
+        extract_outer_sub_dem,
+        extract_inner_sub_dems_with_mapping,
     )
     __all__.extend([
         "BlockExtractor",
@@ -50,6 +54,10 @@ try:
         "soft_xor_over_support",
         "prob_to_llr",
         "llr_to_prob",
+        "build_detector_block_map",
+        "extract_inner_sub_dems",
+        "extract_outer_sub_dem",
+        "extract_inner_sub_dems_with_mapping",
     ])
 except ImportError:
     pass
@@ -58,6 +66,16 @@ except ImportError:
 try:
     from qectostim.decoders.pymatching_decoder import PyMatchingDecoder
     __all__.append("PyMatchingDecoder")
+except ImportError:
+    pass
+
+try:
+    from qectostim.decoders.hybrid_teleportation_decoder import (
+        HybridTeleportationDecoder,
+        HybridDecodingResult,
+        compute_frame_meas_indices,
+    )
+    __all__.extend(["HybridTeleportationDecoder", "HybridDecodingResult", "compute_frame_meas_indices"])
 except ImportError:
     pass
 
@@ -76,6 +94,27 @@ except ImportError:
 try:
     from qectostim.decoders.bp_osd import BPOSDDecoder
     __all__.append("BPOSDDecoder")
+except ImportError:
+    pass
+
+# BP+OSD tuned for concatenated CSS codes (osd_cs, product_sum, no OSD clamping)
+try:
+    from qectostim.decoders.bp_osd_concat import BPOSDConcatDecoder
+    __all__.append("BPOSDConcatDecoder")
+except ImportError:
+    pass
+
+# Near-optimal reference decoder (tesseract → BP+OSD-CS → exact MLE cascade)
+try:
+    from qectostim.decoders.concat_mle_decoder import ConcatMLEDecoder
+    __all__.append("ConcatMLEDecoder")
+except ImportError:
+    pass
+
+# Fast two-level hierarchical decoder for concatenated codes
+try:
+    from qectostim.decoders.hierarchical_concat_decoder import HierarchicalConcatDecoder
+    __all__.append("HierarchicalConcatDecoder")
 except ImportError:
     pass
 

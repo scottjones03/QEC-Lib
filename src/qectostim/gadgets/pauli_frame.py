@@ -39,12 +39,9 @@ from typing import (
     List,
     Dict,
     Any,
-    Optional,
     Tuple,
-    Set,
 )
 from enum import Enum
-import numpy as np
 
 
 class PauliType(Enum):
@@ -147,6 +144,49 @@ class PauliFrame:
             "z_frame": self.z_frame,
             "paulis": [self.get_pauli(i).value for i in range(self.num_qubits)],
         }
+    
+    def serialize(self) -> Dict[str, Any]:
+        """
+        Serialize frame state for gadget chaining.
+        
+        Returns a dictionary that can be used with deserialize() to
+        restore the exact frame state. This is essential for chaining
+        gadgets where the Pauli frame must persist between gadgets.
+        
+        Returns
+        -------
+        Dict[str, Any]
+            Serialized frame state with keys:
+            - num_qubits: int
+            - x_frame: List[bool]
+            - z_frame: List[bool]
+        """
+        return {
+            "num_qubits": self.num_qubits,
+            "x_frame": list(self.x_frame),
+            "z_frame": list(self.z_frame),
+        }
+    
+    @classmethod
+    def deserialize(cls, data: Dict[str, Any]) -> "PauliFrame":
+        """
+        Restore frame state from serialized data.
+        
+        Parameters
+        ----------
+        data : Dict[str, Any]
+            Serialized frame state from serialize().
+            
+        Returns
+        -------
+        PauliFrame
+            Restored frame with exact state.
+        """
+        return cls(
+            num_qubits=data["num_qubits"],
+            x_frame=list(data["x_frame"]),
+            z_frame=list(data["z_frame"]),
+        )
 
 
 class PauliTracker:
@@ -217,28 +257,6 @@ class PauliTracker:
             self.apply_y(qubit)
         # I does nothing
     
-    def apply_from_measurement(
-        self,
-        qubit: int,
-        measurement_outcome: int,
-        correction_type: str = "Z",
-    ) -> None:
-        """
-        Apply Pauli correction based on measurement outcome.
-        
-        Args:
-            qubit: Qubit to correct
-            measurement_outcome: 0 or 1
-            correction_type: "X", "Y", or "Z"
-        """
-        if measurement_outcome == 1:
-            if correction_type == "X":
-                self.apply_x(qubit)
-            elif correction_type == "Z":
-                self.apply_z(qubit)
-            elif correction_type == "Y":
-                self.apply_y(qubit)
-    
     # =========================================================================
     # Frame propagation through Clifford gates
     # =========================================================================
@@ -272,19 +290,6 @@ class PauliTracker:
             # X → XZ (add Z)
             self.frame.z_frame[qubit] = not self.frame.z_frame[qubit]
         self._record_history(f"S({qubit})")
-    
-    def propagate_s_dag(self, qubit: int) -> None:
-        """
-        Propagate frame through S† gate.
-        
-        S† transforms Paulis as:
-        - X → -Y = -XZ
-        - Z → Z
-        - Y → X
-        """
-        if self.frame.x_frame[qubit]:
-            self.frame.z_frame[qubit] = not self.frame.z_frame[qubit]
-        self._record_history(f"S_DAG({qubit})")
     
     def propagate_cnot(self, control: int, target: int) -> None:
         """
@@ -329,18 +334,6 @@ class PauliTracker:
             self.frame.z_frame[qubit1] = not self.frame.z_frame[qubit1]
         
         self._record_history(f"CZ({qubit1},{qubit2})")
-    
-    def propagate_swap(self, qubit1: int, qubit2: int) -> None:
-        """
-        Propagate frame through SWAP gate.
-        
-        Simply swaps the frame entries.
-        """
-        self.frame.x_frame[qubit1], self.frame.x_frame[qubit2] = \
-            self.frame.x_frame[qubit2], self.frame.x_frame[qubit1]
-        self.frame.z_frame[qubit1], self.frame.z_frame[qubit2] = \
-            self.frame.z_frame[qubit2], self.frame.z_frame[qubit1]
-        self._record_history(f"SWAP({qubit1},{qubit2})")
     
     # =========================================================================
     # Teleportation-specific methods
@@ -387,41 +380,6 @@ class PauliTracker:
         )
     
     # =========================================================================
-    # Surgery-specific methods
-    # =========================================================================
-    
-    def process_surgery_outcome(
-        self,
-        qubit1: int,
-        qubit2: int,
-        merge_measurement: int,
-        operator_type: str = "Z",
-    ) -> None:
-        """
-        Process surgery merge measurement outcome.
-        
-        For ZZ merge: odd outcome indicates Z correction needed
-        For XX merge: odd outcome indicates X correction needed
-        
-        Args:
-            qubit1: First qubit in merge
-            qubit2: Second qubit in merge
-            merge_measurement: Parity measurement result
-            operator_type: "X" or "Z" for merge type
-        """
-        if merge_measurement == 1:
-            if operator_type == "Z":
-                # ZZ merge with -1 outcome: need Z on one qubit
-                self.frame.z_frame[qubit1] = not self.frame.z_frame[qubit1]
-            else:
-                # XX merge with -1 outcome: need X on one qubit
-                self.frame.x_frame[qubit1] = not self.frame.x_frame[qubit1]
-        
-        self._record_history(
-            f"SURGERY({qubit1},{qubit2}, m={merge_measurement}, type={operator_type})"
-        )
-    
-    # =========================================================================
     # Query methods
     # =========================================================================
     
@@ -429,73 +387,307 @@ class PauliTracker:
         """Get current Pauli frame."""
         return self.frame.copy()
     
-    def get_correction(self, qubit: int) -> Tuple[bool, bool]:
-        """
-        Get X and Z correction bits for a qubit.
-        
-        Returns:
-            (x_correction, z_correction) booleans
-        """
-        return (self.frame.x_frame[qubit], self.frame.z_frame[qubit])
-    
-    def needs_correction(self, qubit: int) -> bool:
-        """Check if qubit has any pending correction."""
-        return self.frame.x_frame[qubit] or self.frame.z_frame[qubit]
-    
-    def reset(self) -> None:
-        """Reset all corrections to identity."""
-        self.frame.reset()
-        self.history.clear()
-    
     def __str__(self) -> str:
         return f"PauliTracker({self.frame})"
     
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for serialization."""
-        return {
-            "num_qubits": self.num_qubits,
-            "frame": self.frame.to_dict(),
-            "history_length": len(self.history),
-        }
-
-
-def pauli_product(p1: PauliType, p2: PauliType) -> Tuple[PauliType, int]:
-    """
-    Compute product of two Pauli operators.
+    # =========================================================================
+    # Observable computation methods
+    # =========================================================================
     
-    Returns (result_pauli, phase) where phase is 0, 1, 2, 3
-    representing i^phase.
-    
-    Args:
-        p1: First Pauli
-        p2: Second Pauli
+    def compute_observable_parity(
+        self,
+        logical_support: List[int],
+        basis: str,
+    ) -> int:
+        """
+        Compute the parity of Pauli frame corrections on a logical operator.
         
-    Returns:
-        (product_pauli, phase_exponent)
+        For a logical Z (X) observable on qubits in logical_support,
+        this computes whether the Pauli frame introduces a sign flip.
+        
+        - Z observable: X frame corrections flip the sign
+        - X observable: Z frame corrections flip the sign
+        
+        Parameters
+        ----------
+        logical_support : List[int]
+            Qubit indices in the logical operator support.
+        basis : str
+            "X" or "Z" for the observable basis.
+            
+        Returns
+        -------
+        int
+            0 if no sign flip, 1 if sign flipped by frame.
+        """
+        parity = 0
+        for qubit in logical_support:
+            if qubit >= self.num_qubits:
+                continue
+            if basis.upper() == "Z":
+                # Z observable anticommutes with X corrections
+                if self.frame.x_frame[qubit]:
+                    parity ^= 1
+            else:  # X observable
+                # X observable anticommutes with Z corrections
+                if self.frame.z_frame[qubit]:
+                    parity ^= 1
+        return parity
+    
+    def get_frame_correction_indices(
+        self,
+        logical_support: List[int],
+        basis: str,
+    ) -> List[int]:
+        """
+        Get indices of qubits that need frame correction for an observable.
+        
+        Parameters
+        ----------
+        logical_support : List[int]
+            Qubit indices in the logical operator support.
+        basis : str
+            "X" or "Z" for the observable basis.
+            
+        Returns
+        -------
+        List[int]
+            Indices of qubits with frame corrections affecting this observable.
+        """
+        correction_indices = []
+        for qubit in logical_support:
+            if qubit >= self.num_qubits:
+                continue
+            if basis.upper() == "Z":
+                if self.frame.x_frame[qubit]:
+                    correction_indices.append(qubit)
+            else:  # X
+                if self.frame.z_frame[qubit]:
+                    correction_indices.append(qubit)
+        return correction_indices
+
+
+class MultiBlockPauliTracker:
     """
-    # Multiplication table for Paulis (ignoring phase)
-    # I*X=X, I*Y=Y, I*Z=Z
-    # X*X=I, X*Y=Z, X*Z=Y
-    # Y*X=Z, Y*Y=I, Y*Z=X
-    # Z*X=Y, Z*Y=X, Z*Z=I
+    Tracks Pauli frames across multiple named code blocks.
     
-    mult_table = {
-        (PauliType.I, PauliType.I): (PauliType.I, 0),
-        (PauliType.I, PauliType.X): (PauliType.X, 0),
-        (PauliType.I, PauliType.Y): (PauliType.Y, 0),
-        (PauliType.I, PauliType.Z): (PauliType.Z, 0),
-        (PauliType.X, PauliType.I): (PauliType.X, 0),
-        (PauliType.X, PauliType.X): (PauliType.I, 0),
-        (PauliType.X, PauliType.Y): (PauliType.Z, 1),  # XY = iZ
-        (PauliType.X, PauliType.Z): (PauliType.Y, 3),  # XZ = -iY
-        (PauliType.Y, PauliType.I): (PauliType.Y, 0),
-        (PauliType.Y, PauliType.X): (PauliType.Z, 3),  # YX = -iZ
-        (PauliType.Y, PauliType.Y): (PauliType.I, 0),
-        (PauliType.Y, PauliType.Z): (PauliType.X, 1),  # YZ = iX
-        (PauliType.Z, PauliType.I): (PauliType.Z, 0),
-        (PauliType.Z, PauliType.X): (PauliType.Y, 1),  # ZX = iY
-        (PauliType.Z, PauliType.Y): (PauliType.X, 3),  # ZY = -iX
-        (PauliType.Z, PauliType.Z): (PauliType.I, 0),
-    }
+    For multi-block gadgets (teleportation, CNOT, surgery), we need to
+    track frames per block and handle inter-block operations.
     
-    return mult_table[(p1, p2)]
+    Attributes
+    ----------
+    block_trackers : Dict[str, PauliTracker]
+        Per-block Pauli trackers.
+    """
+    
+    def __init__(self, block_sizes: Dict[str, int]):
+        """
+        Initialize multi-block tracker.
+        
+        Parameters
+        ----------
+        block_sizes : Dict[str, int]
+            Mapping from block name to number of logical qubits.
+        """
+        self.block_trackers: Dict[str, PauliTracker] = {}
+        for block_name, size in block_sizes.items():
+            self.block_trackers[block_name] = PauliTracker(size)
+    
+    def get_tracker(self, block_name: str) -> PauliTracker:
+        """Get tracker for a specific block."""
+        return self.block_trackers.get(block_name)
+    
+    def propagate_inter_block_cnot(
+        self,
+        control_block: str,
+        target_block: str,
+        control_qubit: int = 0,
+        target_qubit: int = 0,
+    ) -> None:
+        """
+        Propagate frame through inter-block CNOT.
+        
+        CNOT(ctrl→tgt) transforms:
+        - X_ctrl → X_ctrl ⊗ X_tgt (X on control spreads to target)
+        - Z_tgt → Z_ctrl ⊗ Z_tgt (Z on target spreads to control)
+        """
+        ctrl_tracker = self.block_trackers.get(control_block)
+        tgt_tracker = self.block_trackers.get(target_block)
+        
+        if ctrl_tracker is None or tgt_tracker is None:
+            return
+        
+        # X on control spreads to target
+        if ctrl_tracker.frame.x_frame[control_qubit]:
+            tgt_tracker.apply_x(target_qubit)
+        
+        # Z on target spreads to control
+        if tgt_tracker.frame.z_frame[target_qubit]:
+            ctrl_tracker.apply_z(control_qubit)
+    
+    def propagate_inter_block_cz(
+        self,
+        block1: str,
+        block2: str,
+        qubit1: int = 0,
+        qubit2: int = 0,
+    ) -> None:
+        """
+        Propagate frame through inter-block CZ.
+        
+        CZ transforms:
+        - X_1 → X_1 ⊗ Z_2 (X on qubit1 adds Z to qubit2)
+        - X_2 → Z_1 ⊗ X_2 (X on qubit2 adds Z to qubit1)
+        """
+        tracker1 = self.block_trackers.get(block1)
+        tracker2 = self.block_trackers.get(block2)
+        
+        if tracker1 is None or tracker2 is None:
+            return
+        
+        # X on qubit1 adds Z to qubit2
+        if tracker1.frame.x_frame[qubit1]:
+            tracker2.apply_z(qubit2)
+        
+        # X on qubit2 adds Z to qubit1
+        if tracker2.frame.x_frame[qubit2]:
+            tracker1.apply_z(qubit1)
+    
+    def process_teleportation(
+        self,
+        source_block: str,
+        target_block: str,
+        x_measurement: int,
+        z_measurement: int,
+        source_qubit: int = 0,
+        target_qubit: int = 0,
+    ) -> None:
+        """
+        Process teleportation measurement outcomes across blocks.
+        
+        Transfers frame from source to target and applies corrections.
+        """
+        src_tracker = self.block_trackers.get(source_block)
+        tgt_tracker = self.block_trackers.get(target_block)
+        
+        if src_tracker is None or tgt_tracker is None:
+            return
+        
+        # Transfer existing frame
+        tgt_tracker.frame.x_frame[target_qubit] = src_tracker.frame.x_frame[source_qubit]
+        tgt_tracker.frame.z_frame[target_qubit] = src_tracker.frame.z_frame[source_qubit]
+        
+        # Clear source
+        src_tracker.frame.x_frame[source_qubit] = False
+        src_tracker.frame.z_frame[source_qubit] = False
+        
+        # Apply measurement-based corrections
+        if x_measurement == 1:
+            tgt_tracker.frame.z_frame[target_qubit] = not tgt_tracker.frame.z_frame[target_qubit]
+        if z_measurement == 1:
+            tgt_tracker.frame.x_frame[target_qubit] = not tgt_tracker.frame.x_frame[target_qubit]
+    
+    def serialize(self) -> Dict[str, Any]:
+        """
+        Serialize multi-block tracker state for gadget chaining.
+        
+        Returns
+        -------
+        Dict[str, Any]
+            Serialized state with per-block frame data.
+        """
+        return {
+            "blocks": {
+                name: tracker.frame.serialize()
+                for name, tracker in self.block_trackers.items()
+            }
+        }
+    
+    def compute_block_observable_parity(
+        self,
+        block_name: str,
+        logical_support: List[int],
+        basis: str,
+    ) -> int:
+        """
+        Compute the Pauli-frame parity on a logical operator for one block.
+
+        This is the multi-block entry-point for PauliTracker.compute_observable_parity().
+        It returns 0 or 1 indicating whether the current frame on the given block
+        would flip the sign of the specified logical observable.
+
+        Parameters
+        ----------
+        block_name : str
+            Name of the code block.
+        logical_support : List[int]
+            Local qubit indices in the logical operator support.
+        basis : str
+            "X" or "Z" for the observable basis.
+
+        Returns
+        -------
+        int
+            0 if no sign flip, 1 if the frame flips the observable.
+        """
+        tracker = self.block_trackers.get(block_name)
+        if tracker is None:
+            return 0
+        return tracker.compute_observable_parity(logical_support, basis)
+
+    def get_block_frame_correction_indices(
+        self,
+        block_name: str,
+        logical_support: List[int],
+        basis: str,
+    ) -> List[int]:
+        """
+        Get qubit indices within a block that need frame correction.
+
+        Multi-block entry-point for PauliTracker.get_frame_correction_indices().
+
+        Parameters
+        ----------
+        block_name : str
+            Name of the code block.
+        logical_support : List[int]
+            Local qubit indices in the logical operator support.
+        basis : str
+            "X" or "Z" for the observable basis.
+
+        Returns
+        -------
+        List[int]
+            Local qubit indices with frame corrections affecting this observable.
+        """
+        tracker = self.block_trackers.get(block_name)
+        if tracker is None:
+            return []
+        return tracker.get_frame_correction_indices(logical_support, basis)
+    
+    @classmethod
+    def deserialize(cls, data: Dict[str, Any]) -> "MultiBlockPauliTracker":
+        """
+        Restore multi-block tracker state from serialized data.
+        
+        Parameters
+        ----------
+        data : Dict[str, Any]
+            Serialized state from serialize().
+            
+        Returns
+        -------
+        MultiBlockPauliTracker
+            Restored tracker with exact state.
+        """
+        block_sizes = {
+            name: frame_data["num_qubits"]
+            for name, frame_data in data["blocks"].items()
+        }
+        tracker = cls(block_sizes)
+        for name, frame_data in data["blocks"].items():
+            restored_frame = PauliFrame.deserialize(frame_data)
+            tracker.block_trackers[name].frame = restored_frame
+        return tracker
+    
+

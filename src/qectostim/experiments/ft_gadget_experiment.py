@@ -35,26 +35,50 @@ Example usage:
     >>> circuit = exp.to_stim()
 """
 from __future__ import annotations
-from typing import Any, Dict, Optional, List, Tuple, Union, Set
+from typing import Any, Dict, Optional, List, Tuple, Set
 from dataclasses import dataclass, field
 
 import numpy as np
 import stim
 
-from qectostim.codes.abstract_code import Code, StabilizerCode
-from qectostim.codes.abstract_css import CSSCode
+from qectostim.codes.abstract_code import Code
 from qectostim.experiments.experiment import Experiment
 from qectostim.noise.models import NoiseModel
-from qectostim.gadgets.base import Gadget, GadgetMetadata, StabilizerTransform, PhaseResult, PhaseType
+from qectostim.gadgets.base import (
+    Gadget, 
+    GadgetMetadata, 
+    PreparationConfig,
+    StabilizerTransform,
+)
 from qectostim.gadgets.layout import QubitAllocation
 from qectostim.experiments.stabilizer_rounds import (
     DetectorContext,
-    StabilizerRoundBuilder,
     CSSStabilizerRoundBuilder,
     GeneralStabilizerRoundBuilder,
     BaseStabilizerRoundBuilder,
     StabilizerBasis,
-    get_logical_support,
+)
+from qectostim.experiments.preparation import (
+    emit_initial_states,
+    get_qubits_to_skip_reset,
+)
+from qectostim.experiments.observable import emit_observable
+from qectostim.gadgets.scheduling import (
+    StabilizerScheduler,
+    BlockSchedule,
+)
+from qectostim.experiments.detector_emission import (
+    emit_boundary_detectors as emit_boundary_detectors_func,
+    emit_scheduled_rounds,
+)
+from qectostim.experiments.detector_tracking import (
+    get_stabilizer_supports,
+    MeasurementRecord,
+    DetectorCoverageResolver,
+)
+from qectostim.experiments.phase_orchestrator import (
+    execute_gadget_phases,
+    PhaseExecutionResult,
 )
 
 
@@ -147,8 +171,6 @@ class FaultTolerantGadgetExperiment(Experiment):
         Number of stabilizer rounds before gadget.
     num_rounds_after : int
         Number of stabilizer rounds after gadget.
-    measurement_basis : str
-        Basis for final measurement ("Z" or "X").
     metadata : Optional[Dict]
         Additional experiment metadata.
     """
@@ -160,7 +182,6 @@ class FaultTolerantGadgetExperiment(Experiment):
         noise_model: NoiseModel,
         num_rounds_before: int = 3,
         num_rounds_after: int = 3,
-        measurement_basis: str = "Z",
         metadata: Optional[Dict[str, Any]] = None,
     ):
         # Use first code as primary for base class
@@ -170,15 +191,20 @@ class FaultTolerantGadgetExperiment(Experiment):
         self.gadget = gadget
         self.num_rounds_before = num_rounds_before
         self.num_rounds_after = num_rounds_after
-        self.measurement_basis = measurement_basis.upper()
         
         # Check for placeholder logicals (QLDPC codes without proper logical operators)
         self._validate_codes(codes)
+        
+        # Initialize stabilizer scheduler and detector coverage resolver
+        self._scheduler = StabilizerScheduler()
+        self._coverage_resolver = DetectorCoverageResolver(self._scheduler)
         
         # Cached state
         self._ctx: Optional[DetectorContext] = None
         self._builders: List[BaseStabilizerRoundBuilder] = []
         self._qubit_allocation: Optional[Dict[str, Any]] = None
+        self._prep_config: Optional[PreparationConfig] = None  # Set in to_stim()
+        self._use_rx_prep: bool = True  # Use RX instead of H for |+⟩ prep
     
     def _validate_codes(self, codes: List[Code]) -> None:
         """
@@ -191,201 +217,82 @@ class FaultTolerantGadgetExperiment(Experiment):
         """
         for i, code in enumerate(codes):
             # Check for placeholder logicals via get_ft_gadget_config
-            if hasattr(code, 'get_ft_gadget_config'):
-                config = code.get_ft_gadget_config()
-                extra = getattr(config, 'extra', {}) or {}
-                
-                if extra.get('has_placeholder_logicals', False):
-                    code_name = getattr(code, 'name', None) or code.metadata.get('name', f'codes[{i}]')
-                    reason = extra.get('unsupported_reason', 'placeholder logical operators')
-                    raise ValueError(
-                        f"Code '{code_name}' is not supported for FT gadget experiments: {reason}. "
-                        f"QLDPC codes require proper logical operator computation. "
-                        f"Consider using a code with explicit logical operators like RotatedSurfaceCode or SteaneCode."
-                    )
+            # All Code subclasses implement get_ft_gadget_config() (defined in Code ABC)
+            config = code.get_ft_gadget_config()
+            extra = config.extra or {}
+            
+            if extra.get('has_placeholder_logicals', False):
+                code_name = code.name or code.metadata.get('name', f'codes[{i}]')
+                reason = extra.get('unsupported_reason', 'placeholder logical operators')
+                raise ValueError(
+                    f"Code '{code_name}' is not supported for FT gadget experiments: {reason}. "
+                    f"QLDPC codes require proper logical operator computation. "
+                    f"Consider using a code with explicit logical operators like RotatedSurfaceCode or SteaneCode."
+                )
         
-    def _compute_qubit_allocation(self) -> Dict[str, Any]:
+    @staticmethod
+    def _get_stabilizer_counts(code: Code) -> Tuple[int, int]:
         """
-        Compute global qubit indices for all codes.
+        Get X and Z stabilizer counts using the Code interface.
         
-        Uses the gadget's compute_layout() if available to get the actual blocks.
-        This is important for gadgets like teleportation that create more blocks
-        than codes passed in.
+        Uses code.is_css / CSSCode.hx/hz for CSS codes, or falls back
+        to get_stabilizer_supports() from detector_tracking for others.
         
-        Returns a dictionary with:
-        - Per-code data qubit ranges
-        - Per-code ancilla qubit ranges  
-        - Total qubit count
+        Returns
+        -------
+        Tuple[int, int]
+            (num_x_stabilizers, num_z_stabilizers)
+        """
+        if code.is_css:
+            css_code = code.as_css()
+            if css_code is not None:
+                return css_code.hx.shape[0], css_code.hz.shape[0]
+        
+        # Use detector_tracking's canonical utility
+        try:
+            nx = len(get_stabilizer_supports(code, "X"))
+            nz = len(get_stabilizer_supports(code, "Z"))
+            return nx, nz
+        except NotImplementedError:
+            return 0, 0
+
+    def _allocation_to_dict(self, unified: QubitAllocation) -> Dict[str, Any]:
+        """
+        Convert QubitAllocation to dict format for backwards compatibility.
+        
+        Used during the transition period while internal methods are being
+        refactored to use QubitAllocation directly.
         """
         alloc = {}
-        idx = 0
         
-        # Try to use gadget's layout if available
-        layout = None
-        if hasattr(self.gadget, 'compute_layout'):
-            try:
-                layout = self.gadget.compute_layout(self.codes)
-            except Exception:
-                layout = None
+        for block_name, block in unified.blocks.items():
+            # Reserve projection ancilla index (after z ancillas)
+            proj_anc_idx = block.z_anc_start + block.z_anc_count
+            
+            alloc[block_name] = {
+                "code": block.code,
+                "data": (block.data_start, block.data_count),
+                "x_anc": (block.x_anc_start, block.x_anc_count),
+                "z_anc": (block.z_anc_start, block.z_anc_count),
+                "proj_anc": proj_anc_idx,
+            }
         
-        if layout is not None and hasattr(layout, 'blocks') and layout.blocks:
-            # Use blocks from gadget's layout
-            for block_name, block_info in layout.blocks.items():
-                code = block_info.code
-                n = code.n
-                
-                # Safely get hx/hz
-                hx_raw = getattr(code, 'hx', None)
-                hz_raw = getattr(code, 'hz', None)
-                hx = hx_raw if hx_raw is not None and hasattr(hx_raw, 'shape') else np.zeros((0, code.n), dtype=np.uint8)
-                hz = hz_raw if hz_raw is not None and hasattr(hz_raw, 'shape') else np.zeros((0, code.n), dtype=np.uint8)
-                nx = hx.shape[0] if hx.size else 0
-                nz = hz.shape[0] if hz.size else 0
-                
-                data_start = idx
-                idx += n
-                x_anc_start = idx
-                idx += nx
-                z_anc_start = idx
-                idx += nz
-                
-                alloc[block_name] = {
-                    "code": code,
-                    "data": (data_start, n),
-                    "x_anc": (x_anc_start, nx),
-                    "z_anc": (z_anc_start, nz),
-                }
-        else:
-            # Fallback: create blocks from self.codes
-            for i, code in enumerate(self.codes):
-                n = code.n
-                # Safely get hx/hz - CSS codes have @property returning arrays
-                # Non-CSS codes may not have these or may have them as methods
-                hx_raw = getattr(code, 'hx', None)
-                hz_raw = getattr(code, 'hz', None)
-                # Only use if it's actually a numpy array (has .shape attribute)
-                hx = hx_raw if hx_raw is not None and hasattr(hx_raw, 'shape') else np.zeros((0, code.n), dtype=np.uint8)
-                hz = hz_raw if hz_raw is not None and hasattr(hz_raw, 'shape') else np.zeros((0, code.n), dtype=np.uint8)
-                nx = hx.shape[0] if hx.size else 0
-                nz = hz.shape[0] if hz.size else 0
-                
-                block_name = f"block_{i}"
-                
-                data_start = idx
-                idx += n
-                x_anc_start = idx
-                idx += nx
-                z_anc_start = idx
-                idx += nz
-                
-                alloc[block_name] = {
-                    "code": code,
-                    "data": (data_start, n),
-                    "x_anc": (x_anc_start, nx),
-                    "z_anc": (z_anc_start, nz),
-                }
-        
-        alloc["total"] = idx
+        # GOAL 10: Use QubitAllocation.total_qubits as source of truth
+        alloc["total"] = unified.total_qubits
         return alloc
-    
-    def _to_unified_allocation(self, alloc: Dict[str, Any]) -> QubitAllocation:
-        """
-        Convert dict-based allocation to QubitAllocation for gadget interface.
-        
-        This bridges the legacy dict format used internally with the new
-        QubitAllocation dataclass used by gadgets.
-        """
-        from qectostim.gadgets.layout import BlockAllocation
-        
-        unified = QubitAllocation()
-        
-        for block_name, block_info in alloc.items():
-            if block_name == "total":
-                continue
-            
-            code = block_info["code"]
-            data_start, n = block_info["data"]
-            x_anc_start, nx = block_info["x_anc"]
-            z_anc_start, nz = block_info["z_anc"]
-            
-            block = BlockAllocation(
-                block_name=block_name,
-                code=code,
-                data_start=data_start,
-                data_count=n,
-                x_anc_start=x_anc_start,
-                x_anc_count=nx,
-                z_anc_start=z_anc_start,
-                z_anc_count=nz,
-                offset=(0.0, 0.0),  # Offset computed elsewhere
-            )
-            unified.blocks[block_name] = block
-        
-        unified._total_qubits = alloc.get("total", 0)
-        return unified
     
     def _emit_qubit_coords(
         self,
         circuit: stim.Circuit,
-        alloc: Dict[str, Any],
+        unified_alloc: QubitAllocation,
     ) -> None:
         """
-        Emit QUBIT_COORDS for all qubits using gadget's compute_layout().
+        Emit QUBIT_COORDS for all qubits.
         
-        Uses the gadget's compute_layout() method to get proper block offsets
-        based on code bounding boxes instead of hardcoded offsets.
+        Delegates to QubitAllocation.emit_qubit_coords() which uses
+        topology-aware placement from code coordinate metadata.
         """
-        from qectostim.gadgets.coordinates import get_code_coords, get_bounding_box
-        
-        # Get layout from gadget
-        layout = self.gadget.compute_layout(self.codes)
-        
-        # Build offset map from layout
-        block_offsets = {}
-        for block_name, block_info in layout.blocks.items():
-            block_offsets[block_name] = block_info.offset
-        
-        for block_name, block_info in alloc.items():
-            if block_name == "total":
-                continue
-            
-            code = block_info["code"]
-            
-            # Get offset from layout, default to (0, 0) if not found
-            offset = block_offsets.get(block_name, (0.0, 0.0))
-            x_offset = offset[0] if len(offset) > 0 else 0.0
-            y_offset = offset[1] if len(offset) > 1 else 0.0
-            
-            # Get code's coordinate metadata
-            data_coords, x_stab_coords, z_stab_coords = get_code_coords(code)
-            
-            data_start, n = block_info["data"]
-            x_anc_start, nx = block_info["x_anc"]
-            z_anc_start, nz = block_info["z_anc"]
-            
-            # Data qubits
-            for i in range(n):
-                if data_coords and i < len(data_coords):
-                    coord = data_coords[i]
-                    circuit.append("QUBIT_COORDS", [data_start + i],
-                                 [float(coord[0]) + x_offset, float(coord[1]) + y_offset])
-                else:
-                    circuit.append("QUBIT_COORDS", [data_start + i],
-                                 [float(i) + x_offset, y_offset])
-            
-            # X ancillas
-            for i in range(nx):
-                if x_stab_coords and i < len(x_stab_coords):
-                    coord = x_stab_coords[i]
-                    circuit.append("QUBIT_COORDS", [x_anc_start + i],
-                                 [float(coord[0]) + x_offset, float(coord[1]) + y_offset])
-            
-            # Z ancillas
-            for i in range(nz):
-                if z_stab_coords and i < len(z_stab_coords):
-                    coord = z_stab_coords[i]
-                    circuit.append("QUBIT_COORDS", [z_anc_start + i],
-                                 [float(coord[0]) + x_offset, float(coord[1]) + y_offset])
+        unified_alloc.emit_qubit_coords(circuit)
     
     def _create_builders(
         self,
@@ -397,8 +304,23 @@ class FaultTolerantGadgetExperiment(Experiment):
         Selects the builder type based on code properties:
         - CSSCode with hx/hz: CSSStabilizerRoundBuilder
         - StabilizerCode with stabilizer_matrix: GeneralStabilizerRoundBuilder
+        
+        X Stabilizer Mode
+        -----------------
+        The gadget determines which gate to use for X stabilizer measurement
+        via get_x_stabilizer_mode(). This is CRITICAL for teleportation gadgets:
+        
+        - Most gadgets use "cz" (H-CZ-H circuit) which is symmetric and efficient
+        - Teleportation gadgets MUST use "cx" (H-CX-H circuit) to match ground truth
+        
+        The difference is in backward Pauli propagation through the syndrome circuit:
+        - CZ: X_syndrome → X_syndrome ⊗ Z_data (couples to data Z, breaks determinism)
+        - CX: X_syndrome → X_syndrome (stays local, preserves determinism)
         """
         builders = []
+        
+        # Get X stabilizer mode from gadget (critical for teleportation)
+        x_stabilizer_mode = self.gadget.get_x_stabilizer_mode()
         
         for block_name, block_info in alloc.items():
             if block_name == "total":
@@ -408,55 +330,54 @@ class FaultTolerantGadgetExperiment(Experiment):
             data_start, _ = block_info["data"]
             x_anc_start, _ = block_info["x_anc"]
             
-            # Determine which builder to use based on code type
-            builder: BaseStabilizerRoundBuilder
-            
-            # Check if code is CSS (has hx and hz properties)
-            hx = getattr(code, 'hx', None)
-            hz = getattr(code, 'hz', None)
-            is_css = (
-                hx is not None and hz is not None and
-                hasattr(hx, 'shape') and hasattr(hz, 'shape') and
-                hx.size > 0 and hz.size > 0
+            # Use per-block measurement basis if available from MeasurementConfig,
+            # otherwise fall back to gadget's measurement_basis.
+            # This is important for gadgets like TransversalCNOT where each block
+            # may be measured in a different basis.
+            meas_config = self.gadget.get_measurement_config()
+            block_meas_basis = meas_config.block_bases.get(
+                block_name, self.gadget.get_measurement_basis()
             )
             
-            if is_css:
+            # Determine which builder to use based on code properties:
+            # - code.is_css → CSSStabilizerRoundBuilder (uses hx/hz)
+            # - code.is_stabilizer → GeneralStabilizerRoundBuilder (uses stabilizer_matrix)
+            # - otherwise → CSS builder fallback (produces 0 detectors)
+            if code.is_css:
                 builder = CSSStabilizerRoundBuilder(
                     code=code,
                     ctx=ctx,
                     block_name=block_name,
                     data_offset=data_start,
                     ancilla_offset=x_anc_start,
-                    measurement_basis=self.measurement_basis,
+                    measurement_basis=block_meas_basis,
+                    x_stabilizer_mode=x_stabilizer_mode,
+                )
+            elif code.is_stabilizer:
+                builder = GeneralStabilizerRoundBuilder(
+                    code=code,
+                    ctx=ctx,
+                    block_name=block_name,
+                    data_offset=data_start,
+                    ancilla_offset=x_anc_start,
+                    measurement_basis=block_meas_basis,
                 )
             else:
-                # Try to use GeneralStabilizerRoundBuilder for non-CSS codes
-                stab_mat = getattr(code, 'stabilizer_matrix', None)
-                if stab_mat is not None and hasattr(stab_mat, 'size') and stab_mat.size > 0:
-                    builder = GeneralStabilizerRoundBuilder(
-                        code=code,
-                        ctx=ctx,
-                        block_name=block_name,
-                        data_offset=data_start,
-                        ancilla_offset=x_anc_start,
-                        measurement_basis=self.measurement_basis,
-                    )
-                else:
-                    # Fallback: use CSS builder even if code doesn't look CSS
-                    # This will likely produce 0 detectors but won't crash
-                    builder = CSSStabilizerRoundBuilder(
-                        code=code,
-                        ctx=ctx,
-                        block_name=block_name,
-                        data_offset=data_start,
-                        ancilla_offset=x_anc_start,
-                        measurement_basis=self.measurement_basis,
-                    )
+                # Code base class only: CSS builder fallback
+                builder = CSSStabilizerRoundBuilder(
+                    code=code,
+                    ctx=ctx,
+                    block_name=block_name,
+                    data_offset=data_start,
+                    ancilla_offset=x_anc_start,
+                    measurement_basis=block_meas_basis,
+                    x_stabilizer_mode=x_stabilizer_mode,
+                )
             
             builders.append(builder)
         
         return builders
-    
+
     def _emit_prepare_logical_states(
         self,
         circuit: stim.Circuit,
@@ -465,56 +386,219 @@ class FaultTolerantGadgetExperiment(Experiment):
         """
         Prepare logical states for all code blocks.
         
-        This is CRITICAL for correct first-round detector behavior. Without
-        proper state preparation:
-        - Z-basis measurement (|0⟩_L): data qubits start in |0⟩^⊗n, which is a +1 
-          eigenstate of Z stabilizers but NOT necessarily of X stabilizers
-        - X-basis measurement (|+⟩_L): need to apply H to all data qubits
+        Uses PreparationConfig from the gadget to determine:
+        - Initial state per block (|0⟩ or |+⟩)
+        - Which stabilizers are deterministic (for anchor detectors)
         
-        The initial state determines which stabilizers can emit first-round detectors:
-        - |0⟩_L preparation → first-round Z detectors only
-        - |+⟩_L preparation → first-round X detectors only
+        The initial state determines which stabilizers can emit anchor detectors:
+        - |0⟩_L preparation → Z stabilizers deterministic → Z anchors
+        - |+⟩_L preparation → X stabilizers deterministic → X anchors
         
-        For k>1 codes (e.g., toric codes with k=2, 3D codes with k=3), we only
-        prepare logical qubit 0. The other logical qubits are left in their
-        default state, which still works because the stabilizers are independent
-        of the logical operators.
+        This method emits:
+        1. Initial state preparation (H for |+⟩ blocks)
+        2. DOES NOT emit first syndrome round - that's done in _emit_pre_gadget_memory
+        
+        NOTE: prep_config is computed and stored in to_stim() before the reset,
+        so we use the stored config here.
         """
-        # Determine initial state based on measurement basis
-        # Z-basis measurement → prepare |0⟩_L (already done by R, just need TICK)
-        # X-basis measurement → prepare |+⟩_L (apply H to all data qubits)
-        initial_state = "+" if self.measurement_basis == "X" else "0"
+        # Use PreparationConfig already computed in to_stim()
+        if self._prep_config is None:
+            # Compute if not already done
+            initial_state = "+" if self.gadget.get_measurement_basis() == "X" else "0"
+            self._prep_config = self.gadget.get_preparation_config(initial_state)
+        prep_config = self._prep_config
         
+        # Skip if gadget handles all preparation
+        if self.gadget.should_skip_state_preparation():
+            circuit.append("TICK")
+            return
+        
+        # Emit initial states (RX for |+⟩, nothing for |0⟩)
+        # Build block_data_qubits mapping
+        block_data_qubits: Dict[str, List[int]] = {}
         for builder in builders:
-            builder.emit_prepare_logical_state(circuit, state=initial_state, logical_idx=0)
+            block_name = builder.block_name
+            if block_name in prep_config.blocks:
+                block_config = prep_config.blocks[block_name]
+                if not block_config.skip_experiment_prep:
+                    block_data_qubits[block_name] = builder.data_qubits
+        
+        # Use preparation module to emit initial states
+        # use_rx=True means we use RX instead of H for |+⟩ preparation
+        use_rx = self._use_rx_prep
+        emit_initial_states(circuit, prep_config, block_data_qubits, use_rx=use_rx)
     
+    def _compute_block_schedules(
+        self,
+        builders: List[BaseStabilizerRoundBuilder],
+        num_rounds: int,
+    ) -> Dict[str, BlockSchedule]:
+        """Compute scheduling for all active blocks.
+        
+        Delegates to DetectorCoverageResolver for the determinism logic.
+        Uses per-block measurement basis from MeasurementConfig when available.
+        """
+        # Get per-block measurement bases from gadget's MeasurementConfig
+        meas_config = self.gadget.get_measurement_config()
+        block_meas_bases = meas_config.block_bases if meas_config.block_bases else None
+        
+        return self._coverage_resolver.compute_pre_gadget_coverage(
+            builders=builders,
+            prep_config=self._prep_config,
+            meas_basis=self.gadget.get_measurement_basis(),
+            num_rounds=num_rounds,
+            default_ordering=self.gadget.get_default_stabilizer_ordering(),
+            block_meas_bases=block_meas_bases,
+        )
+
+    def _compute_post_gadget_schedules(
+        self,
+        builders: List[BaseStabilizerRoundBuilder],
+        num_rounds: int,
+        stab_transform: StabilizerTransform,
+    ) -> Dict[str, BlockSchedule]:
+        """Compute scheduling for post-gadget rounds on surviving blocks.
+        
+        Delegates to DetectorCoverageResolver which handles swap_xz
+        transformation for the effective prep basis.
+        Uses per-block measurement basis from MeasurementConfig when available.
+        """
+        # Get per-block measurement bases from gadget's MeasurementConfig
+        meas_config = self.gadget.get_measurement_config()
+        block_meas_bases = meas_config.block_bases if meas_config.block_bases else None
+        
+        return self._coverage_resolver.compute_post_gadget_coverage(
+            builders=builders,
+            prep_config=self._prep_config,
+            meas_basis=self.gadget.get_measurement_basis(),
+            num_rounds=num_rounds,
+            stab_transform=stab_transform,
+            default_ordering=self.gadget.get_default_stabilizer_ordering(),
+            block_meas_bases=block_meas_bases,
+        )
+
     def _emit_pre_gadget_memory(
         self,
         circuit: stim.Circuit,
         builders: List[BaseStabilizerRoundBuilder],
     ) -> None:
-        """Emit pre-gadget stabilizer rounds."""
-        for _ in range(self.num_rounds_before):
-            for builder in builders:
-                builder.emit_round(circuit, StabilizerBasis.BOTH, emit_detectors=True)
+        """
+        Emit pre-gadget stabilizer rounds with anchor detectors.
+        
+        Uses StabilizerScheduler.compute_block_schedule() to determine
+        per-round anchor flags and basis ordering for each block.
+        
+        Supports both sequential and parallel extraction:
+        - Sequential: each builder emits a full round (emit_round)
+        - Parallel: all builders share a round (emit_z_layer/emit_x_layer)
+        
+        The scheduling decisions are identical — only the emission API differs.
+        
+        First round emits anchor detectors for the deterministic basis:
+        - |0⟩ prep → Z stabilizers deterministic → emit_z_anchors=True
+        - |+⟩ prep → X stabilizers deterministic → emit_x_anchors=True
+        
+        Subsequent rounds emit normal temporal detectors.
+        """
+        blocks_to_skip = self.gadget.get_blocks_to_skip_pre_rounds()
+        parallel = self.gadget.requires_parallel_extraction()
+        
+        # Filter to active builders
+        active_builders = [
+            b for b in builders
+            if b.block_name not in blocks_to_skip
+        ]
+        
+        if not active_builders:
+            return
+        
+        # Compute schedules and delegate to emit_scheduled_rounds
+        schedules = self._compute_block_schedules(active_builders, self.num_rounds_before)
+        emit_scheduled_rounds(
+            circuit, active_builders, schedules, self.num_rounds_before,
+            parallel=parallel,
+        )
     
     def _emit_post_gadget_memory(
         self,
         circuit: stim.Circuit,
         builders: List[BaseStabilizerRoundBuilder],
         destroyed_blocks: Optional[Set[str]] = None,
+        pre_gadget_meas: Optional[Dict[str, Dict[str, List[int]]]] = None,
     ) -> None:
-        """Emit post-gadget stabilizer rounds, skipping destroyed blocks."""
+        """Emit post-gadget stabilizer rounds with crossing detectors.
+        
+        Delegates to emit_scheduled_rounds() from detector_emission for the
+        actual round emission, handling ancilla reset and schedule computation.
+        
+        Parameters
+        ----------
+        circuit : stim.Circuit
+            Circuit to emit into.
+        builders : List[BaseStabilizerRoundBuilder]
+            Round builders for each code block.
+        destroyed_blocks : Optional[Set[str]]
+            Blocks that are destroyed (measured) during the gadget.
+        pre_gadget_meas : Optional[Dict[str, Dict[str, List[int]]]]
+            Pre-gadget measurement indices per block, keyed by block_name.
+            If provided, crossing detectors will be emitted on first post-round.
+        """
         if destroyed_blocks is None:
             destroyed_blocks = set()
         
-        for _ in range(self.num_rounds_after):
-            for builder in builders:
-                # Skip builders for destroyed blocks (e.g., data block after teleportation)
-                if builder.block_name in destroyed_blocks:
-                    continue
-                builder.emit_round(circuit, StabilizerBasis.BOTH, emit_detectors=True)
-    
+        parallel = self.gadget.requires_parallel_extraction()
+        use_hybrid = self.gadget.use_hybrid_decoding()
+        blocks_to_skip_post = self.gadget.get_blocks_to_skip_post_rounds()
+        
+        # Filter to active (surviving) builders
+        active_builders = [
+            b for b in builders
+            if b.block_name not in destroyed_blocks
+            and b.block_name not in blocks_to_skip_post
+        ]
+        
+        if not active_builders:
+            return
+        
+        # Check if stabilizer transform cleared history (teleportation)
+        stab_transform = self.gadget.get_stabilizer_transform()
+        skip_ancilla_reset = stab_transform.clear_history
+        
+        # Reset ancillas for surviving blocks before first post-gadget round
+        # Skip for teleportation-style transforms where history is cleared
+        if not skip_ancilla_reset:
+            for builder in active_builders:
+                all_ancillas = builder.x_ancillas + builder.z_ancillas
+                if builder.has_metachecks:
+                    all_ancillas += builder.meta_x_ancillas + builder.meta_z_ancillas
+                if all_ancillas:
+                    circuit.append("R", all_ancillas)
+            if active_builders:
+                circuit.append("TICK")
+        
+        # Get crossing detector config if we have pre-gadget measurements
+        crossing_config = None
+        if pre_gadget_meas is not None:
+            crossing_config = self.gadget.get_crossing_detector_config()
+        
+        # Determine stabilizer type for hybrid decoding
+        stab_type = StabilizerBasis.Z if use_hybrid else StabilizerBasis.BOTH
+        
+        # Compute post-gadget scheduling
+        post_schedules = self._compute_post_gadget_schedules(
+            active_builders, self.num_rounds_after, stab_transform
+        )
+        
+        # Delegate to emit_scheduled_rounds for the actual emission
+        emit_scheduled_rounds(
+            circuit, active_builders, post_schedules, self.num_rounds_after,
+            parallel=parallel, stab_type=stab_type,
+            crossing_config=crossing_config,
+            pre_gadget_meas=pre_gadget_meas,
+            destroyed_blocks=destroyed_blocks,
+            all_builders=builders,
+        )
+
     def _emit_final_measurement(
         self,
         circuit: stim.Circuit,
@@ -522,348 +606,136 @@ class FaultTolerantGadgetExperiment(Experiment):
         alloc: Dict[str, Any],
         ctx: DetectorContext,
         destroyed_blocks: Optional[Set[str]] = None,
-        teleport_correction_info: Optional[Dict[str, Any]] = None,
+        destroyed_block_meas_starts: Optional[Dict[str, int]] = None,
     ) -> None:
-        """Emit final data qubit measurements and observables, skipping destroyed blocks."""
+        """Emit final data measurement, boundary detectors, and observable."""
         if destroyed_blocks is None:
             destroyed_blocks = set()
-        
-        # Collect data qubits only from surviving blocks
-        all_data_qubits = []
-        surviving_alloc = {}
-        for block_name, block_info in alloc.items():
-            if block_name == "total":
-                continue
-            if block_name in destroyed_blocks:
-                continue  # Skip destroyed blocks
-            data_start, n = block_info["data"]
-            all_data_qubits.extend(range(data_start, data_start + n))
-            surviving_alloc[block_name] = block_info
-        
-        if not all_data_qubits:
-            # All blocks destroyed - nothing to measure
-            return
-        
-        # Check if this is a teleportation gadget
-        is_teleportation = hasattr(self.gadget, 'is_teleportation_gadget') and self.gadget.is_teleportation_gadget()
-        
-        # Get the effective measurement basis after transformations
-        # For transversal gates, we track how observables transform and adjust measurement
-        # For teleportation, the output is on a fresh block but we still need to
-        # account for how the gate transforms the observable (e.g., H: Z→X)
-        if is_teleportation:
-            # For teleportation, apply the gate's observable transform
-            # This is necessary because gates like H swap Z↔X
-            effective_basis = ctx.get_transformed_basis(0, self.measurement_basis)
-        else:
-            # For transversal gates, apply observable transforms
-            # If a Hadamard was applied and we started with Z basis, 
-            # we need to measure in X basis to get deterministic results
-            effective_basis = ctx.get_transformed_basis(0, self.measurement_basis)
-        
-        # Apply basis rotation if needed
-        if effective_basis == "X":
-            circuit.append("H", all_data_qubits)
-            circuit.append("TICK")
-        
-        # Measure surviving data qubits (always in Z after possible H rotation)
-        meas_start = ctx.add_measurement(len(all_data_qubits))
-        circuit.append("M", all_data_qubits)
-        
-        # Emit space-like detectors (compare final data with last stabilizer round)
-        # Only for surviving blocks, and skip for teleportation gadgets
-        # Teleportation gadgets transfer state between blocks, so the ancilla's
-        # stabilizers after teleportation don't match its own previous rounds
-        is_teleportation = hasattr(self.gadget, 'is_teleportation_gadget') and self.gadget.is_teleportation_gadget()
-        
-        if not is_teleportation:
-            surviving_builders = [b for b in builders if b.block_name not in destroyed_blocks]
-            
-            # Compute measurement offsets for each block within the combined final measurement
-            # The data qubits were measured in the order they appear in all_data_qubits
-            block_meas_offsets = {}
-            offset = meas_start
-            for block_name, block_info in surviving_alloc.items():
-                data_start, n = block_info["data"]
-                block_meas_offsets[block_name] = offset
-                offset += n
-            
-            for builder in surviving_builders:
-                block_offset = block_meas_offsets.get(builder.block_name, meas_start)
-                builder.emit_space_like_detectors(circuit, effective_basis, data_meas_start=block_offset)
-        
-        # Emit observable include using surviving allocation
-        self._emit_observable(circuit, surviving_alloc, ctx, meas_start, teleport_correction_info)
-    
-    def _emit_observable(
+        if destroyed_block_meas_starts is None:
+            destroyed_block_meas_starts = {}
+
+        measurement_config = self.gadget.get_measurement_config()
+        if measurement_config.destroyed_blocks:
+            destroyed_blocks = destroyed_blocks | measurement_config.destroyed_blocks
+
+        # Phase A: Destructive data measurement
+        surviving_alloc, meas_start = self._emit_destructive_data_measurement(
+            circuit, alloc, ctx, measurement_config, destroyed_blocks,
+        )
+        if meas_start is None:
+            return  # All blocks destroyed
+
+        # Phase B: Boundary detectors
+        self._emit_boundary_detectors(
+            circuit, builders, surviving_alloc, meas_start,
+            destroyed_blocks, destroyed_block_meas_starts,
+        )
+
+        # Phase C: Observable
+        # Use full alloc (not just surviving_alloc) so that correlation terms
+        # referencing destroyed blocks (e.g., data_block in teleportation) can
+        # resolve their qubit→measurement mappings via destroyed_block_meas_starts.
+        obs_config = self.gadget.get_observable_config()
+        emit_observable(
+            circuit=circuit,
+            obs_config=obs_config,
+            alloc=alloc,
+            ctx=ctx,
+            meas_start=meas_start,
+            measurement_basis=self.gadget.get_measurement_basis(),
+            gadget=self.gadget,
+            destroyed_block_meas_starts=destroyed_block_meas_starts,
+        )
+
+    def _emit_destructive_data_measurement(
         self,
         circuit: stim.Circuit,
         alloc: Dict[str, Any],
         ctx: DetectorContext,
-        meas_start: int,
-        teleport_correction_info: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        """
-        Emit OBSERVABLE_INCLUDE for logical observable.
+        measurement_config: Any,
+        destroyed_blocks: Set[str],
+    ) -> Tuple[Dict[str, Any], Optional[int]]:
+        """Emit MX/M on surviving data qubits, one block at a time in block order.
         
-        This method handles three cases:
-        1. Single-qubit gates: Observable on the single code block
-        2. Two-qubit gates (CNOT, CZ, SWAP): Observable may span both blocks
-        3. Teleportation gadgets: Observable is on the ancilla block (output)
-           - For teleportation, we also include Bell measurement corrections
+        Measurements are emitted per-block in allocation order so that
+        downstream helpers (_build_qubit_to_meas, _emit_boundary_detectors)
+        can assume measurement indices follow block iteration order.
         
-        The key insight is that after a gadget, the logical observable may be:
-        - Transformed (e.g., H: Z→X)
-        - Spread across blocks (e.g., CNOT: Z_ctrl → Z_ctrl ⊗ Z_tgt)
-        - Relocated to a different block (teleportation: data→ancilla)
-        - Require classical corrections (teleportation: XOR with Bell measurement)
+        Returns (surviving_alloc, meas_start) or (empty, None) if all destroyed.
         """
-        # Build a mapping from global qubit index to measurement index
-        # Data qubits are measured in order they appear in all_data_qubits
-        qubit_to_meas = {}
-        meas_idx = meas_start
+        surviving_alloc: Dict[str, Any] = {}
+        block_qubit_basis: list = []  # [(block_name, qubits, basis), ...]
+
         for block_name, block_info in alloc.items():
-            if block_name == "total":
+            if block_name == "total" or block_name in destroyed_blocks:
                 continue
             data_start, n = block_info["data"]
-            for i in range(n):
-                qubit_to_meas[data_start + i] = meas_idx
-                meas_idx += 1
+            block_qubits = list(range(data_start, data_start + n))
+            surviving_alloc[block_name] = block_info
+            block_basis = measurement_config.block_bases.get(
+                block_name, self.gadget.get_measurement_basis()
+            )
+            block_qubit_basis.append((block_name, block_qubits, block_basis))
+
+        total_data = sum(len(qs) for _, qs, _ in block_qubit_basis)
+        if total_data == 0:
+            return {}, None
+
+        meas_start = ctx.add_measurement(total_data)
         
-        # Check for teleportation gadget - output is on ancilla block
-        is_teleportation = hasattr(self.gadget, 'is_teleportation_gadget') and self.gadget.is_teleportation_gadget()
-        
-        # Get the effective observable basis
-        # For teleportation, the output is on a fresh block and we measure in the requested basis
-        # For transversal gates, apply observable transforms
-        if is_teleportation:
-            effective_basis = self.measurement_basis
-        else:
-            effective_basis = ctx.get_transformed_basis(0, self.measurement_basis)
-        
-        # Determine which blocks contribute to the observable
-        observable_meas = []
-        
-        # Check for two-qubit gate with cross-block observable propagation
-        has_two_qubit_transform = hasattr(self.gadget, 'get_two_qubit_observable_transform')
-        
-        if is_teleportation:
-            # For teleportation, the output logical state is on the ancilla block
-            # 
-            # There are two teleportation schemes:
-            # 1. Product-state teleportation (2 blocks): data + ancilla
-            #    - Ancilla initialized in product state (e.g., |+⟩ for X basis)
-            #    - Output block is ancilla (block_1)
-            #    - Observable is just the output block
-            #
-            # 2. Bell-state teleportation (3 blocks): data + ancilla1 + ancilla2
-            #    - Ancilla1 and ancilla2 initialized in Bell pair (|00⟩+|11⟩)/√2
-            #    - Gate applied to ancilla2
-            #    - Bell measurement on data and ancilla1
-            #    - Output block is ancilla2 (block_2)
-            #    - Observable includes Pauli frame correction from ancilla1
-            #
-            # For Bell-state teleportation with Z observable:
-            #   Z_logical = Z_output XOR Z_ancilla1
-            # This is deterministic because the Bell pair satisfies Z⊗Z = +1
-            
-            output_block_name = self.gadget.get_output_block_name()
-            is_three_block = hasattr(self.gadget, 'requires_three_blocks') and self.gadget.requires_three_blocks()
-            
-            # Find the output block and add its measurements
-            for block_name, block_info in alloc.items():
-                if block_name == "total":
-                    continue
-                
-                # Match by name or by index
-                is_output_block = (
-                    block_name == output_block_name or 
-                    (output_block_name == "ancilla_block" and block_name == "block_1") or
-                    (output_block_name == "block_2" and block_name == "block_2")
-                )
-                
-                if is_output_block:
-                    code = block_info["code"]
-                    data_start, _ = block_info["data"]
-                    
-                    # Get logical operator support in the effective basis
-                    support = get_logical_support(code, effective_basis, 0)
-                    
-                    for local_idx in support:
-                        global_qubit_idx = data_start + local_idx
-                        if global_qubit_idx in qubit_to_meas:
-                            observable_meas.append(qubit_to_meas[global_qubit_idx])
-                    break
-            
-            # For Bell-state teleportation (3 blocks), include Pauli frame correction
-            # The ancilla1 block's Z logical measurement determines the Z correction
-            if is_three_block and teleport_correction_info is not None:
-                # The teleport_correction_info contains the Bell measurement info
-                # For [[4,2,2]] code or similar, we need the Z logical support on ancilla1
-                # 
-                # The measurement_qubits in teleport_correction_info are:
-                # [data_qubits..., ancilla1_qubits...]
-                # 
-                # We need to find which of these correspond to ancilla1's Z logical
-                meas_qubits = teleport_correction_info.get('measurement_qubits', [])
-                bell_meas_start = teleport_correction_info.get('meas_start', 0)
-                
-                # Get the code for ancilla1 (block_1)
-                # In 3-block teleportation, blocks are: block_0 (data), block_1 (ancilla1), block_2 (ancilla2)
-                if "block_1" in self._qubit_allocation:
-                    ancilla1_info = self._qubit_allocation["block_1"]
-                    ancilla1_code = ancilla1_info["code"]
-                    ancilla1_data_start, ancilla1_n = ancilla1_info["data"]
-                    
-                    # Get Z logical support on ancilla1
-                    # For Z observable, we need Z support (not transformed by gate since
-                    # the gate is on ancilla2, not ancilla1)
-                    ancilla1_z_support = get_logical_support(ancilla1_code, "Z", 0)
-                    
-                    # Find which measurement indices in the Bell measurement correspond
-                    # to ancilla1's Z logical support
-                    # The Bell measurement measures data first, then ancilla1
-                    for local_idx in ancilla1_z_support:
-                        global_qubit_idx = ancilla1_data_start + local_idx
-                        
-                        # Find this qubit in the Bell measurement qubits
-                        if global_qubit_idx in meas_qubits:
-                            meas_offset = meas_qubits.index(global_qubit_idx)
-                            bell_meas_idx = bell_meas_start + meas_offset
-                            observable_meas.append(bell_meas_idx)
-            #
-            # For now, we measure the output block's logical observable directly,
-            # which works correctly when initialized in a +1 eigenstate of the
-            # observable (e.g., |0⟩ for Z observable, |+⟩ for X observable).
-        
-        elif has_two_qubit_transform:
-            # For two-qubit gates (CNOT, CZ, SWAP), observables may spread across blocks
-            # 
-            # CNOT (control=block_0, target=block_1):
-            #   Z_ctrl → Z_ctrl ⊗ Z_tgt (Z spreads from control to target)
-            #   X_tgt → X_ctrl ⊗ X_tgt (X spreads from target to control)
-            #
-            # CZ (symmetric):
-            #   X_ctrl → X_ctrl ⊗ Z_tgt (X picks up Z from other block)
-            #   X_tgt → Z_ctrl ⊗ X_tgt
-            #
-            # SWAP:
-            #   Z_ctrl ↔ Z_tgt (swapped)
-            #   X_ctrl ↔ X_tgt (swapped)
-            #
-            # We're measuring observable 0 (first logical qubit) which starts on block_0
-            two_q_transform = self.gadget.get_two_qubit_observable_transform()
-            
-            if self.measurement_basis == "Z":
-                # Determine which blocks contribute to the Z observable
-                ctrl_z_to = two_q_transform.control_z_to  # (block_0_component, block_1_component)
-                
-                blocks_needed = []
-                block_basis = {}  # What basis to measure on each block
-                if ctrl_z_to[0] is not None:
-                    blocks_needed.append("block_0")
-                    block_basis["block_0"] = ctrl_z_to[0]  # "Z" typically
-                if ctrl_z_to[1] is not None:
-                    blocks_needed.append("block_1")
-                    block_basis["block_1"] = ctrl_z_to[1]  # "Z" typically
+        # Emit measurements block-by-block in allocation order
+        for _, block_qubits, basis in block_qubit_basis:
+            if basis == "X":
+                circuit.append("MX", block_qubits)
             else:
-                # X measurement: check how X_ctrl transforms
-                ctrl_x_to = two_q_transform.control_x_to  # (block_0_component, block_1_component)
-                
-                blocks_needed = []
-                block_basis = {}
-                if ctrl_x_to[0] is not None:
-                    blocks_needed.append("block_0")
-                    block_basis["block_0"] = ctrl_x_to[0]
-                if ctrl_x_to[1] is not None:
-                    blocks_needed.append("block_1")
-                    block_basis["block_1"] = ctrl_x_to[1]
-            
-            for block_name, block_info in alloc.items():
-                if block_name == "total":
-                    continue
-                if block_name not in blocks_needed:
-                    continue
-                
-                code = block_info["code"]
-                data_start, _ = block_info["data"]
-                
-                # Get the appropriate logical operator for this block
-                # The basis may be X or Z depending on how the gate transforms
-                basis_for_block = block_basis.get(block_name, self.measurement_basis)
-                support = get_logical_support(code, basis_for_block, 0)
-                
-                for local_idx in support:
-                    global_qubit_idx = data_start + local_idx
-                    if global_qubit_idx in qubit_to_meas:
-                        observable_meas.append(qubit_to_meas[global_qubit_idx])
-        
-        else:
-            # Standard case: single-qubit gate or simple two-qubit gate
-            # Observable is on all blocks with the effective basis
-            # 
-            # For k>1 codes (like toric code with k=2), we need to emit
-            # OBSERVABLE_INCLUDE for ALL logical qubits, not just the first.
-            # Get k from the first code block
-            first_code = None
-            for block_name, block_info in alloc.items():
-                if block_name != "total":
-                    first_code = block_info["code"]
-                    break
-            
-            k = getattr(first_code, 'k', 1) if first_code else 1
-            
-            for logical_idx in range(k):
-                observable_meas_for_logical = []
-                
-                for i, (block_name, block_info) in enumerate(alloc.items()):
-                    if block_name == "total":
-                        continue
-                    
-                    code = block_info["code"]
-                    data_start, _ = block_info["data"]
-                    
-                    # Get logical operator support using the ORIGINAL measurement basis
-                    # 
-                    # Key insight: effective_basis tells us what basis we WOULD measure in 
-                    # without any conversion. When effective_basis != measurement_basis (e.g., 
-                    # after Hadamard), _emit_final_measurement() applies a basis rotation H
-                    # to convert effective_basis back to measurement_basis.
-                    #
-                    # After this conversion H, we're measuring in the ORIGINAL basis, so we
-                    # need the logical operator support for the ORIGINAL measurement_basis,
-                    # not the effective_basis.
-                    #
-                    # Example: measurement_basis="Z", after H gadget effective_basis="X"
-                    # - _emit_final_measurement applies H to data to convert X→Z measurement
-                    # - Data is now in the ORIGINAL eigenstate (|0⟩ if started in |0⟩)
-                    # - We should measure Z logical support, not X logical support
-                    support = get_logical_support(code, self.measurement_basis, logical_idx)
-                    
-                    # Map local qubit indices to global measurement indices
-                    for local_idx in support:
-                        global_qubit_idx = data_start + local_idx
-                        if global_qubit_idx in qubit_to_meas:
-                            observable_meas_for_logical.append(qubit_to_meas[global_qubit_idx])
-                    
-                    # For single-block gadgets, only use the first block
-                    if not has_two_qubit_transform:
-                        break
-                
-                # Emit observable for this logical qubit
-                if observable_meas_for_logical:
-                    lookbacks = [idx - ctx.measurement_index for idx in observable_meas_for_logical]
-                    targets = [stim.target_rec(lb) for lb in lookbacks]
-                    circuit.append("OBSERVABLE_INCLUDE", targets, logical_idx)
-            
-            # Return early since we've handled all observables
+                circuit.append("M", block_qubits)
+
+        return surviving_alloc, meas_start
+
+    def _emit_boundary_detectors(
+        self,
+        circuit: stim.Circuit,
+        builders: List[BaseStabilizerRoundBuilder],
+        surviving_alloc: Dict[str, Any],
+        meas_start: int,
+        destroyed_blocks: Set[str],
+        destroyed_block_meas_starts: Dict[str, int],
+    ) -> None:
+        """Emit space-like boundary detectors for surviving and destroyed blocks."""
+        if not self.gadget.should_emit_space_like_detectors():
             return
-        
-        # Emit observable (for teleportation and two-qubit gate cases - still only logical 0)
-        if observable_meas:
-            lookbacks = [idx - ctx.measurement_index for idx in observable_meas]
-            targets = [stim.target_rec(lb) for lb in lookbacks]
-            circuit.append("OBSERVABLE_INCLUDE", targets, 0)
+
+        surviving_builders = [
+            b for b in builders if b.block_name not in destroyed_blocks
+        ]
+        boundary_config = self.gadget.get_boundary_detector_config()
+
+        # Surviving block offsets
+        block_meas_offsets: Dict[str, int] = {}
+        offset = meas_start
+        for block_name, block_info in surviving_alloc.items():
+            _, n = block_info["data"]
+            block_meas_offsets[block_name] = offset
+            offset += n
+
+        emit_boundary_detectors_func(
+            circuit, surviving_builders, boundary_config, block_meas_offsets,
+        )
+
+        # Destroyed blocks whose measurements were emitted by the gadget
+        if destroyed_block_meas_starts:
+            destroyed_builders = [
+                b for b in builders
+                if b.block_name in destroyed_block_meas_starts
+            ]
+            destroyed_offsets = {
+                b.block_name: destroyed_block_meas_starts[b.block_name]
+                for b in destroyed_builders
+            }
+            if destroyed_builders and destroyed_offsets:
+                emit_boundary_detectors_func(
+                    circuit, destroyed_builders, boundary_config, destroyed_offsets,
+                )
     
     def to_stim(self) -> stim.Circuit:
         """
@@ -887,25 +759,82 @@ class FaultTolerantGadgetExperiment(Experiment):
         ctx = DetectorContext()
         self._ctx = ctx
         
-        # Compute qubit allocation
-        alloc = self._compute_qubit_allocation()
+        # =====================================================================
+        # GOAL 6 & 10: Use GadgetLayout.allocate_qubits() and QubitAllocation.total_qubits
+        # =====================================================================
+        # Get layout from gadget and use library's allocation
+        layout = self.gadget.compute_layout(self.codes)
+        unified_alloc = layout.allocate_qubits()
+        
+        # Store for later use by other methods
+        self._unified_allocation = unified_alloc
+        
+        # Convert to dict format for backwards compatibility with internal methods
+        # TODO: Refactor internal methods to use QubitAllocation directly
+        alloc = self._allocation_to_dict(unified_alloc)
         self._qubit_allocation = alloc
+        
+        # =====================================================================
+        # Initialize Pauli Frame Tracker
+        # =====================================================================
+        # Count the number of logical qubits (code blocks)
+        num_logical = len(unified_alloc.blocks)
+        if num_logical > 0:
+            ctx.init_pauli_tracker(max(1, num_logical))
         
         # =====================================================================
         # Phase 1: QUBIT_COORDS and Reset
         # =====================================================================
-        self._emit_qubit_coords(circuit, alloc)
+        self._emit_qubit_coords(circuit, unified_alloc)
         
-        total = alloc["total"]
+        # =====================================================================
+        # Phase 1.5: Create builders BEFORE reset to know which qubits need H
+        # =====================================================================
+        # We need builders to know which data qubits belong to which block
+        builders = self._create_builders(alloc, ctx)
+        self._builders = builders
+        
+        # =====================================================================
+        # Phase 1.6: Compute preparation config and gate optimization
+        # =====================================================================
+        # We use RX instead of H for |+⟩ preparation because:
+        # - RX is a single atomic operation (prepare in X-basis eigenstate)
+        # - H requires relying on Stim's implicit |0⟩ and careful reset skipping
+        # - RX produces cleaner detector backward-tracking through the circuit
+        initial_state = "+" if self.gadget.get_measurement_basis() == "X" else "0"
+        prep_config = self.gadget.get_preparation_config(initial_state)
+        self._prep_config = prep_config
+        
+        # Build mapping of block names to data qubits
+        block_data_qubits: Dict[str, List[int]] = {}
+        for builder in builders:
+            block_name = builder.block_name
+            if block_name in prep_config.blocks:
+                block_config = prep_config.blocks[block_name]
+                if not block_config.skip_experiment_prep:
+                    block_data_qubits[block_name] = builder.data_qubits
+        
+        # Use RX for |+⟩ preparation (cleaner than H)
+        # With RX, we don't need to skip reset - RX is atomic
+        use_rx_prep = True
+        skip_reset_qubits = get_qubits_to_skip_reset(prep_config, block_data_qubits, use_rx=use_rx_prep)
+        self._use_rx_prep = use_rx_prep  # Store for use by _emit_prepare_logical_states
+        
+        # =====================================================================
+        # Phase 1.7: Emit Reset on qubits that need it
+        # =====================================================================
+        # GOAL 10: Use QubitAllocation.total_qubits instead of alloc["total"]
+        total = unified_alloc.total_qubits
         if total > 0:
-            circuit.append("R", list(range(total)))
+            # Only reset qubits NOT in the skip set
+            reset_qubits = [q for q in range(total) if q not in skip_reset_qubits]
+            if reset_qubits:
+                circuit.append("R", reset_qubits)
             circuit.append("TICK")
         
         # =====================================================================
-        # Phase 2: Create builders for each code block
+        # Phase 2: (Builders already created above)
         # =====================================================================
-        builders = self._create_builders(alloc, ctx)
-        self._builders = builders
         
         # =====================================================================
         # Phase 2.5: Prepare logical states for all blocks
@@ -921,119 +850,65 @@ class FaultTolerantGadgetExperiment(Experiment):
         # =====================================================================
         self._emit_pre_gadget_memory(circuit, builders)
         
+        # Save pre-gadget measurement indices for crossing detectors
+        # This MUST be done AFTER pre-gadget rounds and BEFORE gadget execution
+        # Save pre-gadget measurement indices for crossing detectors
+        # This MUST be done AFTER pre-gadget rounds and BEFORE gadget execution
+        # Use MeasurementRecord from detector_tracking for structured tracking
+        pre_gadget_record = MeasurementRecord()
+        pre_gadget_meas = {}
+        for builder in builders:
+            last_meas = builder.get_last_measurement_indices()
+            pre_gadget_meas[builder.block_name] = last_meas
+            # Also store in structured record for future chaining
+            for basis, indices in last_meas.items():
+                pre_gadget_record.add_measurement(
+                    builder.block_name, basis, "pre", indices
+                )
+        
         # =====================================================================
-        # Phase 4: Gadget execution via emit_next_phase() interface
+        # Phase 4: Gadget execution via PhaseOrchestrator
         # =====================================================================
-        # Convert dict-based allocation to QubitAllocation for gadget interface
-        unified_alloc = self._to_unified_allocation(alloc)
+        # Determine if hybrid decoding is requested
+        use_hybrid = self.gadget.use_hybrid_decoding()
         
-        # Reset gadget phase counter
-        self.gadget.reset_phases()
+        # Execute all gadget phases using the orchestrator
+        phase_result = execute_gadget_phases(
+            gadget=self.gadget,
+            circuit=circuit,
+            unified_alloc=unified_alloc,
+            ctx=ctx,
+            builders=builders,
+            alloc_dict=alloc,
+            use_hybrid_decoding=use_hybrid,
+            pre_gadget_meas=pre_gadget_meas,
+        )
         
-        # Track which blocks are destroyed during gadget execution
-        destroyed_blocks = set()
-        
-        # Track teleportation Bell measurement info for observable correction
-        teleport_correction_info = None
-        is_teleportation = hasattr(self.gadget, 'is_teleportation_gadget') and self.gadget.is_teleportation_gadget()
-        
-        # Track whether stabilizer transform was applied during phases
-        _transform_applied = False
-        
-        # Execute all phases of the gadget
-        for phase_idx in range(self.gadget.num_phases):
-            # Emit the next phase
-            result = self.gadget.emit_next_phase(circuit, unified_alloc, ctx)
-            
-            # Track measured/destroyed blocks
-            if result.measured_blocks:
-                destroyed_blocks.update(result.measured_blocks)
-            
-            # Track gadget measurements in the detector context
-            # This is crucial for correct detector references after gadget
-            if result.measurement_count > 0:
-                meas_start = ctx.add_measurement(result.measurement_count)
-                
-                # For teleportation, track the Bell measurement info
-                # This is needed for observable corrections
-                if is_teleportation and result.phase_type == PhaseType.MEASUREMENT:
-                    teleport_correction_info = {
-                        'meas_start': meas_start,
-                        'measurement_qubits': result.measurement_qubits,
-                        'measurement_count': result.measurement_count,
-                    }
-            
-            # Apply stabilizer transform BEFORE emitting inter-phase stabilizer rounds
-            # This ensures that history is cleared/swapped before the new rounds
-            # compare measurements across the gate boundary
-            if result.stabilizer_transform is not None:
-                transform = result.stabilizer_transform
-                if transform.clear_history or transform.swap_xz or transform.skip_first_round:
-                    for block_name in alloc:
-                        if block_name != "total":
-                            ctx.clear_stabilizer_history(
-                                block_name=block_name,
-                                swap_xz=transform.swap_xz
-                            )
-                    # Also reset builder's internal history to establish new baseline
-                    for builder in builders:
-                        if hasattr(builder, 'reset_stabilizer_history'):
-                            builder.reset_stabilizer_history(
-                                swap_xz=transform.swap_xz,
-                                skip_first_round=transform.skip_first_round
-                            )
-                    # Mark that we've already applied a transform
-                    _transform_applied = True
-            
-            # Handle stabilizer rounds between phases if requested
-            # These rounds occur AFTER the transform has been applied
-            if result.needs_stabilizer_rounds > 0 and not result.is_final:
-                for _ in range(result.needs_stabilizer_rounds):
-                    for builder in builders:
-                        # Skip stabilizer rounds on destroyed blocks
-                        if builder.block_name not in destroyed_blocks:
-                            builder.emit_round(circuit, StabilizerBasis.BOTH, emit_detectors=True)
-            
-            # Check if gadget is done
-            if result.is_final:
-                break
-        
-        # Apply overall observable transform from the gadget
-        if hasattr(self.gadget, 'gate_name'):
-            ctx.update_for_gate(self.gadget.gate_name)
-        elif hasattr(self.gadget, 'protocol') and hasattr(self.gadget.protocol, 'gate_name'):
-            # Teleportation gadgets
-            ctx.update_for_gate(self.gadget.protocol.gate_name)
-        
-        # Get overall stabilizer transform and apply ONLY if not already applied
-        # during the phase loop. This avoids double-applying transforms for
-        # single-phase gadgets where the phase already provides the transform.
-        if not _transform_applied:
-            overall_transform = self.gadget.get_stabilizer_transform()
-            if overall_transform.clear_history or overall_transform.swap_xz or overall_transform.skip_first_round:
-                for block_name in alloc:
-                    if block_name != "total":
-                        ctx.clear_stabilizer_history(
-                            block_name=block_name,
-                            swap_xz=overall_transform.swap_xz
-                        )
-                # Also reset builder's internal history to establish new baseline
-                for builder in builders:
-                    if hasattr(builder, 'reset_stabilizer_history'):
-                        builder.reset_stabilizer_history(
-                            swap_xz=overall_transform.swap_xz,
-                            skip_first_round=overall_transform.skip_first_round
-                        )
+        # Extract results from orchestrator
+        destroyed_blocks = phase_result.destroyed_blocks
         
         # =====================================================================
         # Phase 5: Post-gadget memory rounds (skip destroyed blocks)
         # =====================================================================
-        self._emit_post_gadget_memory(circuit, builders, destroyed_blocks)
+        # If the orchestrator handled crossing detectors via inter-phase rounds
+        # (multi-phase gadgets like teleportation), pass None to avoid
+        # double-emission.  For single-phase gadgets (e.g. TransversalCNOT)
+        # where is_final=True on the gate phase, the orchestrator did NOT
+        # emit inter-phase rounds, so we must pass pre_gadget_meas here so
+        # that emit_scheduled_rounds can suppress auto-detectors on the first
+        # post-gate round and emit crossing detectors instead.
+        post_gadget_pre_meas = None if phase_result.crossing_handled else pre_gadget_meas
+        self._emit_post_gadget_memory(
+            circuit, builders, destroyed_blocks, post_gadget_pre_meas
+        )
         
         # =====================================================================
         # Phase 6: Final measurement (skip destroyed blocks)
         # =====================================================================
-        self._emit_final_measurement(circuit, builders, alloc, ctx, destroyed_blocks, teleport_correction_info)
+        self._emit_final_measurement(
+            circuit, builders, alloc, ctx, destroyed_blocks,
+            destroyed_block_meas_starts=phase_result.destroyed_block_meas_starts,
+        )
         
         # Apply noise model
         circuit = apply_noise_to_circuit(circuit, self.noise_model)
@@ -1072,13 +947,12 @@ class FaultTolerantGadgetExperiment(Experiment):
         # - Hypergraph DEM handling
         base_result = super().run_decode(shots=num_shots, decoder_name=decoder_name)
         
-        # Get gadget metadata if available
+        # Get gadget metadata
         gadget_metadata = None
-        if hasattr(self.gadget, 'get_metadata'):
-            try:
-                gadget_metadata = self.gadget.get_metadata()
-            except RuntimeError:
-                pass
+        try:
+            gadget_metadata = self.gadget.get_metadata()
+        except RuntimeError:
+            pass
         
         # Get circuit info for extra metadata
         circuit = self.to_stim()
@@ -1137,7 +1011,6 @@ class FaultTolerantGadgetExperiment(Experiment):
             noise_model=None,  # No noise!
             num_rounds_before=self.num_rounds_before,
             num_rounds_after=self.num_rounds_after,
-            measurement_basis=self.measurement_basis,
         )
         
         try:

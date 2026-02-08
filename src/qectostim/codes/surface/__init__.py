@@ -43,6 +43,9 @@ from .toric_code_general import ToricCode
 from .toric_3d import ToricCode3D, ToricCode3DFaces, ToricCode3D_3x3x3, ToricCode3D_4x4x4
 from .toric_4d import ToricCode4D, ToricCode4D_2, ToricCode4D_3
 
+# 4D surface code (tesseract)
+from .four_d_surface_code import FourDSurfaceCode
+
 # Hyperbolic surface codes
 from .hyperbolic import (
     HyperbolicSurfaceCode,
@@ -127,4 +130,6 @@ __all__ = [
     "FractalSurface_L3",
     "LCSCode",
     "LCS_3x3",
+    # 4D surface code
+    "FourDSurfaceCode",
 ]

@@ -114,23 +114,10 @@ class Experiment(ABC):
         }
 
     def _get_code_distance(self) -> int:
-        """Extract distance from code. Defaults to 3 if not available."""
-        # Try metadata first
-        if hasattr(self.code, 'metadata') and isinstance(self.code.metadata, dict):
-            d = self.code.metadata.get('distance')
-            if d is not None and isinstance(d, (int, float)):
-                return int(d)
-        # Try distance property
-        if hasattr(self.code, 'distance'):
-            d = self.code.distance
-            if d is not None and isinstance(d, (int, float)):
-                return int(d)
-        # Try 'd' attribute directly (some codes use this)
-        if hasattr(self.code, 'd'):
-            d = self.code.d
-            if d is not None and isinstance(d, (int, float)):
-                return int(d)
-        # Default to 3 (assume can correct)
+        """Extract distance from code using Code ABC. Defaults to 3 if not available."""
+        d = self.code.distance
+        if d is not None and isinstance(d, (int, float)):
+            return int(d)
         return 3
 
 
@@ -277,18 +264,40 @@ class Experiment(ABC):
         logger.debug("Noisy circuit: %d instructions", len(circuit))
 
         # 3) Build DetectorErrorModel from noisy circuit.
-        # For color codes and other hypergraph codes, we need to handle decomposition failures
-        # by using ignore_decomposition_failures=True
+        # For color codes and other hypergraph codes, we need to handle decomposition failures.
+        # For concatenated codes with many-qubit gates, errors can trigger >15 detectors
+        # which exceeds Stim's decomposition limit.
+        # Strategy:
+        #   1. Try with decompose_errors=True (best for MWPM)
+        #   2. If that fails with "max supported number of symptoms", try ignore_decomposition_failures
+        #   3. If that still fails, use decompose_errors=False (requires BP-OSD decoder)
+        is_hypergraph_dem = False
         try:
             dem = circuit.detector_error_model(decompose_errors=True)
         except ValueError as e:
-            if "Failed to decompose errors" in str(e):
-                # This is a hypergraph code (e.g., color code) - use ignore_decomposition_failures
+            err_str = str(e)
+            if "exceeded the max supported" in err_str:
+                # Complex concatenated circuit with hypergraph-like errors
+                # Try ignore_decomposition_failures first
+                logger.debug("Complex DEM detected (>15 symptoms), trying ignore_decomposition_failures")
+                is_hypergraph_dem = True
+                try:
+                    dem = circuit.detector_error_model(
+                        decompose_errors=True,
+                        ignore_decomposition_failures=True
+                    )
+                except ValueError:
+                    # Still fails - use non-decomposed DEM (requires BP-OSD)
+                    logger.debug("ignore_decomposition_failures failed, using decompose_errors=False")
+                    dem = circuit.detector_error_model(decompose_errors=False)
+            elif "Failed to decompose errors" in err_str:
+                # Hypergraph code (e.g., color code) - use ignore_decomposition_failures
                 logger.debug("Hypergraph DEM detected, using ignore_decomposition_failures")
                 dem = circuit.detector_error_model(
                     decompose_errors=True,
                     ignore_decomposition_failures=True
                 )
+                is_hypergraph_dem = True
             else:
                 raise
         logger.debug("DEM: %d detectors, %d errors, %d observables", 
@@ -304,7 +313,23 @@ class Experiment(ABC):
             }
 
         # 4) Build decoder from DEM.
-        decoder = select_decoder(dem, preferred=decoder_name, code=self.code)
+        # For hypergraph DEMs, matching-based decoders (pymatching, fusion-blossom)
+        # cannot handle hyperedges and will crash.  Override to BP-OSD.
+        effective_decoder_name = decoder_name
+        _matching_decoders = {
+            None, "pymatching", "matching", "mwpm", "mwpm2",
+            "fb", "fusion", "fusionblossom", "fusion-blossom",
+            "uf", "unionfind", "union-find",
+            "beliefmatching", "belief-matching", "belief",
+        }
+        if is_hypergraph_dem and (effective_decoder_name or "").lower() in _matching_decoders:
+            logger.info(
+                "Hypergraph DEM detected — overriding decoder '%s' → 'bposd' "
+                "(matching-based decoders cannot handle hyperedges)",
+                decoder_name,
+            )
+            effective_decoder_name = "bposd"
+        decoder = select_decoder(dem, preferred=effective_decoder_name, code=self.code)
         logger.debug("Decoder type: %s", type(decoder).__name__)
 
         # 5) Sample from the DEM directly.
