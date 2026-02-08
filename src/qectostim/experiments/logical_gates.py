@@ -84,7 +84,7 @@ class GateRouter:
     
     def _build_routing_table(self) -> None:
         """Build the gate routing table."""
-        from qectostim.gadgets.transversal import (
+        from qectostim.gadgets.bin.transversal import (
             TransversalHadamard,
             TransversalS,
             TransversalSDag,
@@ -96,13 +96,13 @@ class GateRouter:
             TransversalCNOT,
             TransversalCZ,
         )
-        from qectostim.gadgets.teleportation import (
+        from qectostim.gadgets.bin.teleportation import (
             TeleportedHadamard,
             TeleportedS,
             TeleportedSDag,
             TeleportedT,
         )
-        from qectostim.gadgets.css_surgery import SurgeryCNOT
+        from qectostim.gadgets.bin.css_surgery import SurgeryCNOT
         
         # Single-qubit gates
         self._routes["H"] = [
@@ -187,12 +187,12 @@ class GateRouter:
             
             # Teleportation works on any CSS code
             elif route.gadget_type == "teleportation":
-                if all(getattr(c, 'is_css', False) for c in codes):
+                if all(c.is_css for c in codes):
                     return route
             
             # Surgery works on any CSS code pair
             elif route.gadget_type == "surgery":
-                if all(getattr(c, 'is_css', False) for c in codes):
+                if all(c.is_css for c in codes):
                     return route
         
         # Fallback: return first compatible route
@@ -209,10 +209,9 @@ class GateRouter:
     ) -> bool:
         """Check if transversal gate is supported by all codes."""
         for code in codes:
-            if hasattr(code, 'transversal_gates'):
-                supported = code.transversal_gates
-                if gate_name.upper() not in [g.upper() for g in supported]:
-                    return False
+            supported = code.transversal_gates()
+            if gate_name.upper() not in [g.upper() for g in supported]:
+                return False
         return True
 
 

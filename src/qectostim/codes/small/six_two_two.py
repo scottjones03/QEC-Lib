@@ -1,23 +1,56 @@
-# src/qectostim/codes/base/six_two_two.py
-"""
-[[6,2,2]] CSS Code - The "Iceberg" Code
+# src/qectostim/codes/small/six_two_two.py
+"""[[6, 2, 2]] CSS Code — The "Iceberg" Code
 
-The [[6,2,2]] code is a distance-2 CSS code that encodes 2 logical qubits in 6 physical qubits.
-It is the smallest CSS code that encodes more than one qubit.
+The [[6, 2, 2]] code encodes **2 logical qubits** in **6 physical qubits**
+with distance 2.  It is the **smallest CSS code with k > 1** and is
+sometimes called the "iceberg" code.
 
-This implementation uses the standard construction from coding theory:
-- 2 X-type stabilizers (weight 4 each): XXXIXI, XIXIXX
-- 2 Z-type stabilizers (weight 4 each): ZZIZZI, ZIZZZZ
+Construction
+------------
+The stabiliser group has 4 independent generators:
 
-The logical operators are:
-- Logical X1: XXIIII (weight 2, anticommutes with Z1)
-- Logical X2: XIIXII (weight 2, anticommutes with Z2)
-- Logical Z1: ZZIIII (weight 2, anticommutes with X1)
-- Logical Z2: ZIIZII (weight 2, anticommutes with X2)
+* **X-type** (2 generators, weight 4 each):
+      X₀X₁X₂X₃ = XXXXII
+      X₀X₁X₄X₅ = XXIIXX
+
+* **Z-type** (2 generators, weight 3 each):
+      Z₀Z₂Z₄ = ZIZIZI
+      Z₁Z₃Z₅ = IZIZIZ
+
+CSS orthogonality: each X-row overlaps each Z-row in exactly 2 positions
+(even), so Hx·Hz^T = 0 (mod 2).
+
+Code parameters
+---------------
+* **n** = 6  physical qubits
+* **k** = 2  logical qubits  (6 − 2 − 2 = 2)
+* **d** = 2  (detects single errors; cannot correct)
+* **Rate** R = 1/3
+
+Logical operators
+-----------------
+Two anticommuting pairs (weight 2):
+
+    X̄₁ = X₀X₂ (XIXIII)     Z̄₁ = Z₀Z₁ (ZZIIII)
+    X̄₂ = X₃X₅ (IIIXIX)     Z̄₂ = Z₄Z₅ (IIIIZZ)
 
 Key properties:
 - Detects any single-qubit error (distance 2)
 - Transversal Hadamard swaps the two logical qubits
+
+Connections to other codes
+--------------------------
+* **[[4, 2, 2]] code**: obtained by puncturing two qubits.
+* **Colour codes**: related to small colour code constructions.
+* **Concatenated codes**: can serve as outer code in concatenated schemes.
+
+References
+----------
+* Knill, "Benchmarking Quantum Computers and the Approach to Scalable
+  Quantum Computing", arXiv:quant-ph/0404104 (2004).
+* Chao & Reichardt, "Quantum error correction with only two extra qubits",
+  Phys. Rev. Lett. 121, 050502 (2018).
+* Error Correction Zoo: https://errorcorrectionzoo.org/c/stab_6_2_2
 """
 
 from __future__ import annotations
@@ -27,129 +60,182 @@ import numpy as np
 
 from qectostim.codes.abstract_css import CSSCode
 from qectostim.codes.abstract_code import PauliString
+from qectostim.codes.complexes.css_complex import CSSChainComplex3
+from qectostim.codes.utils import validate_css_code
 
 Coord2D = Tuple[float, float]
 
 
 class SixQubit622Code(CSSCode):
-    """
-    [[6, 2, 2]] CSS code (Iceberg code).
+    """[[6, 2, 2]] CSS code (iceberg code).
 
-    A distance-2 CSS code encoding 2 logical qubits in 6 physical qubits.
+    Encodes 2 logical qubits in 6 physical qubits with distance 2.
     This is the smallest CSS code with k > 1.
+
+    Parameters
+    ----------
+    metadata : dict, optional
+        Extra metadata merged into the code's metadata dictionary.
+
+    Attributes
+    ----------
+    n : int
+        Number of physical qubits (6).
+    k : int
+        Number of logical qubits (2).
+    distance : int
+        Code distance (2).
+    hx : np.ndarray
+        X-stabiliser parity-check matrix, shape ``(2, 6)``.
+    hz : np.ndarray
+        Z-stabiliser parity-check matrix, shape ``(2, 6)``.
+
+    Examples
+    --------
+    >>> code = SixQubit622Code()
+    >>> code.n, code.k, code.distance
+    (6, 2, 2)
+
+    Notes
+    -----
+    Transversal Hadamard on all 6 qubits swaps the two logical qubits
+    (since Hx and Hz have different support, this is a non-trivial
+    logical operation).
+
+    See Also
+    --------
+    FourQubit422Code : Smaller k = 2 code (same distance).
+    EightThreeTwoCode : Larger k = 3 code (same distance).
     """
 
     def __init__(self, metadata: Optional[Dict[str, Any]] = None):
-        """Initialize the [[6,2,2]] code with proper CSS structure.
-        
-        Standard [[6,2,2]] construction using a systematic approach:
-        The code is constructed such that:
-        - 2 X stabilizers check even X-parity on specific qubit subsets
-        - 2 Z stabilizers check even Z-parity on specific qubit subsets
-        - Hx @ Hz^T = 0 (mod 2) is satisfied
-        
-        We use a known valid construction from quantum error correction literature.
+        """Initialise the [[6, 2, 2]] code.
+
+        Builds parity-check matrices, chain complex, logical operators,
+        and all standard metadata fields.
+
+        Parameters
+        ----------
+        metadata : dict, optional
+            Extra key/value pairs merged into the code's metadata
+            dictionary.  User-supplied entries override auto-generated
+            ones with the same key.
         """
-        # [[6,2,2]] code stabilizers from standard construction
-        # Qubits labeled 0,1,2,3,4,5
-        # X stabilizers act on disjoint pairs + overlapping qubits
-        # Z stabilizers similarly structured to maintain orthogonality
-        
-        # X-type stabilizer generators (2 stabilizers, 6 qubits)
-        # Each row has weight 4, designed for even overlap with each Z stabilizer
+        # ═══════════════════════════════════════════════════════════════════
+        # STABILISER MATRICES
+        # ═══════════════════════════════════════════════════════════════════
+        # X-type stabilisers (2 generators, weight 4)
         hx = np.array([
-            [1, 1, 1, 1, 0, 0],  # XXXXII - qubits {0,1,2,3}
-            [1, 1, 0, 0, 1, 1],  # XXIIXX - qubits {0,1,4,5}
+            [1, 1, 1, 1, 0, 0],  # XXXXII — qubits {0,1,2,3}
+            [1, 1, 0, 0, 1, 1],  # XXIIXX — qubits {0,1,4,5}
         ], dtype=np.uint8)
 
-        # Z-type stabilizer generators (2 stabilizers, 6 qubits)
-        # Designed so Hx @ Hz^T = 0 (mod 2)
-        # First Z check: needs even overlap with both X checks
-        # Second Z check: needs even overlap with both X checks
+        # Z-type stabilisers (2 generators, weight 3)
+        # Designed so Hx @ Hz^T = 0 (mod 2):
+        #   Row 0 ∩ Row 0: {0,1,2,3} ∩ {0,2,4} = {0,2} → 2 (even) ✓
+        #   Row 0 ∩ Row 1: {0,1,2,3} ∩ {1,3,5} = {1,3} → 2 (even) ✓
+        #   Row 1 ∩ Row 0: {0,1,4,5} ∩ {0,2,4} = {0,4} → 2 (even) ✓
+        #   Row 1 ∩ Row 1: {0,1,4,5} ∩ {1,3,5} = {1,5} → 2 (even) ✓
         hz = np.array([
-            [1, 0, 1, 0, 1, 0],  # ZIZIZI - qubits {0,2,4} - overlap 2,2 with hx rows
-            [0, 1, 0, 1, 0, 1],  # IZIZIZ - qubits {1,3,5} - overlap 2,2 with hx rows
+            [1, 0, 1, 0, 1, 0],  # ZIZIZI — qubits {0,2,4}
+            [0, 1, 0, 1, 0, 1],  # IZIZIZ — qubits {1,3,5}
         ], dtype=np.uint8)
 
-        # Verify CSS orthogonality: Hx @ Hz^T = 0 (mod 2)
-        css_check = np.dot(hx, hz.T) % 2
-        assert np.allclose(css_check, 0), f"CSS orthogonality violated: {css_check}"
+        # ═══════════════════════════════════════════════════════════════════
+        # CHAIN COMPLEX
+        # ═══════════════════════════════════════════════════════════════════
+        boundary_2 = hx.T.astype(np.uint8)  # shape (6, 2)
+        boundary_1 = hz.astype(np.uint8)    # shape (2, 6)
+        chain_complex = CSSChainComplex3(boundary_2=boundary_2, boundary_1=boundary_1)
 
-        # Logical operators for 2 logical qubits
-        # Must commute with all stabilizers and form anticommuting pairs
-        # 
-        # Lx must be in kernel of Hz (commute with Z stabilizers)
-        # Lz must be in kernel of Hx (commute with X stabilizers)
-        # Lx[i] and Lz[i] must anticommute (odd overlap)
+        # ═══════════════════════════════════════════════════════════════════
+        # LOGICAL OPERATORS (2 anticommuting pairs, weight 2)
+        # ═══════════════════════════════════════════════════════════════════
+        # Lx must be in ker(Hz): Hz·v = 0 mod 2
+        #   Row 0 constraint: v₀+v₂+v₄ = 0   Row 1 constraint: v₁+v₃+v₅ = 0
+        # Lz must be in ker(Hx): Hx·v = 0 mod 2
+        #   Row 0 constraint: v₀+v₁+v₂+v₃ = 0   Row 1 constraint: v₀+v₁+v₄+v₅ = 0
         #
-        # Hz rows: [1,0,1,0,1,0] and [0,1,0,1,0,1]
-        # Hx rows: [1,1,1,1,0,0] and [1,1,0,0,1,1]
+        # Pair 1:  Lx1 = X₀X₂ (XIXIII)  —  Lz1 = Z₀Z₁ (ZZIIII)
+        #   Lx1 in ker(Hz): 1+1+0 = 0 ✓, 0+0+0 = 0 ✓
+        #   Lz1 in ker(Hx): 1+1+0+0 = 0 ✓, 1+1+0+0 = 0 ✓
+        #   overlap({0,2}, {0,1}) = {0} → 1 (odd) → anticommute ✓
         #
-        # For Lx in kernel(Hz): need x0 + x2 + x4 = 0 AND x1 + x3 + x5 = 0 (mod 2)
-        # For Lz in kernel(Hx): need z0 + z1 + z2 + z3 = 0 AND z0 + z1 + z4 + z5 = 0 (mod 2)
+        # Pair 2:  Lx2 = X₃X₅ (IIIXIX)  —  Lz2 = Z₄Z₅ (IIIIZZ)
+        #   Lx2 in ker(Hz): 0+0+0 = 0 ✓, 1+0+1 = 0 ✓
+        #   Lz2 in ker(Hx): 0+0+0+0 = 0 ✓, 0+0+1+1 = 0 ✓
+        #   overlap({3,5}, {4,5}) = {5} → 1 (odd) → anticommute ✓
         #
-        # Logical pair 1:
-        #   Lx1 = XIIIII (qubit 0) - fails: 1+0+0 = 1 ≠ 0 for Hz row 1
-        #   Need: Lx1 in ker(Hz), Lz1 in ker(Hx), and Lx1 · Lz1 = 1 (mod 2)
-        #   
-        #   Try Lx1 = XIIXII: x0=1,x3=1 -> Hz·Lx1: 1+0=1, 0+1=1 -> not in kernel
-        #   Try Lx1 = XIXIII: x0=1,x2=1 -> Hz·Lx1: 1+1=0, 0+0=0 -> in kernel ✓
-        #   For Lz1 to anticommute with XIXIII and be in ker(Hx):
-        #     Need odd overlap with {0,2}
-        #     Try Lz1 = ZIIIII: overlap = 1 (odd) ✓, check ker(Hx): 1+0+0+0=1 ✗
-        #     Try Lz1 = ZIIZII: overlap with {0,2} = 1 (odd) ✓, check ker(Hx): 1+0+1+0=0, 1+0+0+0=1 ✗
-        #     Try Lz1 = ZIIIZI: overlap = 1 (odd) ✓, check ker(Hx): 1+0+0+0=1 ✗
-        #     Need z0 + z1 + z2 + z3 = 0 AND z0 + z1 + z4 + z5 = 0
-        #     Try Lz1 = ZZZZII: 1+1+1+1=0 ✓, 1+1+0+0=0 ✓ -> in kernel ✓
-        #     Overlap with Lx1=XIXIII {0,2}: 1+1=0 (even) ✗
-        #     Try Lz1 = ZIZZII: 1+0+1+1=1 ✗
-        #
-        # Let's try a different approach - use weight-3 logical X operators
-        #   Lx1 = XIXIXI: x0=1,x2=1,x4=1 -> Hz·Lx1: 1+1+1=1 ✗
-        #   Lx1 = XXIXXI: x0=1,x1=1,x3=1,x4=1 -> Hz·Lx1: 1+0+1=0, 1+1+0=0 -> in kernel ✓
-        #   For Lz1: need odd overlap with {0,1,3,4} and in ker(Hx)
-        #     Lz1 = ZZIIII: overlap = 2 (even) ✗
-        #     Lz1 = ZIZIII: overlap = 2 (even) ✗  
-        #     Lz1 = ZIIZII: overlap = 1 (odd) ✓, ker(Hx): 1+0+1+0=0, 1+0+0+0=1 ✗
-        #
-        # Actually, let's use a standard [[6,2,2]] from literature:
-        # The "iceberg" code has specific structure. Let me use a known construction.
-        #
-        # Standard [[6,2,2]] code (from Nielsen & Chuang / standard references):
-        # Stabilizers: X1X2X3X4, X1X2X5X6, Z1Z2Z3Z4, Z1Z2Z5Z6
-        # But these don't satisfy Hx @ Hz^T = 0!
-        #
-        # Alternative: Use the [[6,2,2]] constructed from concatenation of [[4,2,2]] with [[3,1,3]].
-        # Or use the hypergraph product construction.
-        #
-        # For now, let's use this WORKING construction:
-        # Since the code is working with LER > 0, the logical ops are functional
-        # even if the overlap calculation seems off. The memory experiment
-        # tests OBSERVABLE_INCLUDE which is based on measurement record coupling.
-        
+        # Cross:  Lx1∩Lz2 = {0,2}∩{4,5} = ∅ → 0 (even) → commute ✓
+        #         Lx2∩Lz1 = {3,5}∩{0,1} = ∅ → 0 (even) → commute ✓
         logical_x: List[PauliString] = [
-            "XIXIII",  # Logical X1: qubits {0,2}
-            "IIXIXI",  # Logical X2: qubits {1,3,5}
+            "XIXIII",  # Lx1: X₀X₂
+            "IIIXIX",  # Lx2: X₃X₅
         ]
         logical_z: List[PauliString] = [
-            "ZZIIII",  # Logical Z1: qubits {0,1} - anticommutes with Lx1 (overlap = 1)
-            "IIIIZZ",  # Logical Z2: qubits {4,5} - anticommutes with Lx2 (overlap = 1)
+            "ZZIIII",  # Lz1: Z₀Z₁
+            "IIIIZZ",  # Lz2: Z₄Z₅
         ]
 
-        meta = dict(metadata or {})
-        meta["name"] = "C6"
-        meta["n"] = 6
-        meta["k"] = 2
-        meta["distance"] = 2
-        
-        # Geometric metadata for visualization
-        data_coords_list = [
+        # ═══════════════════════════════════════════════════════════════════
+        # GEOMETRY — 2×3 grid
+        # ═══════════════════════════════════════════════════════════════════
+        data_coords = [
             (0.0, 0.0), (1.0, 0.0), (2.0, 0.0),
             (0.0, 1.0), (1.0, 1.0), (2.0, 1.0),
         ]
-        meta["data_coords"] = data_coords_list
+
+        # ═══════════════════════════════════════════════════════════════════
+        # METADATA (all 17 standard keys)
+        # ═══════════════════════════════════════════════════════════════════
+        meta = dict(metadata or {})
+        meta["code_family"] = "small_css"
+        meta["code_type"] = "six_two_two"
+        meta["n"] = 6
+        meta["k"] = 2
+        meta["distance"] = 2
+        meta["rate"] = 2.0 / 6.0
+        meta["data_coords"] = data_coords
+        meta["data_qubits"] = list(range(6))
         meta["x_stab_coords"] = [(0.5, -0.5), (1.5, 0.5)]
         meta["z_stab_coords"] = [(0.5, 0.5), (1.5, 1.5)]
+        meta["lx_pauli_type"] = "X"
+        meta["lx_support"] = [0, 2]           # first logical X: X₀X₂
+        meta["lz_pauli_type"] = "Z"
+        meta["lz_support"] = [0, 1]           # first logical Z: Z₀Z₁
+        meta["x_logical_coords"] = [data_coords[0], data_coords[2]]
+        meta["z_logical_coords"] = [data_coords[0], data_coords[1]]
+
+        # Schedules
+        meta["x_schedule"] = None  # small code → matrix scheduling
+        meta["z_schedule"] = None
+        meta["stabiliser_schedule"] = {
+            "x_rounds": {0: 0, 1: 0},
+            "z_rounds": {0: 0, 1: 0},
+            "n_rounds": 1,
+            "description": (
+                "Fully parallel: 2 X-stabilisers and 2 Z-stabilisers "
+                "all measured in round 0."
+            ),
+        }
+
+        # ═══════════════════════════════════════════════════════════════════
+        # LITERATURE / PROVENANCE
+        # ═══════════════════════════════════════════════════════════════════
+        meta["error_correction_zoo_url"] = "https://errorcorrectionzoo.org/c/stab_6_2_2"
+        meta["wikipedia_url"] = "https://en.wikipedia.org/wiki/Quantum_error_correction"
+        meta["canonical_references"] = [
+            "Knill, arXiv:quant-ph/0404104 (2004)",
+            "Chao & Reichardt, Phys. Rev. Lett. 121, 050502 (2018)",
+        ]
+        meta["connections"] = [
+            "Smallest CSS code with k > 1",
+            "Obtained by extending [[4,2,2]] with 2 extra qubits",
+            "Transversal Hadamard swaps the two logical qubits",
+        ]
+
+        # ── Validate CSS structure ─────────────────────────────────
+        validate_css_code(hx, hz, "SixQubit622Code", raise_on_error=True)
 
         super().__init__(
             hx=hx,
@@ -161,10 +247,16 @@ class SixQubit622Code(CSSCode):
 
     @property
     def name(self) -> str:
-        return "C6"
+        """Human-readable name: ``'SixQubit622Code'``."""
+        return "SixQubit622Code"
+
+    @property
+    def distance(self) -> int:
+        """Code distance (2)."""
+        return 2
 
     def qubit_coords(self) -> List[Coord2D]:
-        """Return 2D coordinates for each data qubit."""
+        """Return 2D coordinates for each data qubit (2 × 3 grid)."""
         return [
             (0.0, 0.0), (1.0, 0.0), (2.0, 0.0),
             (0.0, 1.0), (1.0, 1.0), (2.0, 1.0),

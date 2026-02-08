@@ -205,6 +205,74 @@ class CSSCode(HomologicalCode):
             stabs.append(pauli)
         return stabs
 
+    # =========================================================================
+    # Stabilizer Support Methods (Goal 2: Library integration)
+    # =========================================================================
+    
+    def get_z_stabilizers(self) -> List[List[int]]:
+        """
+        Get Z stabilizer supports as list of qubit index lists.
+        
+        Returns
+        -------
+        List[List[int]]
+            For each Z stabilizer, the list of qubit indices in its support.
+            
+        Example
+        -------
+        >>> code.get_z_stabilizers()
+        [[0, 1, 2, 3], [1, 2, 4, 5], [2, 3, 5, 6]]  # For Steane code
+        """
+        return [list(np.where(row)[0]) for row in self._hz]
+    
+    def get_x_stabilizers(self) -> List[List[int]]:
+        """
+        Get X stabilizer supports as list of qubit index lists.
+        
+        Returns
+        -------
+        List[List[int]]
+            For each X stabilizer, the list of qubit indices in its support.
+            
+        Example
+        -------
+        >>> code.get_x_stabilizers()
+        [[0, 1, 2, 3], [1, 2, 4, 5], [2, 3, 5, 6]]  # For Steane code
+        """
+        return [list(np.where(row)[0]) for row in self._hx]
+    
+    def get_logical_z_support(self, logical_idx: int = 0) -> List[int]:
+        """
+        Get support of logical Z operator.
+        
+        Parameters
+        ----------
+        logical_idx : int
+            Which logical qubit (default 0).
+            
+        Returns
+        -------
+        List[int]
+            Qubit indices in the logical Z operator's support.
+        """
+        return list(np.where(self.logical_z_array(logical_idx))[0])
+    
+    def get_logical_x_support(self, logical_idx: int = 0) -> List[int]:
+        """
+        Get support of logical X operator.
+        
+        Parameters
+        ----------
+        logical_idx : int
+            Which logical qubit (default 0).
+            
+        Returns
+        -------
+        List[int]
+            Qubit indices in the logical X operator's support.
+        """
+        return list(np.where(self.logical_x_array(logical_idx))[0])
+
     # --- CSS-specific properties ---
 
     @property
@@ -649,6 +717,30 @@ class CSSCode(HomologicalCode):
         return self._metadata.get('plus_encoding_cnots')
     
     @property
+    def plus_state_h_qubits(self) -> Optional[List[int]]:
+        """
+        Qubits to apply H gates for TRUE |+⟩_L preparation (Lx = +1 eigenstate).
+        
+        This uses the UNIVERSAL FORMULA for any CSS code:
+          H on complement(zero_h_qubits)
+          Reversed CNOTs from zero_encoding_cnots
+        
+        This is different from plus_h_qubits, which creates a "standard encoding"
+        state with 50/50 Lz=0/Lz=1 (useful for L2 inner blocks).
+        """
+        return self._metadata.get('plus_state_h_qubits')
+    
+    @property
+    def plus_state_encoding_cnots(self) -> Optional[List[Tuple[int, int]]]:
+        """
+        CNOT gates for TRUE |+⟩_L preparation (Lx = +1 eigenstate).
+        
+        Uses reversed CNOTs from zero_encoding_cnots (control <-> target swapped).
+        This creates |+⟩_L = (|0⟩_L + |1⟩_L)/√2 with deterministic Lx=+1.
+        """
+        return self._metadata.get('plus_state_encoding_cnots')
+    
+    @property
     def requires_direct_plus_prep(self) -> bool:
         """
         Check if this code requires direct |+⟩_L preparation.
@@ -925,7 +1017,24 @@ class CSSCode(HomologicalCode):
     # =========================================================================
     # FT Gadget Experiment Hooks (CSS-specific)
     # =========================================================================
-    
+
+    def stabilizer_coords(self) -> Optional[List[Tuple[float, ...]]]:
+        """
+        Combined stabilizer coordinates (X then Z) for detector assignment.
+        
+        Returns None if neither X nor Z stabilizer coords are available.
+        """
+        x_coords = self.get_x_stabilizer_coords()
+        z_coords = self.get_z_stabilizer_coords()
+        if x_coords is None and z_coords is None:
+            return None
+        result = []
+        if x_coords is not None:
+            result.extend(x_coords)
+        if z_coords is not None:
+            result.extend(z_coords)
+        return result if result else None
+
     def get_x_stabilizer_coords(self) -> Optional[List[Tuple[float, ...]]]:
         """
         Get coordinates for X stabilizer ancillas.
@@ -1177,6 +1286,56 @@ class CSSCodeWithComplex(CSSCode):
         """Whether this code has metacheck structure for single-shot correction."""
         return self.meta_x is not None or self.meta_z is not None
 
+    def validate_chain_complex(self) -> Dict[str, Any]:
+        """Validate the chain complex satisfies ∂² = 0 and report diagnostics.
+
+        Checks every consecutive pair of boundary maps
+        (∂_{k-1} ∘ ∂_k = 0 mod 2) and returns a summary dict.
+
+        Returns
+        -------
+        dict
+            ``{"valid": bool, "grades_checked": list[tuple],
+              "boundary_shapes": dict, "failures": list[str]}``
+
+        Raises
+        ------
+        RuntimeError
+            If ``valid`` is ``False`` (any ∂² ≠ 0).
+
+        Examples
+        --------
+        >>> code = RotatedSurfaceCode(distance=3)
+        >>> info = code.validate_chain_complex()
+        >>> info["valid"]
+        True
+        """
+        cc = self._chain_complex
+        result: Dict[str, Any] = {
+            "valid": True,
+            "grades_checked": [],
+            "boundary_shapes": {},
+            "failures": [],
+        }
+        for k, sigma_k in sorted(cc.boundary_maps.items()):
+            result["boundary_shapes"][k] = sigma_k.shape
+            prev = k - 1
+            if prev in cc.boundary_maps:
+                comp = (cc.boundary_maps[prev] @ sigma_k) % 2
+                pair = (prev, k)
+                result["grades_checked"].append(pair)
+                if np.any(comp):
+                    result["valid"] = False
+                    result["failures"].append(
+                        f"∂_{prev} ∘ ∂_{k} ≠ 0  (non-zero entries: "
+                        f"{int(np.sum(comp))})"
+                    )
+        if not result["valid"]:
+            raise RuntimeError(
+                f"Chain complex ∂²≠0 failures: {result['failures']}"
+            )
+        return result
+
 
 class TopologicalCSSCode(CSSCodeWithComplex, TopologicalCode):
     """
@@ -1360,6 +1519,58 @@ class TopologicalCSSCode3D(CSSCode, TopologicalCode):
         """Return 3D coordinates for data qubits."""
         coords = self.cell_coords(1)  # Typically qubits on edges
         return coords if coords else None
+
+    def validate_chain_complex(self) -> Dict[str, Any]:
+        """Validate ∂²=0 for the stored chain complex.
+
+        Delegates to the same logic as ``CSSCodeWithComplex.validate_chain_complex``.
+
+        Returns
+        -------
+        dict
+            ``{"valid": bool, "grades_checked": [...], "boundary_shapes": {...},
+            "failures": [...]}``
+
+        Raises
+        ------
+        RuntimeError
+            If any consecutive boundary map pair has ∂²≠0.
+        AttributeError
+            If no chain complex is stored.
+        """
+        cc = self._chain_complex
+        if cc is None:
+            raise AttributeError("No chain complex stored on this code.")
+        grades_checked: List[Tuple[int, int]] = []
+        failures: List[str] = []
+        shapes: Dict[str, Tuple[int, ...]] = {}
+        sorted_grades = sorted(cc.boundary_maps.keys())
+        for idx in range(len(sorted_grades) - 1):
+            k_lo = sorted_grades[idx]
+            k_hi = sorted_grades[idx + 1]
+            sigma_lo = cc.boundary_maps[k_lo]
+            sigma_hi = cc.boundary_maps[k_hi]
+            shapes[f"sigma_{k_lo}"] = sigma_lo.shape
+            shapes[f"sigma_{k_hi}"] = sigma_hi.shape
+            comp = (sigma_lo @ sigma_hi) % 2
+            grades_checked.append((k_lo, k_hi))
+            if np.any(comp):
+                failures.append(
+                    f"sigma_{k_lo} @ sigma_{k_hi} != 0  "
+                    f"(shapes {sigma_lo.shape} @ {sigma_hi.shape}, "
+                    f"nonzero entries: {int(np.sum(comp))})"
+                )
+        result = {
+            "valid": len(failures) == 0,
+            "grades_checked": grades_checked,
+            "boundary_shapes": shapes,
+            "failures": failures,
+        }
+        if failures:
+            raise RuntimeError(
+                f"Chain complex validation FAILED:\n" + "\n".join(failures)
+            )
+        return result
 
 
 class TopologicalCSSCode4D(CSSCodeWithComplex, TopologicalCode):

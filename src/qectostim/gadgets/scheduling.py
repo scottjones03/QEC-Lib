@@ -1,520 +1,335 @@
-# src/qectostim/gadgets/scheduling.py
 """
-Parallel Gate Scheduler for Gadget Circuits.
+Stabilizer Scheduling Module for Deterministic Detector Emission.
 
-Schedules gates for maximum parallelism while respecting qubit constraints.
-Supports both geometric scheduling (for topological codes with explicit schedules)
-and graph-coloring-based scheduling (fallback for arbitrary codes).
+═══════════════════════════════════════════════════════════════════════════════
+OVERVIEW
+═══════════════════════════════════════════════════════════════════════════════
 
-Key features:
-- CircuitLayer abstraction for time slices
-- Geometric scheduling using x_schedule/z_schedule from code metadata
-- Greedy graph coloring for conflict-free CNOT layers
-- Stim circuit generation with proper TICK and SHIFT_COORDS
+This module provides scheduling logic to maximize deterministic detector coverage.
+The key insight is that stabilizer measurement ORDER determines which detectors
+can be made deterministic:
+
+**ANCHOR DETECTORS** (after preparation):
+- If preparing in basis B (e.g., |0⟩ = Z basis, |+⟩ = X basis):
+- B-type stabilizers measured FIRST can have anchor detectors
+- Because B-stabilizers are deterministic immediately after B-basis prep
+
+**BOUNDARY DETECTORS** (before destructive measurement):  
+- If measuring in basis B:
+- B-type stabilizers measured LAST can have boundary detectors
+- Because B-stabilizer syndrome correlates with final B-basis data measurement
+
+═══════════════════════════════════════════════════════════════════════════════
+EXAMPLE: |0⟩ preparation, Z-basis measurement
+═══════════════════════════════════════════════════════════════════════════════
+
+Preparation |0⟩ → Z stabilizers are eigenvalue +1 (deterministic)
+First round: Measure Z first, X second
+  → Z anchor detectors compare first Z syndrome to deterministic 0
+
+Final measurement MZ → Z stabilizers correlate with data Z products
+Last round: Measure X first, Z last  
+  → Z boundary detectors compare last Z syndrome to MZ data products
+
+═══════════════════════════════════════════════════════════════════════════════
+GATE OPTIMIZATION
+═══════════════════════════════════════════════════════════════════════════════
+
+We prefer RX/MX over H gates where possible:
+- |+⟩ preparation: Use RX instead of R + H
+- X-basis measurement: Use MX instead of H + M
+- This avoids extra noisy H gates
+
+═══════════════════════════════════════════════════════════════════════════════
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Tuple, Optional, Dict, Any, Set
-from collections import defaultdict
-import numpy as np
-import stim
+from enum import Enum
+from typing import Dict, List, Optional
 
-from qectostim.gadgets.layout import GadgetLayout
-from qectostim.gadgets.coordinates import (
-    CoordND,
-    emit_qubit_coords_nd,
-    emit_detector_nd,
-    pad_coord_to_dim,
-)
-from qectostim.utils.scheduling_core import graph_coloring_cnots
+
+class StabilizerBasis(Enum):
+    """
+    Stabilizer basis types.
+    
+    Values match qectostim.experiments.stabilizer_rounds.base.StabilizerBasis
+    to allow seamless comparison and usage.
+    """
+    X = "x"
+    Z = "z"
+    BOTH = "both"
 
 
 @dataclass
-class CircuitLayer:
+class RoundSchedule:
     """
-    A single time slice of parallelizable operations.
+    Scheduling decision for a single round of stabilizer measurements.
     
-    All operations within a layer can be executed simultaneously
-    (no qubit conflicts).
-    """
-    
-    time: float = 0.0
-    resets: List[int] = field(default_factory=list)
-    single_qubit_gates: Dict[str, List[int]] = field(default_factory=dict)
-    two_qubit_gates: Dict[str, List[Tuple[int, int]]] = field(default_factory=dict)
-    measurements: List[int] = field(default_factory=list)
-    measurement_reset: bool = False  # Use MR instead of M
-    
-    def add_single_gate(self, gate_name: str, qubit: int) -> None:
-        """Add a single-qubit gate."""
-        if gate_name not in self.single_qubit_gates:
-            self.single_qubit_gates[gate_name] = []
-        self.single_qubit_gates[gate_name].append(qubit)
-    
-    def add_two_qubit_gate(self, gate_name: str, q1: int, q2: int) -> None:
-        """Add a two-qubit gate."""
-        if gate_name not in self.two_qubit_gates:
-            self.two_qubit_gates[gate_name] = []
-        self.two_qubit_gates[gate_name].append((q1, q2))
-    
-    def get_all_qubits(self) -> Set[int]:
-        """Get all qubits involved in this layer."""
-        qubits = set(self.resets)
-        for gate_qubits in self.single_qubit_gates.values():
-            qubits.update(gate_qubits)
-        for gate_pairs in self.two_qubit_gates.values():
-            for q1, q2 in gate_pairs:
-                qubits.add(q1)
-                qubits.add(q2)
-        qubits.update(self.measurements)
-        return qubits
-    
-    def is_empty(self) -> bool:
-        """Check if layer has no operations."""
-        return (
-            not self.resets and 
-            not self.single_qubit_gates and 
-            not self.two_qubit_gates and 
-            not self.measurements
-        )
-    
-    def to_stim(self, circuit: stim.Circuit) -> None:
-        """Append this layer's operations to a Stim circuit."""
-        # Resets first
-        if self.resets:
-            circuit.append("R", self.resets)
-        
-        # Single-qubit gates
-        for gate_name, qubits in self.single_qubit_gates.items():
-            if qubits:
-                circuit.append(gate_name, qubits)
-        
-        # Two-qubit gates
-        for gate_name, pairs in self.two_qubit_gates.items():
-            for q1, q2 in pairs:
-                circuit.append(gate_name, [q1, q2])
-        
-        # Measurements
-        if self.measurements:
-            if self.measurement_reset:
-                circuit.append("MR", self.measurements)
-            else:
-                circuit.append("M", self.measurements)
-
-
-class GadgetScheduler:
-    """
-    Schedules operations for a gadget circuit with maximum parallelism.
-    
-    Uses geometric scheduling when available (codes with x_schedule/z_schedule),
-    otherwise falls back to greedy graph coloring.
-    
-    Parameters
+    Attributes
     ----------
-    layout : GadgetLayout
-        The spatial layout of code blocks.
-        
-    Examples
-    --------
-    >>> scheduler = GadgetScheduler(layout)
-    >>> scheduler.schedule_transversal_gate("H", "control")
-    >>> scheduler.schedule_stabilizer_round("control", "x")
-    >>> circuit = scheduler.to_stim()
+    first_basis : StabilizerBasis
+        Which stabilizer type to measure first in this round.
+    last_basis : StabilizerBasis
+        Which stabilizer type to measure last in this round.
+    is_anchor_round : bool
+        Whether this is the first round (anchor detectors possible).
+    is_boundary_round : bool
+        Whether this is the last round (boundary detectors possible).
+    anchor_basis : Optional[StabilizerBasis]
+        Which basis has deterministic anchor detectors (if anchor round).
+    boundary_basis : Optional[StabilizerBasis]
+        Which basis has deterministic boundary detectors (if boundary round).
+    """
+    first_basis: StabilizerBasis
+    last_basis: StabilizerBasis
+    is_anchor_round: bool = False
+    is_boundary_round: bool = False
+    anchor_basis: Optional[StabilizerBasis] = None
+    boundary_basis: Optional[StabilizerBasis] = None
+
+
+@dataclass
+class BlockSchedule:
+    """
+    Complete scheduling for a code block across all rounds.
+    
+    Attributes
+    ----------
+    block_name : str
+        Name of the code block.
+    prep_basis : str
+        Preparation basis: "0" for |0⟩, "+" for |+⟩.
+    meas_basis : str
+        Final measurement basis: "Z" or "X".
+    round_schedules : List[RoundSchedule]
+        Per-round scheduling decisions.
+    use_rx_prep : bool
+        Whether to use RX instead of R+H for |+⟩ prep.
+    use_mx_meas : bool
+        Whether to use MX instead of H+M for X-basis meas.
+    """
+    block_name: str
+    prep_basis: str
+    meas_basis: str
+    round_schedules: List[RoundSchedule] = field(default_factory=list)
+    use_rx_prep: bool = True      # Prefer RX over R+H
+    use_mx_meas: bool = True      # Prefer MX over H+M
+
+
+class StabilizerScheduler:
+    """
+    Scheduler for stabilizer measurements to maximize deterministic detectors.
+    
+    This class computes optimal scheduling based on:
+    - Preparation basis (determines anchor detector determinism)
+    - Measurement basis (determines boundary detector determinism)
+    - Gate transformations (determines crossing detector structure)
+    
+    Usage:
+        scheduler = StabilizerScheduler()
+        schedule = scheduler.compute_schedule(
+            prep_basis="0",
+            meas_basis="Z", 
+            num_rounds=5,
+        )
+        # schedule.first_round_basis -> StabilizerBasis.Z (for anchors)
+        # schedule.last_round_basis -> StabilizerBasis.Z (for boundaries)
     """
     
-    def __init__(self, layout: GadgetLayout):
-        self.layout = layout
-        self.layers: List[CircuitLayer] = []
-        self.current_time: float = 0.0
-        self._measurement_index = 0
-        self._detector_info: List[Tuple[CoordND, float, List[int]]] = []
-        self._observable_info: List[Tuple[int, List[int]]] = []
+    def __init__(self):
+        """Initialize the scheduler."""
+        pass
     
-    def add_layer(self, layer: Optional[CircuitLayer] = None) -> CircuitLayer:
-        """Add a new layer (time slice) to the schedule."""
-        if layer is None:
-            layer = CircuitLayer(time=self.current_time)
+    def get_anchor_deterministic_basis(
+        self,
+        prep_basis: str,
+    ) -> StabilizerBasis:
+        """
+        Determine which stabilizer basis is deterministic after preparation.
+        
+        |0⟩ preparation: Z stabilizers are +1 eigenvalue (deterministic)
+        |+⟩ preparation: X stabilizers are +1 eigenvalue (deterministic)
+        
+        Parameters
+        ----------
+        prep_basis : str
+            Preparation basis: "0" for |0⟩, "+" for |+⟩.
+            
+        Returns
+        -------
+        StabilizerBasis
+            The basis whose stabilizers are deterministic after prep.
+        """
+        if prep_basis == "0":
+            return StabilizerBasis.Z
+        elif prep_basis == "+":
+            return StabilizerBasis.X
         else:
-            layer.time = self.current_time
-        self.layers.append(layer)
-        return layer
+            raise ValueError(f"Unknown prep basis: {prep_basis}")
     
-    def advance_time(self, delta: float = 1.0) -> None:
-        """Advance the current time."""
-        self.current_time += delta
-    
-    def schedule_resets(self, qubits: List[int]) -> CircuitLayer:
-        """Schedule reset operations on given qubits."""
-        layer = self.add_layer()
-        layer.resets = list(qubits)
-        self.advance_time()
-        return layer
-    
-    def schedule_transversal_gate(
+    def get_boundary_deterministic_basis(
         self,
-        gate_name: str,
-        block_name: str,
-        target_qubits: Optional[List[int]] = None,
-    ) -> CircuitLayer:
+        meas_basis: str,
+    ) -> StabilizerBasis:
         """
-        Schedule a transversal (parallel) single-qubit gate on a block.
+        Determine which stabilizer basis has deterministic boundary detectors.
+        
+        MZ measurement: Z stabilizers correlate with MZ products (deterministic)
+        MX measurement: X stabilizers correlate with MX products (deterministic)
         
         Parameters
         ----------
-        gate_name : str
-            Gate name (e.g., 'H', 'S', 'T').
+        meas_basis : str
+            Measurement basis: "Z" for MZ, "X" for MX.
+            
+        Returns
+        -------
+        StabilizerBasis
+            The basis whose boundary detectors are deterministic.
+        """
+        if meas_basis.upper() == "Z":
+            return StabilizerBasis.Z
+        elif meas_basis.upper() == "X":
+            return StabilizerBasis.X
+        else:
+            raise ValueError(f"Unknown meas basis: {meas_basis}")
+    
+    def compute_block_schedule(
+        self,
+        block_name: str,
+        prep_basis: str,
+        meas_basis: str,
+        num_rounds: int,
+        default_ordering: Optional[str] = None,
+    ) -> BlockSchedule:
+        """
+        Compute complete scheduling for a single code block.
+        
+        Parameters
+        ----------
         block_name : str
             Name of the code block.
-        target_qubits : List[int], optional
-            Specific global qubit indices. If None, applies to all data qubits.
+        prep_basis : str
+            Preparation basis: "0" or "+".
+        meas_basis : str
+            Final measurement basis: "Z" or "X".
+        num_rounds : int
+            Total number of syndrome measurement rounds.
+        default_ordering : Optional[str]
+            Override for middle-round ordering: "Z_FIRST" or "X_FIRST".
+            When None, uses Z-first as default for middle rounds.
             
         Returns
         -------
-        CircuitLayer
-            The layer containing the transversal gate.
+        BlockSchedule
+            Complete scheduling for the block.
         """
-        if target_qubits is None:
-            target_qubits = self.layout.get_block_data_qubits(block_name)
+        anchor_basis = self.get_anchor_deterministic_basis(prep_basis)
+        boundary_basis = self.get_boundary_deterministic_basis(meas_basis)
         
-        layer = self.add_layer()
-        layer.single_qubit_gates[gate_name] = list(target_qubits)
-        self.advance_time()
-        return layer
-    
-    def schedule_transversal_two_qubit_gate(
-        self,
-        gate_name: str,
-        block_name_a: str,
-        block_name_b: str,
-    ) -> CircuitLayer:
-        """
-        Schedule a transversal two-qubit gate between two blocks.
+        # Determine prep/meas gate optimization
+        use_rx = (prep_basis == "+")
+        use_mx = (meas_basis.upper() == "X")
         
-        Pairs qubits by index: qubit i of block A with qubit i of block B.
-        Blocks must have the same number of data qubits.
-        
-        Parameters
-        ----------
-        gate_name : str
-            Gate name (e.g., 'CNOT', 'CZ').
-        block_name_a : str
-            First block (control for CNOT).
-        block_name_b : str
-            Second block (target for CNOT).
+        round_schedules = []
+        for r in range(num_rounds):
+            is_first = (r == 0)
+            is_last = (r == num_rounds - 1)
             
-        Returns
-        -------
-        CircuitLayer
-            The layer containing the transversal two-qubit gate.
-        """
-        qubits_a = self.layout.get_block_data_qubits(block_name_a)
-        qubits_b = self.layout.get_block_data_qubits(block_name_b)
-        
-        if len(qubits_a) != len(qubits_b):
-            raise ValueError(
-                f"Blocks have different sizes: {block_name_a}={len(qubits_a)}, "
-                f"{block_name_b}={len(qubits_b)}"
+            if is_first and is_last:
+                # Single round: anchor takes priority, but try to accommodate both
+                # Anchor needs deterministic first; boundary needs deterministic last
+                # If same basis, easy: that basis first AND last (measure once)
+                # If different, anchor wins (measure anchor basis first)
+                if anchor_basis == boundary_basis:
+                    first = anchor_basis
+                    last = anchor_basis
+                else:
+                    # Conflict: anchor wins for first round
+                    first = anchor_basis
+                    other = StabilizerBasis.X if anchor_basis == StabilizerBasis.Z else StabilizerBasis.Z
+                    last = other
+            elif is_first:
+                # First round: anchor deterministic basis first
+                first = anchor_basis
+                other = StabilizerBasis.X if anchor_basis == StabilizerBasis.Z else StabilizerBasis.Z
+                last = other
+            elif is_last:
+                # Last round: boundary deterministic basis last
+                other = StabilizerBasis.X if boundary_basis == StabilizerBasis.Z else StabilizerBasis.Z
+                first = other
+                last = boundary_basis
+            else:
+                # Middle rounds: use gadget's requested ordering or default (Z first, X second)
+                if default_ordering == "X_FIRST":
+                    first = StabilizerBasis.X
+                    last = StabilizerBasis.Z
+                else:
+                    # Default: Z first, X second
+                    first = StabilizerBasis.Z
+                    last = StabilizerBasis.X
+            
+            schedule = RoundSchedule(
+                first_basis=first,
+                last_basis=last,
+                is_anchor_round=is_first,
+                is_boundary_round=is_last,
+                anchor_basis=anchor_basis if is_first else None,
+                boundary_basis=boundary_basis if is_last else None,
             )
+            round_schedules.append(schedule)
         
-        layer = self.add_layer()
-        layer.two_qubit_gates[gate_name] = list(zip(qubits_a, qubits_b))
-        self.advance_time()
-        return layer
-    
-    def schedule_stabilizer_round(
-        self,
-        block_name: str,
-        stab_type: str = "both",  # "x", "z", or "both"
-        use_measurement_reset: bool = True,
-    ) -> List[CircuitLayer]:
-        """
-        Schedule a full stabilizer measurement round for a block.
-        
-        Uses geometric scheduling if the code has x_schedule/z_schedule metadata,
-        otherwise falls back to greedy graph coloring.
-        
-        Parameters
-        ----------
-        block_name : str
-            Name of the code block.
-        stab_type : str
-            Which stabilizers to measure: "x", "z", or "both".
-        use_measurement_reset : bool
-            Whether to use MR (measure+reset) instead of M.
-            
-        Returns
-        -------
-        List[CircuitLayer]
-            The layers comprising the stabilizer round.
-        """
-        block = self.layout.blocks.get(block_name)
-        if block is None:
-            return []
-        
-        code = block.code
-        layers = []
-        
-        # Get stabilizer matrices - safely handle non-CSS codes
-        # CSS codes define hx/hz as @property returning numpy arrays
-        # Non-CSS codes may not have these or may have them as methods
-        hx_raw = getattr(code, 'hx', None)
-        hz_raw = getattr(code, 'hz', None)
-        # Only use if it's actually a numpy array (has .shape attribute)
-        hx = hx_raw if hx_raw is not None and hasattr(hx_raw, 'shape') else None
-        hz = hz_raw if hz_raw is not None and hasattr(hz_raw, 'shape') else None
-        
-        # Get scheduling info from metadata
-        meta = getattr(code, '_metadata', {}) or {}
-        x_schedule = meta.get('x_schedule')
-        z_schedule = meta.get('z_schedule')
-        data_coords = meta.get('data_coords', [])
-        x_stab_coords = meta.get('x_stab_coords', [])
-        z_stab_coords = meta.get('z_stab_coords', [])
-        
-        data_qubits = self.layout.get_block_data_qubits(block_name)
-        x_ancillas = self.layout.get_block_x_ancillas(block_name)
-        z_ancillas = self.layout.get_block_z_ancillas(block_name)
-        
-        # Check if we can use geometric scheduling
-        use_geo_x = (
-            x_schedule is not None and 
-            data_coords and 
-            x_stab_coords and 
-            len(x_stab_coords) == len(x_ancillas)
+        return BlockSchedule(
+            block_name=block_name,
+            prep_basis=prep_basis,
+            meas_basis=meas_basis.upper(),
+            round_schedules=round_schedules,
+            use_rx_prep=use_rx,
+            use_mx_meas=use_mx,
         )
-        use_geo_z = (
-            z_schedule is not None and 
-            data_coords and 
-            z_stab_coords and 
-            len(z_stab_coords) == len(z_ancillas)
-        )
-        
-        # Build coordinate lookup for geometric scheduling
-        coord_to_data = {}
-        if data_coords:
-            for local_idx, coord in enumerate(data_coords):
-                coord_to_data[tuple(coord)] = data_qubits[local_idx] if local_idx < len(data_qubits) else None
-        
-        # Schedule X stabilizers
-        if stab_type in ("x", "both") and hx is not None and len(x_ancillas) > 0:
-            # Prepare X ancillas (H gate)
-            h_layer = self.add_layer()
-            h_layer.single_qubit_gates["H"] = list(x_ancillas)
-            self.advance_time()
-            layers.append(h_layer)
-            
-            if use_geo_x:
-                # Geometric scheduling: one TICK per phase
-                for dx, dy in x_schedule:
-                    cnot_layer = self.add_layer()
-                    for s_idx, (sx, sy) in enumerate(x_stab_coords):
-                        if s_idx >= len(x_ancillas):
-                            continue
-                        anc = x_ancillas[s_idx]
-                        nbr = (float(sx) + dx, float(sy) + dy)
-                        dq = coord_to_data.get(nbr)
-                        if dq is not None:
-                            cnot_layer.add_two_qubit_gate("CNOT", dq, anc)
-                    self.advance_time()
-                    layers.append(cnot_layer)
-            else:
-                # Fallback: use graph coloring for conflict-free CNOT layers
-                layers.extend(self._schedule_stabilizers_graph_coloring(
-                    hx, data_qubits, x_ancillas
-                ))
-            
-            # Final H on X ancillas
-            h_layer2 = self.add_layer()
-            h_layer2.single_qubit_gates["H"] = list(x_ancillas)
-            self.advance_time()
-            layers.append(h_layer2)
-            
-            # Measure X ancillas
-            meas_layer = self.add_layer()
-            meas_layer.measurements = list(x_ancillas)
-            meas_layer.measurement_reset = use_measurement_reset
-            self.advance_time()
-            layers.append(meas_layer)
-        
-        # Schedule Z stabilizers
-        if stab_type in ("z", "both") and hz is not None and len(z_ancillas) > 0:
-            if use_geo_z:
-                # Geometric scheduling
-                for dx, dy in z_schedule:
-                    cnot_layer = self.add_layer()
-                    for s_idx, (sx, sy) in enumerate(z_stab_coords):
-                        if s_idx >= len(z_ancillas):
-                            continue
-                        anc = z_ancillas[s_idx]
-                        nbr = (float(sx) + dx, float(sy) + dy)
-                        dq = coord_to_data.get(nbr)
-                        if dq is not None:
-                            cnot_layer.add_two_qubit_gate("CNOT", dq, anc)
-                    self.advance_time()
-                    layers.append(cnot_layer)
-            else:
-                # Fallback: graph coloring
-                layers.extend(self._schedule_stabilizers_graph_coloring(
-                    hz, data_qubits, z_ancillas
-                ))
-            
-            # Measure Z ancillas
-            meas_layer = self.add_layer()
-            meas_layer.measurements = list(z_ancillas)
-            meas_layer.measurement_reset = use_measurement_reset
-            self.advance_time()
-            layers.append(meas_layer)
-        
-        return layers
     
-    def _schedule_stabilizers_graph_coloring(
-        self,
-        stab_matrix: np.ndarray,
-        data_qubits: List[int],
-        ancilla_qubits: List[int],
-    ) -> List[CircuitLayer]:
+    def get_reset_instruction(self, basis: str) -> str:
         """
-        Schedule CNOT gates using greedy graph coloring.
-        
-        Creates conflict-free layers where no qubit is used twice.
+        Get the Stim instruction for reset in given basis.
         
         Parameters
         ----------
-        stab_matrix : np.ndarray
-            Stabilizer matrix (n_stabs x n_data).
-        data_qubits : List[int]
-            Global indices of data qubits.
-        ancilla_qubits : List[int]
-            Global indices of ancilla qubits.
+        basis : str
+            "Z" for |0⟩, "X" for |+⟩.
             
         Returns
         -------
-        List[CircuitLayer]
-            CNOT layers with no conflicts.
+        str
+            "R" for Z-basis, "RX" for X-basis.
         """
-        if stab_matrix is None or stab_matrix.size == 0:
-            return []
-        
-        n_stabs, n_data = stab_matrix.shape
-        
-        # Collect all CNOT operations: (data_qubit, ancilla_qubit)
-        all_cnots = []
-        for s_idx in range(min(n_stabs, len(ancilla_qubits))):
-            anc = ancilla_qubits[s_idx]
-            for d_idx in range(min(n_data, len(data_qubits))):
-                if stab_matrix[s_idx, d_idx]:
-                    dq = data_qubits[d_idx]
-                    all_cnots.append((dq, anc))
-        
-        if not all_cnots:
-            return []
-        
-        # Use shared graph coloring algorithm
-        layers_data = graph_coloring_cnots(all_cnots)
-        
-        # Convert to CircuitLayer objects
-        result = []
-        for layer_cnots in layers_data:
-            layer = self.add_layer()
-            layer.two_qubit_gates["CNOT"] = layer_cnots
-            self.advance_time()
-            result.append(layer)
-        
-        return result
+        if basis.upper() == "Z":
+            return "R"
+        elif basis.upper() == "X":
+            return "RX"
+        else:
+            raise ValueError(f"Unknown basis: {basis}")
     
-    def schedule_measurements(
-        self,
-        qubits: List[int],
-        use_reset: bool = False,
-    ) -> CircuitLayer:
-        """Schedule measurement operations."""
-        layer = self.add_layer()
-        layer.measurements = list(qubits)
-        layer.measurement_reset = use_reset
-        self.advance_time()
-        return layer
-    
-    def add_detector(
-        self,
-        coord: CoordND,
-        measurement_indices: List[int],
-    ) -> None:
+    def get_meas_reset_instruction(self, basis: str) -> str:
         """
-        Register a detector to be emitted.
+        Get the Stim instruction for measure-and-reset in given basis.
         
         Parameters
         ----------
-        coord : CoordND
-            Spatial coordinate for the detector.
-        measurement_indices : List[int]
-            Absolute measurement record indices.
-        """
-        self._detector_info.append((coord, self.current_time, measurement_indices))
-    
-    def add_observable(
-        self,
-        observable_idx: int,
-        measurement_indices: List[int],
-    ) -> None:
-        """
-        Register an observable to be emitted.
-        
-        Parameters
-        ----------
-        observable_idx : int
-            Logical observable index.
-        measurement_indices : List[int]
-            Absolute measurement record indices.
-        """
-        self._observable_info.append((observable_idx, measurement_indices))
-    
-    def to_stim(self, include_coords: bool = True) -> stim.Circuit:
-        """
-        Convert the scheduled layers to a Stim circuit.
-        
-        Parameters
-        ----------
-        include_coords : bool
-            Whether to emit QUBIT_COORDS instructions.
+        basis : str
+            "Z" for computational, "X" for Hadamard.
             
         Returns
         -------
-        stim.Circuit
-            The complete Stim circuit.
+        str
+            "MR" for Z-basis, "MRX" for X-basis.
         """
-        circuit = stim.Circuit()
-        
-        # Emit QUBIT_COORDS
-        if include_coords:
-            for global_idx, coord in sorted(self.layout.qubit_map.global_coords.items()):
-                emit_qubit_coords_nd(circuit, global_idx, coord)
-        
-        # Emit layers with TICKs
-        for i, layer in enumerate(self.layers):
-            if not layer.is_empty():
-                layer.to_stim(circuit)
-                # Track measurements
-                n_meas = len(layer.measurements)
-                self._measurement_index += n_meas
-            
-            # Add TICK between layers (except after last)
-            if i < len(self.layers) - 1:
-                circuit.append("TICK")
-        
-        # Emit detectors
-        for coord, time, meas_indices in self._detector_info:
-            emit_detector_nd(circuit, meas_indices, coord, time, self._measurement_index)
-        
-        # Emit observables
-        for obs_idx, meas_indices in self._observable_info:
-            if meas_indices:
-                lookbacks = [idx - self._measurement_index for idx in meas_indices]
-                targets = [stim.target_rec(lb) for lb in lookbacks]
-                circuit.append("OBSERVABLE_INCLUDE", targets, obs_idx)
-        
-        return circuit
-    
-    def get_measurement_count(self) -> int:
-        """Get total number of measurements scheduled."""
-        return sum(len(layer.measurements) for layer in self.layers)
+        if basis.upper() == "Z":
+            return "MR"
+        elif basis.upper() == "X":
+            return "MRX"
+        else:
+            raise ValueError(f"Unknown basis: {basis}")
+
+
+

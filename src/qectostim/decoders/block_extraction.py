@@ -642,6 +642,489 @@ def soft_xor_llr(qubit_llrs: np.ndarray, support: np.ndarray) -> float:
 
 
 # =============================================================================
+# Sub-DEM Extraction (coordinate-based partitioning for hierarchical decoding)
+# =============================================================================
+
+def build_detector_block_map(
+    dem: 'stim.DetectorErrorModel',
+) -> Tuple[Dict[int, int], Dict[int, list]]:
+    """
+    Build a mapping from detector index to block ID using DEM coordinates.
+
+    Detector coordinates are assigned by the circuit builder:
+    - coord[0] = block_id (0..n_blocks-1 for inner, >=7 for outer/ancilla)
+
+    Parameters
+    ----------
+    dem : stim.DetectorErrorModel
+        The detector error model with coordinates.
+
+    Returns
+    -------
+    det_to_block : Dict[int, int]
+        Mapping from detector index to block_id.
+    block_to_dets : Dict[int, list]
+        Mapping from block_id to sorted list of detector indices.
+    """
+    coords = dem.get_detector_coordinates()
+    det_to_block: Dict[int, int] = {}
+    block_to_dets: Dict[int, list] = {}
+
+    for d_idx, c in coords.items():
+        bid = int(c[0])
+        det_to_block[d_idx] = bid
+        block_to_dets.setdefault(bid, []).append(d_idx)
+
+    for bid in block_to_dets:
+        block_to_dets[bid].sort()
+
+    return det_to_block, block_to_dets
+
+
+def extract_inner_sub_dems(
+    dem: 'stim.DetectorErrorModel',
+    n_inner_blocks: int,
+    det_to_block: Dict[int, int],
+    block_to_dets: Dict[int, list],
+) -> Tuple[list, list, list]:
+    """
+    Extract per-inner-block sub-DEMs from the full DEM.
+
+    For each inner block (block_id 0 .. n_inner_blocks-1):
+    - Collects error mechanisms where at least one detector belongs to this block
+    - Remaps detector indices to local (0-based) within the block
+    - Drops detectors belonging to other blocks (projects cross-block errors)
+    - Preserves observable flip information
+
+    Parameters
+    ----------
+    dem : stim.DetectorErrorModel
+        Full detector error model.
+    n_inner_blocks : int
+        Number of inner code blocks.
+    det_to_block : Dict[int, int]
+        Detector → block_id mapping.
+    block_to_dets : Dict[int, list]
+        block_id → sorted list of detector indices.
+
+    Returns
+    -------
+    sub_dems : list of stim.DetectorErrorModel
+        Per-block sub-DEMs with local detector indexing.
+    local_maps : list of Dict[int, int]
+        Per-block mappings from global detector index → local index.
+    block_n_dets : list of int
+        Number of detectors per block.
+    """
+    import stim as _stim
+
+    sub_dems = []
+    local_maps = []
+    block_n_dets_list = []
+
+    for block_id in range(n_inner_blocks):
+        dets_in_block = block_to_dets.get(block_id, [])
+        # Global → local index mapping
+        global_to_local = {g: i for i, g in enumerate(dets_in_block)}
+        n_local = len(dets_in_block)
+
+        local_maps.append(global_to_local)
+        block_n_dets_list.append(n_local)
+
+        # Build sub-DEM text
+        lines = []
+        for instr in dem.flattened():
+            if instr.type != "error":
+                continue
+
+            prob = instr.args_copy()[0]
+            det_ids = []
+            obs_ids = []
+            for t in instr.targets_copy():
+                if t.is_relative_detector_id():
+                    det_ids.append(t.val)
+                elif t.is_logical_observable_id():
+                    obs_ids.append(t.val)
+
+            # Check if any detector in this error belongs to this block
+            local_dets = []
+            for d in det_ids:
+                if det_to_block.get(d, -1) == block_id:
+                    local_dets.append(global_to_local[d])
+
+            if not local_dets and not obs_ids:
+                continue  # Error doesn't touch this block at all
+            if not local_dets:
+                continue  # Observable-only with no block detectors — skip
+
+            # Determine if this is an inner-only error (all detectors
+            # belong to this block) vs a cross-block error.
+            # Only inner-only errors carry their observable flip into
+            # the sub-DEM.  Cross-block errors are projected to just
+            # their local detectors — the observable information is
+            # handled at the outer level, not per-block.
+            all_in_this_block = all(
+                det_to_block.get(d, -1) == block_id for d in det_ids
+            )
+
+            # Build error instruction with local detector indices
+            targets = []
+            for ld in local_dets:
+                targets.append(f"D{ld}")
+            if all_in_this_block:
+                for oid in obs_ids:
+                    targets.append(f"L{oid}")
+            targets_str = " ".join(targets)
+            lines.append(f"error({prob}) {targets_str}")
+
+        # Build sub-DEM
+        dem_text = "\n".join(lines) if lines else "error(0.001) D0"
+        sub_dem = _stim.DetectorErrorModel(dem_text)
+        sub_dems.append(sub_dem)
+
+    return sub_dems, local_maps, block_n_dets_list
+
+
+def extract_outer_sub_dem(
+    dem: 'stim.DetectorErrorModel',
+    n_inner_blocks: int,
+    det_to_block: Dict[int, int],
+    block_to_dets: Dict[int, list],
+) -> Tuple['stim.DetectorErrorModel', Dict[int, int], int]:
+    """
+    Extract a sub-DEM for the outer code detectors.
+
+    Outer detectors are those with block_id >= 7 (outer code stabilizers,
+    ancilla prep/boundary detectors, etc.).
+
+    Parameters
+    ----------
+    dem : stim.DetectorErrorModel
+        Full detector error model.
+    n_inner_blocks : int
+        Number of inner blocks (0..n_inner_blocks-1 are inner).
+    det_to_block : Dict[int, int]
+        Detector → block_id mapping.
+    block_to_dets : Dict[int, list]
+        block_id → sorted list of detector indices.
+
+    Returns
+    -------
+    outer_dem : stim.DetectorErrorModel
+        Sub-DEM for outer-only errors with local indexing.
+    outer_global_to_local : Dict[int, int]
+        Global → local detector mapping for outer detectors.
+    n_outer_dets : int
+        Total number of outer detectors.
+    """
+    import stim as _stim
+
+    # Collect all outer detector indices
+    outer_dets = []
+    for bid, dets in sorted(block_to_dets.items()):
+        if bid >= n_inner_blocks:  # outer blocks (>=7 in practice)
+            outer_dets.extend(dets)
+    outer_dets.sort()
+
+    outer_global_to_local = {g: i for i, g in enumerate(outer_dets)}
+    n_outer = len(outer_dets)
+
+    lines = []
+    for instr in dem.flattened():
+        if instr.type != "error":
+            continue
+
+        prob = instr.args_copy()[0]
+        det_ids = []
+        obs_ids = []
+        for t in instr.targets_copy():
+            if t.is_relative_detector_id():
+                det_ids.append(t.val)
+            elif t.is_logical_observable_id():
+                obs_ids.append(t.val)
+
+        # Only include errors that are purely outer (no inner detectors)
+        inner_dets = [d for d in det_ids if det_to_block.get(d, -1) < n_inner_blocks]
+        if inner_dets:
+            continue  # Skip cross-block errors (handled by inner decoders)
+
+        local_dets = []
+        for d in det_ids:
+            if d in outer_global_to_local:
+                local_dets.append(outer_global_to_local[d])
+
+        if not local_dets and not obs_ids:
+            continue
+
+        targets = [f"D{ld}" for ld in local_dets]
+        targets.extend(f"L{oid}" for oid in obs_ids)
+        lines.append(f"error({prob}) {' '.join(targets)}")
+
+    dem_text = "\n".join(lines) if lines else "error(0.001) D0"
+    outer_dem = _stim.DetectorErrorModel(dem_text)
+
+    return outer_dem, outer_global_to_local, n_outer
+
+
+def extract_inner_sub_dems_with_mapping(
+    dem: 'stim.DetectorErrorModel',
+    n_inner_blocks: int,
+    det_to_block: Dict[int, int],
+    block_to_dets: Dict[int, list],
+    *,
+    include_all_blocks: bool = False,
+) -> Tuple[list, list, list, list, list]:
+    """
+    Extract per-block sub-DEMs with error-index mapping back to the full DEM.
+
+    This is the key function for the error-index-mapped hierarchical decoder.
+    For each block, it builds a small sub-DEM (with local detector indices,
+    NO observable information) and records a mapping from each sub-DEM error
+    index back to the corresponding error index in the full DEM's flattened
+    error list.
+
+    Each error is assigned to the block containing the **most** of its
+    detectors (ties broken by lowest block ID).  This means every error
+    appears in exactly one block's sub-DEM, preventing double-counting
+    when per-block predictions are assembled into a global error vector.
+
+    Parameters
+    ----------
+    dem : stim.DetectorErrorModel
+        Full detector error model.
+    n_inner_blocks : int
+        Number of inner code blocks (0..n_inner_blocks-1).
+    det_to_block : Dict[int, int]
+        Detector index → block_id mapping.
+    block_to_dets : Dict[int, list]
+        block_id → sorted list of detector indices.
+    include_all_blocks : bool
+        If ``True``, build sub-DEMs for *all* blocks (inner AND
+        outer/ancilla), ordered by block_id.  If ``False``, only inner
+        blocks 0..n_inner_blocks-1 are included.
+
+    Returns
+    -------
+    sub_dems : list of stim.DetectorErrorModel
+        Per-block sub-DEMs with local detector indexing and no observable.
+    local_maps : list of Dict[int, int]
+        Per-block mappings from global detector index → local detector index.
+    block_n_dets : list of int
+        Number of detectors per block.
+    local_to_global_error : list of list of int
+        Per-block list mapping local sub-DEM error index → global DEM
+        error index.
+    block_ids_ordered : list of int
+        The block IDs in the order they appear in the output lists.
+    """
+    import stim as _stim
+
+    # Decide which blocks to include
+    if include_all_blocks:
+        block_ids_ordered = sorted(block_to_dets.keys())
+    else:
+        block_ids_ordered = list(range(n_inner_blocks))
+
+    block_id_set = set(block_ids_ordered)
+
+    # ------------------------------------------------------------------
+    # Step 1: enumerate all DEM errors with global indices
+    # ------------------------------------------------------------------
+    all_errors = []  # list of (prob, det_ids, obs_ids)
+    for instr in dem.flattened():
+        if instr.type != "error":
+            continue
+        prob = instr.args_copy()[0]
+        det_ids = []
+        obs_ids = []
+        for t in instr.targets_copy():
+            if t.is_relative_detector_id():
+                det_ids.append(t.val)
+            elif t.is_logical_observable_id():
+                obs_ids.append(t.val)
+        all_errors.append((prob, det_ids, obs_ids))
+
+    # ------------------------------------------------------------------
+    # Step 2: assign each error to the block with the MOST detectors
+    # (ties broken by lowest block_id).  Errors with no detectors in any
+    # included block are skipped (they'll be unowned).
+    # ------------------------------------------------------------------
+    error_owner: Dict[int, int] = {}  # global_err_idx → owning block_id
+    for eidx, (prob, det_ids, obs_ids) in enumerate(all_errors):
+        if not det_ids:
+            continue
+        # Count detectors per block
+        block_counts: Dict[int, int] = {}
+        for d in det_ids:
+            bid = det_to_block.get(d, -1)
+            if bid in block_id_set:
+                block_counts[bid] = block_counts.get(bid, 0) + 1
+        if block_counts:
+            # Pick block with most detectors (lowest ID on tie)
+            best_bid = max(block_counts, key=lambda b: (block_counts[b], -b))
+            error_owner[eidx] = best_bid
+
+    # ------------------------------------------------------------------
+    # Step 3: build per-block sub-DEMs with local→global error mapping
+    # ------------------------------------------------------------------
+    sub_dems = []
+    local_maps = []
+    block_n_dets_list = []
+    local_to_global_error = []
+
+    for block_id in block_ids_ordered:
+        dets_in_block = block_to_dets.get(block_id, [])
+        global_to_local_det = {g: i for i, g in enumerate(dets_in_block)}
+        n_local = len(dets_in_block)
+
+        local_maps.append(global_to_local_det)
+        block_n_dets_list.append(n_local)
+
+        lines = []
+        l2g_err = []
+
+        for eidx, (prob, det_ids, obs_ids) in enumerate(all_errors):
+            # Only include errors owned by this block
+            if error_owner.get(eidx, -1) != block_id:
+                continue
+
+            # Map detectors to local indices (only keep those in this block)
+            local_dets = []
+            for d in det_ids:
+                if d in global_to_local_det:
+                    local_dets.append(global_to_local_det[d])
+
+            if not local_dets:
+                continue  # Shouldn't happen since this block owns it
+
+            # Build error instruction — NO observable (handled globally)
+            targets_str = " ".join(f"D{ld}" for ld in local_dets)
+            lines.append(f"error({prob}) {targets_str}")
+            l2g_err.append(eidx)
+
+        dem_text = "\n".join(lines) if lines else "error(0.001) D0"
+        sub_dem = _stim.DetectorErrorModel(dem_text)
+        sub_dems.append(sub_dem)
+        local_to_global_error.append(l2g_err)
+
+    return sub_dems, local_maps, block_n_dets_list, local_to_global_error, block_ids_ordered
+
+
+def extract_purely_inner_sub_dems(
+    dem: 'stim.DetectorErrorModel',
+    n_inner_blocks: int,
+    det_to_block: Dict[int, int],
+    block_to_dets: Dict[int, list],
+) -> Tuple[list, list, list, list]:
+    """
+    Extract per-block sub-DEMs using ONLY purely-inner errors.
+
+    A purely-inner error is one whose **every** detector falls within a
+    single inner block (block_id < ``n_inner_blocks``) and which has no
+    detectors in any outer block.  Cross-block errors and purely-outer
+    errors are excluded entirely.
+
+    This produces small, well-conditioned sub-DEMs suitable for fast
+    inner decoding in a hierarchical strategy.  The ``local_to_global_error``
+    mapping allows assembling per-block solutions into a global error
+    vector for residual computation.
+
+    Parameters
+    ----------
+    dem : stim.DetectorErrorModel
+        Full detector error model.
+    n_inner_blocks : int
+        Number of inner code blocks (block_ids 0..n_inner_blocks-1).
+    det_to_block : Dict[int, int]
+        Detector index → block_id mapping.
+    block_to_dets : Dict[int, list]
+        block_id → sorted list of detector indices.
+
+    Returns
+    -------
+    sub_dems : list of stim.DetectorErrorModel
+        Per-block sub-DEMs (one per inner block, local detector indexing).
+        Contains only purely-inner errors; no observable information.
+    local_maps : list of Dict[int, int]
+        Per-block mappings from global detector index → local detector index.
+    block_n_dets : list of int
+        Number of detectors per block.
+    local_to_global_error : list of list of int
+        Per-block list mapping local sub-DEM error index → global DEM
+        error index.
+    """
+    import stim as _stim
+
+    # Build per-block detector maps
+    local_maps = []
+    block_n_dets_list = []
+    for bid in range(n_inner_blocks):
+        dets = block_to_dets.get(bid, [])
+        g2l = {g: i for i, g in enumerate(dets)}
+        local_maps.append(g2l)
+        block_n_dets_list.append(len(dets))
+
+    # Enumerate all errors with global indices
+    all_errors = []
+    for instr in dem.flattened():
+        if instr.type != "error":
+            continue
+        prob = instr.args_copy()[0]
+        det_ids = []
+        obs_ids = []
+        for t in instr.targets_copy():
+            if t.is_relative_detector_id():
+                det_ids.append(t.val)
+            elif t.is_logical_observable_id():
+                obs_ids.append(t.val)
+        all_errors.append((prob, det_ids, obs_ids))
+
+    # Classify each error and assign purely-inner ones to their block
+    per_block_errors: Dict[int, list] = {bid: [] for bid in range(n_inner_blocks)}
+
+    for eidx, (prob, det_ids, obs_ids) in enumerate(all_errors):
+        if not det_ids:
+            continue
+        # Find which blocks are touched
+        blocks_touched = set()
+        for d in det_ids:
+            blocks_touched.add(det_to_block.get(d, -1))
+
+        # Purely inner: exactly one inner block, no outer blocks
+        inner_blocks = set(b for b in blocks_touched if 0 <= b < n_inner_blocks)
+        outer_blocks = blocks_touched - inner_blocks
+        if len(inner_blocks) == 1 and len(outer_blocks) == 0:
+            bid = next(iter(inner_blocks))
+            per_block_errors[bid].append(eidx)
+
+    # Build per-block sub-DEMs
+    sub_dems = []
+    local_to_global_error = []
+
+    for bid in range(n_inner_blocks):
+        g2l = local_maps[bid]
+        lines = []
+        l2g_err = []
+
+        for eidx in per_block_errors[bid]:
+            prob, det_ids, obs_ids = all_errors[eidx]
+            local_dets = [g2l[d] for d in det_ids if d in g2l]
+            if not local_dets:
+                continue
+            # No observable info — inner errors never flip the observable
+            targets_str = " ".join(f"D{ld}" for ld in local_dets)
+            lines.append(f"error({prob}) {targets_str}")
+            l2g_err.append(eidx)
+
+        dem_text = "\n".join(lines) if lines else "error(0.001) D0"
+        sub_dem = _stim.DetectorErrorModel(dem_text)
+        sub_dems.append(sub_dem)
+        local_to_global_error.append(l2g_err)
+
+    return sub_dems, local_maps, block_n_dets_list, local_to_global_error
+
+
+# =============================================================================
 # Block Extraction Helper Class
 # =============================================================================
 
@@ -846,3 +1329,315 @@ class BlockExtractor:
         copy_len = min(n_det, n_stabs)
         result[:copy_len] = outer_det_syndrome[:copy_len]
         return result
+
+
+# =============================================================================
+# Role-based DEM splitting for true hierarchical decoding
+# =============================================================================
+#
+# The hierarchical builder tags every detector with a 4th coordinate:
+#   coord = (block_id, stab_idx, time, role)
+#
+# DetectorRole values (from hierarchical_concatenated.py):
+#   0 = INNER_TEMPORAL   – inner stabiliser temporal comparisons
+#   1 = INNER_CROSSING   – crossing detectors (inner stab during outer round)
+#   2 = INNER_BOUNDARY   – inner boundary (space-like at final measurement)
+#   3 = OUTER_TEMPORAL    – outer stabiliser temporal comparisons / boundary
+#   4 = OAB_BOUNDARY      – outer-ancilla-block boundary detectors
+#
+# The split assigns detectors to sub-DEMs as follows:
+#
+#   INNER sub-DEM (one per block b):
+#       All detectors with block_id == b  AND  role in {0, 1, 2}
+#       Contains ONLY purely-inner errors (all dets in one block,
+#       no outer dets).  These errors never flip the observable.
+#
+#   OUTER sub-DEM:
+#       ALL detectors that participate in cross-block or mixed errors
+#       (this includes both inner-role and outer-role detectors).
+#       Contains cross-block, mixed, and purely-outer errors WITH
+#       observable info.  This is the sub-DEM that determines the
+#       observable prediction.
+#
+# Error assignment:
+#   - Purely inner (single block, no outer dets) → inner sub-DEM only
+#   - Cross-block / mixed / purely outer → outer sub-DEM with ALL
+#     detectors (inner + outer) preserved — no information loss
+# =============================================================================
+
+INNER_ROLES = {0, 1, 2}    # INNER_TEMPORAL, INNER_CROSSING, INNER_BOUNDARY
+OUTER_ROLES = {3, 4}       # OUTER_TEMPORAL, OAB_BOUNDARY
+
+
+@dataclass
+class SplitDEMs:
+    """
+    Result of splitting a full DEM into inner per-block sub-DEMs and
+    an outer sub-DEM suitable for hierarchical decoding.
+
+    Attributes
+    ----------
+    inner_dems : list of stim.DetectorErrorModel
+        Per-block sub-DEMs (one per inner block, local detector indexing).
+        Contain only purely-inner errors.
+    inner_det_maps : list of Dict[int, int]
+        Per-block global→local detector index mapping.
+    inner_n_dets : list of int
+        Number of detectors in each inner sub-DEM.
+    outer_dem : stim.DetectorErrorModel
+        Outer sub-DEM with local detector indexing.  Contains ALL
+        cross-block/mixed/purely-outer errors with full detector info.
+    outer_det_map : Dict[int, int]
+        Global→local detector index mapping for outer sub-DEM.
+        Includes both outer-role AND inner-role detectors that
+        participate in cross-block errors.
+    outer_n_dets : int
+        Number of detectors in the outer sub-DEM.
+    n_blocks : int
+        Number of inner blocks.
+    inner_obs_error_indices : list of list of int
+        Per-block list of global error indices whose observable flip
+        is captured by the inner sub-DEM (i.e. purely-inner errors).
+    """
+    inner_dems: list
+    inner_det_maps: list
+    inner_n_dets: list
+    outer_dem: Any
+    outer_det_map: Dict[int, int]
+    outer_n_dets: int
+    n_blocks: int
+    inner_obs_error_indices: list
+
+
+def build_role_based_detector_map(
+    dem: 'stim.DetectorErrorModel',
+) -> Tuple[Dict[int, int], Dict[int, int], Dict[int, list], list]:
+    """
+    Partition detectors by (block_id, role) using the 4th coordinate.
+
+    Parameters
+    ----------
+    dem : stim.DetectorErrorModel
+        DEM with 4-component detector coordinates (block_id, stab_idx, time, role).
+
+    Returns
+    -------
+    det_to_block : Dict[int, int]
+        Detector index → block_id  (from coord[0]).
+    det_to_role : Dict[int, int]
+        Detector index → role  (from coord[3]).
+    block_to_dets : Dict[int, list]
+        block_id → sorted list of detector indices (inner-role detectors only).
+    outer_dets : list of int
+        Sorted list of detector indices with outer roles.
+    """
+    coords = dem.get_detector_coordinates()
+    det_to_block: Dict[int, int] = {}
+    det_to_role: Dict[int, int] = {}
+    block_to_dets: Dict[int, list] = {}
+    outer_dets: list = []
+
+    for d_idx, c in coords.items():
+        bid = int(c[0])
+        role = int(c[3]) if len(c) >= 4 else 0
+        det_to_block[d_idx] = bid
+        det_to_role[d_idx] = role
+
+        if role in INNER_ROLES:
+            block_to_dets.setdefault(bid, []).append(d_idx)
+        else:
+            outer_dets.append(d_idx)
+
+    for bid in block_to_dets:
+        block_to_dets[bid].sort()
+    outer_dets.sort()
+
+    return det_to_block, det_to_role, block_to_dets, outer_dets
+
+
+def build_split_dems(
+    dem: 'stim.DetectorErrorModel',
+    n_inner_blocks: int,
+) -> SplitDEMs:
+    """
+    Split a full DEM into per-block inner sub-DEMs and an outer sub-DEM.
+
+    Uses the role tag in ``coord[3]`` to decide which detectors are
+    inner vs outer (see module-level docstring for assignment rules).
+
+    Error assignment
+    ----------------
+    Each error in the full DEM is categorised:
+
+    * **Purely inner** (all detectors in one inner block, no outer dets):
+      Added to that block's inner sub-DEM **with** observable-flip info.
+
+    * **Cross-block / mixed** (detectors in ≥2 blocks, or has outer dets):
+      Added to the outer sub-DEM with **ALL** detectors (both inner and
+      outer) preserved.  Inner-role detectors that appear in any
+      cross-block error are promoted into the outer detector set so
+      the outer decoder has the full syndrome picture.
+
+    * **Purely outer** (all detectors have outer roles):
+      Added to the outer sub-DEM with observable info.
+
+    Parameters
+    ----------
+    dem : stim.DetectorErrorModel
+        Full DEM with 4-component detector coordinates.
+    n_inner_blocks : int
+        Number of inner code blocks (block_ids 0..n_inner_blocks-1).
+
+    Returns
+    -------
+    SplitDEMs
+        Contains inner sub-DEMs (per block), outer sub-DEM, and mappings.
+    """
+    import stim as _stim
+
+    # Step 1: build role-based detector partition
+    det_to_block, det_to_role, block_to_dets, outer_dets_list = \
+        build_role_based_detector_map(dem)
+
+    # Build inner local index maps (for inner sub-DEMs)
+    inner_local_maps: list = []
+    inner_n_dets: list = []
+    for bid in range(n_inner_blocks):
+        dets = block_to_dets.get(bid, [])
+        g2l = {g: i for i, g in enumerate(dets)}
+        inner_local_maps.append(g2l)
+        inner_n_dets.append(len(dets))
+
+    # Step 2: enumerate all errors and find which inner detectors
+    #         participate in cross-block / mixed errors
+    all_errors = []
+    for instr in dem.flattened():
+        if instr.type != "error":
+            continue
+        prob = instr.args_copy()[0]
+        det_ids = []
+        obs_ids = []
+        for t in instr.targets_copy():
+            if t.is_relative_detector_id():
+                det_ids.append(t.val)
+            elif t.is_logical_observable_id():
+                obs_ids.append(t.val)
+        all_errors.append((prob, det_ids, obs_ids))
+
+    # First pass: identify ALL inner detectors that appear in
+    # cross-block / mixed errors so they can be included in the
+    # outer sub-DEM detector set.
+    outer_dets_set = set(outer_dets_list)
+    promoted_inner_dets: set = set()  # inner-role dets promoted to outer
+
+    for prob, det_ids, obs_ids in all_errors:
+        inner_dets_by_block: Dict[int, list] = {}
+        has_outer = False
+        for d in det_ids:
+            role = det_to_role.get(d, 0)
+            bid = det_to_block.get(d, -1)
+            if role in INNER_ROLES and 0 <= bid < n_inner_blocks:
+                inner_dets_by_block.setdefault(bid, []).append(d)
+            elif d in outer_dets_set:
+                has_outer = True
+
+        is_cross_block = len(inner_dets_by_block) > 1 or has_outer
+        if is_cross_block:
+            # All inner dets of this error get promoted to outer set
+            for dets in inner_dets_by_block.values():
+                promoted_inner_dets.update(dets)
+
+    # Build the outer detector set: original outer-role dets + promoted inner dets
+    all_outer_dets = sorted(set(outer_dets_list) | promoted_inner_dets)
+    outer_g2l = {g: i for i, g in enumerate(all_outer_dets)}
+    n_outer = len(all_outer_dets)
+
+    # Step 3: partition errors (second pass)
+    inner_lines: list = [[] for _ in range(n_inner_blocks)]
+    inner_obs_error_indices: list = [[] for _ in range(n_inner_blocks)]
+    outer_lines: list = []
+
+    for eidx, (prob, det_ids, obs_ids) in enumerate(all_errors):
+        # Classify each detector
+        inner_dets_by_block: Dict[int, list] = {}
+        has_outer_role = False
+        for d in det_ids:
+            role = det_to_role.get(d, 0)
+            bid = det_to_block.get(d, -1)
+            if role in INNER_ROLES and 0 <= bid < n_inner_blocks:
+                inner_dets_by_block.setdefault(bid, []).append(d)
+            elif d in outer_dets_set:
+                has_outer_role = True
+
+        inner_blocks_touched = set(inner_dets_by_block.keys())
+        is_cross_block = len(inner_blocks_touched) > 1 or has_outer_role
+
+        if len(inner_blocks_touched) <= 1 and not is_cross_block:
+            if inner_blocks_touched:
+                # ---- PURELY INNER (single block, no outer) ----
+                bid = next(iter(inner_blocks_touched))
+                g2l = inner_local_maps[bid]
+                local_dets = [g2l[d] for d in inner_dets_by_block[bid]]
+                inner_lines[bid].append((prob, local_dets, obs_ids))
+                if obs_ids:
+                    inner_obs_error_indices[bid].append(eidx)
+            else:
+                # No detectors at all — obs-only error → outer
+                if obs_ids:
+                    outer_lines.append((prob, [], obs_ids))
+        else:
+            # ---- CROSS-BLOCK or MIXED ----
+            # Put ALL detectors (inner + outer) in the outer sub-DEM
+            all_det_locals = []
+            for d in det_ids:
+                if d in outer_g2l:
+                    all_det_locals.append(outer_g2l[d])
+            outer_lines.append((prob, all_det_locals, obs_ids))
+
+            # Also project inner detectors to inner sub-DEMs (no obs)
+            # so inner decoders can correct per-block syndrome noise
+            for bid in inner_blocks_touched:
+                g2l = inner_local_maps[bid]
+                local_dets = [g2l[d] for d in inner_dets_by_block[bid]]
+                if local_dets:
+                    inner_lines[bid].append((prob, local_dets, []))
+
+    # Step 4: build stim sub-DEMs
+    inner_dems = []
+    for bid in range(n_inner_blocks):
+        lines = inner_lines[bid]
+        if not lines:
+            dem_text = "error(0.001) D0"
+        else:
+            text_lines = []
+            for prob, local_dets, obs in lines:
+                parts = [f"D{ld}" for ld in local_dets]
+                parts.extend(f"L{oid}" for oid in obs)
+                text_lines.append(f"error({prob}) {' '.join(parts)}")
+            dem_text = "\n".join(text_lines)
+        inner_dems.append(_stim.DetectorErrorModel(dem_text))
+
+    # Outer sub-DEM
+    if not outer_lines:
+        outer_dem_text = "error(0.001) D0"
+    else:
+        text_lines = []
+        for prob, local_dets, obs in outer_lines:
+            parts = [f"D{ld}" for ld in local_dets]
+            parts.extend(f"L{oid}" for oid in obs)
+            if parts:
+                text_lines.append(f"error({prob}) {' '.join(parts)}")
+        outer_dem_text = "\n".join(text_lines) if text_lines else "error(0.001) D0"
+    outer_dem = _stim.DetectorErrorModel(outer_dem_text)
+
+    return SplitDEMs(
+        inner_dems=inner_dems,
+        inner_det_maps=inner_local_maps,
+        inner_n_dets=inner_n_dets,
+        outer_dem=outer_dem,
+        outer_det_map=outer_g2l,
+        outer_n_dets=n_outer,
+        n_blocks=n_inner_blocks,
+        inner_obs_error_indices=inner_obs_error_indices,
+    )
+

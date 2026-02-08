@@ -48,6 +48,14 @@ from .memory import (
 #     ConcatenatedMemoryExperiment,  # Deprecated alias
 # )
 
+# Concatenated Memory Experiments
+from .concatenated_memory import (
+    ConcatenatedCSSMemoryExperiment,
+    FlatConcatenatedMemoryExperiment,
+    HierarchicalConcatenatedMemoryExperiment,
+    ConcatenatedMemoryExperiment,  # Deprecated alias
+)
+
 # V2 Hierarchical Architecture - try to import if available
 try:
     from .unified_hierarchical_memory_v2 import (
@@ -111,6 +119,7 @@ from .stabilizer_rounds import (
     DetectorContext,
     StabilizerRoundBuilder,
     FlatConcatenatedStabilizerRoundBuilder,
+    HierarchicalConcatenatedStabilizerRoundBuilder,
     ConcatenatedStabilizerRoundBuilder,  # Deprecated alias
     GeneralStabilizerRoundBuilder,
     XYZColorCodeStabilizerRoundBuilder,
@@ -145,7 +154,9 @@ __all__ = [
     "XYZColorCodeMemoryExperiment",
     "FloquetMemoryExperiment",
     # Concatenated memory experiments
+    "ConcatenatedCSSMemoryExperiment",
     "FlatConcatenatedMemoryExperiment",
+    "HierarchicalConcatenatedMemoryExperiment",
     "ConcatenatedMemoryExperiment",  # Deprecated alias
     # Multi-level concatenated memory
     "MultiLevelMemoryExperiment",

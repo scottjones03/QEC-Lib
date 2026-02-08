@@ -95,56 +95,25 @@ src/qectostim/decoders/custom_decoders.py
 src/qectostim/decoders/decoder_selector.py
 src/qectostim/decoders/detector_decoder.py
 src/qectostim/decoders/fusion_blossom_decoder.py
+src/qectostim/decoders/hybrid_teleportation_decoder.py
 src/qectostim/decoders/local_decoders.py
 src/qectostim/decoders/mle_decoder.py
 src/qectostim/decoders/pymatching_decoder.py
 src/qectostim/decoders/tesseract_decoder.py
+src/qectostim/decoders/two_dem_decoder.py
 src/qectostim/decoders/union_find_decoder.py
-src/qectostim/decoders/_ignore/concatenated_ec_decoder.py
-src/qectostim/decoders/_ignore/enhanced_concatenated_decoder.py
-src/qectostim/decoders/_ignore/flag_aware_decoder.py
-src/qectostim/decoders/_ignore/hard_decision_hierarchical_decoder.py
-src/qectostim/decoders/_ignore/hierarchical_v6_variants.py
-src/qectostim/decoders/_ignore/joint_minimum_weight_decoder.py
-src/qectostim/decoders/_ignore/joint_ml_decoder.py
-src/qectostim/decoders/_ignore/optimal_concatenated_decoder.py
-src/qectostim/decoders/_ignore/recursive_hierarchical_decoder.py
-src/qectostim/decoders/_ignore/syndrome_only_hierarchical_decoder.py
-src/qectostim/decoders/_ignore/strategies/__init__.py
-src/qectostim/decoders/_ignore/strategies/base.py
-src/qectostim/decoders/_ignore/strategies/belief_propagation.py
-src/qectostim/decoders/_ignore/strategies/majority_vote.py
-src/qectostim/decoders/_ignore/strategies/ml.py
-src/qectostim/decoders/_ignore/strategies/mwpm.py
-src/qectostim/decoders/_ignore/strategies/syndrome_lookup.py
 src/qectostim/experiments/__init__.py
 src/qectostim/experiments/concatenated_css_v10.py
-src/qectostim/experiments/detector_memory.py
-src/qectostim/experiments/detector_multilevel_memory.py
+src/qectostim/experiments/concatenated_memory.py
+src/qectostim/experiments/detector_emission.py
+src/qectostim/experiments/detector_tracking.py
 src/qectostim/experiments/experiment.py
 src/qectostim/experiments/ft_gadget_experiment.py
-src/qectostim/experiments/logical_block_manager_v2.py
-src/qectostim/experiments/logical_gate_dispatcher.py
 src/qectostim/experiments/logical_gates.py
-src/qectostim/experiments/measurement_model.py
 src/qectostim/experiments/memory.py
-src/qectostim/experiments/multilevel_memory.py
-src/qectostim/experiments/outer_stabilizer_engine_v3.py
-src/qectostim/experiments/simple_concatenated_memory.py
-src/qectostim/experiments/unified_hierarchical_memory_v2.py
-src/qectostim/experiments/gadgets/__init__.py
-src/qectostim/experiments/gadgets/ancilla_prep_gadget.py
-src/qectostim/experiments/gadgets/base.py
-src/qectostim/experiments/gadgets/combinators.py
-src/qectostim/experiments/gadgets/detector_gadgets.py
-src/qectostim/experiments/gadgets/detector_primitives.py
-src/qectostim/experiments/gadgets/ft_gadget_adapter.py
-src/qectostim/experiments/gadgets/noop_gadget.py
-src/qectostim/experiments/gadgets/post_selection_utils.py
-src/qectostim/experiments/gadgets/shor_syndrome_gadget.py
-src/qectostim/experiments/gadgets/stabilizer_syndrome_gadget.py
-src/qectostim/experiments/gadgets/teleportation_ec_gadget.py
-src/qectostim/experiments/gadgets/transversal_syndrome_gadget.py
+src/qectostim/experiments/observable.py
+src/qectostim/experiments/phase_orchestrator.py
+src/qectostim/experiments/preparation.py
 src/qectostim/experiments/hardware_simulation/__init__ 2.py
 src/qectostim/experiments/hardware_simulation/__init__.py
 src/qectostim/experiments/hardware_simulation/base 2.py
@@ -198,33 +167,34 @@ src/qectostim/experiments/hardware_simulation/trapped_ion/operations.py
 src/qectostim/experiments/hardware_simulation/trapped_ion/routing.py
 src/qectostim/experiments/hardware_simulation/trapped_ion/scheduling.py
 src/qectostim/experiments/hardware_simulation/trapped_ion/simulator.py
-src/qectostim/experiments/stabilizer_rounds/__init__ 2.py
 src/qectostim/experiments/stabilizer_rounds/__init__.py
-src/qectostim/experiments/stabilizer_rounds/base 2.py
 src/qectostim/experiments/stabilizer_rounds/base.py
-src/qectostim/experiments/stabilizer_rounds/color 2.py
 src/qectostim/experiments/stabilizer_rounds/color.py
-src/qectostim/experiments/stabilizer_rounds/concatenated 2.py
 src/qectostim/experiments/stabilizer_rounds/concatenated.py
-src/qectostim/experiments/stabilizer_rounds/context 2.py
 src/qectostim/experiments/stabilizer_rounds/context.py
-src/qectostim/experiments/stabilizer_rounds/css 2.py
 src/qectostim/experiments/stabilizer_rounds/css.py
-src/qectostim/experiments/stabilizer_rounds/general 2.py
 src/qectostim/experiments/stabilizer_rounds/general.py
-src/qectostim/experiments/stabilizer_rounds/utils 2.py
+src/qectostim/experiments/stabilizer_rounds/hierarchical_concatenated.py
+src/qectostim/experiments/stabilizer_rounds/memory_emitter.py
 src/qectostim/experiments/stabilizer_rounds/utils.py
-src/qectostim/experiments/stabilizer_rounds/xyz_color 2.py
 src/qectostim/experiments/stabilizer_rounds/xyz_color.py
 src/qectostim/gadgets/__init__.py
 src/qectostim/gadgets/base.py
 src/qectostim/gadgets/coordinates.py
-src/qectostim/gadgets/css_surgery.py
+src/qectostim/gadgets/cz_h_teleportation.py
+src/qectostim/gadgets/knill_ec.py
 src/qectostim/gadgets/layout.py
 src/qectostim/gadgets/pauli_frame.py
+src/qectostim/gadgets/preparation.py
 src/qectostim/gadgets/scheduling.py
-src/qectostim/gadgets/teleportation.py
-src/qectostim/gadgets/transversal.py
+src/qectostim/gadgets/teleportation_h_gadgets.py
+src/qectostim/gadgets/transversal_cnot.py
+src/qectostim/gadgets/bin/bell_xx_correlation.py
+src/qectostim/gadgets/bin/css_surgery.py
+src/qectostim/gadgets/bin/ft_h_teleportation.py
+src/qectostim/gadgets/bin/teleportation.py
+src/qectostim/gadgets/bin/teleportation_v2.py
+src/qectostim/gadgets/bin/transversal.py
 src/qectostim/noise/__init__.py
 src/qectostim/noise/models.py
 src/qectostim/noise/hardware/__init__ 2.py
@@ -241,17 +211,4 @@ src/qectostim/utils/logging.py
 src/qectostim/utils/pauli.py
 src/qectostim/utils/scheduling_core.py
 src/tests/__init__.py
-src/tests/conftest.py
-src/tests/test_css_v10_data_structures.py
-src/tests/test_css_v10_decoder.py
-src/tests/test_css_v10_detector_tracking.py
-src/tests/test_css_v10_ec_gadgets.py
-src/tests/test_css_v10_fixtures.py
-src/tests/test_css_v10_gates.py
-src/tests/test_css_v10_integration.py
-src/tests/test_css_v10_l1_validation.py
-src/tests/test_css_v10_l2_validation.py
-src/tests/test_css_v10_operations.py
-src/tests/test_css_v10_post_selection.py
-src/tests/test_css_v10_preparation.py
 src/tests/testing_utils.py

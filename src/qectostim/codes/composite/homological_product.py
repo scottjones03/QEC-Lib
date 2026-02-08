@@ -1,30 +1,72 @@
 # src/qectostim/codes/composite/homological_product.py
-"""
-Homological Product Codes: Tensor product of chain complexes.
+r"""
+Homological Product Codes
+=========================
 
-The homological product (or hypergraph product) of two CSS codes A and B
-produces a new CSS code with parameters related to both inputs.
+The **homological product** (also called the **hypergraph product** in its
+simplest form) takes two CSS codes and combines them via the tensor product
+of their underlying chain complexes.  This is *the* central algebraic
+tool for building higher-dimensional topological codes from lower-dimensional
+building blocks.
 
-For two codes with chain complexes:
-- Code A: n-chain complex with qubit_grade = q_A
-- Code B: m-chain complex with qubit_grade = q_B
-
-The tensor product produces:
-- (n+m-1)-chain complex with qubit_grade = q_A + q_B
-
-Examples:
-- RepetitionCode (2-chain) ⊗ RepetitionCode (2-chain) → ToricCode (3-chain)
-- ToricCode (3-chain) ⊗ ToricCode (3-chain) → 4D Tesseract (5-chain)
-
-The construction at the chain complex level:
-    (A ⊗ B)_k = ⊕_{i+j=k} A_i ⊗ B_j
-    ∂^{A⊗B} = ∂^A ⊗ I + I ⊗ ∂^B (over GF(2))
-
-References
+Background
 ----------
-- Tillich & Zémor, "Quantum LDPC codes with positive rate and minimum 
-  distance proportional to n^(1/2)", 2009
-- Hastings, "Quantum codes from high-dimensional manifolds", 2016
+Every CSS code can be represented as a 2-term or longer chain complex of
+vector spaces over GF(2).  If code *A* has a chain complex of length
+:math:`n` and code *B* of length :math:`m`, their tensor product yields a
+new chain complex of length :math:`n + m - 1`.  Physical qubits live on the
+middle grade of this product complex, stabilisers on adjacent grades, and
+meta-checks (if any) one grade further out.
+
+Key identity at the chain level::
+
+    (A ⊗ B)_k  =  ⊕_{i+j=k}  A_i ⊗ B_j
+    ∂^{A⊗B}_k  =  ∂^A ⊗ I  +  (-1)^i · I ⊗ ∂^B   (signs mod 2 → just XOR)
+
+The **Künneth formula** gives :math:`k_{\text{product}} = k_A \times k_B`,
+and the distance satisfies :math:`d \ge \min(d_A, d_B)` (equality in the
+balanced case).
+
+Two entry-points
+~~~~~~~~~~~~~~~~
+1. **Tillich–Zémor HGP** (``TillichZemorHGP``): takes two *classical*
+   parity-check matrices :math:`H_1, H_2` and produces a CSS code with
+   :math:`n = n_1 n_2 + r_1 r_2` qubits and stabilisers built from
+   Kronecker products.  This is the original "hypergraph product".
+
+2. **Full homological product** (``HomologicalProductCode``): takes two
+   ``CSSCodeWithComplex`` objects (any chain length) and computes the full
+   tensor-product complex.  This generalises to products of toric codes,
+   colour codes, etc.
+
+Canonical examples
+~~~~~~~~~~~~~~~~~~
+- RepetitionCode (2-chain) :math:`\otimes` RepetitionCode → Toric code (3-chain)
+- ToricCode (3-chain) :math:`\otimes` ToricCode → 4-D toric code (5-chain)
+
+Decoder considerations
+~~~~~~~~~~~~~~~~~~~~~~
+Products of 3-chains or higher (chain length ≥ 5) introduce **hyperedge**
+errors that cannot be decomposed into pair-wise edges.  Standard MWPM
+decoders (PyMatching, Fusion Blossom) cannot handle these; use
+BP-OSD or the Tesseract decoder instead.
+
+Literature
+----------
+-  Tillich & Zémor, "Quantum LDPC codes with positive rate and minimum
+   distance proportional to :math:`\sqrt n`", IEEE Trans. Inf. Theory 60
+   (2), 2014. `arXiv:0903.0566 <https://arxiv.org/abs/0903.0566>`_
+-  Bravyi & Hastings, "Homological product codes",
+   `arXiv:1311.0885 <https://arxiv.org/abs/1311.0885>`_
+-  Audoux & Couvreur, "On tensor products of CSS codes",
+   `arXiv:1512.07081 <https://arxiv.org/abs/1512.07081>`_
+-  Hastings, "Quantum codes from high-dimensional manifolds", 2016.
+
+See Also
+--------
+qectostim.codes.small.repetition_codes : Simplest building block for HGP.
+qectostim.codes.surface.toric_code : 3-chain code; its self-product gives
+    a 4-D toric code.
 """
 from __future__ import annotations
 
@@ -48,6 +90,7 @@ from qectostim.codes.complexes.css_complex import (
     CSSChainComplex4,
     FiveCSSChainComplex,
 )
+from qectostim.codes.utils import validate_css_code
 
 
 def _compute_logicals_from_complex(
@@ -67,7 +110,14 @@ def _compute_logicals_from_complex(
         log_x_vecs, log_z_vecs = compute_css_logicals(hx, hz)
         logical_x = vectors_to_paulis_x(log_x_vecs)
         logical_z = vectors_to_paulis_z(log_z_vecs)
-    except Exception:
+    except Exception as exc:
+        import warnings
+        warnings.warn(
+            f"Failed to compute CSS logicals: {exc!r}. "
+            "Returning empty logical operator lists.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
         logical_x = []
         logical_z = []
     
@@ -75,31 +125,62 @@ def _compute_logicals_from_complex(
 
 
 class HomologicalProductCode(CSSCodeWithComplex):
-    """
-    Homological product of two CSS codes with chain complexes.
-    
-    For codes with 3-chain or higher complexes, computes the full tensor 
-    product of chain complexes. The result has:
-    
-    - Chain length = len(A) + len(B) - 1  
-    - Qubits on the middle grade: qubit_grade = max_grade // 2
-    
-    For 3-chain ⊗ 3-chain (e.g., ToricCode ⊗ ToricCode):
-    - Produces a 5-chain complex (4D tesseract-like structure)
-    - Qubits on grade 2 (middle of C4→C3→C2→C1→C0)
-    - k = k_A × k_B (Künneth formula)
-    
+    r"""Homological product of two CSS codes with chain complexes.
+
+    Computes the full tensor product of the input chain complexes.  The
+    resulting complex has:
+
+    * **chain length** = ``len(A) + len(B) - 1``
+    * **qubit grade** = middle grade = ``max_grade // 2``
+    * **k** = :math:`k_A \times k_B`  (Künneth formula)
+    * **d** ≥ :math:`\min(d_A, d_B)`
+
+    For 3-chain ⊗ 3-chain (e.g. toric ⊗ toric) the result is a 5-chain
+    complex whose qubits sit on grade 2.
+
     Parameters
     ----------
     code_a, code_b : CSSCodeWithComplex
-        CSS codes with 3-chain or higher complexes.
+        CSS codes whose ``chain_complex`` attributes are not ``None``.
     metadata : dict, optional
-        Additional metadata.
-        
+        Additional metadata merged into the auto-generated fields.
+
+    Attributes
+    ----------
+    code_a, code_b : CSSCodeWithComplex
+        The two factor codes.
+    n_a, n_b, k_a, k_b : int
+        Qubit / logical counts of the factor codes.
+
+    Examples
+    --------
+    >>> from qectostim.codes.surface.toric_code import ToricCode33
+    >>> t = ToricCode33()
+    >>> prod = HomologicalProductCode(t, t)
+    >>> print(prod.chain_length)  # 5
+    >>> print(prod.k)             # k_A * k_B = 4
+
+    Notes
+    -----
+    * Products of 3-chains (chain length ≥ 5) contain **hyperedge** errors.
+      Standard MWPM decoders cannot decode them — use BP-OSD or Tesseract.
+    * The ``stabiliser_schedule`` is set to ``None`` because the optimal
+      measurement schedule depends on the specific factor codes and the
+      target decoder.
+
     References
     ----------
-    - Bravyi & Hastings, "Homological product codes", arXiv:1311.0885
-    - Audoux & Couvreur, "On tensor products of CSS codes", arXiv:1512.07081
+    .. [1] Bravyi & Hastings, "Homological product codes",
+       `arXiv:1311.0885 <https://arxiv.org/abs/1311.0885>`_
+    .. [2] Audoux & Couvreur, "On tensor products of CSS codes",
+       `arXiv:1512.07081 <https://arxiv.org/abs/1512.07081>`_
+
+    See Also
+    --------
+    TillichZemorHGP : Simpler construction from classical parity-check
+        matrices (2-chain inputs).
+    homological_product : Factory function that dispatches to the right
+        class.
     """
     
     def __init__(
@@ -139,6 +220,12 @@ class HomologicalProductCode(CSSCodeWithComplex):
         
         # Compute logical operators
         logical_x, logical_z = _compute_logicals_from_complex(hx, hz)
+
+        # ── Validate CSS structure ─────────────────────────────────
+        validate_css_code(
+            hx, hz,
+            f"HomologicalProduct({code_a.name}, {code_b.name})",
+        )
         
         # Build metadata
         meta: Dict[str, Any] = dict(metadata or {})
@@ -150,6 +237,37 @@ class HomologicalProductCode(CSSCodeWithComplex):
         meta["product_chain_length"] = product_complex.max_grade + 1
         meta["qubit_grade"] = qg
         
+        # --- Standardised metadata -----------------------------------------
+        meta["code_family"] = "homological_product"
+        meta["code_type"] = "CSS"
+        # Compute n and k from Hx/Hz
+        n_product = hx.shape[1] if hx.size > 0 else (hz.shape[1] if hz.size > 0 else 0)
+        k_product = self.k_a * self.k_b  # Künneth formula
+        meta["n"] = n_product
+        meta["k"] = k_product
+        meta["rate"] = (k_product / n_product) if n_product > 0 else 0.0
+        meta["distance"] = meta.get("distance", None)  # exact distance hard to compute
+        meta["data_qubits"] = list(range(n_product))
+
+        # ── Logical operator Pauli types ───────────────────────
+        meta["lx_pauli_type"] = "X"
+        meta["lz_pauli_type"] = "Z"
+        # ── Logical operator supports ──────────────────────────
+        def _supp(op):
+            if isinstance(op, str):
+                return [i for i, c in enumerate(op) if c != 'I']
+            elif isinstance(op, dict):
+                return sorted(op.keys())
+            return []
+        if logical_x:
+            meta["lx_support"] = [_supp(lx) for lx in logical_x] if len(logical_x) > 1 else _supp(logical_x[0])
+        else:
+            meta["lx_support"] = []
+        if logical_z:
+            meta["lz_support"] = [_supp(lz) for lz in logical_z] if len(logical_z) > 1 else _supp(logical_z[0])
+        else:
+            meta["lz_support"] = []
+
         # Homological product metadata for decoder compatibility
         chain_len = product_complex.max_grade + 1
         meta["is_homological_product"] = True
@@ -159,6 +277,35 @@ class HomologicalProductCode(CSSCodeWithComplex):
         meta["has_hyperedges"] = chain_len >= 5
         meta["requires_hyperedge_decoder"] = chain_len >= 5
         meta["supports_standard_decoders"] = chain_len < 5
+
+        # Stabiliser schedule: depends on factor codes and decoder
+        meta["stabiliser_schedule"] = {
+            "n_rounds": None,
+            "description": (
+                "Schedule depends on factor codes and target decoder.  "
+                "For 5-chain codes, meta-checks enable single-shot "
+                "decoding without repeated syndrome rounds."
+            ),
+        }
+        meta["x_schedule"] = None  # depends on factor codes and target decoder
+        meta["z_schedule"] = None  # depends on factor codes and target decoder
+
+        # Literature
+        meta["error_correction_zoo_url"] = (
+            "https://errorcorrectionzoo.org/c/hypergraph_product"
+        )
+        meta["wikipedia_url"] = "https://en.wikipedia.org/wiki/Hypergraph_product_code"
+        meta["canonical_references"] = [
+            "Bravyi & Hastings, 'Homological product codes', arXiv:1311.0885",
+            "Audoux & Couvreur, 'On tensor products of CSS codes', arXiv:1512.07081",
+            "Tillich & Zémor, 'Quantum LDPC codes …', arXiv:0903.0566",
+        ]
+        meta["connections"] = [
+            "Generalises hypergraph product (HGP) to arbitrary chain complexes",
+            "Künneth formula: k_product = k_A × k_B",
+            "Products of 3-chains yield 4-D codes with single-shot decoding",
+            "Building block for fibre-bundle and balanced-product codes",
+        ]
         
         super().__init__(
             chain_complex=product_complex,
@@ -181,6 +328,7 @@ class HomologicalProductCode(CSSCodeWithComplex):
     
     @property
     def name(self) -> str:
+        """Human-readable name: ``HomologicalProduct(A, B)``."""
         return f"HomologicalProduct({self.code_a.name}, {self.code_b.name})"
     
     # =========================================================================
@@ -384,33 +532,56 @@ def hypergraph_product_from_classical(
 
 
 class TillichZemorHGP(CSSCode):
-    """
-    Standard Tillich-Zémor hypergraph product code from classical codes.
-    
-    Given two classical codes with parity check matrices H1 (r1×n1) and 
-    H2 (r2×n2), the hypergraph product code has:
-    
-    - n = n1*n2 + r1*r2 physical qubits
-    - k = k1*k2 logical qubits (where ki = ni - ri)
-    - d >= min(d1, d2)
-    
-    The stabilizer matrices are:
-        Hx = [H1 ⊗ I_{n2}, I_{r1} ⊗ H2.T]
-        Hz = [I_{n1} ⊗ H2, H1.T ⊗ I_{r2}]
-    
+    r"""Standard Tillich–Zémor hypergraph product code from classical codes.
+
+    Given two classical codes with parity-check matrices
+    :math:`H_1` (:math:`r_1 \times n_1`) and :math:`H_2`
+    (:math:`r_2 \times n_2`), the hypergraph product code has:
+
+    * :math:`n = n_1 n_2 + r_1 r_2` physical qubits
+    * :math:`k = k_1 k_2` logical qubits where :math:`k_i = n_i - r_i`
+    * :math:`d \ge \min(d_1, d_2)`
+
+    Stabiliser matrices::
+
+        Hx = [ H1 ⊗ I_{n2}  |  I_{r1} ⊗ H2^T ]
+        Hz = [ I_{n1} ⊗ H2   |  H1^T ⊗ I_{r2} ]
+
     Parameters
     ----------
     H1, H2 : np.ndarray
-        Classical parity check matrices.
+        Binary parity-check matrices of the two classical seed codes.
     metadata : dict, optional
         Additional metadata.
-    
+
+    Attributes
+    ----------
+    _H1, _H2 : np.ndarray
+        Stored copies of the input parity-check matrices.
+
     Examples
     --------
-    >>> # Repetition code parity check
-    >>> H = np.array([[1,1,0],[0,1,1]])  # [3,1,3] rep code
+    >>> import numpy as np
+    >>> # [3,1,3] repetition code parity-check matrix
+    >>> H = np.array([[1,1,0],[0,1,1]], dtype=np.uint8)
     >>> hgp = TillichZemorHGP(H, H)
-    >>> print(f"[[{hgp.n}, {hgp.k}]]")  # [[13, 1]]
+    >>> print(f'[[{hgp.n}, {hgp.k}]]')  # [[13, 1]]
+
+    Notes
+    -----
+    This is the original construction from Tillich & Zémor (2009).  When
+    both seed codes are identical the product is **self-dual** (Hx and Hz
+    have the same weight profile).
+
+    References
+    ----------
+    .. [1] Tillich & Zémor, "Quantum LDPC codes with positive rate and
+       minimum distance proportional to √n", arXiv:0903.0566.
+
+    See Also
+    --------
+    HomologicalProductCode : General tensor product for arbitrary chain
+        complexes.
     """
     
     def __init__(
@@ -437,9 +608,18 @@ class TillichZemorHGP(CSSCode):
         
         # Compute logicals
         logical_x, logical_z = _compute_logicals_from_complex(hx, hz)
+
+        # ── Validate CSS structure ─────────────────────────────────
+        validate_css_code(
+            hx, hz,
+            f"TillichZemorHGP({H1.shape}, {H2.shape})",
+            raise_on_error=True,
+        )
         
         # Build metadata
         meta: Dict[str, Any] = dict(metadata or {})
+        meta["code_family"] = "hypergraph_product"
+        meta["code_type"] = "CSS"
         meta["construction"] = "tillich_zemor"
         meta["n1"] = n1
         meta["n2"] = n2
@@ -447,6 +627,65 @@ class TillichZemorHGP(CSSCode):
         meta["r2"] = r2
         meta["k1"] = n1 - r1
         meta["k2"] = n2 - r2
+        total_n = n1 * n2 + r1 * r2
+        k_product = (n1 - r1) * (n2 - r2)
+        meta["n"] = total_n
+        meta["k"] = k_product
+        meta["rate"] = (k_product / total_n) if total_n > 0 else 0.0
+        # Distance lower bound: d >= min(d1, d2)
+        # Exact distance is hard to compute; store as None unless overridden
+        meta["distance"] = meta.get("distance", None)
+        meta["data_qubits"] = list(range(total_n))
+        # ── Logical operator Pauli types ───────────────────────
+        meta["lx_pauli_type"] = "X"
+        meta["lz_pauli_type"] = "Z"
+        # ── Logical operator supports ──────────────────────────
+        def _support_from_pauli(op):
+            if isinstance(op, str):
+                return [i for i, c in enumerate(op) if c != 'I']
+            elif isinstance(op, dict):
+                return sorted(op.keys())
+            return []
+        if logical_x:
+            if len(logical_x) == 1:
+                meta["lx_support"] = _support_from_pauli(logical_x[0])
+            else:
+                meta["lx_support"] = [_support_from_pauli(lx) for lx in logical_x]
+        else:
+            meta["lx_support"] = []
+        if logical_z:
+            if len(logical_z) == 1:
+                meta["lz_support"] = _support_from_pauli(logical_z[0])
+            else:
+                meta["lz_support"] = [_support_from_pauli(lz) for lz in logical_z]
+        else:
+            meta["lz_support"] = []
+        # ── Stabiliser scheduling ──────────────────────────────
+        meta["stabiliser_schedule"] = {
+            "n_rounds": None,
+            "description": (
+                "Schedule depends on factor-code layout and target "
+                "decoder."
+            ),
+        }  # schedule depends on layout / decoder
+        # NOTE: x_schedule/z_schedule set to None for product codes.
+        # Optimal measurement scheduling depends on the specific factor codes
+        # and the target decoder.
+        meta["x_schedule"] = None
+        meta["z_schedule"] = None
+        # ── Literature / provenance ────────────────────────────
+        meta["error_correction_zoo_url"] = (
+            "https://errorcorrectionzoo.org/c/hypergraph_product"
+        )
+        meta["wikipedia_url"] = "https://en.wikipedia.org/wiki/Hypergraph_product_code"
+        meta["canonical_references"] = [
+            "Tillich & Zémor, 'Quantum LDPC codes …', arXiv:0903.0566",
+        ]
+        meta["connections"] = [
+            "Special case of homological product with 2-chain inputs",
+            "Self-product of [n,k,d] repetition code gives toric-like code",
+            "Building block for fibre-bundle and lifted-product codes",
+        ]
         
         # Store matrices for parent
         self._hx = hx
@@ -464,4 +703,5 @@ class TillichZemorHGP(CSSCode):
     
     @property
     def name(self) -> str:
+        """Human-readable name showing seed matrix shapes."""
         return f"TillichZemorHGP({self._H1.shape}, {self._H2.shape})"

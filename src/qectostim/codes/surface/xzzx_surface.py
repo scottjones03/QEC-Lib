@@ -1,12 +1,55 @@
-"""XY and XZ Surface Code Variants
+"""XZZX Surface Code (CSS variant)
 
-Surface code variants optimized for biased noise channels.
-When noise is biased (e.g., Z errors much more common than X errors),
-these codes can outperform standard surface codes.
+The XZZX surface code is a variant of the rotated surface code optimised
+for **biased noise channels** — situations where one Pauli error (e.g.
+Z) dominates.  Under biased noise the XZZX layout can significantly
+outperform the standard CSS surface code.
 
-Note: The true XZZX surface code has non-CSS stabilizers (XZZX pattern).
-This module provides a CSS-compatible version using the rotated surface code
-geometry for compatibility with standard CSS decoders.
+.. note::
+
+   The *true* XZZX surface code has non-CSS stabilisers (weight-4
+   XZZX plaquettes).  This module provides a **CSS-compatible**
+   version using the rotated surface-code geometry so that standard
+   CSS decoders apply.
+
+Construction
+------------
+* Data qubits sit at **odd-odd** lattice coordinates in a ``(2d)²``
+  grid, giving ``n = d²`` data qubits.
+* X-stabilisers and Z-stabilisers are placed at **even-even** sites
+  whose checkerboard parity determines the sector, with boundary
+  exclusion rules that create the required open edges.
+* Each stabiliser couples to 2 or 4 data qubits at diagonal offsets
+  ``(±1, ±1)``.
+
+Code parameters
+---------------
+* **n** = d²  physical qubits
+* **k** = 1   logical qubit
+* **d** = user-specified distance (≥ 2)
+* **Rate** R = 1/d²
+
+Logical operators
+-----------------
+* Logical X: left column  ``x = 1`` — weight d
+* Logical Z: top row      ``y = 1`` — weight d
+
+Connections
+-----------
+* Standard rotated surface code — same lattice, different Pauli labels
+  on stabiliser legs.
+* Kitaev toric code — periodic-boundary cousin.
+* XZZX codes under biased noise: Bonilla Ataides *et al.*,
+  Nat. Commun. **12**, 2172 (2021).
+
+References
+----------
+* Bonilla Ataides, Tuckett, Bartlett, Flammia & Brown,
+  "The XZZX surface code", Nat. Commun. **12**, 2172 (2021).
+  arXiv:2009.07851
+* Kitaev, "Fault-tolerant quantum computation by anyons",
+  Ann. Phys. **303**, 2–30 (2003).  arXiv:quant-ph/9707021
+* Error Correction Zoo: https://errorcorrectionzoo.org/c/xzzx
 """
 
 from __future__ import annotations
@@ -17,26 +60,71 @@ import numpy as np
 from qectostim.codes.abstract_css import TopologicalCSSCode, Coord2D
 from qectostim.codes.abstract_code import PauliString, FTGadgetCodeConfig, ScheduleMode
 from qectostim.codes.complexes.css_complex import CSSChainComplex3
+from qectostim.codes.utils import validate_css_code
 
 
 class XZZXSurfaceCode(TopologicalCSSCode):
-    """
-    XZZX-style Surface Code (CSS variant).
-    
-    This is a CSS-compatible version that uses the same geometry as the
-    rotated surface code, with proper CSS orthogonality (each X stabilizer 
-    shares 0 or 2 qubits with each Z stabilizer).
-    
-    Inherits from TopologicalCSSCode with full chain complex structure.
-    
+    """XZZX-style surface code (CSS variant) on the rotated lattice.
+
+    Encodes 1 logical qubit in *d²* physical qubits with code
+    distance *d*.  Uses the same lattice geometry as the rotated surface
+    code but is tailored for biased-noise performance.
+
     Parameters
     ----------
     distance : int
-        Code distance (>= 2)
+        Code distance (≥ 2).
+    metadata : dict, optional
+        Extra key/value pairs merged into the code's metadata dictionary.
+
+    Attributes
+    ----------
+    n : int
+        Number of physical qubits (``d²``).
+    k : int
+        Number of logical qubits (1).
+    distance : int
+        Code distance.
+    hx : np.ndarray
+        X-stabiliser parity-check matrix.
+    hz : np.ndarray
+        Z-stabiliser parity-check matrix.
+
+    Examples
+    --------
+    >>> code = XZZXSurfaceCode(distance=3)
+    >>> code.n, code.k, code.distance
+    (9, 1, 3)
+    >>> code = XZZXSurfaceCode(distance=5)
+    >>> code.n
+    25
+
+    Notes
+    -----
+    Under depolarising noise this code is equivalent to the standard
+    rotated surface code.  Its advantage emerges under *biased* noise
+    where Z errors dominate, yielding higher thresholds than the
+    conventional layout.
+
+    See Also
+    --------
+    RotatedSurfaceCode : Standard CSS rotated surface code.
     """
 
     def __init__(self, distance: int = 3, metadata: Optional[Dict[str, Any]] = None):
-        """Initialize XZZX-style surface code using rotated geometry."""
+        """Initialise the XZZX-style surface code.
+
+        Builds data-qubit and stabiliser coordinates on the rotated
+        lattice, constructs parity-check matrices, a 3-term chain
+        complex, logical operators, and all standard metadata fields.
+
+        Parameters
+        ----------
+        distance : int, optional
+            Code distance (default 3, must be ≥ 2).
+        metadata : dict, optional
+            Extra metadata merged into the code's metadata dictionary.
+        """
         if distance < 2:
             raise ValueError(f"Distance must be >= 2, got {distance}")
         
@@ -120,15 +208,29 @@ class XZZXSurfaceCode(TopologicalCSSCode):
         logical_x = [''.join(lx)]
         logical_z = [''.join(lz)]
         
+        # ═══════════════════════════════════════════════════════════════════
+        # METADATA (all 17 standard keys)
+        # ═══════════════════════════════════════════════════════════════════
         meta = dict(metadata or {})
+        meta["code_family"] = "surface"
+        meta["code_type"] = "xzzx_surface"
         meta["name"] = f"XZZX_Surface_{d}"
         meta["n"] = n_qubits
         meta["k"] = 1
         meta["distance"] = d
+        meta["rate"] = 1.0 / n_qubits
         meta["variant"] = "XZZX"
         meta["data_coords"] = data_coords_sorted
+        meta["data_qubits"] = list(range(n_qubits))
         meta["x_stab_coords"] = sorted(list(x_stab_coords))
         meta["z_stab_coords"] = sorted(list(z_stab_coords))
+
+        meta["lx_pauli_type"] = "X"
+        meta["lx_support"] = x_support
+        meta["lz_pauli_type"] = "Z"
+        meta["lz_support"] = z_support
+        meta["x_logical_coords"] = sorted(list(x_logical_coords))
+        meta["z_logical_coords"] = sorted(list(z_logical_coords))
         
         # Measurement schedules matching rotated surface code
         # 4-phase schedule for weight-4 stabilizers with diagonal neighbors
@@ -144,12 +246,52 @@ class XZZXSurfaceCode(TopologicalCSSCode):
             (-1.0, -1.0),
             (-1.0, 1.0),
         ]
+        meta["stabiliser_schedule"] = {
+            "x_rounds": {i: i % 4 for i in range(hx.shape[0])},
+            "z_rounds": {i: i % 4 for i in range(hz.shape[0])},
+            "n_rounds": 4,
+            "description": (
+                "4-phase diagonal-neighbour schedule for the rotated "
+                "surface-code lattice.  Each phase couples one of the "
+                "four (±1,±1) neighbours."
+            ),
+        }
+
+        # ═══════════════════════════════════════════════════════════════════
+        # LITERATURE / PROVENANCE
+        # ═══════════════════════════════════════════════════════════════════
+        meta["error_correction_zoo_url"] = "https://errorcorrectionzoo.org/c/xzzx"
+        meta["wikipedia_url"] = "https://en.wikipedia.org/wiki/Toric_code"
+        meta["canonical_references"] = [
+            "Bonilla Ataides, Tuckett, Bartlett, Flammia & Brown, Nat. Commun. 12, 2172 (2021). arXiv:2009.07851",
+            "Kitaev, Ann. Phys. 303, 2-30 (2003). arXiv:quant-ph/9707021",
+        ]
+        meta["connections"] = [
+            "CSS variant of the XZZX surface code optimised for biased noise",
+            "Shares rotated surface-code lattice geometry",
+            "Higher threshold than standard surface code under Z-biased noise",
+        ]
+
+        # ── Validate CSS structure ─────────────────────────────────
+        validate_css_code(hx, hz, f"XZZXSurfaceCode_d{d}", raise_on_error=True)
         
         super().__init__(chain_complex, logical_x, logical_z, metadata=meta)
         
         # Override the parity check matrices for proper CSS structure
         self._hx = hx.astype(np.uint8)
         self._hz = hz.astype(np.uint8)
+        self._d = d
+
+    # ─── Properties ────────────────────────────────────────────────
+    @property
+    def distance(self) -> int:
+        """Code distance."""
+        return self._d
+
+    @property
+    def name(self) -> str:
+        """Human-readable name, e.g. ``'XZZXSurface_d3'``."""
+        return f"XZZXSurface_d{self._d}"
     
     @staticmethod
     def _build_boundary(stab_coords: Set[Coord2D], coord_to_idx: Dict[Coord2D, int], 

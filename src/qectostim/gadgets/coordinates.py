@@ -31,26 +31,24 @@ def get_code_dimension(code: Any) -> int:
     Parameters
     ----------
     code : Code
-        A code object, possibly with qubit_coords() method.
+        A code object with qubit_coords() method (on Code ABC).
         
     Returns
     -------
     int
         Spatial dimension (2, 3, 4, etc.). Defaults to 2 if no coords found.
     """
-    if hasattr(code, 'qubit_coords'):
-        coords = code.qubit_coords()
-        if coords and len(coords) > 0:
-            first_coord = coords[0]
-            if isinstance(first_coord, (list, tuple)):
-                return len(first_coord)
+    coords = code.qubit_coords()
+    if coords and len(coords) > 0:
+        first_coord = coords[0]
+        if isinstance(first_coord, (list, tuple)):
+            return len(first_coord)
     
     # Check metadata fallback
-    if hasattr(code, '_metadata'):
-        meta = code._metadata or {}
-        data_coords = meta.get('data_coords', [])
-        if data_coords and len(data_coords) > 0:
-            return len(data_coords[0])
+    meta = code.metadata or {}
+    data_coords = meta.get('data_coords', [])
+    if data_coords and len(data_coords) > 0:
+        return len(data_coords[0])
     
     return 2  # Default to 2D
 
@@ -377,20 +375,18 @@ def get_code_coords(code: Any) -> Tuple[List[CoordND], List[CoordND], List[Coord
     x_stab_coords: List[CoordND] = []
     z_stab_coords: List[CoordND] = []
     
-    # Try qubit_coords() method first - but handle None return
-    if hasattr(code, 'qubit_coords'):
-        coords = code.qubit_coords()
-        if coords is not None:
-            data_coords = [tuple(c) for c in coords]
+    # Use Code ABC qubit_coords() method directly
+    coords = code.qubit_coords()
+    if coords is not None:
+        data_coords = [tuple(c) for c in coords]
     
     # Get stabilizer coords from metadata
-    if hasattr(code, '_metadata'):
-        meta = code._metadata or {}
-        if 'data_coords' in meta and not data_coords:
-            data_coords = [tuple(c) for c in meta['data_coords']]
-        if 'x_stab_coords' in meta:
-            x_stab_coords = [tuple(c) for c in meta['x_stab_coords']]
-        if 'z_stab_coords' in meta:
-            z_stab_coords = [tuple(c) for c in meta['z_stab_coords']]
+    meta = code.metadata or {}
+    if 'data_coords' in meta and not data_coords:
+        data_coords = [tuple(c) for c in meta['data_coords']]
+    if 'x_stab_coords' in meta:
+        x_stab_coords = [tuple(c) for c in meta['x_stab_coords']]
+    if 'z_stab_coords' in meta:
+        z_stab_coords = [tuple(c) for c in meta['z_stab_coords']]
     
     return data_coords, x_stab_coords, z_stab_coords

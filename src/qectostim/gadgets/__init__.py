@@ -53,7 +53,6 @@ from qectostim.gadgets.base import (
     ObservableTransform,
     TwoQubitObservableTransform,
     TransversalGadgetMixin,
-    SurgeryGadgetMixin,
     TeleportationGadgetMixin,
     PhaseResult,
     PhaseType,
@@ -80,14 +79,8 @@ from qectostim.gadgets.layout import (
     BlockAllocation,
 )
 
-# Scheduling
-from qectostim.gadgets.scheduling import (
-    GadgetScheduler,
-    CircuitLayer,
-)
-
 # Transversal gates
-from qectostim.gadgets.transversal import (
+from qectostim.gadgets.bin.transversal import (
     TransversalGate,
     TransversalHadamard,
     TransversalS,
@@ -104,7 +97,7 @@ from qectostim.gadgets.transversal import (
 )
 
 # Teleportation-based gates
-from qectostim.gadgets.teleportation import (
+from qectostim.gadgets.bin.teleportation import (
     TeleportedGate,
     BellStateTeleportedGate,
     TeleportedHadamard,
@@ -120,7 +113,7 @@ from qectostim.gadgets.teleportation import (
 )
 
 # CSS surgery
-from qectostim.gadgets.css_surgery import (
+from qectostim.gadgets.bin.css_surgery import (
     SurgeryType,
     SurgeryBoundary,
     LatticeZZMerge,
@@ -134,7 +127,24 @@ from qectostim.gadgets.pauli_frame import (
     PauliFrame,
     PauliTracker,
     PauliType,
-    pauli_product,
+)
+
+# State preparation by projection
+from qectostim.gadgets.preparation import (
+    CSSStatePreparation,
+    LogicalBasis,
+    ProjectionResult,
+    InjectionGate,
+    InjectionResult,
+    LogicalStateInjector,
+    find_injection_qubit,
+)
+
+# H-Teleportation gadgets (CZ and CNOT based)
+from qectostim.gadgets.teleportation_h_gadgets import (
+    CZHTeleportGadget,
+    CNOTHTeleportGadget,
+    create_h_teleport_gadget,
 )
 
 
@@ -146,7 +156,6 @@ __all__ = [
     "ObservableTransform",
     "TwoQubitObservableTransform",
     "TransversalGadgetMixin",
-    "SurgeryGadgetMixin",
     "TeleportationGadgetMixin",
     "PhaseResult",
     "PhaseType",
@@ -166,8 +175,6 @@ __all__ = [
     "QubitAllocation",
     "BlockAllocation",
     # Scheduling
-    "GadgetScheduler",
-    "CircuitLayer",
     # Transversal
     "TransversalGate",
     "TransversalHadamard",
@@ -206,5 +213,21 @@ __all__ = [
     "PauliFrame",
     "PauliTracker",
     "PauliType",
-    "pauli_product",
+    # State preparation
+    "CSSStatePreparation",
+    "LogicalBasis",
+    "ProjectionResult",
+    "InjectionGate",
+    "InjectionResult",
+    "LogicalStateInjector",
+    "find_injection_qubit",
+    # H-Teleportation gadgets
+    "CZHTeleportGadget",
+    "CNOTHTeleportGadget",
+    "create_h_teleport_gadget",
+    # Two-DEM Teleportation (commented out - modules don't exist)
+    # "TwoDEMCircuitBuilder",
+    # "TwoDEMTeleportedHadamard",
+    # "TwoDEMExperimentResult",
+    # "run_two_dem_correlated",
 ]

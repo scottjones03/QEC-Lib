@@ -1,12 +1,60 @@
-"""[[9,1,3]] Shor Code (Concatenated Repetition Code)
+"""[[9, 1, 3]] Shor Code — Concatenated Repetition Code
 
-Shor's code is a [[9,1,3]] CSS code – the first quantum error-correcting code,
-constructed by concatenating a 3-qubit bit-flip code with a 3-qubit phase-flip code.
-It can correct one arbitrary qubit error (distance 3).
+Shor's code is the **first quantum error-correcting code**, published
+in 1995.  It is a [[9, 1, 3]] CSS code constructed by concatenating
+a 3-qubit bit-flip repetition code (inner) with a 3-qubit phase-flip
+repetition code (outer).  It can correct any single-qubit Pauli error
+(distance 3).
 
-The qubits are organized in a 3×3 grid where:
-- Each row is a bit-flip repetition code (Z errors detected by row parity)
-- Each column is a phase-flip repetition code (X errors detected by column parity)
+Construction
+------------
+The 9 physical qubits are arranged in a 3 × 3 grid.  Each **row** is
+an independent 3-qubit repetition code protecting against bit-flip
+(X) errors, while the **columns** are linked by weight-6 X-type
+stabilisers that detect phase-flip (Z) errors.
+
+Stabilisers
+-----------
+* **Z-type** (6 generators, weight 2 each):
+      Z₀Z₁, Z₁Z₂, Z₃Z₄, Z₄Z₅, Z₆Z₇, Z₇Z₈
+
+* **X-type** (2 generators, weight 6 each):
+      X₀X₁X₂X₃X₄X₅, X₃X₄X₅X₆X₇X₈
+
+Logical operators (minimum weight)
+-----------------------------------
+    X̄ = X₀X₃X₆   (one qubit per row-block)
+    Z̄ = Z₀Z₁Z₂   (entire first block)
+
+Code parameters
+---------------
+* **n** = 9  physical qubits
+* **k** = 1  logical qubit
+* **d** = 3
+* **Rate** R = 1/9 ≈ 0.111
+
+Encoding circuits
+-----------------
+|0⟩_L: Apply H to qubits {0, 3, 6}, then CNOT within each block to
+create (|000⟩ + |111⟩)^⊗3 / 2√2.
+
+Connections to other codes
+--------------------------
+* **Repetition codes**: direct concatenation of two 3-qubit repetition
+  codes (bit-flip inner, phase-flip outer).
+* **Bacon–Shor codes**: the [[9, 1, 3]] Shor code is the smallest
+  Bacon–Shor code (3 × 3 lattice with gauge operators fixed).
+* **Surface codes**: can be viewed as a defective rotated surface code
+  on a 3 × 3 patch.
+
+References
+----------
+* Shor, "Scheme for reducing decoherence in quantum computer memory",
+  Phys. Rev. A 52, R2493 (1995).
+* Calderbank & Shor, Phys. Rev. A 54, 1098 (1996).
+  arXiv:quant-ph/9512032
+* Error Correction Zoo: https://errorcorrectionzoo.org/c/shor_nine
+* Wikipedia: https://en.wikipedia.org/wiki/Shor%27s_nine-qubit_code
 """
 
 from __future__ import annotations
@@ -17,27 +65,72 @@ import numpy as np
 from qectostim.codes.abstract_css import TopologicalCSSCode, Coord2D
 from qectostim.codes.abstract_code import PauliString
 from qectostim.codes.complexes.css_complex import CSSChainComplex3
+from qectostim.codes.utils import validate_css_code
 
 
 class ShorCode91(TopologicalCSSCode):
-    """
-    [[9,1,3]] Shor code (first quantum error-correcting code).
+    """[[9, 1, 3]] Shor code — the first quantum error-correcting code.
 
-    Qubits arranged in 3x3 grid:
-      0  1  2
-      3  4  5
-      6  7  8
+    Encodes 1 logical qubit in 9 physical qubits with distance 3 via
+    concatenation of 3-qubit bit-flip and phase-flip repetition codes.
 
-    Stabilizers:
-    - Z stabilizers: parity checks within each row (weight-2)
-    - X stabilizers: parity checks across rows (weight-6, ensuring phase coherence)
+    Parameters
+    ----------
+    metadata : dict, optional
+        Extra metadata merged into the code's metadata dictionary.
+
+    Attributes
+    ----------
+    n : int
+        Number of physical qubits (9).
+    k : int
+        Number of logical qubits (1).
+    distance : int
+        Code distance (3).
+    hx : np.ndarray
+        X-stabiliser parity-check matrix, shape ``(2, 9)``.
+    hz : np.ndarray
+        Z-stabiliser parity-check matrix, shape ``(6, 9)``.
+
+    Examples
+    --------
+    >>> code = ShorCode91()
+    >>> code.n, code.k, code.distance
+    (9, 1, 3)
+
+    Notes
+    -----
+    Qubits are arranged in a 3 × 3 grid::
+
+        0  1  2
+        3  4  5
+        6  7  8
+
+    Z-stabilisers are weight-2 parity checks *within* each row-block.
+    X-stabilisers are weight-6 parity checks *across* adjacent blocks.
+
+    See Also
+    --------
+    RepetitionCode : 1D repetition code (inner building block).
+    BaconShorCode : Subsystem generalisation of the Shor code.
     """
 
     def __init__(self, metadata: Optional[Dict[str, Any]] = None):
-        """Initialize Shor's code with proper CSS structure and chain complex."""
+        """Initialise the [[9, 1, 3]] Shor code.
+
+        Builds parity-check matrices, chain complex, logical operators,
+        and all standard metadata fields.
+
+        Parameters
+        ----------
+        metadata : dict, optional
+            Extra key/value pairs merged into the code's metadata
+            dictionary.  User-supplied entries override auto-generated
+            ones with the same key.
+        """
 
         # ═══════════════════════════════════════════════════════════════════
-        # SHOR CODE STABILIZER STRUCTURE
+        # SHOR CODE STABILIZER STRUCTURE (Standard CSS Convention)
         # ═══════════════════════════════════════════════════════════════════
         # Shor code = concatenation of:
         #   Inner: 3-qubit bit-flip repetition code (protects against X errors)
@@ -48,18 +141,24 @@ class ShorCode91(TopologicalCSSCode):
         #   Block 1: qubits 3,4,5
         #   Block 2: qubits 6,7,8
         #
-        # Codewords (the 8 basis states of |0⟩_L and |1⟩_L combined):
-        #   |000000000⟩, |000000111⟩, |000111000⟩, |000111111⟩,
-        #   |111000000⟩, |111000111⟩, |111111000⟩, |111111111⟩
-        # (Each block is either all-0 or all-1, and the pattern repeats)
+        # Using STANDARD CSS CONVENTION:
+        #   Hx defines X-type stabilizers (detect Z errors)
+        #   Hz defines Z-type stabilizers (detect X errors)
         # ═══════════════════════════════════════════════════════════════════
 
-        # Z-type stabilizers (hx): 6 weight-2 checks WITHIN each block
-        # These detect X errors (bit-flips within a GHZ block)
+        # X-type stabilizers (hx): 2 weight-6 checks ACROSS blocks
+        # These are X-Pauli operators that detect Z errors
+        hx = np.array([
+            [1, 1, 1, 1, 1, 1, 0, 0, 0],  # X_0 X_1 X_2 X_3 X_4 X_5
+            [0, 0, 0, 1, 1, 1, 1, 1, 1],  # X_3 X_4 X_5 X_6 X_7 X_8
+        ], dtype=np.uint8)
+
+        # Z-type stabilizers (hz): 6 weight-2 checks WITHIN each block
+        # These are Z-Pauli operators that detect X errors (bit-flips)
         # Rows: {0,1}, {1,2} (block 0)
         #       {3,4}, {4,5} (block 1)
         #       {6,7}, {7,8} (block 2)
-        hx = np.array([
+        hz = np.array([
             [1, 1, 0, 0, 0, 0, 0, 0, 0],  # Z_0 Z_1
             [0, 1, 1, 0, 0, 0, 0, 0, 0],  # Z_1 Z_2
             [0, 0, 0, 1, 1, 0, 0, 0, 0],  # Z_3 Z_4
@@ -68,53 +167,36 @@ class ShorCode91(TopologicalCSSCode):
             [0, 0, 0, 0, 0, 0, 0, 1, 1],  # Z_7 Z_8
         ], dtype=np.uint8)
 
-        # X-type stabilizers (hz): 2 weight-6 checks ACROSS blocks
-        # These detect Z errors (phase-flips that affect block coherence)
-        hz = np.array([
-            [1, 1, 1, 1, 1, 1, 0, 0, 0],  # X_0 X_1 X_2 X_3 X_4 X_5
-            [0, 0, 0, 1, 1, 1, 1, 1, 1],  # X_3 X_4 X_5 X_6 X_7 X_8
-        ], dtype=np.uint8)
-
         # Build chain complex for CSS code structure:
         #   C2 (X stabilizers) --∂2--> C1 (qubits) --∂1--> C0 (Z stabilizers)
         #
-        # boundary_2 = Hz.T: maps faces (X stabs) → edges (qubits)
-        # boundary_1 = Hx:   maps edges (qubits) → vertices (Z stabs)
-        boundary_2 = hz.T.astype(np.uint8)  # shape (9, 2)
-        boundary_1 = hx.astype(np.uint8)    # shape (6, 9)
+        # boundary_2 = Hx.T: maps faces (X stabs) → edges (qubits)
+        # boundary_1 = Hz:   maps edges (qubits) → vertices (Z stabs)
+        boundary_2 = hx.T.astype(np.uint8)  # shape (9, 2)
+        boundary_1 = hz.astype(np.uint8)    # shape (6, 9)
         
         chain_complex = CSSChainComplex3(boundary_2=boundary_2, boundary_1=boundary_1)
 
         # ═══════════════════════════════════════════════════════════════════
-        # SHOR CODE LOGICAL OPERATORS (SWAPPED vs. naive expectation!)
+        # SHOR CODE LOGICAL OPERATORS (Standard CSS Convention)
         # ═══════════════════════════════════════════════════════════════════
-        # 
-        # CRITICAL: Shor code has SWAPPED logical operators due to its
-        # concatenated structure. The codewords are:
-        #   |0⟩_L = (|000⟩ + |111⟩)⊗³ / 2√2
-        #   |1⟩_L = (|000⟩ - |111⟩)⊗³ / 2√2
+        # Using standard CSS convention where:
+        #   Logical X is X-type (X on qubits 0, 3, 6 - one per block)
+        #   Logical Z is Z-type (Z on qubits 0, 1, 2 - first block)
         #
-        # The difference is a PHASE (minus sign), not a Z-basis amplitude!
-        # This means:
-        #   - Z-type operators CANNOT distinguish |0⟩_L from |1⟩_L
-        #   - X-type operators CAN distinguish them (via phase detection)
-        #
-        # Mathematical proof:
-        #   Z₀Z₃Z₆ |0⟩_L = |1⟩_L  (acts as logical X, NOT logical Z!)
-        #   X₀X₁X₂ |0⟩_L = +|0⟩_L, X₀X₁X₂ |1⟩_L = -|1⟩_L  (eigenvalue ±1)
-        #
-        # Therefore:
-        #   Logical Z = X₀X₁X₂ (X-type! measures ±1 for |0⟩_L vs |1⟩_L)
-        #   Logical X = Z₀Z₃Z₆ (Z-type! flips |0⟩_L ↔ |1⟩_L)
+        # This matches the standard definition where Lz commutes with Hz
+        # and Lx commutes with Hx.
         # ═══════════════════════════════════════════════════════════════════
         
-        # Logical X: Z on one qubit per block (flips between |0⟩_L and |1⟩_L)
-        # Z₀Z₃Z₆ maps (|000⟩+|111⟩)⊗³ → (|000⟩-|111⟩)⊗³
-        logical_x = ["ZIIZIIZII"]  # Z_0 Z_3 Z_6 (one per block)
+        # Logical X: X on one qubit per block (qubits 0, 3, 6)
+        # Qubits: 0  1  2  3  4  5  6  7  8
+        #         X  I  I  X  I  I  X  I  I
+        logical_x = ["XIIXIIXII"]
         
-        # Logical Z: X on one complete block (distinguishes |0⟩_L from |1⟩_L)
-        # X₀X₁X₂ gives +1 eigenvalue on |0⟩_L, -1 eigenvalue on |1⟩_L
-        logical_z = ["XXXIIIIII"]  # X_0 X_1 X_2 (first block)
+        # Logical Z: Z on first block (qubits 0, 1, 2)
+        # Qubits: 0  1  2  3  4  5  6  7  8
+        #         Z  Z  Z  I  I  I  I  I  I
+        logical_z = ["ZZZIIIIII"]
 
         # 3x3 grid coordinates
         coords = {q: (float(q % 3), float(q // 3)) for q in range(9)}
@@ -130,36 +212,71 @@ class ShorCode91(TopologicalCSSCode):
         ]
 
         meta = dict(metadata or {})
-        meta["name"] = "Shor_91"
+        meta["name"] = "ShorCode91"
+        meta["code_family"] = "small_css"
+        meta["code_type"] = "shor"
         meta["n"] = 9
         meta["k"] = 1
         meta["distance"] = 3
+        meta["rate"] = 1.0 / 9.0
         meta["data_coords"] = data_coords
         meta["x_stab_coords"] = x_stab_coords
         meta["z_stab_coords"] = z_stab_coords
+        meta["data_qubits"] = list(range(9))
+        meta["x_logical_coords"] = [data_coords[i] for i in [0, 3, 6]]
+        meta["z_logical_coords"] = [data_coords[i] for i in [0, 1, 2]]
         
         # ═══════════════════════════════════════════════════════════════════
-        # CRITICAL: Logical Z measurement basis indicator
+        # LOGICAL OPERATOR PAULI TYPES (Standard CSS Convention)
         # ═══════════════════════════════════════════════════════════════════
-        # Shor code's logical Z is X-type (X₀X₁X₂), not Z-type.
-        # This means:
-        # - To measure Lz, we need X-basis measurements (MX), not Z-basis (M)
-        # - For FT verification, we need X-basis comparison instead of Z-basis
-        # - The observable parity must be computed from MX results
+        # Using standard CSS convention:
+        #   Logical Z is Z-type (Z on qubits 0, 1, 2)
+        #   Logical X is X-type (X on qubits 0, 3, 6)
         #
-        # lz_pauli_type = 'X' indicates Lz is an X-type operator
-        # lz_support = [0, 1, 2] gives the qubit support of Lz
+        # This means:
+        # - To measure Lz, we need Z-basis measurements (M), standard path
+        # - Lz commutes with Hz (Z-type stabilizers)
+        # - Lx commutes with Hx (X-type stabilizers)
         # ═══════════════════════════════════════════════════════════════════
-        meta["lz_pauli_type"] = "X"  # Lz is X-type (unusual!)
-        meta["lz_support"] = [0, 1, 2]  # X₀X₁X₂
+        meta["lz_pauli_type"] = "Z"  # Lz is Z-type (standard)
+        meta["lz_support"] = [0, 1, 2]  # Z₀Z₁Z₂
         
-        # Also indicate that Lx is Z-type (swapped from normal CSS)
-        meta["lx_pauli_type"] = "Z"
-        meta["lx_support"] = [0, 3, 6]  # Z₀Z₃Z₆
+        meta["lx_pauli_type"] = "X"  # Lx is X-type (standard)
+        meta["lx_support"] = [0, 3, 6]  # X₀X₃X₆
         
         # Measurement schedules
         meta["x_schedule"] = [(0.0, 0.5), (1.0, 0.5), (2.0, 0.5)]  # 3 qubits per X stab
         meta["z_schedule"] = [(0.5, 0.0), (-0.5, 0.0)]  # 2 qubits per Z stab
+
+        # ═══════════════════════════════════════════════════════════════════
+        # STABILISER SCHEDULE
+        # ═══════════════════════════════════════════════════════════════════
+        # Z-stabilisers: 6 weight-2 checks (3 pairs per block, all parallel)
+        # X-stabilisers: 2 weight-6 checks (between blocks, all parallel)
+        meta["stabiliser_schedule"] = {
+            "x_rounds": {0: 0, 1: 0},
+            "z_rounds": {0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0},
+            "n_rounds": 1,
+            "description": (
+                "Fully parallel: all 2 X-stabilisers in round 0, "
+                "all 6 Z-stabilisers in round 0."
+            ),
+        }
+
+        # ═══════════════════════════════════════════════════════════════════
+        # LITERATURE / PROVENANCE
+        # ═══════════════════════════════════════════════════════════════════
+        meta["error_correction_zoo_url"] = "https://errorcorrectionzoo.org/c/shor_nine"
+        meta["wikipedia_url"] = "https://en.wikipedia.org/wiki/Shor%27s_nine-qubit_code"
+        meta["canonical_references"] = [
+            "Shor, Phys. Rev. A 52, R2493 (1995)",
+            "Calderbank & Shor, Phys. Rev. A 54, 1098 (1996). arXiv:quant-ph/9512032",
+        ]
+        meta["connections"] = [
+            "Concatenation of 3-qubit bit-flip and phase-flip repetition codes",
+            "Smallest Bacon-Shor code (3x3 lattice)",
+            "Defective rotated surface code on 3x3 patch",
+        ]
         
         # ═══════════════════════════════════════════════════════════════════
         # |0⟩_L AND |+⟩_L ENCODING FOR NON-SELF-DUAL CODES
@@ -200,6 +317,9 @@ class ShorCode91(TopologicalCSSCode):
             (6, 7), (6, 8),  # Block 2: qubit 6 controls 7, 8
         ]
 
+        # ── Validate CSS structure ─────────────────────────────────
+        validate_css_code(hx, hz, "ShorCode91", raise_on_error=True)
+
         super().__init__(chain_complex, logical_x, logical_z, metadata=meta)
         
         # Override parity check matrices
@@ -207,5 +327,15 @@ class ShorCode91(TopologicalCSSCode):
         self._hz = hz.astype(np.uint8)
     
     def qubit_coords(self) -> List[Coord2D]:
-        """Return qubit coordinates for visualization."""
+        """Return qubit coordinates for visualisation (3 × 3 grid)."""
         return list(self.metadata.get("data_coords", []))
+
+    @property
+    def distance(self) -> int:
+        """Code distance (3)."""
+        return 3
+
+    @property
+    def name(self) -> str:
+        """Human-readable name: ``'ShorCode91'``."""
+        return "ShorCode91"

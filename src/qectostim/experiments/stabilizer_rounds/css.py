@@ -20,6 +20,7 @@ from .base import BaseStabilizerRoundBuilder, StabilizerBasis
 
 if TYPE_CHECKING:
     from qectostim.codes.abstract_css import CSSCode
+    from qectostim.gadgets.preparation import CSSStatePreparation, LogicalBasis
 
 
 class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
@@ -49,8 +50,23 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         measurement_basis: str = "Z",
         enable_metachecks: bool = False,
         single_shot_metachecks: bool = True,
+        x_stabilizer_mode: str = "cz",
     ):
         super().__init__(code, ctx, block_name, data_offset, ancilla_offset, measurement_basis)
+        
+        # X-stabilizer extraction mode:
+        # - "cz": Use CZ gates (default, safe for memory experiments)
+        #         H-CZ-H-Measure measures X parity without disturbing Z-basis state
+        # - "cx": Use CX gates (required for teleportation gadgets)
+        #         H-CX-H-Measure: after teleportation CNOT, post-CNOT X_D syndrome
+        #         remains local to the data block, enabling deterministic detectors
+        # 
+        # IMPORTANT: Teleportation requires "cx" mode because CZ-based extraction
+        # couples X_D measurements to Z_A after the teleportation CNOT, making
+        # the boundary detectors non-deterministic.
+        if x_stabilizer_mode not in ("cz", "cx"):
+            raise ValueError(f"x_stabilizer_mode must be 'cz' or 'cx', got {x_stabilizer_mode!r}")
+        self._x_stabilizer_mode = x_stabilizer_mode
         
         # Get code's FT gadget config for code-specific behavior
         self._ft_config = code.get_ft_gadget_config()
@@ -95,6 +111,11 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         # Flag to skip first-round detectors (used after teleportation)
         self._skip_first_round: bool = False
         
+        # Temporary flags for explicit anchor detector emission
+        # These are set per-round by emit_round() and consumed by _emit_x_round/_emit_z_round
+        self._emit_z_anchors: bool = False
+        self._emit_x_anchors: bool = False
+        
         # Flag to track if stabilizer types have been swapped (after Hadamard)
         # When True, physical X ancillas measure logical Z, and vice versa
         self._stabilizer_swapped: bool = False
@@ -102,8 +123,9 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         # Metacheck support for 4D/5D codes (single-shot error correction)
         # Use code's config setting, but can be overridden by parameter
         self._enable_metachecks = enable_metachecks or self._ft_config.enable_metachecks
-        _meta_x_raw = getattr(code, 'meta_x', None)
-        _meta_z_raw = getattr(code, 'meta_z', None)
+        _meta_x_raw = self._meta.get('meta_x', None)
+        _meta_z_raw = self._meta.get('meta_z', None)
+        # meta_x and meta_z should be numpy arrays or None
         self._meta_x = _meta_x_raw if _meta_x_raw is not None and hasattr(_meta_x_raw, 'shape') else None
         self._meta_z = _meta_z_raw if _meta_z_raw is not None and hasattr(_meta_z_raw, 'shape') else None
         self._n_meta_x = self._meta_x.shape[0] if self._meta_x is not None and self._meta_x.size > 0 else 0
@@ -126,9 +148,13 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         List[Tuple[float, ...]]
             Coordinates for each stabilizer of the given type.
         """
-        # Try code's hook method first (allows code-specific customization)
-        if hasattr(self.code, f'get_{basis}_stabilizer_coords'):
-            coords = getattr(self.code, f'get_{basis}_stabilizer_coords')()
+        # Use CSSCode hook if available (code.as_css() returns non-None for CSS codes)
+        css = self.code.as_css()
+        if css is not None:
+            if basis == 'x':
+                coords = css.get_x_stabilizer_coords()
+            else:
+                coords = css.get_z_stabilizer_coords()
             if coords is not None:
                 return coords
         
@@ -149,9 +175,10 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         Optional[List[Tuple[float, float]]]
             Schedule offsets or None for default scheduling.
         """
-        # Try code's hook method first
-        if hasattr(self.code, 'get_stabilizer_schedule'):
-            schedule = self.code.get_stabilizer_schedule(basis)
+        # Use CSSCode hook if available
+        css = self.code.as_css()
+        if css is not None:
+            schedule = css.get_stabilizer_schedule(basis)
             if schedule is not None:
                 return schedule
         
@@ -277,9 +304,22 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         circuit: stim.Circuit,
         state: str = "0",
         logical_idx: int = 0,
-    ) -> None:
+        use_projection: bool = True,
+    ) -> Dict[str, List[int]]:
         """
-        Prepare a logical eigenstate.
+        Prepare a logical eigenstate using Pauli frame projection.
+        
+        This implements the correct Pauli frame approach for CSS code preparation
+        using the CSSStatePreparation strategy:
+        - For |0⟩_L: Reset to |0⟩^⊗n, measure stabilizers to project into codespace
+        - For |+⟩_L: Reset to |0⟩^⊗n, H on all, measure stabilizers to project
+        - For |1⟩_L: Same as |0⟩_L + logical X
+        - For |-⟩_L: Same as |+⟩_L + logical Z
+        
+        The stabilizer measurements PROJECT into the codespace. The eigenvalues
+        may be random (±1), but they are CONSISTENT - this is the Pauli frame.
+        The frame information is returned so it can be tracked and applied
+        at final measurement.
         
         Parameters
         ----------
@@ -289,33 +329,226 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
             "0" for |0⟩_L, "1" for |1⟩_L, "+" for |+⟩_L, "-" for |-⟩_L.
         logical_idx : int
             Which logical qubit.
+        use_projection : bool
+            If True (default), use stabilizer projection for proper Pauli frame
+            encoding. If False, use the simple (incorrect for general CSS) approach
+            of assuming |0⟩^⊗n is already in codespace.
+            
+        Returns
+        -------
+        Dict[str, List[int]]
+            Measurement indices from projection:
+            - 'x_stab_meas': X stabilizer measurement indices
+            - 'z_stab_meas': Z stabilizer measurement indices
+            - 'logical_meas': Logical operator measurement index (if measured)
+            Empty dict if use_projection=False.
         """
-        # Get code interface
         code = self.code
+        result: Dict[str, List[int]] = {
+            'x_stab_meas': [],
+            'z_stab_meas': [],
+            'logical_meas': [],
+        }
         
-        # Determine which qubits need preparation based on state
+        if not use_projection:
+            # Legacy behavior - simple but incorrect for general CSS codes
+            # Kept for backward compatibility and testing
+            if state in ("0", "1"):
+                if state == "1" and hasattr(code, 'logical_x_support'):
+                    support = code.logical_x_support(logical_idx)
+                    for q in support:
+                        circuit.append("X", [self.data_offset + q])
+            elif state in ("+", "-"):
+                if state == "-" and hasattr(code, 'logical_x_support'):
+                    support = code.logical_x_support(logical_idx)
+                    for q in support:
+                        circuit.append("Z", [self.data_offset + q])
+                circuit.append("H", self.data_qubits)
+            circuit.append("TICK")
+            return result
+        
+        # === USE CSSStatePreparation STRATEGY ===
+        # This ensures consistent state preparation across all CSS components
+        # Import lazily to avoid circular imports
+        from qectostim.gadgets.preparation import CSSStatePreparation
+        css_prep = CSSStatePreparation(code)
+        
+        # Get the projection ancilla (after all stabilizer ancillas)
+        proj_ancilla = self.ancilla_offset + self._n_x + self._n_z
+        if self._enable_metachecks:
+            proj_ancilla += self._n_meta_x + self._n_meta_z
+        
+        # Record where measurements will start in the DetectorContext
+        meas_start = self.ctx.measurement_index
+        
+        # Prepare the state using CSSStatePreparation
         if state in ("0", "1"):
-            # Z-basis eigenstate
-            # |0⟩_L: prepare all data in |0⟩ (already done by reset)
-            # |1⟩_L: apply logical X
-            if state == "1" and hasattr(code, 'logical_x_support'):
-                support = code.logical_x_support(logical_idx)
-                for q in support:
-                    circuit.append("X", [self.data_offset + q])
+            prep_result = css_prep.prepare_zero(
+                circuit, self.data_qubits, proj_ancilla,
+                num_rounds=1, emit_detectors=False
+            )
+        else:  # "+" or "-"
+            prep_result = css_prep.prepare_plus(
+                circuit, self.data_qubits, proj_ancilla,
+                num_rounds=1, emit_detectors=False
+            )
         
-        elif state in ("+", "-"):
-            # X-basis eigenstate
-            # For CSS codes: |+⟩_L = H^⊗n|0⟩_L (uniform superposition over Z code space)
-            # Apply H to ALL data qubits to prepare |+⟩^⊗n which is +1 eigenstate of all X stabilizers
-            # For |-⟩_L, additionally apply Z to the logical X support to get the -1 eigenvalue
-            if state == "-" and hasattr(code, 'logical_x_support'):
-                support = code.logical_x_support(logical_idx)
-                for q in support:
-                    circuit.append("Z", [self.data_offset + q])
-            # Apply H to all data qubits
-            circuit.append("H", self.data_qubits)
+        # Map the local measurement indices from CSSStatePreparation to global DetectorContext indices
+        # CSSStatePreparation uses local indices starting from 0, we need to add meas_start
+        num_meas = len(prep_result.all_measurements)
+        for _ in range(num_meas):
+            self.ctx.add_measurement(1)  # Register each measurement with context
         
-        circuit.append("TICK")
+        # Convert local indices to global indices
+        result['z_stab_meas'] = [m + meas_start for m in prep_result.final_z_meas]
+        result['x_stab_meas'] = [m + meas_start for m in prep_result.final_x_meas]
+        
+        # Apply logical operator for |1⟩_L or |-⟩_L
+        if state == "1" and hasattr(code, 'logical_x_support'):
+            support = code.logical_x_support(logical_idx)
+            for q in support:
+                circuit.append("X", [self.data_offset + q])
+            circuit.append("TICK")
+        elif state == "-" and hasattr(code, 'logical_z_support'):
+            support = code.logical_z_support(logical_idx)
+            for q in support:
+                circuit.append("Z", [self.data_offset + q])
+            circuit.append("TICK")
+        
+        # Initialize stabilizer history from projection measurements
+        self._initialize_stabilizer_history_from_projection(result)
+        
+        # CRITICAL: Skip first-round detectors after projection!
+        # Projection measurements give random ±1 outcomes, so detectors comparing
+        # first round to projection would be non-deterministic. We establish the
+        # stabilizer history for measurement index tracking, but don't emit detectors.
+        # Second and subsequent rounds will have deterministic time-like detectors.
+        self._skip_first_round = True
+        
+        return result
+    
+    def _emit_projection_measurements(
+        self,
+        circuit: stim.Circuit,
+        state_type: str,
+    ) -> Dict[str, List[int]]:
+        """
+        Emit stabilizer measurements to project into the codespace.
+        
+        DEPRECATED: This method is kept for backward compatibility.
+        New code should use emit_prepare_logical_state() which delegates
+        to CSSStatePreparation.
+        
+        This is the core of Pauli frame encoding. The measurements project
+        |0⟩^⊗n or |+⟩^⊗n into the code space. The measurement outcomes are
+        random (±1) but define a consistent Pauli frame.
+        
+        Parameters
+        ----------
+        circuit : stim.Circuit
+            Target circuit.
+        state_type : str
+            "0" or "1" for Z-basis, "+" or "-" for X-basis.
+            
+        Returns
+        -------
+        Dict[str, List[int]]
+            Measurement indices for each stabilizer type.
+        """
+        n = self.code.n
+        data_qubits = self.data_qubits
+        
+        # Use a dedicated projection ancilla (after all stabilizer ancillas)
+        # This avoids conflicts with the parallel stabilizer ancillas
+        proj_ancilla = self.ancilla_offset + self._n_x + self._n_z
+        if self._enable_metachecks:
+            proj_ancilla += self._n_meta_x + self._n_meta_z
+        
+        result = {
+            'x_stab_meas': [],
+            'z_stab_meas': [],
+            'logical_meas': [],
+        }
+        
+        # === Measure Z-type stabilizers ===
+        # Circuit: R-CX(data→anc)-M (NO H gates!)
+        # CNOT propagates Z: measures Z parity directly
+        if self._hz is not None and self._n_z > 0:
+            for row_idx in range(self._n_z):
+                # Reset ancilla to |0⟩
+                circuit.append("R", [proj_ancilla])
+                
+                # CNOT from each data qubit in stabilizer support to ancilla
+                # data controls ancilla → measures Z parity
+                for q in range(n):
+                    if self._hz[row_idx, q]:
+                        circuit.append("CX", [data_qubits[q], proj_ancilla])
+                
+                # Measure in Z-basis
+                meas_idx = self.ctx.add_measurement(1)
+                circuit.append("M", [proj_ancilla])
+                result['z_stab_meas'].append(meas_idx)
+            
+            circuit.append("TICK")
+        
+        # === Measure X-type stabilizers ===
+        # Circuit: R-H-CX[anc→data]-H-M
+        # Ancilla in |+⟩, CNOT applies X to data, measures X parity
+        if self._hx is not None and self._n_x > 0:
+            for row_idx in range(self._n_x):
+                # Reset and prepare ancilla in |+⟩
+                circuit.append("R", [proj_ancilla])
+                circuit.append("H", [proj_ancilla])
+                
+                # CNOT from ancilla to each data qubit in stabilizer support
+                # This measures X parity non-destructively for X eigenstates
+                for q in range(n):
+                    if self._hx[row_idx, q]:
+                        circuit.append("CX", [proj_ancilla, data_qubits[q]])  # anc controls data
+                
+                # Measure in X-basis to get parity
+                circuit.append("H", [proj_ancilla])
+                meas_idx = self.ctx.add_measurement(1)
+                circuit.append("M", [proj_ancilla])
+                result['x_stab_meas'].append(meas_idx)
+            
+            circuit.append("TICK")
+        
+        return result
+    
+    def _initialize_stabilizer_history_from_projection(
+        self,
+        projection_result: Dict[str, List[int]],
+    ) -> None:
+        """
+        Initialize stabilizer measurement history from projection.
+        
+        After projection, the stabilizer measurements establish a baseline
+        for subsequent time-like detectors. We record these so emit_round()
+        can compare against them.
+        
+        Parameters
+        ----------
+        projection_result : Dict[str, List[int]]
+            Result from _emit_projection_measurements.
+        """
+        # Record X stabilizer measurements
+        x_meas = projection_result.get('x_stab_meas', [])
+        for s_idx, meas_idx in enumerate(x_meas):
+            if s_idx < self._n_x:
+                self._last_x_meas[s_idx] = meas_idx
+                self.ctx.record_stabilizer_measurement(
+                    self.block_name, "x", s_idx, meas_idx
+                )
+        
+        # Record Z stabilizer measurements
+        z_meas = projection_result.get('z_stab_meas', [])
+        for s_idx, meas_idx in enumerate(z_meas):
+            if s_idx < self._n_z:
+                self._last_z_meas[s_idx] = meas_idx
+                self.ctx.record_stabilizer_measurement(
+                    self.block_name, "z", s_idx, meas_idx
+                )
     
     def _can_interleave(self) -> bool:
         """Check if interleaved X/Z scheduling is possible.
@@ -334,12 +567,105 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         # Schedules must have same number of phases for pairing
         return len(self._x_schedule) == len(self._z_schedule)
     
+    def emit_z_layer(
+        self,
+        circuit: stim.Circuit,
+        emit_detectors: bool = True,
+        emit_z_anchors: bool = False,
+    ) -> None:
+        """
+        Emit Z stabilizer measurement layer only (no time advance).
+        
+        This is used for parallel extraction in teleportation gadgets where
+        multiple blocks need to emit their Z measurements together before
+        any block emits X measurements.
+        
+        Unlike emit_round(), this does NOT:
+        - Advance time (ctx.advance_time)
+        - Emit SHIFT_COORDS
+        - Increment round number
+        
+        Call finalize_parallel_round() after all layers are emitted.
+        
+        Parameters
+        ----------
+        circuit : stim.Circuit
+            Target circuit.
+        emit_detectors : bool
+            Whether to emit temporal detectors.
+        emit_z_anchors : bool
+            If True, emit single-term anchor detectors for Z stabilizers
+            (use for first round when Z stabilizers are deterministic).
+        """
+        self._emit_z_anchors = emit_z_anchors
+        self._explicit_anchor_mode = True  # Always use explicit mode for layer methods
+        
+        self._emit_z_round(circuit, emit_detectors)
+        
+        self._emit_z_anchors = False
+        self._explicit_anchor_mode = False
+    
+    def emit_x_layer(
+        self,
+        circuit: stim.Circuit,
+        emit_detectors: bool = True,
+        emit_x_anchors: bool = False,
+    ) -> None:
+        """
+        Emit X stabilizer measurement layer only (no time advance).
+        
+        This is used for parallel extraction in teleportation gadgets where
+        multiple blocks need to emit their X measurements together after
+        all blocks emitted Z measurements.
+        
+        Unlike emit_round(), this does NOT:
+        - Advance time (ctx.advance_time)
+        - Emit SHIFT_COORDS
+        - Increment round number
+        
+        Call finalize_parallel_round() after all layers are emitted.
+        
+        Parameters
+        ----------
+        circuit : stim.Circuit
+            Target circuit.
+        emit_detectors : bool
+            Whether to emit temporal detectors.
+        emit_x_anchors : bool
+            If True, emit single-term anchor detectors for X stabilizers
+            (use for first round when X stabilizers are deterministic).
+        """
+        self._emit_x_anchors = emit_x_anchors
+        self._explicit_anchor_mode = True  # Always use explicit mode for layer methods
+        
+        self._emit_x_round(circuit, emit_detectors)
+        
+        self._emit_x_anchors = False
+        self._explicit_anchor_mode = False
+    
+    def finalize_parallel_round(self, circuit: stim.Circuit) -> None:
+        """
+        Finalize a parallel round after emit_z_layer and emit_x_layer calls.
+        
+        This advances time, emits SHIFT_COORDS, and increments the round number.
+        Call this once per logical round after all blocks have emitted their
+        Z and X layers.
+        """
+        self.ctx.advance_time()
+        self._emit_shift_coords(circuit)
+        self._round_number += 1
+        self._skip_first_round = False
+    
     def emit_round(
         self,
         circuit: stim.Circuit,
         stab_type: StabilizerBasis = StabilizerBasis.BOTH,
         emit_detectors: bool = True,
         emit_metachecks: bool = False,
+        emit_z_anchors: bool = False,
+        emit_x_anchors: bool = False,
+        explicit_anchor_mode: Optional[bool] = None,
+        first_basis: Optional[StabilizerBasis] = None,
     ) -> None:
         """
         Emit one complete stabilizer measurement round.
@@ -360,21 +686,71 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         emit_metachecks : bool
             Whether to emit metacheck detectors for single-shot correction.
             Only applies if the code has metachecks (4D/5D surface codes).
+        emit_z_anchors : bool
+            If True, emit single-term anchor detectors for Z stabilizers.
+            Use this for first round when Z stabilizers are deterministic
+            (e.g., after |0⟩ preparation).
+        emit_x_anchors : bool
+            If True, emit single-term anchor detectors for X stabilizers.
+            Use this for first round when X stabilizers are deterministic
+            (e.g., after |+⟩ preparation).
+        explicit_anchor_mode : Optional[bool]
+            If True, ONLY use emit_z_anchors/emit_x_anchors flags for anchor
+            emission - do NOT also check measurement_basis. This ensures the
+            caller has full control over which anchors are emitted.
+            If None (default), auto-detect: use explicit mode if either
+            anchor flag was set in previous rounds for this builder.
+        first_basis : Optional[StabilizerBasis]
+            Which stabilizer type to measure first in this round.
+            - StabilizerBasis.Z: Measure Z first, then X
+            - StabilizerBasis.X: Measure X first, then Z
+            - None (default): Use default order (X first, then Z)
+            
+            For deterministic anchor/boundary detectors:
+            - Anchor round (first round): Measure deterministic basis FIRST
+              (Z first for |0⟩ prep, X first for |+⟩ prep)
+            - Boundary round (last round): Measure deterministic basis LAST
+              (Z last for MZ, X last for MX)
         """
         # Track measurement indices for metachecks
         x_meas_start = self.ctx.measurement_index
         z_meas_start = x_meas_start + self._n_x  # Z measurements follow X
+        
+        # Store anchor flags for internal methods to access
+        self._emit_z_anchors = emit_z_anchors
+        self._emit_x_anchors = emit_x_anchors
+        
+        # Determine explicit anchor mode
+        # If caller explicitly passed anchor flags, use ONLY those flags
+        # (don't also check measurement_basis which could enable unwanted anchors)
+        if explicit_anchor_mode is None:
+            # Auto-detect: if any anchor flag is True, we're in explicit mode
+            self._explicit_anchor_mode = emit_z_anchors or emit_x_anchors
+        else:
+            self._explicit_anchor_mode = explicit_anchor_mode
         
         # Use interleaved scheduling for BOTH when possible (surface codes, etc.)
         if stab_type == StabilizerBasis.BOTH and self._can_interleave():
             self._emit_interleaved_round(circuit, emit_detectors)
         else:
             # Sequential fallback for single-type or non-geometric codes
-            if stab_type in (StabilizerBasis.X, StabilizerBasis.BOTH):
-                self._emit_x_round(circuit, emit_detectors)
-            
-            if stab_type in (StabilizerBasis.Z, StabilizerBasis.BOTH):
-                self._emit_z_round(circuit, emit_detectors)
+            # Respect first_basis ordering for deterministic anchors/boundaries
+            if first_basis == StabilizerBasis.Z:
+                # Z first, then X
+                if stab_type in (StabilizerBasis.Z, StabilizerBasis.BOTH):
+                    self._emit_z_round(circuit, emit_detectors)
+                if stab_type in (StabilizerBasis.X, StabilizerBasis.BOTH):
+                    self._emit_x_round(circuit, emit_detectors)
+            else:
+                # Default: X first, then Z
+                if stab_type in (StabilizerBasis.X, StabilizerBasis.BOTH):
+                    self._emit_x_round(circuit, emit_detectors)
+                if stab_type in (StabilizerBasis.Z, StabilizerBasis.BOTH):
+                    self._emit_z_round(circuit, emit_detectors)
+        
+        # Clear anchor flags after use
+        self._emit_z_anchors = False
+        self._emit_x_anchors = False
         
         # Emit metachecks if enabled and available
         if emit_metachecks and self.has_metachecks and stab_type == StabilizerBasis.BOTH:
@@ -390,6 +766,45 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         # Clear skip_first_round flag after the first round completes
         # Subsequent rounds should emit normal time-like detectors
         self._skip_first_round = False
+    
+    def emit_round_with_transform(
+        self,
+        circuit: stim.Circuit,
+        stab_type: StabilizerBasis = StabilizerBasis.BOTH,
+        emit_detectors: bool = True,
+        swap_xz: bool = False,
+    ) -> None:
+        """
+        Emit a stabilizer round with stabilizer transform applied.
+        
+        This is used after gates like Hadamard that swap X↔Z stabilizers.
+        The transform is applied temporarily for this round only.
+        
+        Parameters
+        ----------
+        circuit : stim.Circuit
+            Target circuit.
+        stab_type : StabilizerBasis
+            Which stabilizers to measure.
+        emit_detectors : bool
+            Whether to emit time-like detectors.
+        swap_xz : bool
+            If True, measure stabilizers as if H was applied (X stabs measure Z, Z stabs measure X).
+            This should be True for post-gadget rounds after Hadamard gates.
+        """
+        if swap_xz:
+            # Temporarily set swap state to swapped
+            saved_swap_state = self._stabilizer_swapped
+            self._stabilizer_swapped = True  # Set to swapped (not toggle!)
+            
+            # Emit the round with swapped stabilizers
+            self.emit_round(circuit, stab_type, emit_detectors)
+            
+            # Restore original swap state
+            self._stabilizer_swapped = saved_swap_state
+        else:
+            # No transform: emit round normally
+            self.emit_round(circuit, stab_type, emit_detectors)
     
     def _emit_interleaved_round(self, circuit: stim.Circuit, emit_detectors: bool) -> None:
         """Emit interleaved X/Z stabilizer measurements.
@@ -413,21 +828,21 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         
         if self._stabilizer_swapped:
             # After Hadamard: swap the circuit patterns
-            # Z ancillas measure X-type → H-CNOT(anc→data)-H-M
+            # Z ancillas measure X-type → H-CZ-H-M (use CZ to not disturb data!)
             # X ancillas measure Z-type → CNOT(data→anc)-M
             
             # Step 1: Prepare Z ancillas with H (they now measure X-type)
             circuit.append("H", z_anc)
             circuit.append("TICK")
             
-            # Step 2: Interleaved CNOT phases - swapped control/target
+            # Step 2: Interleaved CZ/CNOT phases - swapped control/target
             for phase_idx, ((dx_x, dy_x), (dx_z, dy_z)) in enumerate(
                 zip(self._x_schedule, self._z_schedule)
             ):
                 if phase_idx > 0:
                     circuit.append("TICK")
                 
-                # X CNOTs: now measuring Z-type → data controls ancilla
+                # X ancillas: now measuring Z-type → data controls ancilla (CNOT)
                 for s_idx, (sx, sy) in enumerate(self._x_stab_coords):
                     if s_idx >= len(x_anc):
                         continue
@@ -437,7 +852,8 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
                     if dq is not None:
                         circuit.append("CNOT", [dq, anc])  # data controls ancilla
                 
-                # Z CNOTs: now measuring X-type → ancilla controls data
+                # Z ancillas: now measuring X-type → use CZ (same fix as normal mode)
+                # CRITICAL: Must use CZ, not CNOT[anc,data], to avoid flipping data!
                 for s_idx, (sx, sy) in enumerate(self._z_stab_coords):
                     if s_idx >= len(z_anc):
                         continue
@@ -445,7 +861,7 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
                     nbr = (float(sx) + dx_z, float(sy) + dy_z)
                     dq = self._lookup_data_qubit(nbr)
                     if dq is not None:
-                        circuit.append("CNOT", [anc, dq])  # ancilla controls data
+                        circuit.append("CZ", [anc, dq])  # CZ measures X parity
             
             circuit.append("TICK")
             
@@ -459,16 +875,20 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
             circuit.append("H", x_anc)
             circuit.append("TICK")
             
-            # Step 2: Interleaved CNOT phases - X and Z in parallel
+            # Step 2: Interleaved CNOT/CZ phases - X and Z in parallel
             for phase_idx, ((dx_x, dy_x), (dx_z, dy_z)) in enumerate(
                 zip(self._x_schedule, self._z_schedule)
             ):
                 if phase_idx > 0:
                     circuit.append("TICK")
                 
-                # X CNOTs for this phase
-                # For X stabilizers: H-CNOT-H pattern means ancilla is control
-                # (H converts Z-basis measurement to X-basis parity check)
+                # X stabilizer measurement for this phase
+                # Gate choice depends on x_stabilizer_mode:
+                # - "cz": Use CZ (default for memory experiments)
+                #         CZ is symmetric and measures X parity without disturbing Z-basis
+                # - "cx": Use CX(ancilla → data) (required for teleportation)
+                #         After teleportation CNOT, CX keeps X_D syndromes local
+                x_gate = "CZ" if self._x_stabilizer_mode == "cz" else "CNOT"
                 for s_idx, (sx, sy) in enumerate(self._x_stab_coords):
                     if s_idx >= len(x_anc):
                         continue
@@ -476,10 +896,14 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
                     nbr = (float(sx) + dx_x, float(sy) + dy_x)
                     dq = self._lookup_data_qubit(nbr)
                     if dq is not None:
-                        circuit.append("CNOT", [anc, dq])  # ancilla controls data
+                        if self._x_stabilizer_mode == "cz":
+                            circuit.append("CZ", [anc, dq])
+                        else:
+                            circuit.append("CNOT", [anc, dq])  # CX(anc → data)
                 
                 # Z CNOTs for this phase (SAME TICK - parallel with X)
-                # For Z stabilizers: data qubits are control (standard parity check)
+                # For Z stabilizers: data qubits control ancilla (standard parity check)
+                # This doesn't change data because target is ancilla.
                 for s_idx, (sx, sy) in enumerate(self._z_stab_coords):
                     if s_idx >= len(z_anc):
                         continue
@@ -520,15 +944,32 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
                 has_transforms = self.ctx.has_pending_transforms(self.block_name, "x", s_idx)
                 
                 if prev_meas is None and not has_transforms:
-                    # First round: only emit if measurement_basis matches effective type
+                    # First round: emit anchor detector if appropriate
+                    # 
+                    # In explicit_anchor_mode, ONLY use the explicit flag:
+                    # - emit_x_anchors=True => emit anchor
+                    # - emit_x_anchors=False => no anchor
+                    #
+                    # In legacy mode (no explicit flags set), use measurement_basis:
                     # After swap, X ancillas measure Z-type, so first-round OK if state is |0⟩
                     # Before swap, X ancillas measure X-type, so first-round OK if state is |+⟩
-                    should_emit = not self._skip_first_round and self.measurement_basis == x_effective_basis
+                    if getattr(self, '_explicit_anchor_mode', False):
+                        should_emit = not self._skip_first_round and self._emit_x_anchors
+                    else:
+                        should_emit = (
+                            not self._skip_first_round and (
+                                self._emit_x_anchors or
+                                self.measurement_basis == x_effective_basis
+                            )
+                        )
                     if should_emit:
                         coord = self._get_stab_coord("x", s_idx)
                         self.ctx.emit_detector(circuit, [cur_meas], coord)
-                else:
-                    # Use transform-aware detector measurements
+                elif not self._skip_first_round:
+                    # Only emit time-like detector if not skipping first round
+                    # (After projection, first round should skip detectors since
+                    # projection outcomes are random - frame is established but
+                    # first comparison would be non-deterministic)
                     meas_indices = self.ctx.get_x_detector_measurements(
                         self.block_name, s_idx, cur_meas
                     )
@@ -555,14 +996,32 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
                 has_transforms = self.ctx.has_pending_transforms(self.block_name, "z", s_idx)
                 
                 if prev_meas is None and not has_transforms:
-                    # First round: only emit if measurement_basis matches effective type
+                    # First round: emit anchor detector if appropriate
+                    #
+                    # In explicit_anchor_mode, ONLY use the explicit flag:
+                    # - emit_z_anchors=True => emit anchor
+                    # - emit_z_anchors=False => no anchor
+                    #
+                    # In legacy mode (no explicit flags set), use measurement_basis:
                     # After swap, Z ancillas measure X-type, so first-round OK if state is |+⟩
                     # Before swap, Z ancillas measure Z-type, so first-round OK if state is |0⟩
-                    should_emit = not self._skip_first_round and self.measurement_basis == z_effective_basis
+                    if getattr(self, '_explicit_anchor_mode', False):
+                        should_emit = not self._skip_first_round and self._emit_z_anchors
+                    else:
+                        should_emit = (
+                            not self._skip_first_round and (
+                                self._emit_z_anchors or
+                                self.measurement_basis == z_effective_basis
+                            )
+                        )
                     if should_emit:
                         coord = self._get_stab_coord("z", s_idx)
                         self.ctx.emit_detector(circuit, [cur_meas], coord)
-                else:
+                elif not self._skip_first_round:
+                    # Only emit time-like detector if not skipping first round
+                    # (After projection, first round should skip detectors since
+                    # projection outcomes are random - frame is established but
+                    # first comparison would be non-deterministic)
                     # Use transform-aware detector measurements
                     meas_indices = self.ctx.get_z_detector_measurements(
                         self.block_name, s_idx, cur_meas
@@ -638,25 +1097,25 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
                 has_transforms = self.ctx.has_pending_transforms(self.block_name, "x", s_idx)
                 
                 if prev_meas is None and not has_transforms:
-                    # First round: only create detector if appropriate
-                    # 
-                    # For CSS codes, first-round detectors can only be emitted if the
-                    # measurement result is deterministic. This depends on:
-                    # 1. The prepared state (|0⟩ is Z eigenstate, |+⟩ is X eigenstate)
-                    # 2. What type of parity the ancilla actually measures
+                    # First round: emit anchor detector if appropriate
                     #
-                    # After Hadamard (_stabilizer_swapped=True), X ancillas use Z-type
-                    # circuit (data→anc) so they measure Z parity. Z parity of |+⟩ is
-                    # random, so X first-round should NOT be emitted after H.
+                    # In explicit_anchor_mode, ONLY use the explicit flag:
+                    # - emit_x_anchors=True => emit anchor
+                    # - emit_x_anchors=False => no anchor
                     #
-                    # The effective_first_round_basis accounts for the swap:
+                    # In legacy mode (no explicit flags set), use measurement_basis:
                     # - Before swap: X ancillas measure X → first-round OK if state is |+⟩ (measurement_basis=="X")
                     # - After swap: X ancillas measure Z → first-round OK if state is |0⟩ (measurement_basis=="Z")
-                    should_emit = (
-                        not self._skip_first_round and
-                        self._ft_config.first_round_x_detectors and
-                        self.measurement_basis == effective_first_round_basis
-                    )
+                    if getattr(self, '_explicit_anchor_mode', False):
+                        should_emit = not self._skip_first_round and self._emit_x_anchors
+                    else:
+                        should_emit = (
+                            not self._skip_first_round and (
+                                self._emit_x_anchors or  # Explicit anchor request
+                                (self._ft_config.first_round_x_detectors and
+                                 self.measurement_basis == effective_first_round_basis)
+                            )
+                        )
                     if should_emit:
                         coord = self._get_stab_coord("x", s_idx)
                         self.ctx.emit_detector(circuit, [cur_meas], coord)
@@ -736,17 +1195,25 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
                 has_transforms = self.ctx.has_pending_transforms(self.block_name, "z", s_idx)
                 
                 if prev_meas is None and not has_transforms:
-                    # First round: only create detector if appropriate
-                    # 
-                    # Similar to X stabilizers, we need to check what the Z ancillas
-                    # actually measure after potential swap:
+                    # First round: emit anchor detector if appropriate
+                    #
+                    # In explicit_anchor_mode, ONLY use the explicit flag:
+                    # - emit_z_anchors=True => emit anchor
+                    # - emit_z_anchors=False => no anchor
+                    #
+                    # In legacy mode (no explicit flags set), use measurement_basis:
                     # - Before swap: Z ancillas measure Z → first-round OK if state is |0⟩ (measurement_basis=="Z")
                     # - After swap: Z ancillas measure X → first-round OK if state is |+⟩ (measurement_basis=="X")
-                    should_emit = (
-                        not self._skip_first_round and
-                        self._ft_config.first_round_z_detectors and
-                        self.measurement_basis == effective_first_round_basis
-                    )
+                    if getattr(self, '_explicit_anchor_mode', False):
+                        should_emit = not self._skip_first_round and self._emit_z_anchors
+                    else:
+                        should_emit = (
+                            not self._skip_first_round and (
+                                self._emit_z_anchors or  # Explicit anchor request
+                                (self._ft_config.first_round_z_detectors and
+                                 self.measurement_basis == effective_first_round_basis)
+                            )
+                        )
                     if should_emit:
                         coord = self._get_stab_coord("z", s_idx)
                         self.ctx.emit_detector(circuit, [cur_meas], coord)
@@ -973,7 +1440,22 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         return True
     
     def _emit_geometric_cnots(self, circuit: stim.Circuit, stab_type: str) -> None:
-        """Emit CNOTs using geometric scheduling."""
+        """Emit controlled gates using geometric scheduling.
+        
+        Gate Choice for X-Type Stabilizers
+        -----------------------------------
+        The gate type depends on self._x_stabilizer_mode:
+        
+        - "cz" (default): Use CZ gates. CZ is symmetric and measures X parity
+          correctly with H-CZ-H circuit. Good for memory experiments.
+          
+        - "cx": Use CNOT[ancilla → data]. Required for teleportation gadgets to
+          match ground truth and ensure deterministic X anchor detectors.
+          
+        The difference is in backward Pauli propagation:
+        - CZ: X_ancilla → X_ancilla ⊗ Z_data (Z_data on |0⟩ prep = random)
+        - CX: X_ancilla → X_ancilla (stays local, deterministic on |0⟩ prep)
+        """
         if stab_type == "x":
             schedule = self._x_schedule
             stab_coords = self._x_stab_coords
@@ -984,6 +1466,10 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
             stab_coords = self._z_stab_coords
             ancillas = self.z_ancillas
             is_x_type = False
+        
+        # Choose gate based on x_stabilizer_mode for X stabilizers
+        if is_x_type:
+            x_gate = "CZ" if self._x_stabilizer_mode == "cz" else "CNOT"
         
         for layer_idx, (dx, dy) in enumerate(schedule):
             if layer_idx > 0:
@@ -996,10 +1482,11 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
                 dq = self._lookup_data_qubit(nbr)
                 if dq is not None:
                     if is_x_type:
-                        circuit.append("CNOT", [anc, dq])
+                        # Use x_stabilizer_mode to determine gate (CZ or CNOT)
+                        circuit.append(x_gate, [anc, dq])
                     else:
                         circuit.append("CNOT", [dq, anc])
-    
+
     def _emit_graph_coloring_cnots(
         self,
         circuit: stim.Circuit,
@@ -1008,33 +1495,59 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         ancilla_qubits: List[int],
         is_x_type: bool = True,
     ) -> None:
-        """Emit CNOTs using greedy graph coloring."""
+        """Emit controlled gates using greedy graph coloring.
+        
+        Gate Choice for X-Type Stabilizers
+        -----------------------------------
+        The gate type depends on self._x_stabilizer_mode:
+        
+        - "cz" (default): Use CZ gates. CZ is symmetric and measures X parity
+          correctly with H-CZ-H circuit. Good for memory experiments.
+          
+        - "cx": Use CNOT[ancilla → data]. Required for teleportation gadgets to
+          match ground truth and ensure deterministic X anchor detectors.
+          
+        The difference is in backward Pauli propagation:
+        - CZ: X_ancilla → X_ancilla ⊗ Z_data (Z_data → H → X_data on |0⟩ = random)
+        - CX: X_ancilla → X_ancilla (stays local, deterministic on |0⟩)
+        """
         if stab_matrix is None or stab_matrix.size == 0:
             return
         
         n_stabs, n_data = stab_matrix.shape
         
-        all_cnots: List[Tuple[int, int]] = []
+        # Build list of (ancilla, data) pairs for graph coloring
+        all_gates: List[Tuple[int, int]] = []
         for s_idx in range(min(n_stabs, len(ancilla_qubits))):
             anc = ancilla_qubits[s_idx]
             for d_idx in range(min(n_data, len(data_qubits))):
                 if stab_matrix[s_idx, d_idx]:
                     dq = data_qubits[d_idx]
                     if is_x_type:
-                        all_cnots.append((anc, dq))
+                        # Ancilla is control for both CZ and CNOT
+                        all_gates.append((anc, dq))
                     else:
-                        all_cnots.append((dq, anc))
+                        # Z-type: data controls ancilla
+                        all_gates.append((dq, anc))
         
-        if not all_cnots:
+        if not all_gates:
             return
         
-        layers = graph_coloring_cnots(all_cnots)
+        layers = graph_coloring_cnots(all_gates)
+        
+        # Choose gate type based on is_x_type and x_stabilizer_mode
+        if is_x_type:
+            # Use x_stabilizer_mode to choose CZ vs CNOT
+            gate_name = "CZ" if self._x_stabilizer_mode == "cz" else "CNOT"
+        else:
+            # Z-type always uses CNOT (data controls ancilla)
+            gate_name = "CNOT"
         
         for layer_idx, layer in enumerate(layers):
             if layer_idx > 0:
                 circuit.append("TICK")
             for ctrl, tgt in layer:
-                circuit.append("CNOT", [ctrl, tgt])
+                circuit.append(gate_name, [ctrl, tgt])
     
     def _get_stab_coord(self, stab_type: str, s_idx: int) -> Tuple[float, float, float]:
         """Get detector coordinate for a stabilizer."""
@@ -1077,16 +1590,130 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
             return (x_sum / count, y_sum / count, self.ctx.current_time, 1.0)
         return (0.0, 0.0, self.ctx.current_time, 1.0)
     
+    def get_last_measurement_indices(self) -> dict:
+        """Get the last measurement indices for each stabilizer type.
+        
+        Returns a dict with:
+        - 'x': list of measurement indices for X stabilizers (or None if not measured)
+        - 'z': list of measurement indices for Z stabilizers (or None if not measured)
+        - 'round': current round number
+        
+        This allows external code to construct custom detectors after calling
+        emit_round() with emit_detectors=False.
+        """
+        return {
+            'x': list(self._last_x_meas),
+            'z': list(self._last_z_meas),
+            'round': self._round_number,
+        }
+    
     def emit_rounds(
         self,
         circuit: stim.Circuit,
         num_rounds: int,
         stab_type: StabilizerBasis = StabilizerBasis.BOTH,
         emit_metachecks: bool = False,
+        emit_detectors: bool = True,
     ) -> None:
-        """Emit multiple stabilizer measurement rounds."""
+        """Emit multiple stabilizer measurement rounds.
+        
+        Parameters
+        ----------
+        circuit : stim.Circuit
+            Target circuit.
+        num_rounds : int
+            Number of rounds to emit.
+        stab_type : StabilizerBasis
+            Which stabilizers to measure.
+        emit_metachecks : bool
+            Whether to emit metacheck detectors.
+        emit_detectors : bool
+            Whether to emit time-like detectors. Set to False when you need
+            to construct custom detectors (e.g., for cross-block correlations
+            in teleportation gadgets). Use get_last_measurement_indices() to
+            retrieve measurement info for manual detector construction.
+        """
         for _ in range(num_rounds):
-            self.emit_round(circuit, stab_type, emit_detectors=True, emit_metachecks=emit_metachecks)
+            self.emit_round(circuit, stab_type, emit_detectors=emit_detectors, emit_metachecks=emit_metachecks)
+    
+    def emit_scheduled_rounds(
+        self,
+        circuit: stim.Circuit,
+        num_rounds: int,
+        prep_basis: str,
+        meas_basis: str,
+        emit_detectors: bool = True,
+    ) -> None:
+        """
+        Emit rounds with optimal scheduling for deterministic detectors.
+        
+        This uses StabilizerScheduler to determine optimal measurement ordering:
+        - First round: Deterministic basis measured FIRST for anchor detectors
+        - Last round: Deterministic basis measured LAST for boundary detectors
+        - Middle rounds: Standard ordering
+        
+        Parameters
+        ----------
+        circuit : stim.Circuit
+            Target circuit.
+        num_rounds : int
+            Number of syndrome rounds.
+        prep_basis : str
+            Preparation basis: "0" for |0⟩, "+" for |+⟩.
+        meas_basis : str
+            Final measurement basis: "Z" or "X".
+        emit_detectors : bool
+            Whether to emit detectors.
+            
+        Example
+        -------
+        For |0⟩ prep → MZ measurement:
+        - Round 1: Z first (Z has anchors), X second
+        - Round N: X first, Z last (Z has boundaries)
+        
+        For |+⟩ prep → MX measurement:
+        - Round 1: X first (X has anchors), Z second
+        - Round N: Z first, X last (X has boundaries)
+        """
+        from qectostim.gadgets.scheduling import StabilizerScheduler
+        
+        scheduler = StabilizerScheduler()
+        
+        # Compute which basis is deterministic for each detector type
+        anchor_basis = scheduler.get_anchor_deterministic_basis(prep_basis)
+        boundary_basis = scheduler.get_boundary_deterministic_basis(meas_basis)
+        
+        for round_idx in range(num_rounds):
+            is_first = (round_idx == 0)
+            is_last = (round_idx == num_rounds - 1)
+            
+            # Determine first_basis for this round
+            if is_first and is_last:
+                # Single round: anchor takes priority
+                first_basis = anchor_basis
+            elif is_first:
+                # First round: deterministic basis first for anchors
+                first_basis = anchor_basis
+            elif is_last:
+                # Last round: deterministic basis last for boundaries
+                # So the OTHER basis is first
+                other_basis = StabilizerBasis.X if boundary_basis == StabilizerBasis.Z else StabilizerBasis.Z
+                first_basis = other_basis
+            else:
+                # Middle rounds: standard order (Z first is typical)
+                first_basis = StabilizerBasis.Z
+            
+            # Determine anchor flags
+            emit_z_anchors = is_first and anchor_basis == StabilizerBasis.Z
+            emit_x_anchors = is_first and anchor_basis == StabilizerBasis.X
+            
+            self.emit_round(
+                circuit,
+                emit_detectors=emit_detectors,
+                emit_z_anchors=emit_z_anchors,
+                emit_x_anchors=emit_x_anchors,
+                first_basis=first_basis,
+            )
     
     def emit_final_measurement(
         self,

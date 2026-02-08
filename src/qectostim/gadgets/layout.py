@@ -69,6 +69,22 @@ class BlockAllocation:
     @property
     def total_qubits(self) -> int:
         return self.data_count + self.x_anc_count + self.z_anc_count
+    
+    # =========================================================================
+    # Goal 7: Syndrome qubit accessors
+    # =========================================================================
+    
+    def get_z_syndrome_qubits(self) -> List[int]:
+        """Get list of Z syndrome ancilla qubit indices."""
+        return list(self.z_anc_range)
+    
+    def get_x_syndrome_qubits(self) -> List[int]:
+        """Get list of X syndrome ancilla qubit indices."""
+        return list(self.x_anc_range)
+    
+    def get_data_qubits(self) -> List[int]:
+        """Get list of data qubit indices."""
+        return list(self.data_range)
 
 
 @dataclass
@@ -117,11 +133,11 @@ class QubitAllocation:
         for i, code in enumerate(codes):
             n = code.n
             
-            # Get stabilizer counts safely
+            # Get stabilizer counts from CSS parity check matrices
             hx_raw = getattr(code, 'hx', None)
             hz_raw = getattr(code, 'hz', None)
-            nx = hx_raw.shape[0] if hx_raw is not None and hasattr(hx_raw, 'shape') and hx_raw.size > 0 else 0
-            nz = hz_raw.shape[0] if hz_raw is not None and hasattr(hz_raw, 'shape') and hz_raw.size > 0 else 0
+            nx = hx_raw.shape[0] if hx_raw is not None and hx_raw.size > 0 else 0
+            nz = hz_raw.shape[0] if hz_raw is not None and hz_raw.size > 0 else 0
             
             block_name = f"block_{i}"
             
@@ -404,19 +420,19 @@ class GadgetLayout:
         if name in self.blocks:
             raise ValueError(f"Block '{name}' already exists")
         
-        # Get code properties
+        # Get code properties (n is abstract on Code ABC, always available)
         local_dim = get_code_dimension(code)
         data_coords, x_stab_coords, z_stab_coords = get_code_coords(code)
         
-        n_data = code.n if hasattr(code, 'n') else len(data_coords)
+        n_data = code.n
         
-        # Safely get hx/hz dimensions - must check if it's actually an array
+        # Get stabilizer counts from CSS parity check matrices
         # CSS codes define hx/hz as @property returning arrays
-        # Non-CSS codes may not have these at all
+        # Non-CSS codes won't have these, so getattr returns None
         hx = getattr(code, 'hx', None)
         hz = getattr(code, 'hz', None)
-        n_x = hx.shape[0] if hx is not None and hasattr(hx, 'shape') and hx.size > 0 else len(x_stab_coords)
-        n_z = hz.shape[0] if hz is not None and hasattr(hz, 'shape') and hz.size > 0 else len(z_stab_coords)
+        n_x = hx.shape[0] if hx is not None and hx.size > 0 else len(x_stab_coords)
+        n_z = hz.shape[0] if hz is not None and hz.size > 0 else len(z_stab_coords)
         
         # Determine target dimension
         if self.target_dim is None:
@@ -644,3 +660,51 @@ class GadgetLayout:
         """
         return self.qubit_map
 
+    def allocate_qubits(self) -> QubitAllocation:
+        """
+        Convert this layout to a QubitAllocation object.
+        
+        Creates a QubitAllocation with all the blocks and their
+        qubit allocations, suitable for use by experiment classes.
+        
+        Returns
+        -------
+        QubitAllocation
+            Qubit allocation suitable for circuit generation.
+        """
+        alloc = QubitAllocation()
+        
+        for name, block_info in self.blocks.items():
+            block = BlockAllocation(
+                block_name=name,
+                code=block_info.code,
+                data_start=block_info.data_qubit_range.start,
+                data_count=len(block_info.data_qubit_range),
+                x_anc_start=block_info.x_ancilla_range.start,
+                x_anc_count=len(block_info.x_ancilla_range),
+                z_anc_start=block_info.z_ancilla_range.start,
+                z_anc_count=len(block_info.z_ancilla_range),
+                offset=block_info.offset,
+            )
+            alloc.blocks[name] = block
+        
+        # Add bridge ancillas
+        for bridge in self.bridge_ancillas:
+            alloc.bridge_ancillas.append(
+                (bridge.global_idx, bridge.coord, bridge.purpose)
+            )
+        
+        alloc._total_qubits = self.total_qubits
+        
+        return alloc
+    
+    def get_qubit_coords(self) -> Dict[int, CoordND]:
+        """
+        Get mapping from global qubit indices to coordinates.
+        
+        Returns
+        -------
+        Dict[int, CoordND]
+            Mapping from qubit index to spatial coordinates.
+        """
+        return dict(self.qubit_map.global_coords)

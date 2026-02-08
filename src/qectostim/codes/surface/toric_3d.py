@@ -1,30 +1,86 @@
-"""3D Toric Code
+"""3D Toric Code — [[3L³, 3, L]] Topological Code on a 3-Torus
 
-The 3D toric code is a topological CSS code defined on a 3-torus (L×L×L with 
-periodic boundary conditions in all three dimensions).
+The 3D toric code generalises Kitaev's 2D toric code to three spatial
+dimensions.  Data qubits live on the **edges** (or **faces**) of a cubic
+lattice with periodic boundary conditions in all three directions.
 
-Chain complex structure (proper 4-chain for 3D code):
-    C3 (cubes) --∂3--> C2 (faces) --∂2--> C1 (edges) --∂1--> C0 (vertices)
+Overview
+--------
+In the **qubits-on-edges** picture:
 
-For a CSS code with qubits on edges (C1):
-    - X stabilizers from ∂2^T (faces acting on boundary edges)  
-    - Z stabilizers from ∂1 (vertices acting on incident edges)
+* **X-stabilisers** are **weight-4 plaquette operators**: each face of
+  the cubic lattice contributes an X-type check on its 4 boundary edges.
+  There are 3L³ faces (xy, xz, yz), of which 3L³ − 3 are independent.
+* **Z-stabilisers** are **weight-6 star operators**: each vertex
+  contributes a Z-type check on its 6 incident edges.  There are L³
+  vertices, of which L³ − 1 are independent.
 
-For a CSS code with qubits on faces (C2):
-    - X stabilizers from ∂3^T (cubes acting on boundary faces)
-    - Z stabilizers from ∂2 (edges acting on incident faces)
+Code parameters (qubits on edges, L×L×L torus)
+------------------------------------------------
+* **n** = 3L³ physical qubits
+* **k** = 3 logical qubits (three non-contractible 1-cycles)
+* **d** = L
 
-The 3D toric code has interesting properties:
-    - With qubits on edges: point-like X excitations, loop-like Z excitations
-    - With qubits on faces: loop-like X excitations, point-like Z excitations
-    - Self-correcting behavior at finite temperature (for one sector)
+Excitation structure (key difference from 2D)
+---------------------------------------------
+* **X excitations** (violated plaquettes) are **point-like** (0-dimensional).
+* **Z excitations** (violated stars) are **loop-like** (1-dimensional).
 
-Note: This implementation uses CSSChainComplex4 (4-chain) for proper 3D topology.
-The boundary_3 map from cubes to faces is included for completeness.
+This asymmetry means that X errors create point-like anyons that can be
+paired by minimum-weight matching (just like the 2D toric code), but Z
+errors create loop-like excitations that require more sophisticated decoding.
 
-References:
-    - Castelnovo & Chamon, "Topological order in a 3D toric code at finite temperature" (2008)
-    - Dennis et al., "Topological quantum memory" (2002)
+Self-correction
+---------------
+In the qubits-on-faces picture (the dual), Z excitations become point-like
+and X excitations become loop-like.  The loop-like excitations cost energy
+proportional to their length, providing a **finite-temperature self-correcting
+memory** for the logical qubits encoded in sheet-like operators.
+
+Single-shot error correction
+----------------------------
+Because the 3D toric code has a 4-chain complex (C₃ → C₂ → C₁ → C₀),
+the stabiliser syndromes themselves have redundancy (meta-checks from ∂₃).
+This enables **single-shot** error correction: a noisy syndrome measurement
+can be decoded in one round without repetition, because measurement errors
+are detectable via the meta-check structure.
+
+Chain complex (4-term for 3D)
+-----------------------------
+    C₃ (cubes) —∂₃→ C₂ (faces) —∂₂→ C₁ (edges/qubits) —∂₁→ C₀ (vertices)
+
+* H_X = ∂₂ᵀ (faces → boundary edges)
+* H_Z = ∂₁   (vertices → incident edges)
+* Meta-X-checks from ∂₃ (cubes constrain faces)
+
+Logical operators
+-----------------
+For qubits on edges:
+* **X̄ᵢ** : weight-L string of edges wrapping around direction i
+* **Z̄ᵢ** : weight-L² sheet of edges perpendicular to direction i
+
+The string–sheet duality reflects the point–loop duality of excitations.
+
+Connections to other codes
+--------------------------
+* **2D toric code**: direct lower-dimensional analogue; both are
+  CSS codes from cellulations of tori.
+* **4D toric code**: further generalisation where both excitation types
+  become loop-like, enabling full self-correction.
+* **Homological product**: ToricCode ⊗ RepetitionCode yields 3D-like codes.
+* **Haah’s cubic code**: another 3D topological code with fractal
+  excitations (very different from the toric code's loop-like excitations).
+
+References
+----------
+* Castelnovo & Chamon, "Topological order in a 3D toric code at finite
+  temperature", Phys. Rev. B 78, 155120 (2008).  arXiv:0804.3591
+* Dennis, Kitaev, Landahl & Preskill, "Topological quantum memory",
+  J. Math. Phys. 43, 4452 (2002).  arXiv:quant-ph/0110143
+* Kubica & Preskill, "Cellular-automaton decoders with provable
+  thresholds for topological codes", Phys. Rev. Lett. 123, 020501 (2019).
+* Error Correction Zoo: https://errorcorrectionzoo.org/c/3d_surface
+* Wikipedia: https://en.wikipedia.org/wiki/Toric_code (3D section)
 """
 
 from __future__ import annotations
@@ -34,31 +90,79 @@ import numpy as np
 from qectostim.codes.abstract_css import TopologicalCSSCode3D, Coord2D
 from qectostim.codes.abstract_code import PauliString, FTGadgetCodeConfig, ScheduleMode
 from qectostim.codes.complexes.css_complex import CSSChainComplex4, CSSChainComplex3
+from qectostim.codes.utils import validate_css_code
 
 Coord3D = Tuple[float, float, float]
 
 
 class ToricCode3D(TopologicalCSSCode3D):
-    """
-    3D Toric code with qubits on edges.
-    
+    """3D Toric code with qubits on edges.
+
     For an L×L×L torus:
-        - n = 3L³ qubits (edges in x, y, z directions)
-        - k = 3 logical qubits (three non-contractible cycles)
-        - d = L distance
-    
-    X stabilizers are weight-4 face operators (plaquettes).
-    Z stabilizers are weight-6 vertex operators (stars).
-    
+
+    * **n** = 3L³ qubits (edges in x, y, z directions)
+    * **k** = 3 logical qubits (three non-contractible 1-cycles)
+    * **d** = L distance
+    * X-stabilisers: weight-4 face/plaquette operators (3L³ − 3 independent)
+    * Z-stabilisers: weight-6 vertex/star operators (L³ − 1 independent)
+
     Parameters
     ----------
     L : int
-        Linear size of the cubic lattice (default: 3)
+        Linear size of the cubic lattice (must be ≥ 2, default 3).
     metadata : dict, optional
-        Additional metadata
+        Extra metadata merged into the code's metadata dictionary.
+
+    Attributes
+    ----------
+    n : int
+        Number of physical qubits (3L³).
+    k : int
+        Number of logical qubits (3).
+    distance : int
+        Code distance (L).
+    hx : np.ndarray
+        X-stabiliser parity-check matrix.
+    hz : np.ndarray
+        Z-stabiliser parity-check matrix.
+
+    Examples
+    --------
+    >>> code = ToricCode3D(L=3)
+    >>> code.n, code.k, code.distance
+    (81, 3, 3)
+
+    Notes
+    -----
+    The 3D toric code is important for its:
+
+    1. **Single-shot decoding**: the 4-chain structure provides meta-checks
+       that constrain measurement errors.
+    2. **Finite-temperature self-correction** (in the dual/faces picture):
+       loop-like excitations cost energy proportional to their length.
+    3. **String–sheet duality**: logical X is a string (weight L),
+       logical Z is a sheet (weight L²).
+
+    See Also
+    --------
+    ToricCode33 : 2D toric code (simpler, no meta-checks).
+    ToricCode3DFaces : Dual picture with qubits on faces.
     """
     
     def __init__(self, L: int = 3, metadata: Optional[Dict[str, Any]] = None):
+        """Initialise the 3D toric code with qubits on edges.
+
+        Builds the periodic cubic lattice, computes the 4-chain complex
+        (cubes → faces → edges → vertices), and populates all standard
+        metadata fields.
+
+        Parameters
+        ----------
+        L : int, default 3
+            Linear lattice size (must be ≥ 2).
+        metadata : dict, optional
+            Extra key/value pairs merged into auto-generated metadata.
+        """
         if L < 2:
             raise ValueError("L must be at least 2")
         
@@ -91,19 +195,73 @@ class ToricCode3D(TopologicalCSSCode3D):
         # Metadata
         meta: Dict[str, Any] = dict(metadata or {})
         meta.update({
+            # ── Code parameters ────────────────────────────────────
+            "code_family": "surface",
+            "code_type": "toric_3d",
             "name": f"ToricCode3D_{L}x{L}x{L}",
             "n": n_qubits,
             "k": 3,
             "distance": L,
+            "rate": 3.0 / n_qubits,
             "lattice_size": L,
             "dimension": 3,
+            # ── Geometry ───────────────────────────────────────────
             "data_coords": data_coords,
             "x_stab_coords": x_stab_coords,
             "z_stab_coords": z_stab_coords,
+            # ── Logical operator Pauli types ───────────────────────
+            "lx_pauli_type": "X",
+            "lz_pauli_type": "Z",
+            # ── Logical operator supports (k=3: list-of-lists) ────
+            # Lx are weight-L strings, Lz are weight-L² sheets
+            "lx_support": [
+                [((i % L) * L) * L for i in range(L)],         # x-edges at (i,0,0)
+                [L**3 + ((0 % L) * L + (j % L)) * L for j in range(L)],  # y-edges at (0,j,0)
+                [2 * L**3 + ((0 % L) * L) * L + k for k in range(L)],    # z-edges at (0,0,k)
+            ],
+            "lz_support": [
+                [((0 % L) * L + j) * L + k for j in range(L) for k in range(L)],                          # x-edges i=0
+                [L**3 + ((i % L) * L + (0 % L)) * L + k for i in range(L) for k in range(L)],             # y-edges j=0
+                [2 * L**3 + ((i % L) * L + j) * L + (0 % L) for i in range(L) for j in range(L)],        # z-edges k=0
+            ],
+            # ── Stabiliser scheduling ──────────────────────────────
+            # 3D codes use graph-colouring-based scheduling rather
+            # than offset vectors, because 3D coords don’t map to
+            # 2D geometric offset patterns.
+            "stabiliser_schedule": {
+                "x_rounds": {i: 0 for i in range(3 * L**3 - 3)},
+                "z_rounds": {i: 0 for i in range(L**3 - 1)},
+                "n_rounds": 1,
+                "description": (
+                    "Nominally parallel (round 0 for all stabilisers). "
+                    "Actual circuit scheduling uses GRAPH_COLORING mode "
+                    "to handle 3D geometry."
+                ),
+            },
             # 3D codes use graph coloring scheduling for proper 3D coord handling
             "requires_3d_support": True,
+            # NOTE: x_schedule/z_schedule set to None for 3D codes.
+            # 3D geometry uses GRAPH_COLORING mode, not 2D offset vectors.
+            "x_schedule": None,
+            "z_schedule": None,
+            # ── Literature / provenance ────────────────────────────
+            "error_correction_zoo_url": "https://errorcorrectionzoo.org/c/3d_surface",
+            "wikipedia_url": "https://en.wikipedia.org/wiki/Toric_code",
+            "canonical_references": [
+                "Castelnovo & Chamon, Phys. Rev. B 78, 155120 (2008). arXiv:0804.3591",
+                "Dennis et al., J. Math. Phys. 43, 4452 (2002). arXiv:quant-ph/0110143",
+            ],
+            "connections": [
+                "Generalisation of 2D toric code to 3 spatial dimensions",
+                "Single-shot decoding via 4-chain meta-checks",
+                "Self-correcting memory (qubits-on-faces dual)",
+                "Haah's cubic code: alternative 3D code with fractal excitations",
+            ],
         })
         
+        # ── Validate CSS structure ─────────────────────────────────
+        validate_css_code(hx, hz, f"ToricCode3D_{L}x{L}x{L}", raise_on_error=True)
+
         # Call parent constructor - TopologicalCSSCode3D now requires chain_complex first
         super().__init__(
             chain_complex=chain_complex,
@@ -119,6 +277,16 @@ class ToricCode3D(TopologicalCSSCode3D):
     @property
     def L(self) -> int:
         """Lattice size."""
+        return self._L
+
+    @property
+    def name(self) -> str:
+        """Human-readable name, e.g. ``'ToricCode3D(3x3x3)'``."""
+        return f"ToricCode3D({self._L}x{self._L}x{self._L})"
+
+    @property
+    def distance(self) -> int:
+        """Code distance (= L)."""
         return self._L
     
     @staticmethod
@@ -423,67 +591,178 @@ class ToricCode3D(TopologicalCSSCode3D):
 
 
 class ToricCode3DFaces(TopologicalCSSCode3D):
-    """
-    3D Toric code with qubits on faces (2-cells).
-    
-    This is the dual picture where:
-        - X stabilizers are cube operators (weight-6)
-        - Z stabilizers are edge operators (weight-4)
-    
+    """3D Toric code with qubits on faces (2-cells).
+
+    This is the **dual picture** of the standard 3D toric code:
+
+    * X-stabilisers are **cube operators** (weight 6, one per 3-cell).
+    * Z-stabilisers are **edge operators** (weight 4, one per 1-cell).
+
     For an L×L×L torus:
-        - n = 3L³ qubits (faces in xy, xz, yz orientations)
-        - k = 3 logical qubits
-        - d = L distance
-    
-    This version has point-like Z excitations and loop-like X excitations,
-    which is relevant for self-correction at finite temperature.
-    
+
+    * **n** = 3L³ (faces in xy, xz, yz orientations)
+    * **k** = 3
+    * **d** = L
+
+    Excitation structure:
+
+    * **Z excitations** (violated edges) are **point-like** (0-D).
+    * **X excitations** (violated cubes) are **loop-like** (1-D).
+
+    This makes the Z-sector decodable by MWPM and gives a
+    **finite-temperature self-correcting memory** because the loop-like X
+    excitations cost energy proportional to their length.
+
+    The 4-chain complex ``C₃ → C₂ → C₁ → C₀`` (cubes → faces → edges →
+    vertices) provides **meta-checks** (∂₁: vertices constrain
+    edge-Z syndromes) enabling single-shot error correction.
+
     Parameters
     ----------
     L : int
-        Linear size of the cubic lattice (default: 3)
+        Linear size of the cubic lattice (must be ≥ 2, default 3).
     metadata : dict, optional
-        Additional metadata
+        Extra metadata merged into the code's metadata dictionary.
+
+    Attributes
+    ----------
+    n : int
+        Number of physical qubits (3L³).
+    k : int
+        Number of logical qubits (3).
+    distance : int
+        Code distance (L).
+    hx : np.ndarray
+        X-stabiliser parity-check matrix (cube operators).
+    hz : np.ndarray
+        Z-stabiliser parity-check matrix (edge operators).
+
+    Examples
+    --------
+    >>> code = ToricCode3DFaces(L=2)
+    >>> code.n, code.k, code.distance
+    (24, 3, 2)
+    >>> code = ToricCode3DFaces(L=3)
+    >>> code.n, code.k, code.distance
+    (81, 3, 3)
+
+    Notes
+    -----
+    Uses ``CSSChainComplex4`` (4-term chain complex) for the full
+    ``C₃ → C₂ → C₁ → C₀`` structure.  The meta-checks from ∂₁ enable
+    **single-shot** error correction of Z-type syndromes.
+
+    See Also
+    --------
+    ToricCode3D : Dual picture with qubits on edges.
+    ToricCode33 : 2D toric code (no meta-checks).
     """
-    
+
     def __init__(self, L: int = 3, metadata: Optional[Dict[str, Any]] = None):
+        """Initialise the 3D toric code with qubits on faces.
+
+        Builds the cubic lattice on a 3-torus, computes the 4-chain
+        complex (cubes → faces → edges → vertices), and derives the
+        X-stabiliser (cube) and Z-stabiliser (edge) parity-check matrices.
+
+        Parameters
+        ----------
+        L : int, default 3
+            Linear lattice size (must be ≥ 2).
+        metadata : dict, optional
+            Extra key/value pairs merged into auto-generated metadata.
+        """
         if L < 2:
             raise ValueError("L must be at least 2")
-        
+
         self._L = L
         n_qubits = 3 * L**3  # faces
-        
-        # Build lattice
+
+        # Build lattice — returns the three boundary maps for the 4-chain
         (
             data_coords,
             x_stab_coords,
             z_stab_coords,
             hx,
             hz,
-            boundary_2,
-            boundary_1,
+            boundary_3,   # cubes → faces  (n_faces × n_cubes)
+            boundary_2,   # faces → edges  (n_edges × n_faces)
+            boundary_1,   # edges → vertices (n_vertices × n_edges)
         ) = self._build_lattice(L)
-        
-        chain_complex = CSSChainComplex3(boundary_2=boundary_2, boundary_1=boundary_1)
+
+        # 4-chain complex: C₃ → C₂ → C₁ → C₀, qubits on grade 2 (faces)
+        chain_complex = CSSChainComplex4(
+            boundary_3=boundary_3,
+            boundary_2=boundary_2,
+            boundary_1=boundary_1,
+            qubit_grade=2,  # qubits live on faces
+        )
         logical_x, logical_z = self._build_logicals(L, n_qubits)
-        
+
         meta: Dict[str, Any] = dict(metadata or {})
         meta.update({
+            # ── Code parameters ────────────────────────────────────
+            "code_family": "surface",
+            "code_type": "toric_3d_faces",
             "name": f"ToricCode3DFaces_{L}x{L}x{L}",
             "n": n_qubits,
             "k": 3,
             "distance": L,
+            "rate": 3.0 / n_qubits,
             "lattice_size": L,
             "dimension": 3,
             "qubits_on": "faces",
-            # Add coordinate metadata for gadget experiments
+            # ── Geometry ───────────────────────────────────────────
             "data_coords": data_coords,
             "x_stab_coords": x_stab_coords,
             "z_stab_coords": z_stab_coords,
+            # ── Logical operator Pauli types ───────────────────────
+            "lx_pauli_type": "X",
+            "lz_pauli_type": "Z",
+            # ── Logical operator supports (k=3: list-of-lists) ────
+            # Lx are weight-L² membranes, Lz are weight-L strings
+            "lx_support": [
+                [((i % L) * L + (j % L)) * L for i in range(L) for j in range(L)],              # xy-faces at z=0
+                [L**3 + ((i % L) * L) * L + k for i in range(L) for k in range(L)],             # xz-faces at y=0
+                [2 * L**3 + ((0 % L) * L + j) * L + k for j in range(L) for k in range(L)],    # yz-faces at x=0
+            ],
+            "lz_support": [
+                [k for k in range(L)],                                  # xy-faces at (0,0,k)
+                [L**3 + j * L**2 for j in range(L)],                   # xz-faces at (0,j,0)
+                [2 * L**3 + i * L**2 for i in range(L)],               # yz-faces at (i,0,0)
+            ],
+            # ── Stabiliser scheduling ──────────────────────────────
+            "stabiliser_schedule": {
+                "x_rounds": {i: 0 for i in range(L**3 - 1)},
+                "z_rounds": {i: 0 for i in range(3 * L**3 - 3)},
+                "n_rounds": 1,
+                "description": (
+                    "Nominally parallel (round 0). 3D geometry uses "
+                    "GRAPH_COLORING scheduling mode."
+                ),
+            },
+            # NOTE: x_schedule/z_schedule set to None for 3D codes.
+            "x_schedule": None,
+            "z_schedule": None,
             # 3D codes use graph coloring scheduling for proper 3D coord handling
             "requires_3d_support": True,
+            # ── Literature / provenance ────────────────────────────
+            "error_correction_zoo_url": "https://errorcorrectionzoo.org/c/3d_surface",
+            "wikipedia_url": "https://en.wikipedia.org/wiki/Toric_code",
+            "canonical_references": [
+                "Castelnovo & Chamon, Phys. Rev. B 78, 155120 (2008). arXiv:0804.3591",
+                "Dennis et al., J. Math. Phys. 43, 4452 (2002). arXiv:quant-ph/0110143",
+            ],
+            "connections": [
+                "Dual of ToricCode3D (qubits on edges → qubits on faces)",
+                "Self-correcting memory at finite temperature",
+                "Point-like Z excitations, loop-like X excitations",
+            ],
         })
-        
+
+        # ── Validate CSS structure ─────────────────────────────────
+        validate_css_code(hx, hz, f"ToricCode3DFaces_{L}x{L}x{L}", raise_on_error=True)
+
         super().__init__(
             hx=hx,
             hz=hz,
@@ -495,7 +774,33 @@ class ToricCode3DFaces(TopologicalCSSCode3D):
     
     @staticmethod
     def _build_lattice(L: int) -> Tuple:
-        """Build lattice with qubits on faces."""
+        """Build lattice with qubits on faces and full 4-chain boundaries.
+
+        Returns the three boundary maps for the 4-chain complex
+        ``C₃ (cubes) → C₂ (faces) → C₁ (edges) → C₀ (vertices)``.
+
+        Parameters
+        ----------
+        L : int
+            Linear lattice size.
+
+        Returns
+        -------
+        data_coords : list of Coord3D
+            Face-centre coordinates for data qubits.
+        x_stab_coords : list of Coord3D
+            Cube-centre coordinates (X-stabiliser ancillas).
+        z_stab_coords : list of Coord3D
+            Edge-midpoint coordinates (Z-stabiliser ancillas).
+        hx, hz : np.ndarray
+            Parity-check matrices (dependent rows removed).
+        boundary_3 : np.ndarray
+            ∂₃ map (n_faces × n_cubes): cube → face incidence.
+        boundary_2 : np.ndarray
+            ∂₂ map (n_edges × n_faces): face → edge incidence.
+        boundary_1 : np.ndarray
+            ∂₁ map (n_vertices × n_edges): edge → vertex incidence.
+        """
         n_qubits = 3 * L**3
         n_cubes = L**3
         n_edges = 3 * L**3
@@ -589,11 +894,55 @@ class ToricCode3DFaces(TopologicalCSSCode3D):
         hz_full = np.array(hz_list, dtype=np.uint8)
         hz = hz_full[:-3]  # Remove 3 dependent rows
         z_stab_coords = z_stab_coords[:-3]
-        
-        boundary_2 = hx.T
-        boundary_1 = hz
-        
-        return (data_coords, x_stab_coords, z_stab_coords, hx, hz, boundary_2, boundary_1)
+
+        # ── 4-chain boundary maps (full, no dependent-row removal) ─────
+        # ∂₃: cubes → faces.  hx_full has shape (n_cubes, n_faces), so
+        #     ∂₃ = hx_full.T  →  shape (n_faces, n_cubes)
+        boundary_3 = hx_full.T.astype(np.uint8)
+
+        # ∂₂: faces → edges.  hz_full has shape (n_edges, n_faces), so
+        #     ∂₂ = hz_full.T  →  shape (n_faces … wait, hz_full rows are
+        #     edge-stabilisers acting on faces).  Each row is an edge's
+        #     4 incident faces.  So hz_full.T[face, edge] = incidence,
+        #     which is the transpose of what we want.
+        #     Actually ∂₂ maps faces→edges: ∂₂[edge, face] = 1 iff face
+        #     has that edge on its boundary.  That is exactly hz_full,
+        #     transposed from the stabiliser convention.
+        #     hz_full shape = (n_edges, n_faces), and ∂₂ should have shape
+        #     (n_edges, n_faces) — mapping grade-2 (faces) to grade-1 (edges).
+        boundary_2 = hz_full.astype(np.uint8)
+
+        # ∂₁: edges → vertices.  Each edge connects two vertices.
+        n_vertices = L**3
+
+        def edge_x(i, j, k):
+            return ((i % L) * L + (j % L)) * L + (k % L)
+
+        def edge_y(i, j, k):
+            return L**3 + ((i % L) * L + (j % L)) * L + (k % L)
+
+        def edge_z(i, j, k):
+            return 2 * L**3 + ((i % L) * L + (j % L)) * L + (k % L)
+
+        def vertex_idx(i, j, k):
+            return ((i % L) * L + (j % L)) * L + (k % L)
+
+        boundary_1 = np.zeros((n_vertices, n_edges), dtype=np.uint8)
+        for i in range(L):
+            for j in range(L):
+                for k in range(L):
+                    # x-edge at (i,j,k) connects vertices (i,j,k) and (i+1,j,k)
+                    boundary_1[vertex_idx(i, j, k), edge_x(i, j, k)] = 1
+                    boundary_1[vertex_idx((i + 1) % L, j, k), edge_x(i, j, k)] = 1
+                    # y-edge at (i,j,k) connects vertices (i,j,k) and (i,j+1,k)
+                    boundary_1[vertex_idx(i, j, k), edge_y(i, j, k)] = 1
+                    boundary_1[vertex_idx(i, (j + 1) % L, k), edge_y(i, j, k)] = 1
+                    # z-edge at (i,j,k) connects vertices (i,j,k) and (i,j,k+1)
+                    boundary_1[vertex_idx(i, j, k), edge_z(i, j, k)] = 1
+                    boundary_1[vertex_idx(i, j, (k + 1) % L), edge_z(i, j, k)] = 1
+
+        return (data_coords, x_stab_coords, z_stab_coords, hx, hz,
+                boundary_3, boundary_2, boundary_1)
     
     @staticmethod
     def _build_logicals(L: int, n_qubits: int) -> Tuple[List[str], List[str]]:
@@ -678,6 +1027,16 @@ class ToricCode3DFaces(TopologicalCSSCode3D):
     def qubit_coords(self) -> List[Coord3D]:
         """Return 3D coordinates of data qubits (face centers)."""
         return self._metadata.get("data_coords", [])
+
+    @property
+    def name(self) -> str:
+        """Human-readable name, e.g. ``'ToricCode3DFaces(3x3x3)'``."""
+        return f"ToricCode3DFaces({self._L}x{self._L}x{self._L})"
+
+    @property
+    def distance(self) -> int:
+        """Code distance (= L)."""
+        return self._L
 
     def get_ft_gadget_config(self) -> FTGadgetCodeConfig:
         """

@@ -131,6 +131,17 @@ class Code(ABC):
         return self.metadata.get('distance', None)
 
     @property
+    def d(self) -> int:
+        """
+        Code distance as an integer (convenience alias).
+        
+        Returns the distance from metadata, defaulting to 3 if unknown.
+        CSSCode overrides this with its own implementation.
+        """
+        dist = self.distance
+        return dist if dist is not None else 3
+
+    @property
     def name(self) -> str:
         return self.__class__.__name__
 
@@ -175,9 +186,138 @@ class Code(ABC):
         """Check if this code is a CSS code."""
         return False
 
+    @property
+    def is_stabilizer(self) -> bool:
+        """Check if this code is a stabilizer code (has stabilizer_matrix)."""
+        return False
+
+    @property
+    def is_self_dual(self) -> bool:
+        """
+        Whether the code is self-dual (X and Z stabilizers are identical).
+        
+        Only meaningful for CSS codes. Default is False.
+        CSSCode overrides this with an actual hx==hz check.
+        """
+        return False
+
+    def transversal_gates(self) -> List[str]:
+        """
+        List of gates this code supports transversally.
+        
+        Default uses metadata['transversal_gates'] if available,
+        otherwise returns ["H", "CZ", "CNOT"] for CSS codes, [] otherwise.
+        """
+        meta_gates = self.metadata.get('transversal_gates', None)
+        if meta_gates is not None:
+            if isinstance(meta_gates, list):
+                return meta_gates
+            return []
+        # Default for CSS codes
+        if self.is_css:
+            return ["H", "CZ", "CNOT"]
+        return []
+
+    def stabilizer_coords(self) -> Optional[List[Tuple[float, ...]]]:
+        """
+        Coordinates for stabilizer anchors (for detector coordinate assignment).
+        
+        Returns None by default. CSSCode overrides this to combine
+        get_x_stabilizer_coords() and get_z_stabilizer_coords().
+        """
+        return None
+
     def extra_metadata(self) -> Dict[str, Any]:
         """Arbitrary metadata for advanced use."""
         return {}
+
+    # --- Stabilizer accessors (standard interface) ---
+    # These methods provide a CLEAN INTERFACE for accessing stabilizer information
+    # without hasattr checks. Non-stabilizer codes should override to raise errors.
+    
+    def get_x_stabilizers(self) -> List[List[int]]:
+        """
+        Get X-type stabilizer supports.
+        
+        Returns a list of stabilizers, where each stabilizer is a list of
+        qubit indices in its support. For CSS codes, these are the X-type
+        stabilizers. For non-CSS codes, this returns stabilizers with X component.
+        
+        Returns
+        -------
+        List[List[int]]
+            List of qubit index lists for each X-type stabilizer.
+            
+        Raises
+        ------
+        NotImplementedError
+            If this code type doesn't support stabilizer access.
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not implement get_x_stabilizers(). "
+            "Override this method or use a StabilizerCode subclass."
+        )
+    
+    def get_z_stabilizers(self) -> List[List[int]]:
+        """
+        Get Z-type stabilizer supports.
+        
+        Returns a list of stabilizers, where each stabilizer is a list of
+        qubit indices in its support. For CSS codes, these are the Z-type
+        stabilizers. For non-CSS codes, this returns stabilizers with Z component.
+        
+        Returns
+        -------
+        List[List[int]]
+            List of qubit index lists for each Z-type stabilizer.
+            
+        Raises
+        ------
+        NotImplementedError
+            If this code type doesn't support stabilizer access.
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not implement get_z_stabilizers(). "
+            "Override this method or use a StabilizerCode subclass."
+        )
+    
+    def get_logical_x_support(self, logical_idx: int = 0) -> List[int]:
+        """
+        Get qubit support for a logical X operator.
+        
+        Parameters
+        ----------
+        logical_idx : int
+            Which logical qubit (0 to k-1).
+            
+        Returns
+        -------
+        List[int]
+            Qubit indices in the logical X support.
+        """
+        if logical_idx >= self.k:
+            raise IndexError(f"Logical index {logical_idx} >= k={self.k}")
+        x_op = self.logical_x_ops[logical_idx]
+        return sorted(x_op.keys())
+    
+    def get_logical_z_support(self, logical_idx: int = 0) -> List[int]:
+        """
+        Get qubit support for a logical Z operator.
+        
+        Parameters
+        ----------
+        logical_idx : int
+            Which logical qubit (0 to k-1).
+            
+        Returns
+        -------
+        List[int]
+            Qubit indices in the logical Z support.
+        """
+        if logical_idx >= self.k:
+            raise IndexError(f"Logical index {logical_idx} >= k={self.k}")
+        z_op = self.logical_z_ops[logical_idx]
+        return sorted(z_op.keys())
 
     # --- FT Gadget Experiment Interface ---
     
@@ -277,6 +417,11 @@ class StabilizerCode(Code):
     - CSSCode: Stabilizers factor into pure X-type and pure Z-type
     - SubsystemCode: Has gauge operators in addition to stabilizers
     """
+
+    @property
+    def is_stabilizer(self) -> bool:
+        """StabilizerCode always returns True."""
+        return True
     
     @property
     @abstractmethod

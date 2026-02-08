@@ -31,7 +31,9 @@ from .concatenated import (
     FlatConcatenatedStabilizerRoundBuilder,
     ConcatenatedStabilizerRoundBuilder,  # Deprecated alias
 )
+from .hierarchical_concatenated import HierarchicalConcatenatedStabilizerRoundBuilder
 from .utils import get_logical_support, _parse_pauli_support
+from .memory_emitter import MemoryRoundEmitter, RoundEmissionConfig, create_memory_emitter
 
 # Backwards compatibility alias
 StabilizerRoundBuilder = CSSStabilizerRoundBuilder
@@ -50,6 +52,7 @@ __all__ = [
     "GeneralStabilizerRoundBuilder",
     "XYZColorCodeStabilizerRoundBuilder",
     "FlatConcatenatedStabilizerRoundBuilder",
+    "HierarchicalConcatenatedStabilizerRoundBuilder",
     
     # Deprecated aliases (kept for backward compatibility)
     "ConcatenatedStabilizerRoundBuilder",
@@ -57,6 +60,11 @@ __all__ = [
     # Utility functions
     "get_logical_support",
     "_parse_pauli_support",
+    
+    # Memory round emission
+    "MemoryRoundEmitter",
+    "RoundEmissionConfig",
+    "create_memory_emitter",
     
     # Backwards compatibility
     "StabilizerRoundBuilder",
