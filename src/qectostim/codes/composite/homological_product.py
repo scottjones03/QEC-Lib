@@ -44,6 +44,46 @@ Canonical examples
 - RepetitionCode (2-chain) :math:`\otimes` RepetitionCode → Toric code (3-chain)
 - ToricCode (3-chain) :math:`\otimes` ToricCode → 4-D toric code (5-chain)
 
+Distance analysis
+~~~~~~~~~~~~~~~~~
+For the Tillich–Zémor HGP with seed codes ``[n_i, k_i, d_i]``:
+
+* **Lower bound**: :math:`d \ge \min(d_1, d_2)` (always)
+* **Upper bound**: :math:`d \le \max(d_1, d_2)` (typical for balanced seeds)
+* **Exact**: when both seeds are identical, :math:`d = d_1 = d_2`
+
+Code Parameters
+~~~~~~~~~~~~~~~
+For two CSS seed codes ``[[n_a, k_a, d_a]]`` and ``[[n_b, k_b, d_b]]``:
+
+**Full homological product** (``HomologicalProductCode``):
+
+* **n** = dimension of the middle grade of the tensor-product complex
+* **k** = ``k_a * k_b``  (Künneth formula)
+* **d** ≥ ``min(d_a, d_b)``  (equality for balanced seed codes)
+
+**Tillich–Zémor HGP** (``TillichZemorHGP``, from classical ``[n_i, k_i, d_i]`` seeds):
+
+* **n** = ``n_1 * n_2 + r_1 * r_2``  where ``r_i`` = number of checks
+* **k** = ``k_1 * k_2``
+* **d** ≥ ``min(d_1, d_2)``
+
+Stabiliser Structure
+~~~~~~~~~~~~~~~~~~~~
+Stabilisers are built from tensor products of the input chain complexes:
+
+* **X stabilisers**: ``Hx = [H1 ⊗ I_{n2} | I_{r1} ⊗ H2^T]``  (for HGP)
+  with weights determined by the row weights of the seed codes.
+  Count = ``r_1 * n_2`` generators.
+* **Z stabilisers**: ``Hz = [I_{n1} ⊗ H2 | H1^T ⊗ I_{r2}]``  (for HGP)
+  with analogous structure.  Count = ``n_1 * r_2`` generators.
+* **Meta-checks**: for chain complexes of length ≥ 5, additional
+  meta-check layers arise from the grades adjacent to the stabiliser
+  grades, enabling **single-shot error correction**.
+* **Measurement schedule**: depends on the factor codes and target
+  decoder.  For 5-chain codes, meta-checks may be measured in a
+  separate round or interleaved with stabiliser measurements.
+
 Decoder considerations
 ~~~~~~~~~~~~~~~~~~~~~~
 Products of 3-chains or higher (chain length ≥ 5) introduce **hyperedge**
@@ -67,6 +107,22 @@ See Also
 qectostim.codes.small.repetition_codes : Simplest building block for HGP.
 qectostim.codes.surface.toric_code : 3-chain code; its self-product gives
     a 4-D toric code.
+
+Fault tolerance
+---------------
+* Products of distance-d codes yield codes with d_product ≥ d, so
+  fault-tolerance properties are inherited from the seed codes.
+* The meta-check structure arising from chain complexes of length ≥ 5
+  enables single-shot error correction.
+
+Implementation notes
+--------------------
+* The Kronecker product of sparse matrices is computed using
+  ``scipy.sparse.kron`` for memory efficiency.
+* Boundary operators are cached after the first computation to avoid
+  redundant tensor-product calculations.
+* For very large seed codes (n > 1000), the product code can exceed
+  10⁶ qubits; users should verify memory availability before construction.
 """
 from __future__ import annotations
 
@@ -189,6 +245,30 @@ class HomologicalProductCode(CSSCodeWithComplex):
         code_b: CSSCodeWithComplex,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
+        """Construct the homological product of two CSS codes.
+
+        Computes the full tensor product of the input chain complexes
+        and derives the stabiliser matrices, logical operators, and
+        metadata for the resulting code.
+
+        Parameters
+        ----------
+        code_a : CSSCodeWithComplex
+            First CSS code (must have a non-``None`` ``chain_complex``).
+        code_b : CSSCodeWithComplex
+            Second CSS code (must have a non-``None`` ``chain_complex``).
+        metadata : dict, optional
+            Extra key/value pairs merged into the code's metadata dict.
+
+        Raises
+        ------
+        ValueError
+            If either input code has ``chain_complex is None``
+            (incompatible structure for homological product).
+        ValueError
+            If the product check matrices fail CSS validation
+            (``Hx @ Hz^T ≠ 0`` mod 2).
+        """
         self.code_a = code_a
         self.code_b = code_b
         self.n_a = code_a.n
@@ -225,6 +305,7 @@ class HomologicalProductCode(CSSCodeWithComplex):
         validate_css_code(
             hx, hz,
             f"HomologicalProduct({code_a.name}, {code_b.name})",
+            raise_on_error=True,
         )
         
         # Build metadata
@@ -248,6 +329,31 @@ class HomologicalProductCode(CSSCodeWithComplex):
         meta["rate"] = (k_product / n_product) if n_product > 0 else 0.0
         meta["distance"] = meta.get("distance", None)  # exact distance hard to compute
         meta["data_qubits"] = list(range(n_product))
+
+        # Coordinate metadata
+        cols_grid = int(np.ceil(np.sqrt(n_product)))
+        data_coords_list = [(float(i % cols_grid), float(i // cols_grid)) for i in range(n_product)]
+        meta.setdefault("data_coords", data_coords_list)
+        x_stab_coords_list = []
+        for row in hx:
+            support = np.where(row)[0]
+            if len(support) > 0:
+                cx = float(np.mean([data_coords_list[q][0] for q in support if q < len(data_coords_list)]))
+                cy = float(np.mean([data_coords_list[q][1] for q in support if q < len(data_coords_list)]))
+                x_stab_coords_list.append((cx, cy))
+            else:
+                x_stab_coords_list.append((0.0, 0.0))
+        meta.setdefault("x_stab_coords", x_stab_coords_list)
+        z_stab_coords_list = []
+        for row in hz:
+            support = np.where(row)[0]
+            if len(support) > 0:
+                cx = float(np.mean([data_coords_list[q][0] for q in support if q < len(data_coords_list)]))
+                cy = float(np.mean([data_coords_list[q][1] for q in support if q < len(data_coords_list)]))
+                z_stab_coords_list.append((cx, cy))
+            else:
+                z_stab_coords_list.append((0.0, 0.0))
+        meta.setdefault("z_stab_coords", z_stab_coords_list)
 
         # ── Logical operator Pauli types ───────────────────────
         meta["lx_pauli_type"] = "X"
@@ -590,6 +696,25 @@ class TillichZemorHGP(CSSCode):
         H2: np.ndarray,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
+        """Construct a Tillich–Zémor HGP from two classical parity-check matrices.
+
+        Parameters
+        ----------
+        H1 : np.ndarray
+            Binary parity-check matrix of the first classical seed code
+            (shape ``(r1, n1)``).
+        H2 : np.ndarray
+            Binary parity-check matrix of the second classical seed code
+            (shape ``(r2, n2)``).
+        metadata : dict, optional
+            Extra key/value pairs merged into the code's metadata dict.
+
+        Raises
+        ------
+        ValueError
+            If the product check matrices fail CSS validation
+            (``Hx @ Hz^T ≠ 0`` mod 2).
+        """
         H1 = np.array(H1, dtype=np.uint8) % 2
         H2 = np.array(H2, dtype=np.uint8) % 2
         
@@ -636,6 +761,32 @@ class TillichZemorHGP(CSSCode):
         # Exact distance is hard to compute; store as None unless overridden
         meta["distance"] = meta.get("distance", None)
         meta["data_qubits"] = list(range(total_n))
+
+        # Coordinate metadata
+        cols_grid = int(np.ceil(np.sqrt(total_n)))
+        data_coords_list = [(float(i % cols_grid), float(i // cols_grid)) for i in range(total_n)]
+        meta.setdefault("data_coords", data_coords_list)
+        x_stab_coords_list = []
+        for row in hx:
+            support = np.where(row)[0]
+            if len(support) > 0:
+                cx = float(np.mean([data_coords_list[q][0] for q in support if q < len(data_coords_list)]))
+                cy = float(np.mean([data_coords_list[q][1] for q in support if q < len(data_coords_list)]))
+                x_stab_coords_list.append((cx, cy))
+            else:
+                x_stab_coords_list.append((0.0, 0.0))
+        meta.setdefault("x_stab_coords", x_stab_coords_list)
+        z_stab_coords_list = []
+        for row in hz:
+            support = np.where(row)[0]
+            if len(support) > 0:
+                cx = float(np.mean([data_coords_list[q][0] for q in support if q < len(data_coords_list)]))
+                cy = float(np.mean([data_coords_list[q][1] for q in support if q < len(data_coords_list)]))
+                z_stab_coords_list.append((cx, cy))
+            else:
+                z_stab_coords_list.append((0.0, 0.0))
+        meta.setdefault("z_stab_coords", z_stab_coords_list)
+
         # ── Logical operator Pauli types ───────────────────────
         meta["lx_pauli_type"] = "X"
         meta["lz_pauli_type"] = "Z"
@@ -705,3 +856,34 @@ class TillichZemorHGP(CSSCode):
     def name(self) -> str:
         """Human-readable name showing seed matrix shapes."""
         return f"TillichZemorHGP({self._H1.shape}, {self._H2.shape})"
+
+    @property
+    def distance(self) -> int:
+        """Code distance (from metadata, or 1 if unknown).
+
+        The exact distance of a hypergraph product code is hard to compute
+        in general.  A lower bound ``min(d1, d2)`` is stored at construction
+        if provided via metadata; otherwise returns 1 as a safe fallback.
+        """
+        d = self._metadata.get("distance")
+        return d if d is not None else 1
+
+    def qubit_coords(self) -> List[Tuple[float, float]]:
+        """Return 2-D qubit coordinates based on the tensor structure.
+
+        The first ``n1 * n2`` qubits are laid out on an ``n1 × n2`` grid.
+        The remaining ``r1 * r2`` qubits are placed in an ``r1 × r2`` grid
+        offset to the right.
+        """
+        r1, n1 = self._H1.shape
+        _, n2 = self._H2.shape
+        r2 = self._H2.shape[0]
+        coords: List[Tuple[float, float]] = []
+        # Left sector: n1 x n2
+        for i in range(n1 * n2):
+            coords.append((float(i % n2), float(i // n2)))
+        # Right sector: r1 x r2, offset
+        x_off = float(n2 + 1)
+        for i in range(r1 * r2):
+            coords.append((x_off + float(i % r2), float(i // r2)))
+        return coords

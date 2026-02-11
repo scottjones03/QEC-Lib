@@ -1,16 +1,121 @@
 """Non-CSS Stabilizer Codes
+=========================
 
-This module contains important non-CSS stabilizer codes that have mixed X/Z
-stabilizer generators. Unlike CSS codes where stabilizers are purely X-type
-or Z-type, these codes have stabilizers with both X and Z operators.
+Overview
+--------
+This module implements several important non-CSS stabiliser codes — quantum
+error-correcting codes whose stabiliser generators are *not* separable into
+purely X-type and purely Z-type subgroups.  Unlike CSS (Calderbank–Shor–
+Steane) codes, the generators of a non-CSS code contain Pauli operators of
+mixed type (e.g. ``XZXZII``), which means the X- and Z-parts of the
+parity-check matrix are not independent.  This has significant consequences
+for syndrome extraction circuits, decoder design, and fault-tolerance
+thresholds.
 
-Included codes:
-- [[6,4,2]] Six-qubit code: Highest rate distance-2 code
-- [[7,1,3]] Bare code: A non-CSS variant related to the Steane code
-- [[10,2,3]] Reed-Muller non-CSS code
+Non-CSS Stabiliser Codes
+------------------------
+The module provides four concrete code classes:
 
-These codes are important for testing general stabilizer code handling and
-for applications where CSS structure is not required.
+* :class:`SixQubit642Code` — the ``[[6,4,2]]`` code with the highest known
+  rate (k/n = 2/3) at distance 2.
+* :class:`BareAncillaCode713` — a ``[[7,1,3]]`` non-CSS construction that
+  uses disjoint XZ pairs on qubit pairs with a cyclic structure.
+* :class:`TenQubitCode` — a ``[[10,2,3]]`` code encoding two logical qubits
+  with distance 3 using a cyclic XZ / ZX pair pattern.
+* :class:`FiveQubitMixedCode` — a ``[[5,1,2]]`` code with low-weight mixed
+  stabilisers, useful as a compact non-CSS test case.
+
+Code Parameters
+---------------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 10 10 10 15 25
+
+   * - Class
+     - n
+     - k
+     - d
+     - Rate
+     - Decoder compatible
+   * - ``SixQubit642Code``
+     - 6
+     - 4
+     - 2
+     - 0.667
+     - No (29 % naked L0)
+   * - ``BareAncillaCode713``
+     - 7
+     - 1
+     - 3
+     - 0.143
+     - No (28 % naked L0)
+   * - ``TenQubitCode``
+     - 10
+     - 2
+     - 3
+     - 0.200
+     - No (100 % naked L0)
+   * - ``FiveQubitMixedCode``
+     - 5
+     - 1
+     - 2
+     - 0.200
+     - No (48 % naked L0)
+
+Stabiliser Formalism
+--------------------
+A general *n*-qubit stabiliser code ``[[n, k, d]]`` is defined by a set of
+*n − k* independent, mutually commuting Pauli operators (the *stabiliser
+generators*).  For CSS codes these generators split into X-only and Z-only
+subsets, but for non-CSS codes every generator may contain a mixture of
+``X``, ``Y``, and ``Z`` on different qubits.  In the binary symplectic
+representation each generator is a length-2n binary vector ``[x | z]``
+where ``x_i = z_i = 1`` encodes a ``Y`` on qubit *i*.
+
+The ``naked L0`` metric reported in the metadata quantifies the fraction of
+weight-1 logical errors that trigger zero stabiliser violations (detectors).
+A high naked-L0 percentage renders standard minimum-weight matching or
+belief-propagation decoders ineffective because those logical errors are
+indistinguishable from the identity by syndrome alone.
+
+Code Parameters
+~~~~~~~~~~~~~~~
+:math:`[[n, k, d]]` where:
+
+- :math:`n` = number of physical qubits (varies per code: 5, 6, 7, 10)
+- :math:`k` = number of logical qubits (1–4 depending on the code)
+- :math:`d` = code distance (2 or 3)
+- Rate :math:`k/n` ranges from 0.143 to 0.667
+
+Stabiliser Structure
+~~~~~~~~~~~~~~~~~~~~
+- **Non-CSS stabilisers**: generators mix X and Z operators on the
+  same qubits (e.g. ``XZIZXI``).  No separation into X-type and Z-type.
+- Stabiliser weights are typically 2–4.
+- Measurement schedule: each generator requires a joint X/Z ancilla
+  circuit; cannot use independent X and Z syndrome extraction.
+
+Connections to CSS Codes
+------------------------
+Every CSS code can be viewed as a special case of the stabiliser formalism
+where the X- and Z-parts decouple.  Non-CSS codes sacrifice this decoupling
+for potentially better parameters (higher rate or lower overhead) at the
+cost of more complex syndrome extraction and decoding.  The codes in this
+module therefore serve as important benchmarks for verifying that the
+circuit-generation and decoding infrastructure handles the general
+stabiliser case correctly, beyond the CSS-restricted path.
+
+References
+----------
+.. [1] A. R. Calderbank, E. M. Rains, P. W. Shor, and N. J. A. Sloane,
+       "Quantum Error Correction via Codes over GF(4)," *IEEE Trans. Inf.
+       Theory*, vol. 44, no. 4, pp. 1369–1387, 1998.
+.. [2] D. Gottesman, "Stabilizer Codes and Quantum Error Correction,"
+       PhD thesis, Caltech, 1997.  arXiv:quant-ph/9705052.
+.. [3] M. Grassl, "Bounds on the minimum distance of linear codes and
+       quantum codes," online code tables, https://codetables.de/.
+.. [4] Error Correction Zoo, https://errorcorrectionzoo.org/.
 """
 
 from __future__ import annotations
@@ -51,7 +156,12 @@ class SixQubit642Code(StabilizerCode):
     """
     
     def __init__(self, metadata: Optional[Dict[str, Any]] = None):
-        """Initialize the [[6,4,2]] non-CSS code."""
+        """Initialize the [[6,4,2]] non-CSS code.
+
+        Raises
+        ------
+        No ``ValueError`` raised — all code parameters are fixed.
+        """
         
         # Symplectic form [X | Z] for stabilizers
         # Using a clean non-CSS presentation:
@@ -113,6 +223,21 @@ class SixQubit642Code(StabilizerCode):
         meta["distance"] = 2
         meta["is_css"] = False
         meta["rate"] = 4/6
+        meta["code_family"] = "stabiliser"
+        meta["code_type"] = "non-css"
+        meta["lx_pauli_type"] = "mixed"
+        meta["lz_pauli_type"] = "mixed"
+        meta["stabiliser_schedule"] = "parallel"
+        meta["error_correction_zoo_url"] = "https://errorcorrectionzoo.org/c/stab_6_4_2"
+        meta["wikipedia_url"] = ""
+        meta["canonical_references"] = [
+            "Calderbank1998_GF4",
+            "Grassl_CodeTables",
+        ]
+        meta["connections"] = [
+            "Highest-rate known distance-2 stabiliser code.",
+            "Encodes 4 logical qubits — useful for multi-logical experiments.",
+        ]
         # Decoder compatibility: 29% of L0 errors trigger 0 detectors ("naked L0")
         # These undetectable errors make standard decoding ineffective
         meta["decoder_compatible"] = False
@@ -127,6 +252,10 @@ class SixQubit642Code(StabilizerCode):
         
         self._metadata = meta
     
+    @property
+    def name(self) -> str:
+        return self._metadata.get("name", "NonCSS_642")
+
     @property
     def n(self) -> int:
         return 6
@@ -171,7 +300,12 @@ class BareAncillaCode713(StabilizerCode):
     """
     
     def __init__(self, metadata: Optional[Dict[str, Any]] = None):
-        """Initialize the [[7,1,3]] non-CSS code."""
+        """Initialize the [[7,1,3]] non-CSS code.
+
+        Raises
+        ------
+        No ``ValueError`` raised — all code parameters are fixed.
+        """
         
         # Stabilizers using disjoint XZ pairs that commute
         # Pairs (0,1), (2,3), (4,5) with X on first, Z on second
@@ -204,11 +338,26 @@ class BareAncillaCode713(StabilizerCode):
         meta["n"] = 7
         meta["k"] = 1
         meta["distance"] = 3
+        meta["is_css"] = False
+        meta["rate"] = 1/7
+        meta["code_family"] = "stabiliser"
+        meta["code_type"] = "non-css"
+        meta["lx_pauli_type"] = "mixed"
+        meta["lz_pauli_type"] = "mixed"
+        meta["stabiliser_schedule"] = "parallel"
+        meta["error_correction_zoo_url"] = "https://errorcorrectionzoo.org/c/steane"
+        meta["wikipedia_url"] = ""
+        meta["canonical_references"] = [
+            "Gottesman1997_Stabilizer",
+        ]
+        meta["connections"] = [
+            "Non-CSS variant related to the Steane code layout.",
+            "Uses disjoint XZ pairs for commuting stabiliser structure.",
+        ]
         # Decoder compatibility: 28% of L0 errors trigger 0 detectors ("naked L0")
         # These undetectable errors make standard decoding ineffective
         meta["decoder_compatible"] = False
         meta["naked_l0_percentage"] = 28
-        meta["is_css"] = False
         
         # Heptagonal layout
         coords = []
@@ -219,6 +368,10 @@ class BareAncillaCode713(StabilizerCode):
         
         self._metadata = meta
     
+    @property
+    def name(self) -> str:
+        return self._metadata.get("name", "BareAncilla_713")
+
     @property
     def n(self) -> int:
         return 7
@@ -259,7 +412,12 @@ class TenQubitCode(StabilizerCode):
     """
     
     def __init__(self, metadata: Optional[Dict[str, Any]] = None):
-        """Initialize the [[10,2,3]] non-CSS code."""
+        """Initialize the [[10,2,3]] non-CSS code.
+
+        Raises
+        ------
+        No ``ValueError`` raised — all code parameters are fixed.
+        """
         
         # 8 stabilizers for 10 qubits, 2 logical qubits
         # Each stabilizer: X on qubit i, Z on qubit i+1 (commuting structure)
@@ -300,6 +458,22 @@ class TenQubitCode(StabilizerCode):
         meta["k"] = 2
         meta["distance"] = 3
         meta["is_css"] = False
+        meta["rate"] = 2/10
+        meta["code_family"] = "stabiliser"
+        meta["code_type"] = "non-css"
+        meta["lx_pauli_type"] = "mixed"
+        meta["lz_pauli_type"] = "mixed"
+        meta["stabiliser_schedule"] = "parallel"
+        meta["error_correction_zoo_url"] = "https://errorcorrectionzoo.org/c/shor_nine"
+        meta["wikipedia_url"] = ""
+        meta["canonical_references"] = [
+            "Calderbank1998_GF4",
+            "Grassl_CodeTables",
+        ]
+        meta["connections"] = [
+            "Encodes 2 logical qubits with cyclic XZ/ZX stabiliser pattern.",
+            "100% naked L0 — all weight-1 logical errors are undetectable.",
+        ]
         # Decoder compatibility: 100% of L0 errors trigger 0 detectors ("naked L0")
         # ALL logical errors are undetectable - this code cannot be decoded
         meta["decoder_compatible"] = False
@@ -314,6 +488,10 @@ class TenQubitCode(StabilizerCode):
         
         self._metadata = meta
     
+    @property
+    def name(self) -> str:
+        return self._metadata.get("name", "NonCSS_1023")
+
     @property
     def n(self) -> int:
         return 10
@@ -358,7 +536,12 @@ class FiveQubitMixedCode(StabilizerCode):
     """
     
     def __init__(self, metadata: Optional[Dict[str, Any]] = None):
-        """Initialize the [[5,1,2]] mixed code."""
+        """Initialize the [[5,1,2]] mixed code.
+
+        Raises
+        ------
+        No ``ValueError`` raised — all code parameters are fixed.
+        """
         
         # Commuting non-CSS stabilizers: each stabilizer XZ on disjoint pairs
         self._stabilizer_matrix = np.array([
@@ -381,6 +564,21 @@ class FiveQubitMixedCode(StabilizerCode):
         meta["k"] = 1
         meta["distance"] = 2
         meta["is_css"] = False
+        meta["rate"] = 1/5
+        meta["code_family"] = "stabiliser"
+        meta["code_type"] = "non-css"
+        meta["lx_pauli_type"] = "mixed"
+        meta["lz_pauli_type"] = "mixed"
+        meta["stabiliser_schedule"] = "parallel"
+        meta["error_correction_zoo_url"] = "https://errorcorrectionzoo.org/c/stab_5_1_3"
+        meta["wikipedia_url"] = ""
+        meta["canonical_references"] = [
+            "Gottesman1997_Stabilizer",
+        ]
+        meta["connections"] = [
+            "Compact non-CSS test case with low-weight stabilisers.",
+            "Related to the perfect [[5,1,3]] code but with distance 2.",
+        ]
         # Decoder compatibility: 48% of L0 errors trigger 0 detectors ("naked L0")
         # These undetectable errors make standard decoding ineffective
         meta["decoder_compatible"] = False
@@ -395,6 +593,10 @@ class FiveQubitMixedCode(StabilizerCode):
         
         self._metadata = meta
     
+    @property
+    def name(self) -> str:
+        return self._metadata.get("name", "Mixed_512")
+
     @property
     def n(self) -> int:
         return 5

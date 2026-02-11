@@ -40,13 +40,38 @@ anti-commute with each other (overlap on 3 qubits → odd).
 
 Qubit layout (triangular colour-code embedding)
 -------------------------------------------------
-        0
-       / \\
-      2---6
-     / \\ / \\
-    1---5---3
-         \\
-          4
+The Steane code is the smallest triangular colour code.  Data qubits sit
+on the **vertices** of a triangulated region; each stabiliser corresponds
+to one of the three quadrilateral **faces** (plaquettes).
+
+::
+
+            0                 y=2
+          /   \\
+        3 - 6 - 5             y=1
+      /   \\ | /   \\
+    1 ----- 4 ----- 2         y=0
+
+    x:  0   1   2   3   4
+
+    Data qubits at vertices:
+      0: (2, 2)   top vertex
+      1: (0, 0)   bottom-left
+      2: (4, 0)   bottom-right
+      3: (1, 1)   mid-left
+      4: (2, 0)   bottom-center
+      5: (3, 1)   mid-right
+      6: (2, 1)   center
+
+    Stabiliser plaquettes (quadrilateral faces):
+      [0] → {0, 3, 5, 6}  upper face (vertices 0-3-6-5)
+      [1] → {1, 3, 4, 6}  lower-left face (vertices 1-3-6-4)
+      [2] → {2, 4, 5, 6}  lower-right face (vertices 2-5-6-4)
+
+    Stabiliser coords (face centroids):
+      [0]: centroid of (2,2),(1,1),(3,1),(2,1) → (2.0, 1.25)
+      [1]: centroid of (0,0),(1,1),(2,0),(2,1) → (1.25, 0.5)
+      [2]: centroid of (4,0),(2,0),(3,1),(2,1) → (2.75, 0.5)
 
 The three weight-4 stabilisers correspond to the three faces of this
 triangulation.  This makes the Steane code equivalent to the **smallest
@@ -56,7 +81,7 @@ Transversal gates
 -----------------
 The Steane code supports transversal implementations of the full
 **Clifford group** {H, S, CNOT}.  In particular:
-
+z
 * Transversal H: H⊗⁷ (because H_X = H_Z, self-dual)
 * Transversal CNOT: bitwise CNOT between two code blocks
 * Transversal S (phase): requires the triorthogonality property
@@ -76,6 +101,24 @@ with logical Z̄ = +1):
 
     1. Apply H to qubits {0, 1, 2, 6}  (complement of {3, 4, 5})
     2. Reversed CNOT cascade
+
+Code Parameters
+~~~~~~~~~~~~~~~
+:math:`[[n, k, d]] = [[7, 1, 3]]` where:
+
+- :math:`n = 7` physical qubits (vertices of the Fano-plane triangulation)
+- :math:`k = 1` logical qubit
+- :math:`d = 3` (corrects any single Pauli error)
+- Rate :math:`k/n = 1/7 \approx 0.143`
+
+Stabiliser Structure
+~~~~~~~~~~~~~~~~~~~~
+- **X-type stabilisers**: 3 generators, each weight 4; supports are
+  ``{0,3,5,6}``, ``{1,3,4,6}``, ``{2,4,5,6}`` (faces of the triangulation).
+- **Z-type stabilisers**: 3 generators, each weight 4; identical supports
+  to the X-type stabilisers (self-dual: :math:`H_X = H_Z`).
+- Measurement schedule: all 6 stabilisers can be measured in a single
+  round (parallel); each requires a depth-4 CNOT circuit.
 
 Connections to other codes
 --------------------------
@@ -171,6 +214,10 @@ class SteaneCode713(TopologicalCSSCode):
             dictionary.  User-supplied entries override auto-generated
             ones with the same key.
 
+        Raises
+        ------
+        No ``ValueError`` raised — all code parameters are fixed.
+
         Notes
         -----
         Stabilisers are defined in Hamming systematic form H = [I₃ | P]:
@@ -219,23 +266,46 @@ class SteaneCode713(TopologicalCSSCode):
         logical_x=[{0: 'X', 1: 'X', 3: 'X'}]
         logical_z=[{0: 'Z', 1: 'Z', 3: 'Z'}]
 
-        # Geometric layout: triangular arrangement
+        # ═══════════════════════════════════════════════════════════════════
+        # GEOMETRIC LAYOUT: Triangular colour-code embedding
+        # ═══════════════════════════════════════════════════════════════════
+        # The Steane code lives on a triangulated region with data qubits
+        # at vertices and stabilizers as face operators.
+        #
+        #         0                 y=2
+        #       /   \
+        #     3 - 6 - 5             y=1
+        #   /   \ | /   \
+        # 1 ----- 4 ----- 2         y=0
+        #
+        # Stabilizer [0] = {0,3,5,6} = upper face
+        # Stabilizer [1] = {1,3,4,6} = lower-left face
+        # Stabilizer [2] = {2,4,5,6} = lower-right face
+        #
+        # Each face is a quadrilateral with 4 vertices (qubits).
+        # Check overlaps (must share exactly 2 qubits for colour code):
+        #   {0,3,5,6} ∩ {1,3,4,6} = {3,6} ✓
+        #   {0,3,5,6} ∩ {2,4,5,6} = {5,6} ✓
+        #   {1,3,4,6} ∩ {2,4,5,6} = {4,6} ✓
         coords = {
-            0: (1.0, 2.0),    # top vertex
+            0: (2.0, 2.0),    # top vertex
             1: (0.0, 0.0),    # bottom-left vertex
-            2: (0.5, 1.0),    # left edge center
-            3: (2.0, 0.0),    # bottom-right vertex
-            4: (1.5, 1.0),    # right edge center
-            5: (1.0, 0.0),    # bottom edge center
-            6: (1.0, 1.0),    # face center
+            2: (4.0, 0.0),    # bottom-right vertex
+            3: (1.0, 1.0),    # mid-left vertex
+            4: (2.0, 0.0),    # bottom-center vertex
+            5: (3.0, 1.0),    # mid-right vertex
+            6: (2.0, 1.0),    # center vertex
         }
         data_coords = [coords[i] for i in range(7)]
         
-        # Face centers for stabilizer coordinates (color code faces)
+        # Face centers for stabilizer coordinates (centroids of face qubits)
+        # Stabilizer [0] = {0,3,5,6}: centroid of (2,2), (1,1), (3,1), (2,1)
+        # Stabilizer [1] = {1,3,4,6}: centroid of (0,0), (1,1), (2,0), (2,1)
+        # Stabilizer [2] = {2,4,5,6}: centroid of (4,0), (2,0), (3,1), (2,1)
         stab_coords = [
-            (1.5, 0.5),  # Face {0,3,5,6}
-            (0.5, 0.5),  # Face {1,3,4,6}
-            (1.0, 1.33), # Face {2,4,5,6}
+            (2.0, 1.25),   # Face [0]: {0,3,5,6} → (2+1+3+2)/4=2, (2+1+1+1)/4=1.25
+            (1.25, 0.5),   # Face [1]: {1,3,4,6} → (0+1+2+2)/4=1.25, (0+1+0+1)/4=0.5
+            (2.75, 0.5),   # Face [2]: {2,4,5,6} → (4+2+3+2)/4=2.75, (0+0+1+1)/4=0.5
         ]
 
         meta = dict(metadata or {})

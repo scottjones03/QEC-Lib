@@ -1,26 +1,114 @@
 """4D Toric Code
+=============
 
-The 4D toric code is a topological CSS code defined on a 4-torus (L×L×L×L with 
-periodic boundary conditions in all four dimensions).
+The 4D toric code is a topological CSS code defined on a 4-torus
+(L × L × L × L with periodic boundary conditions in all four dimensions).
+It is the canonical example of a self-correcting quantum memory in
+four spatial dimensions.
 
-Chain complex structure (proper 5-chain for 4D code):
-    C4 (4-cells) --∂4--> C3 (3-cells) --∂3--> C2 (2-cells) --∂2--> C1 (1-cells) --∂1--> C0 (0-cells)
+Construction
+------------
+The code is built on a regular hypercubic lattice with periodic boundary
+conditions along every axis.  Qubits reside on the **2-cells** (faces)
+of the cellulation.  There are six face orientations—xy, xz, xw, yz,
+yw, zw—each contributing L⁴ faces, for a total of n = 6 L⁴ qubits.
 
-For the standard 4D toric code with qubits on 2-cells (faces):
-    - X stabilizers from ∂3^T (3-cells acting on boundary faces)
-    - Z stabilizers from ∂2 (edges acting on incident faces)
+Chain complex
+-------------
+A proper 4D cellulation requires a **5-chain** (grades 0–4)::
 
-The 4D toric code has remarkable properties:
-    - Self-correcting at finite temperature (in both X and Z sectors)
-    - Both X and Z excitations are loop-like (1D)
-    - Related to the 4D surface code via boundary conditions
+    C₄ (4-cells) ─∂₄─▸ C₃ (3-cells) ─∂₃─▸ C₂ (2-cells)
+                                              ─∂₂─▸ C₁ (1-cells) ─∂₁─▸ C₀ (0-cells)
 
-Note: This implementation uses FiveCSSChainComplex (5-chain) for proper 4D topology.
+With qubits on grade 2:
 
-References:
-    - Dennis et al., "Topological quantum memory" (2002)
-    - Alicki et al., "On thermal stability of topological qubit in Kitaev's 4D model" (2010)
-    - Bombin et al., "Experiments with the 4D surface code" (2024)
+* **X stabilisers** = rows of ∂₃ᵀ   (one per 3-cell / cube)
+* **Z stabilisers** = rows of ∂₂    (one per 1-cell / edge)
+* **X metachecks**  = rows of ∂₄ᵀ   (one per 4-cell / tesseract)
+* **Z metachecks**  = rows of ∂₁    (one per 0-cell / vertex)
+
+Code parameters
+---------------
+For lattice size L:
+
+* n = 6 L⁴  (qubits)
+* k = 6     (logical qubits, corresponding to six independent 2-cycles)
+* d = L     (code distance, minimum-weight non-trivial 2-cycle)
+
+Self-correction
+---------------
+The 4D toric code is the textbook example of a self-correcting quantum
+memory.  Because both X-type and Z-type excitations are **loop-like**
+(1-dimensional), creating a logical error requires nucleating a large
+loop whose energy cost scales with L.  The resulting energy barrier
+protects quantum information at any temperature below a critical
+threshold (Alicki et al., 2010).
+
+Excitation structure
+--------------------
+* **X excitations** live on edges (violated Z stabilisers) and form
+  closed loops in the dual 1-skeleton.
+* **Z excitations** live on cubes (violated X stabilisers) and form
+  closed loops in the 3-skeleton.
+* In both sectors the excitations are 1-dimensional, unlike the 2D
+  toric code where excitations are point-like (0-dimensional).
+
+Logical operators
+-----------------
+Each of the six logical pairs is associated with one face orientation.
+The logical-X operator is a planar sheet of X operators spanning two
+lattice directions at fixed complementary coordinates; the logical-Z
+operator is a complementary sheet of Z operators shifted so that the
+two sheets share exactly one face, guaranteeing anti-commutation.
+
+Single-shot error correction
+----------------------------
+Because the chain complex extends above and below the qubit grade,
+both X and Z syndromes possess metachecks (from ∂₄ᵀ and ∂₁
+respectively).  This enables **single-shot** error correction: a
+single noisy syndrome measurement suffices for reliable decoding
+without temporal repetition (Bombín, 2015).
+
+Connections
+-----------
+* 4D generalisation of the 2D toric code.
+* Self-correcting quantum memory at finite temperature.
+* Both X and Z excitations are loop-like (unlike 2D where they are
+  point-like).
+* Related to the 4D surface code via boundary conditions.
+* Single-shot error correction via redundant stabilisers (metachecks).
+
+Code Parameters
+~~~~~~~~~~~~~~~
+:math:`[[n, k, d]] = [[6L^4, 6, L]]` where:
+
+- :math:`n = 6L^4` physical qubits (faces in xy, xz, xw, yz, yw, zw orientations)
+- :math:`k = 6` logical qubits (six independent 2-cycles on the 4-torus)
+- :math:`d = L` (minimum-weight non-trivial 2-cycle)
+- Rate :math:`k/n = 1/L^4`
+
+Stabiliser Structure
+~~~~~~~~~~~~~~~~~~~~
+- **X-type stabilisers**: weight-6 cube (3-cell) operators; :math:`4L^4`
+  generators corresponding to 3-cells in four orientations.
+- **Z-type stabilisers**: weight-4 edge (1-cell) operators; :math:`4L^4`
+  generators corresponding to edges in four directions.
+- Measurement schedule: fully parallel — all X-stabilisers in one round,
+  all Z-stabilisers in one round.  Meta-checks from :math:`\partial_4^T`
+  and :math:`\partial_1` enable single-shot error correction.
+
+References
+----------
+.. [Dennis2002] Dennis, Kitaev, Landahl & Preskill,
+   "Topological quantum memory",
+   J. Math. Phys. **43**, 4452 (2002).  arXiv:quant-ph/0110143
+.. [Alicki2010] Alicki, Horodecki, Horodecki & Horodecki,
+   "On thermal stability of topological qubit in Kitaev's 4D model",
+   Open Syst. Inf. Dyn. **17**, 1 (2010).  arXiv:0811.0033
+.. [Bombin2015] Bombín, "Single-shot fault-tolerant quantum error
+   correction", Phys. Rev. X **5**, 031043 (2015).  arXiv:1404.5504
+.. [Bombin2024] Bombín et al., "Experiments with the 4D surface code"
+   (2024).
 """
 
 from __future__ import annotations
@@ -31,6 +119,7 @@ from itertools import product
 from qectostim.codes.abstract_css import TopologicalCSSCode4D, Coord2D
 from qectostim.codes.abstract_code import FTGadgetCodeConfig, ScheduleMode
 from qectostim.codes.complexes.css_complex import FiveCSSChainComplex
+from qectostim.codes.utils import validate_css_code
 
 Coord4D = Tuple[float, float, float, float]
 
@@ -59,6 +148,20 @@ class ToricCode4D(TopologicalCSSCode4D):
     """
     
     def __init__(self, L: int = 2, metadata: Optional[Dict[str, Any]] = None):
+        """Initialise the 4D toric code on an L×L×L×L hyper-torus.
+
+        Parameters
+        ----------
+        L : int, default 2
+            Linear lattice size (must be ≥ 2).
+        metadata : dict, optional
+            Additional metadata merged into the code's metadata dict.
+
+        Raises
+        ------
+        ValueError
+            If ``L < 2``.
+        """
         if L < 2:
             raise ValueError("L must be at least 2")
         
@@ -89,6 +192,9 @@ class ToricCode4D(TopologicalCSSCode4D):
         
         logical_x, logical_z = self._build_logicals(L, n_qubits)
         
+        # Validate CSS orthogonality before constructing
+        validate_css_code(hx, hz, f"ToricCode4D_{L}", raise_on_error=True)
+        
         meta: Dict[str, Any] = dict(metadata or {})
         meta.update({
             "name": f"ToricCode4D_{L}",
@@ -98,6 +204,37 @@ class ToricCode4D(TopologicalCSSCode4D):
             "lattice_size": L,
             "dimension": 4,
             "qubits_on": "2-cells",
+            "data_coords": data_coords,
+            "x_stab_coords": x_stab_coords,
+            "z_stab_coords": z_stab_coords,
+            "code_family": "toric",
+            "code_type": "toric_4d",
+            "rate": 6.0 / n_qubits,
+            "lx_pauli_type": "X",
+            "lx_support": [i for i, c in enumerate(logical_x[0]) if c == 'X'],
+            "lz_pauli_type": "Z",
+            "lz_support": [i for i, c in enumerate(logical_z[0]) if c == 'Z'],
+            "stabiliser_schedule": {
+                "x_rounds": {i: 0 for i in range(hx.shape[0])},
+                "z_rounds": {i: 0 for i in range(hz.shape[0])},
+                "n_rounds": 1,
+                "description": "Fully parallel: all X-stabilisers round 0, all Z-stabilisers round 0.",
+            },
+            "x_schedule": None,
+            "z_schedule": None,
+            "error_correction_zoo_url": "https://errorcorrectionzoo.org/c/4d_surface",
+            "wikipedia_url": "https://en.wikipedia.org/wiki/Toric_code",
+            "canonical_references": [
+                "Dennis et al., J. Math. Phys. 43, 4452 (2002). arXiv:quant-ph/0110143",
+                "Alicki et al., Open Syst. Inf. Dyn. 17, 1 (2010). arXiv:0811.0033",
+            ],
+            "connections": [
+                "4D generalisation of the 2D toric code",
+                "Self-correcting quantum memory at finite temperature",
+                "Both X and Z excitations are loop-like (unlike 2D where they are point-like)",
+                "Related to the 4D surface code via boundary conditions",
+                "Single-shot error correction via redundant stabilisers (metachecks)",
+            ],
         })
         
         # Call parent constructor with chain_complex
@@ -111,6 +248,14 @@ class ToricCode4D(TopologicalCSSCode4D):
     @property
     def L(self) -> int:
         return self._L
+    
+    @property
+    def name(self) -> str:
+        return self._metadata.get("name", f"ToricCode4D_{self._L}")
+
+    @property
+    def distance(self) -> int:
+        return self._metadata.get("distance", self._L)
     
     @staticmethod
     def _build_4d_toric_lattice(L: int) -> Tuple:

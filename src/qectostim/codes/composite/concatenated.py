@@ -2,9 +2,9 @@
 """
 Concatenated Codes: Outer ∘ Inner encoding.
 
-This module provides concatenated code constructions where each physical qubit 
-of the outer code is encoded using the inner code. The total number of physical 
-qubits is n_outer * n_inner.
+This module provides concatenated code constructions where each physical qubit
+of the outer code is encoded using the inner code. The total number of physical
+qubits is ``n_outer * n_inner``.
 
 Naming Convention
 -----------------
@@ -12,16 +12,18 @@ The terms "outer" and "inner" follow the mathematical composition notation:
     concatenated = outer ∘ inner
 
 This means:
+
 - **outer**: The code whose logical qubits are protected. Each physical qubit
   of the outer code becomes a logical qubit of the inner code.
-- **inner**: The code that provides the physical layer. Each outer physical 
-  qubit is encoded into n_inner physical qubits.
+- **inner**: The code that provides the physical layer. Each outer physical
+  qubit is encoded into ``n_inner`` physical qubits.
 
 For hierarchical decoding, the perspective is reversed:
+
 - **physical_code** (= inner): The physical-level code, closest to hardware.
-  This has n_inner physical qubits per block.
-- **logical_code** (= outer): The logical-level code, providing the outer 
-  error correction. This has n_outer blocks.
+  This has ``n_inner`` physical qubits per block.
+- **logical_code** (= outer): The logical-level code, providing the outer
+  error correction. This has ``n_outer`` blocks.
 
 Example: Rep(3) ∘ [[4,2,2]]
     - outer = Rep(3): 3 logical qubits, provides majority vote
@@ -29,18 +31,82 @@ Example: Rep(3) ∘ [[4,2,2]]
     - physical_code = [[4,2,2]] (4 qubits per block)
     - logical_code = Rep(3) (3 blocks for error correction)
 
+Code Parameters
+~~~~~~~~~~~~~~~
+For an outer ``[[n_o, k_o, d_o]]`` code and inner ``[[n_i, k_i, d_i]]``:
+
+* **n** = ``n_o * n_i``  (each outer qubit replaced by an inner block)
+* **k** = ``k_o``        (outer logical qubits; inner encodes outer physical)
+* **d** ≥ ``d_o * d_i``  (product distance; exact under independent decoding)
+* **Rate** = ``k_o / (n_o * n_i)``
+
 For CSS codes, the parity check matrices are constructed as:
-- Inner checks: Block-diagonal copies of inner Hx/Hz for each outer qubit
-- Outer checks: Each outer stabilizer lifted through inner logical operators
+
+- Inner checks: Block-diagonal copies of inner ``Hx`` / ``Hz`` for each
+  outer qubit.
+- Outer checks: Each outer stabiliser lifted through inner logical operators.
+
+Stabiliser Structure
+~~~~~~~~~~~~~~~~~~~~
+The concatenated code has two layers of stabilisers:
+
+* **Inner stabilisers**: ``n_o`` block-diagonal copies of the inner code's
+  ``r_x + r_z`` stabiliser generators (weights unchanged from inner code).
+  Total inner checks = ``n_o * (r_x_inner + r_z_inner)``.
+* **Outer stabilisers**: Each outer stabiliser is lifted through the inner
+  logical operators, yielding generators whose weight equals the outer
+  stabiliser weight times the inner logical operator weight.
+  Total outer checks = ``r_x_outer + r_z_outer``.
+* **Measurement schedule**: In hierarchical decoding, inner stabilisers
+  are measured first (one round per inner block), then outer stabilisers
+  are measured via transversal operations between blocks.
+
+Threshold theorem connection
+-----------------------------
+Concatenated codes are central to the **threshold theorem** for fault-tolerant
+quantum computation.  At level-:math:`l` concatenation the effective error
+rate scales as :math:`p_{\text{eff}} \sim (p / p_{\text{th}})^{2^l}`, giving
+doubly-exponential suppression below threshold.
+
+Decoder considerations
+----------------------
+Concatenated codes naturally support **hierarchical (level-by-level)**
+decoding: decode the inner code first, then feed corrected syndromes to
+the outer decoder.  This is simpler than global MWPM but may be sub-optimal.
 
 Classes
 -------
 ConcatenatedCode
     Abstract base for concatenated codes (stores outer/inner reference).
-ConcatenatedCSSCode  
-    Concatenation of two CSS codes with proper stabilizer lifting.
+ConcatenatedCSSCode
+    Concatenation of two CSS codes with proper stabiliser lifting.
 ConcatenatedTopologicalCSSCode
     Adds geometric layout for topological codes.
+
+References
+----------
+* Knill & Laflamme, "Concatenated quantum codes", arXiv:quant-ph/9608012.
+* Aharonov & Ben-Or, "Fault-tolerant quantum computation with constant
+  error rate", SIAM J. Comput. **38**, 1207 (2008). arXiv:quant-ph/9906129.
+* Error Correction Zoo: https://errorcorrectionzoo.org/c/quantum_concatenated
+
+Error budget
+------------
+At concatenation level *l* with physical error rate *p* and
+pseudo-threshold *p_th*:
+
+* Effective logical error rate: p_eff ≈ p_th · (p / p_th)^{2^l}.
+* Below threshold, each additional level squares the relative error.
+* The qubit overhead grows as n_inner^l, so moderate inner codes
+  (n_inner ≤ 10) are preferred to control resource costs.
+
+Worked example
+--------------
+Steane [[7,1,3]] concatenated 2 levels:
+  * Level 0: 7 physical qubits, d = 3.
+  * Level 1: 7 × 7 = 49 physical qubits, d = 9.
+  * Level 2: 7³ = 343 physical qubits, d = 27.
+With p = 10⁻³ and p_th ≈ 10⁻², p_eff(level 2) ≈ 10⁻²·(0.1)^4 ≈ 10⁻⁶.
 """
 from __future__ import annotations
 
@@ -56,6 +122,7 @@ from qectostim.codes.utils import (
     symplectic_to_pauli,
     kron_gf2,
     str_to_pauli,
+    validate_css_code,
 )
 
 
@@ -351,6 +418,28 @@ class ConcatenatedCSSCode(CSSCode, ConcatenatedCode):
         depth: int = 1,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
+        """Construct a concatenated CSS code (outer ∘ inner).
+
+        Parameters
+        ----------
+        outer : CSSCode
+            The outer (logical-level) CSS code.
+        inner : CSSCode
+            The inner (physical-level) CSS code; must have ``k ≥ 1``.
+        depth : int, optional
+            Concatenation depth (default 1).  Depth *d* applies the
+            inner code recursively *d* times.
+        metadata : dict, optional
+            Extra key/value pairs merged into the code's metadata dict.
+
+        Raises
+        ------
+        ValueError
+            If the inner code has ``k = 0`` (no logical qubits).
+        ValueError
+            If the concatenated check matrices violate the CSS
+            constraint ``Hx · Hz^T ≠ 0 (mod 2)``.
+        """
         # First remember outer/inner and sizes.
         ConcatenatedCode.__init__(self, outer, inner, depth)
         
@@ -479,6 +568,55 @@ class ConcatenatedCSSCode(CSSCode, ConcatenatedCode):
         meta["inner_k"] = inner.k  # Number of logical qubits in inner code
         meta["outer_k"] = outer.k  # Number of logical qubits in outer code
 
+        # ── 17 standard metadata keys ──────────────────────────────────────
+        meta["code_family"] = "concatenated"
+        meta["code_type"] = "concatenated_css"
+        # n, k are set by CSSCode.__init__ from Hx/Hz dimensions
+        meta["n"] = n_concat
+        meta["k"] = outer.k  # outer code's logical qubits pass through
+        meta["distance"] = None  # concatenated distance depends on inner/outer
+        meta["rate"] = outer.k / n_concat if n_concat > 0 else 0.0
+
+        # Logical operator info (first pair)
+        if logical_x:
+            lx0_support = sorted(logical_x[0].keys())
+            meta["lx_pauli_type"] = "X"
+            meta["lx_support"] = lx0_support
+        else:
+            meta["lx_pauli_type"] = None
+            meta["lx_support"] = []
+        if logical_z:
+            lz0_support = sorted(logical_z[0].keys())
+            meta["lz_pauli_type"] = "Z"
+            meta["lz_support"] = lz0_support
+        else:
+            meta["lz_pauli_type"] = None
+            meta["lz_support"] = []
+
+        meta["stabiliser_schedule"] = {
+            "inner_x": "block-diagonal Hx_inner on each outer qubit",
+            "inner_z": "block-diagonal Hz_inner on each outer qubit",
+            "outer_x": "outer Hx lifted through inner logical X",
+            "outer_z": "outer Hz lifted through inner logical Z",
+        }
+        meta["x_schedule"] = None  # measured via hierarchical scheme
+        meta["z_schedule"] = None
+
+        meta["error_correction_zoo_url"] = "https://errorcorrectionzoo.org/c/quantum_concatenated"
+        meta["wikipedia_url"] = "https://en.wikipedia.org/wiki/Concatenated_quantum_code"
+        meta["canonical_references"] = [
+            "Knill & Laflamme, 'Concatenated quantum codes' (1996)",
+            "Aharonov & Ben-Or, 'Fault-tolerant quantum computation with constant error rate' (1999)",
+        ]
+        meta["connections"] = [
+            "Each outer physical qubit is encoded using the inner code",
+            "Achieves threshold theorem via recursive concatenation",
+            f"Outer: {outer.name}, Inner: {inner.name}",
+        ]
+
+        # Validate CSS constraint before calling super().__init__
+        validate_css_code(hx, hz, code_name=f"Concatenated({outer.name},{inner.name})", raise_on_error=True)
+
         # Let CSSCode set up n, k, stabilizers, etc.
         CSSCode.__init__(
             self,
@@ -582,6 +720,37 @@ class ConcatenatedCSSCode(CSSCode, ConcatenatedCode):
     def name(self) -> str:
         # Use the name defined in ConcatenatedCode
         return ConcatenatedCode.name.fget(self)  # type: ignore
+
+    @property
+    def distance(self) -> int:
+        """Code distance (product of outer and inner distances)."""
+        d = self._metadata.get("distance")
+        if d is not None:
+            return d
+        d_out = getattr(self.outer, 'distance', 1)
+        d_in = getattr(self.inner, 'distance', 1)
+        return d_out * d_in
+
+    def qubit_coords(self) -> List:
+        """Return qubit coordinates for the concatenated code.
+
+        Each outer qubit position is expanded into a block of inner
+        qubit positions, scaled and offset to avoid overlap.
+        """
+        if hasattr(self.inner, 'qubit_coords') and hasattr(self.outer, 'qubit_coords'):
+            try:
+                inner_coords = self.inner.qubit_coords()
+                outer_coords = self.outer.qubit_coords()
+                if inner_coords and outer_coords:
+                    scale = _compute_optimal_scale(outer_coords, inner_coords)
+                    coords = []
+                    for ox, oy in outer_coords:
+                        for ix, iy in inner_coords:
+                            coords.append((ox * scale + ix, oy * scale + iy))
+                    return coords
+            except Exception:
+                pass
+        return list(range(self.n))
     
     @property
     def effective_inner(self) -> CSSCode:

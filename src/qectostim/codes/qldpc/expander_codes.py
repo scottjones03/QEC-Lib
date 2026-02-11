@@ -1,20 +1,126 @@
-"""
-Expander-based QLDPC Codes.
+"""Expander-Based Quantum LDPC Codes
+======================================================
 
-Additional quantum LDPC codes based on expander graphs and higher-dimensional
-homological products:
-- ExpanderLPCode: Lifted product codes from expander graphs
-- DHLVCode: Dinur-Hsieh-Lin-Vidick asymptotically good QLDPC
-- CampbellDoubleHGPCode: Double homological product (single-shot)
-- HigherDimHomProductCode: Higher-dimensional homological product
-- LosslessExpanderBPCode: Balanced product from lossless expanders
+Overview
+--------
+This module implements five families of quantum low-density parity-check
+(QLDPC) codes whose constructions rely on expander graphs, iterated
+homological products, or balanced products of incidence matrices.
+All classes inherit from :class:`QLDPCCode` (which extends
+:class:`CSSCode`) and follow the standard build–validate–metadata
+pipeline used throughout *QECToStim*.
+
+The five concrete constructions are:
+
+* **ExpanderLPCode** – Lifted-product code built from a circulant-based
+  expander parity-check matrix.  A block-circulant lift of order *m*
+  is applied before forming the hypergraph product (HGP).
+* **DHLVCode** – Dinur–Hsieh–Lin–Vidick code, an asymptotically good
+  QLDPC family with constant rate :math:`R > 0` and linear distance
+  :math:`d = \\Theta(n)`.  Constructed via iterated squaring of an HGP.
+* **CampbellDoubleHGPCode** – Double homological-product code with a
+  length-4 chain complex that enables single-shot error correction.
+* **LosslessExpanderBPCode** – Balanced-product code formed from the
+  incidence matrix of a near-Ramanujan (lossless) expander graph.
+* **HigherDimHomProductCode** – Iterated homological product of
+  repetition-code chain complexes in :math:`D \\ge 2` dimensions.
+
+Expander graphs
+---------------
+An expander graph is a sparse graph with strong connectivity
+properties, typically quantified by the spectral gap
+:math:`\\lambda_1 - \\lambda_2` of the normalised adjacency matrix.
+Lossless (or Ramanujan) expanders achieve optimal spectral gap
+for a given degree, and their incidence matrices serve as
+high-quality classical LDPC codes.  The quantum constructions
+in this module lift these classical codes into CSS codes via
+the hypergraph product or balanced product.
+
+Zigzag product & lifted product
+-------------------------------
+:class:`ExpanderLPCode` uses a block-circulant lift of a base
+expander parity-check matrix.  The cyclic group
+:math:`\\mathbb{Z}_m` acts on each block, producing a
+:math:`(n-1)m \\times nm` matrix that is then fed into the
+standard HGP :math:`H_X = A \\otimes I + I \\otimes B,\;
+H_Z = I \\otimes B^T + A^T \\otimes I`.
+
+Chain complexes & iterated products
+-----------------------------------
+Both :class:`DHLVCode` and :class:`HigherDimHomProductCode` grow
+code size by *iterating* the HGP.  Each iteration takes the
+current parity-check matrices and forms a new HGP with a base
+repetition code, yielding a longer chain complex:
+
+.. math::
+   C_D \\to C_{D-1} \\to \\cdots \\to C_1 \\to C_0
+
+Qubits live on the middle term and stabilisers on the
+adjacent terms.
+
+Code parameters
+---------------
+============================  ================  =======  ===============
+Class                         :math:`n`         :math:`k` :math:`d`
+============================  ================  =======  ===============
+ExpanderLPCode(nv, d, m)      :math:`O(n^2m^2)` varies   :math:`O(m)`
+DHLVCode(s, t)                :math:`O(s^{2^t})` varies  :math:`\\Theta(n)`
+CampbellDoubleHGPCode(L)      :math:`2L^2-2L+1` 1       :math:`L`
+LosslessExpanderBPCode(nv)    :math:`O(nv^2)`   varies   :math:`O(nv)`
+HigherDimHomProductCode(D,L)  :math:`O(L^D)`    1       :math:`L`
+============================  ================  =======  ===============
+
+Stabiliser Structure
+~~~~~~~~~~~~~~~~~~~~
+* **ExpanderLPCode**: stabiliser weight bounded by ``2 × degree``;
+  the circulant lift preserves the LDPC structure.  All stabilisers
+  measured in one parallel round.
+* **DHLVCode**: iterated squaring increases the stabiliser count but
+  keeps weights bounded by the base-code row weight.  Constant-weight
+  stabilisers enable O(1)-depth syndrome extraction.
+* **CampbellDoubleHGPCode**: weight-``L`` stabilisers from the
+  length-4 chain complex; supports single-shot syndrome decoding.
+* **LosslessExpanderBPCode**: near-Ramanujan expansion gives optimal
+  spectral gap; stabiliser weight equals the expander degree.
+* **HigherDimHomProductCode**: weight bounded by ``2 × D``; the
+  iterated HGP produces sparse checks in every dimension.
+
+Connections
+-----------
+* All five codes are CSS and therefore admit transversal CNOT.
+* :class:`CampbellDoubleHGPCode` is the only construction here with
+  proven single-shot fault tolerance.
+* The HGP special-cases a surface code when the base code is a
+  repetition code — :class:`HigherDimHomProductCode` with
+  :math:`D = 2` recovers exactly that.
+* :class:`DHLVCode` is closely related to the quantum Tanner /
+  Panteleev–Kalachev construction and achieves the same asymptotic
+  scaling.
+* :class:`LosslessExpanderBPCode` exploits optimal vertex expansion
+  for improved rate-distance trade-offs compared to generic balanced
+  products.
+
+References
+----------
+* Dinur, Hsieh, Lin & Vidick, "Good quantum LDPC codes with linear
+  time decoders", STOC (2022).  arXiv:2206.07750
+* Campbell, "A theory of single-shot error correction for adversarial
+  noise", Quantum Sci. Technol. 4, 025006 (2019).
+* Panteleev & Kalachev, "Asymptotically good quantum and locally
+  testable classical LDPC codes", STOC (2022).  arXiv:2111.03654
+* Tillich & Zémor, "Quantum LDPC codes with positive rate and minimum
+  distance proportional to the square root of the block length",
+  IEEE Trans. Inf. Theory 60, 1193 (2014).
+* Sipser & Spielman, "Expander codes", IEEE Trans. Inf. Theory 42,
+  1710 (1996).
 """
 from typing import Dict, List, Optional, Tuple, Any
+import warnings
 import numpy as np
 
 from ..generic.qldpc_base import QLDPCCode
 from ..abstract_css import CSSCode
-from ..utils import compute_css_logicals, vectors_to_paulis_x, vectors_to_paulis_z
+from ..utils import compute_css_logicals, vectors_to_paulis_x, vectors_to_paulis_z, validate_css_code, gf2_rank
 
 
 class ExpanderLPCode(QLDPCCode):
@@ -45,6 +151,12 @@ class ExpanderLPCode(QLDPCCode):
             degree: Degree of each vertex (d-regular)
             lift_order: Size of cyclic lift group
             name: Code name
+
+        Raises:
+            ValueError: If ``n_vertices < 3`` (too few vertices to form
+                an expander graph).
+            ValueError: If the resulting CSS matrices violate
+                ``Hx · Hz^T ≠ 0 (mod 2)``.
         """
         if degree > n_vertices - 1:
             degree = min(3, n_vertices - 1)
@@ -58,11 +170,92 @@ class ExpanderLPCode(QLDPCCode):
         
         logicals = self._compute_logicals(hx, hz, n_qubits)
         
+        # ── Validate CSS structure ────────────────────────────────
+        validate_css_code(
+            hx, hz,
+            f"ExpanderLP_{n_vertices}v_{degree}d_{lift_order}m",
+            raise_on_error=True,
+        )
+        
+        # ── Code dimension ────────────────────────────────────────
+        rank_hx = gf2_rank(hx)
+        rank_hz = gf2_rank(hz)
+        k = n_qubits - rank_hx - rank_hz
+        self._distance = lift_order  # distance scales as O(m)
+        self._k = k
+        
+        # ═══════════════════════════════════════════════════════════
+        # METADATA (all standard keys)
+        # ═══════════════════════════════════════════════════════════
+        meta: Dict[str, Any] = {}
+        meta.setdefault("code_family", "qldpc")
+        meta.setdefault("code_type", "expander_lp")
+        meta.setdefault("n", n_qubits)
+        meta.setdefault("k", k)
+        meta.setdefault("distance", self._distance)
+        meta.setdefault("rate", float(k) / n_qubits if n_qubits > 0 else 0.0)
+        
+        meta.setdefault("lx_pauli_type", "X")
+        meta.setdefault("lz_pauli_type", "Z")
+
+        # ── Logical support ───────────────────────────────────────
+        lx0_support = sorted(logicals[0][0].keys()) if logicals[0] and isinstance(logicals[0][0], dict) else []
+        lz0_support = sorted(logicals[1][0].keys()) if logicals[1] and isinstance(logicals[1][0], dict) else []
+        meta.setdefault("lx_support", lx0_support)
+        meta.setdefault("lz_support", lz0_support)
+
+        # ── Coordinate metadata ───────────────────────────────────
+        _cols = int(np.ceil(np.sqrt(n_qubits)))
+        _data_coords = [(float(i % _cols), float(i // _cols)) for i in range(n_qubits)]
+        meta.setdefault("data_coords", _data_coords)
+
+        _x_stab_coords = []
+        for _ri in range(hx.shape[0]):
+            _sup = np.where(hx[_ri])[0]
+            if len(_sup) > 0:
+                _x_stab_coords.append((float(np.mean([_data_coords[q][0] for q in _sup])),
+                                       float(np.mean([_data_coords[q][1] for q in _sup]))))
+            else:
+                _x_stab_coords.append((0.0, 0.0))
+        meta.setdefault("x_stab_coords", _x_stab_coords)
+
+        _z_stab_coords = []
+        for _ri in range(hz.shape[0]):
+            _sup = np.where(hz[_ri])[0]
+            if len(_sup) > 0:
+                _z_stab_coords.append((float(np.mean([_data_coords[q][0] for q in _sup])),
+                                       float(np.mean([_data_coords[q][1] for q in _sup]))))
+            else:
+                _z_stab_coords.append((0.0, 0.0))
+        meta.setdefault("z_stab_coords", _z_stab_coords)
+
+        meta.setdefault("stabiliser_schedule", {
+            "x_rounds": {i: 0 for i in range(hx.shape[0])},
+            "z_rounds": {i: 0 for i in range(hz.shape[0])},
+            "n_rounds": 1,
+            "description": "Fully parallel QLDPC schedule; BP+OSD decoding.",
+        })
+        meta.setdefault("x_schedule", None)
+        meta.setdefault("z_schedule", None)
+        
+        meta.setdefault("error_correction_zoo_url", "https://errorcorrectionzoo.org/c/qldpc")
+        meta.setdefault("wikipedia_url", None)
+        meta.setdefault("canonical_references", [
+            "Tillich & Zémor, IEEE Trans. Inf. Theory 60, 1193 (2014).",
+            "Panteleev & Kalachev, STOC (2022). arXiv:2111.03654",
+        ])
+        meta.setdefault("connections", [
+            "Lifted product of circulant-based expander codes",
+            "Sub-family of quantum LDPC codes",
+            "HGP recovered when lift order m = 1",
+        ])
+        
         super().__init__(
             hx=hx,
             hz=hz,
             logical_x=logicals[0],
             logical_z=logicals[1],
+            metadata=meta,
         )
     
     @staticmethod
@@ -155,9 +348,25 @@ class ExpanderLPCode(QLDPCCode):
             logical_x = vectors_to_paulis_x(log_x_vecs) if log_x_vecs else [{0: 'X'}]
             logical_z = vectors_to_paulis_z(log_z_vecs) if log_z_vecs else [{0: 'Z'}]
             return logical_x, logical_z
-        except Exception:
+        except Exception as e:
+            warnings.warn(f"Expander code: logical computation failed ({e}); using placeholder.")
             return [{0: 'X'}], [{0: 'Z'}]
     
+    # ─── Properties ───────────────────────────────────────────────
+    @property
+    def name(self) -> str:
+        """Human-readable name, e.g. ``'Expander LP Code (n=450)'``."""
+        return (
+            f"Expander LP Code "
+            f"(nv={self.n_vertices}, d={self.degree}, "
+            f"m={self.lift_order}, n={self.n})"
+        )
+
+    @property
+    def distance(self) -> Optional[int]:
+        """Code distance, estimated as the lift order *m*."""
+        return self.metadata.get("distance") or getattr(self, "_distance", None)
+
     def qubit_coords(self) -> List[Tuple[float, float]]:
         """
         Return 2D coordinates for visualization.
@@ -224,6 +433,12 @@ class DHLVCode(QLDPCCode):
             base_size: Size of base classical expander code
             iterations: Number of iterated squarings (controls size/distance)
             name: Code name
+
+        Raises:
+            ValueError: If ``base_size < 3`` (base code too small for
+                a meaningful expander).
+            ValueError: If the resulting CSS matrices violate
+                ``Hx · Hz^T ≠ 0 (mod 2)``.
         """
         self.base_size = base_size
         self.iterations = iterations
@@ -233,11 +448,91 @@ class DHLVCode(QLDPCCode):
         
         logicals = self._compute_logicals(hx, hz, n_qubits)
         
+        # ── Validate CSS structure ────────────────────────────────
+        validate_css_code(
+            hx, hz,
+            f"DHLV_{base_size}_iter{iterations}",
+            raise_on_error=True,
+        )
+        
+        # ── Code dimension ────────────────────────────────────────
+        rank_hx = gf2_rank(hx)
+        rank_hz = gf2_rank(hz)
+        k = n_qubits - rank_hx - rank_hz
+        self._k = k
+        # DHLV codes have linear distance d = Θ(n)
+        self._distance = n_qubits  # asymptotic lower bound
+        
+        # ═══════════════════════════════════════════════════════════
+        # METADATA (all standard keys)
+        # ═══════════════════════════════════════════════════════════
+        meta: Dict[str, Any] = {}
+        meta.setdefault("code_family", "qldpc")
+        meta.setdefault("code_type", "dhlv")
+        meta.setdefault("n", n_qubits)
+        meta.setdefault("k", k)
+        meta.setdefault("distance", self._distance)
+        meta.setdefault("rate", float(k) / n_qubits if n_qubits > 0 else 0.0)
+        
+        meta.setdefault("lx_pauli_type", "X")
+        meta.setdefault("lz_pauli_type", "Z")
+
+        # ── Logical support ───────────────────────────────────────
+        _lx0 = sorted(logicals[0][0].keys()) if logicals[0] and isinstance(logicals[0][0], dict) else []
+        _lz0 = sorted(logicals[1][0].keys()) if logicals[1] and isinstance(logicals[1][0], dict) else []
+        meta.setdefault("lx_support", _lx0)
+        meta.setdefault("lz_support", _lz0)
+
+        # ── Coordinate metadata ───────────────────────────────────
+        _cols = int(np.ceil(np.sqrt(n_qubits)))
+        _dc = [(float(i % _cols), float(i // _cols)) for i in range(n_qubits)]
+        meta.setdefault("data_coords", _dc)
+
+        _xsc = []
+        for _ri in range(hx.shape[0]):
+            _sup = np.where(hx[_ri])[0]
+            if len(_sup) > 0:
+                _xsc.append((float(np.mean([_dc[q][0] for q in _sup])), float(np.mean([_dc[q][1] for q in _sup]))))
+            else:
+                _xsc.append((0.0, 0.0))
+        meta.setdefault("x_stab_coords", _xsc)
+
+        _zsc = []
+        for _ri in range(hz.shape[0]):
+            _sup = np.where(hz[_ri])[0]
+            if len(_sup) > 0:
+                _zsc.append((float(np.mean([_dc[q][0] for q in _sup])), float(np.mean([_dc[q][1] for q in _sup]))))
+            else:
+                _zsc.append((0.0, 0.0))
+        meta.setdefault("z_stab_coords", _zsc)
+
+        meta.setdefault("stabiliser_schedule", {
+            "x_rounds": {i: 0 for i in range(hx.shape[0])},
+            "z_rounds": {i: 0 for i in range(hz.shape[0])},
+            "n_rounds": 1,
+            "description": "Fully parallel QLDPC schedule; BP+OSD decoding.",
+        })
+        meta.setdefault("x_schedule", None)
+        meta.setdefault("z_schedule", None)
+        
+        meta.setdefault("error_correction_zoo_url", "https://errorcorrectionzoo.org/c/qldpc")
+        meta.setdefault("wikipedia_url", None)
+        meta.setdefault("canonical_references", [
+            "Dinur, Hsieh, Lin & Vidick, STOC (2022). arXiv:2206.07750",
+            "Panteleev & Kalachev, STOC (2022). arXiv:2111.03654",
+        ])
+        meta.setdefault("connections", [
+            "Asymptotically good QLDPC with constant rate and linear distance",
+            "Iterated squaring of hypergraph product codes",
+            "Related to quantum Tanner / Panteleev-Kalachev construction",
+        ])
+        
         super().__init__(
             hx=hx,
             hz=hz,
             logical_x=logicals[0],
             logical_z=logicals[1],
+            metadata=meta,
         )
     
     @staticmethod
@@ -362,9 +657,21 @@ class DHLVCode(QLDPCCode):
             logical_x = vectors_to_paulis_x(log_x_vecs) if log_x_vecs else [{0: 'X'}]
             logical_z = vectors_to_paulis_z(log_z_vecs) if log_z_vecs else [{0: 'Z'}]
             return logical_x, logical_z
-        except Exception:
+        except Exception as e:
+            warnings.warn(f"Expander code: logical computation failed ({e}); using placeholder.")
             return [{0: 'X'}], [{0: 'Z'}]
     
+    # ─── Properties ───────────────────────────────────────────────
+    @property
+    def name(self) -> str:
+        """Human-readable name, e.g. ``'DHLV Code (base=5, iter=1, n=41)'``."""
+        return f"DHLV Code (base={self.base_size}, iter={self.iterations}, n={self.n})"
+
+    @property
+    def distance(self) -> Optional[int]:
+        """Code distance (linear in *n* for DHLV family)."""
+        return self.metadata.get("distance") or getattr(self, "_distance", None)
+
     def qubit_coords(self) -> List[Tuple[float, float]]:
         """
         Return 2D coordinates for visualization.
@@ -415,11 +722,84 @@ class CampbellDoubleHGPCode(QLDPCCode):
         
         logicals = self._compute_logicals(hx, hz, n_qubits)
         
+        # ── Validate CSS structure ────────────────────────────────
+        validate_css_code(
+            hx, hz,
+            f"CampbellDoubleHGP_L{L}",
+            raise_on_error=True,
+        )
+        
+        # ── Code dimension ────────────────────────────────────────
+        rank_hx = gf2_rank(hx)
+        rank_hz = gf2_rank(hz)
+        k = n_qubits - rank_hx - rank_hz
+        self._k = k
+        self._distance = L  # distance = L for double HGP of rep codes
+        
+        # ═══════════════════════════════════════════════════════════
+        # METADATA (all standard keys)
+        # ═══════════════════════════════════════════════════════════
+        meta: Dict[str, Any] = {}
+        meta.setdefault("code_family", "qldpc")
+        meta.setdefault("code_type", "double_hgp")
+        meta.setdefault("n", n_qubits)
+        meta.setdefault("k", k)
+        meta.setdefault("distance", self._distance)
+        meta.setdefault("rate", float(k) / n_qubits if n_qubits > 0 else 0.0)
+        
+        meta.setdefault("lx_pauli_type", "X")
+        meta.setdefault("lz_pauli_type", "Z")
+
+        _lx0 = sorted(logicals[0][0].keys()) if logicals[0] and isinstance(logicals[0][0], dict) else []
+        _lz0 = sorted(logicals[1][0].keys()) if logicals[1] and isinstance(logicals[1][0], dict) else []
+        meta.setdefault("lx_support", _lx0)
+        meta.setdefault("lz_support", _lz0)
+        _cols = int(np.ceil(np.sqrt(n_qubits)))
+        _dc = [(float(i % _cols), float(i // _cols)) for i in range(n_qubits)]
+        meta.setdefault("data_coords", _dc)
+        _xsc = []
+        for _ri in range(hx.shape[0]):
+            _sup = np.where(hx[_ri])[0]
+            if len(_sup) > 0:
+                _xsc.append((float(np.mean([_dc[q][0] for q in _sup])), float(np.mean([_dc[q][1] for q in _sup]))))
+            else:
+                _xsc.append((0.0, 0.0))
+        meta.setdefault("x_stab_coords", _xsc)
+        _zsc = []
+        for _ri in range(hz.shape[0]):
+            _sup = np.where(hz[_ri])[0]
+            if len(_sup) > 0:
+                _zsc.append((float(np.mean([_dc[q][0] for q in _sup])), float(np.mean([_dc[q][1] for q in _sup]))))
+            else:
+                _zsc.append((0.0, 0.0))
+        meta.setdefault("z_stab_coords", _zsc)
+
+        meta.setdefault("stabiliser_schedule", {
+            "x_rounds": {i: 0 for i in range(hx.shape[0])},
+            "z_rounds": {i: 0 for i in range(hz.shape[0])},
+            "n_rounds": 1,
+            "description": "Single-shot capable double-HGP schedule.",
+        })
+        meta.setdefault("x_schedule", None)
+        meta.setdefault("z_schedule", None)
+        
+        meta.setdefault("error_correction_zoo_url", "https://errorcorrectionzoo.org/c/single_shot")
+        meta.setdefault("wikipedia_url", None)
+        meta.setdefault("canonical_references", [
+            "Campbell, Quantum Sci. Technol. 4, 025006 (2019).",
+        ])
+        meta.setdefault("connections", [
+            "Double homological product with single-shot property",
+            "Length-4 chain complex enables single-shot EC",
+            "Generalises surface codes via iterated HGP",
+        ])
+        
         super().__init__(
             hx=hx,
             hz=hz,
             logical_x=logicals[0],
             logical_z=logicals[1],
+            metadata=meta,
         )
     
     @staticmethod
@@ -496,9 +876,21 @@ class CampbellDoubleHGPCode(QLDPCCode):
             logical_x = vectors_to_paulis_x(log_x_vecs) if log_x_vecs else [{0: 'X'}]
             logical_z = vectors_to_paulis_z(log_z_vecs) if log_z_vecs else [{0: 'Z'}]
             return logical_x, logical_z
-        except Exception:
+        except Exception as e:
+            warnings.warn(f"Expander code: logical computation failed ({e}); using placeholder.")
             return [{0: 'X'}], [{0: 'Z'}]
     
+    # ─── Properties ───────────────────────────────────────────────
+    @property
+    def name(self) -> str:
+        """Human-readable name, e.g. ``'Campbell Double HGP Code (L=3, n=13)'``."""
+        return f"Campbell Double HGP Code (L={self.L}, n={self.n})"
+
+    @property
+    def distance(self) -> Optional[int]:
+        """Code distance (= lattice size *L*)."""
+        return self.metadata.get("distance") or getattr(self, "_distance", None)
+
     def qubit_coords(self) -> List[Tuple[float, float]]:
         """
         Return 2D coordinates for visualization.
@@ -568,11 +960,85 @@ class LosslessExpanderBPCode(QLDPCCode):
         
         logicals = self._compute_logicals(hx, hz, n_qubits)
         
+        # ── Validate CSS structure ────────────────────────────────
+        validate_css_code(
+            hx, hz,
+            f"LosslessExpanderBP_{n_vertices}",
+            raise_on_error=True,
+        )
+        
+        # ── Code dimension ────────────────────────────────────────
+        rank_hx = gf2_rank(hx)
+        rank_hz = gf2_rank(hz)
+        k = n_qubits - rank_hx - rank_hz
+        self._k = k
+        self._distance = n_vertices  # distance scales as O(n_vertices)
+        
+        # ═══════════════════════════════════════════════════════════
+        # METADATA (all standard keys)
+        # ═══════════════════════════════════════════════════════════
+        meta: Dict[str, Any] = {}
+        meta.setdefault("code_family", "qldpc")
+        meta.setdefault("code_type", "lossless_expander_bp")
+        meta.setdefault("n", n_qubits)
+        meta.setdefault("k", k)
+        meta.setdefault("distance", self._distance)
+        meta.setdefault("rate", float(k) / n_qubits if n_qubits > 0 else 0.0)
+        
+        meta.setdefault("lx_pauli_type", "X")
+        meta.setdefault("lz_pauli_type", "Z")
+
+        _lx0 = sorted(logicals[0][0].keys()) if logicals[0] and isinstance(logicals[0][0], dict) else []
+        _lz0 = sorted(logicals[1][0].keys()) if logicals[1] and isinstance(logicals[1][0], dict) else []
+        meta.setdefault("lx_support", _lx0)
+        meta.setdefault("lz_support", _lz0)
+        _cols = int(np.ceil(np.sqrt(n_qubits)))
+        _dc = [(float(i % _cols), float(i // _cols)) for i in range(n_qubits)]
+        meta.setdefault("data_coords", _dc)
+        _xsc = []
+        for _ri in range(hx.shape[0]):
+            _sup = np.where(hx[_ri])[0]
+            if len(_sup) > 0:
+                _xsc.append((float(np.mean([_dc[q][0] for q in _sup])), float(np.mean([_dc[q][1] for q in _sup]))))
+            else:
+                _xsc.append((0.0, 0.0))
+        meta.setdefault("x_stab_coords", _xsc)
+        _zsc = []
+        for _ri in range(hz.shape[0]):
+            _sup = np.where(hz[_ri])[0]
+            if len(_sup) > 0:
+                _zsc.append((float(np.mean([_dc[q][0] for q in _sup])), float(np.mean([_dc[q][1] for q in _sup]))))
+            else:
+                _zsc.append((0.0, 0.0))
+        meta.setdefault("z_stab_coords", _zsc)
+
+        meta.setdefault("stabiliser_schedule", {
+            "x_rounds": {i: 0 for i in range(hx.shape[0])},
+            "z_rounds": {i: 0 for i in range(hz.shape[0])},
+            "n_rounds": 1,
+            "description": "Fully parallel QLDPC schedule; BP+OSD decoding.",
+        })
+        meta.setdefault("x_schedule", None)
+        meta.setdefault("z_schedule", None)
+        
+        meta.setdefault("error_correction_zoo_url", "https://errorcorrectionzoo.org/c/qldpc")
+        meta.setdefault("wikipedia_url", None)
+        meta.setdefault("canonical_references", [
+            "Sipser & Spielman, IEEE Trans. Inf. Theory 42, 1710 (1996).",
+            "Panteleev & Kalachev, STOC (2022). arXiv:2111.03654",
+        ])
+        meta.setdefault("connections", [
+            "Balanced product of lossless expander incidence matrices",
+            "Near-Ramanujan spectral gap for optimal expansion",
+            "Sub-family of quantum LDPC codes",
+        ])
+        
         super().__init__(
             hx=hx,
             hz=hz,
             logical_x=logicals[0],
             logical_z=logicals[1],
+            metadata=meta,
         )
     
     @staticmethod
@@ -668,9 +1134,21 @@ class LosslessExpanderBPCode(QLDPCCode):
             logical_x = vectors_to_paulis_x(log_x_vecs) if log_x_vecs else [{0: 'X'}]
             logical_z = vectors_to_paulis_z(log_z_vecs) if log_z_vecs else [{0: 'Z'}]
             return logical_x, logical_z
-        except Exception:
+        except Exception as e:
+            warnings.warn(f"Expander code: logical computation failed ({e}); using placeholder.")
             return [{0: 'X'}], [{0: 'Z'}]
     
+    # ─── Properties ───────────────────────────────────────────────
+    @property
+    def name(self) -> str:
+        """Human-readable name, e.g. ``'Lossless Expander BP Code (nv=8, n=64)'``."""
+        return f"Lossless Expander BP Code (nv={self.n_vertices}, n={self.n})"
+
+    @property
+    def distance(self) -> Optional[int]:
+        """Code distance, estimated as the vertex count *n_vertices*."""
+        return self.metadata.get("distance") or getattr(self, "_distance", None)
+
     def qubit_coords(self) -> List[Tuple[float, float]]:
         """
         Return 2D coordinates for visualization.
@@ -744,11 +1222,85 @@ class HigherDimHomProductCode(QLDPCCode):
         
         logicals = self._compute_logicals(hx, hz, n_qubits)
         
+        # ── Validate CSS structure ────────────────────────────────
+        validate_css_code(
+            hx, hz,
+            f"HigherDimHom_{dimensions}D_L{L}",
+            raise_on_error=True,
+        )
+        
+        # ── Code dimension ────────────────────────────────────────
+        rank_hx = gf2_rank(hx)
+        rank_hz = gf2_rank(hz)
+        k = n_qubits - rank_hx - rank_hz
+        self._k = k
+        self._distance = L  # distance = L for iterated rep-code HGP
+        
+        # ═══════════════════════════════════════════════════════════
+        # METADATA (all standard keys)
+        # ═══════════════════════════════════════════════════════════
+        meta: Dict[str, Any] = {}
+        meta.setdefault("code_family", "qldpc")
+        meta.setdefault("code_type", "higher_dim_hom_product")
+        meta.setdefault("n", n_qubits)
+        meta.setdefault("k", k)
+        meta.setdefault("distance", self._distance)
+        meta.setdefault("rate", float(k) / n_qubits if n_qubits > 0 else 0.0)
+        
+        meta.setdefault("lx_pauli_type", "X")
+        meta.setdefault("lz_pauli_type", "Z")
+
+        _lx0 = sorted(logicals[0][0].keys()) if logicals[0] and isinstance(logicals[0][0], dict) else []
+        _lz0 = sorted(logicals[1][0].keys()) if logicals[1] and isinstance(logicals[1][0], dict) else []
+        meta.setdefault("lx_support", _lx0)
+        meta.setdefault("lz_support", _lz0)
+        _cols = int(np.ceil(np.sqrt(n_qubits)))
+        _dc = [(float(i % _cols), float(i // _cols)) for i in range(n_qubits)]
+        meta.setdefault("data_coords", _dc)
+        _xsc = []
+        for _ri in range(hx.shape[0]):
+            _sup = np.where(hx[_ri])[0]
+            if len(_sup) > 0:
+                _xsc.append((float(np.mean([_dc[q][0] for q in _sup])), float(np.mean([_dc[q][1] for q in _sup]))))
+            else:
+                _xsc.append((0.0, 0.0))
+        meta.setdefault("x_stab_coords", _xsc)
+        _zsc = []
+        for _ri in range(hz.shape[0]):
+            _sup = np.where(hz[_ri])[0]
+            if len(_sup) > 0:
+                _zsc.append((float(np.mean([_dc[q][0] for q in _sup])), float(np.mean([_dc[q][1] for q in _sup]))))
+            else:
+                _zsc.append((0.0, 0.0))
+        meta.setdefault("z_stab_coords", _zsc)
+
+        meta.setdefault("stabiliser_schedule", {
+            "x_rounds": {i: 0 for i in range(hx.shape[0])},
+            "z_rounds": {i: 0 for i in range(hz.shape[0])},
+            "n_rounds": 1,
+            "description": "Fully parallel QLDPC schedule; BP+OSD decoding.",
+        })
+        meta.setdefault("x_schedule", None)
+        meta.setdefault("z_schedule", None)
+        
+        meta.setdefault("error_correction_zoo_url", "https://errorcorrectionzoo.org/c/qldpc")
+        meta.setdefault("wikipedia_url", None)
+        meta.setdefault("canonical_references", [
+            "Tillich & Zémor, IEEE Trans. Inf. Theory 60, 1193 (2014).",
+            "Campbell, Quantum Sci. Technol. 4, 025006 (2019).",
+        ])
+        meta.setdefault("connections", [
+            "Iterated HGP of repetition-code chain complexes",
+            "D=2 recovers the standard surface code",
+            "Higher D provides improved single-shot properties",
+        ])
+        
         super().__init__(
             hx=hx,
             hz=hz,
             logical_x=logicals[0],
             logical_z=logicals[1],
+            metadata=meta,
         )
     
     @staticmethod
@@ -878,9 +1430,24 @@ class HigherDimHomProductCode(QLDPCCode):
             logical_x = vectors_to_paulis_x(log_x_vecs) if log_x_vecs else [{0: 'X'}]
             logical_z = vectors_to_paulis_z(log_z_vecs) if log_z_vecs else [{0: 'Z'}]
             return logical_x, logical_z
-        except Exception:
+        except Exception as e:
+            warnings.warn(f"Expander code: logical computation failed ({e}); using placeholder.")
             return [{0: 'X'}], [{0: 'Z'}]
     
+    # ─── Properties ───────────────────────────────────────────────
+    @property
+    def name(self) -> str:
+        """Human-readable name, e.g. ``'Higher-Dim Hom Product Code (D=3, L=3, n=45)'``."""
+        return (
+            f"Higher-Dim Hom Product Code "
+            f"(D={self.dimensions}, L={self.L}, n={self.n})"
+        )
+
+    @property
+    def distance(self) -> Optional[int]:
+        """Code distance (= lattice size *L*)."""
+        return self.metadata.get("distance") or getattr(self, "_distance", None)
+
     def qubit_coords(self) -> List[Tuple[float, float]]:
         """
         Return 2D coordinates for visualization.

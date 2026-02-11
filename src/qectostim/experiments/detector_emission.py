@@ -490,6 +490,7 @@ class MemoryRoundEmitter:
         parallel: bool = False,
         emit_detectors: bool = True,
         stab_type: Optional["StabilizerBasis"] = None,
+        per_block_stab_type: Optional[Dict[str, "StabilizerBasis"]] = None,
     ) -> None:
         """
         Emit one stabilizer measurement round using schedule-driven ordering.
@@ -508,11 +509,15 @@ class MemoryRoundEmitter:
         stab_type : Optional[StabilizerBasis]
             Which stabilizers to measure (for hybrid decoding).
             None or BOTH means measure all.
+        per_block_stab_type : Optional[Dict[str, StabilizerBasis]]
+            Per-block stabilizer basis overrides.  Maps block_name -> StabilizerBasis.
+            Blocks not listed fall back to stab_type (or BOTH).
         """
         if parallel:
             self._emit_parallel(circuit, round_info, emit_detectors)
         else:
-            self._emit_sequential(circuit, round_info, emit_detectors, stab_type)
+            self._emit_sequential(circuit, round_info, emit_detectors, stab_type,
+                                  per_block_stab_type=per_block_stab_type)
     
     def _emit_sequential(
         self,
@@ -520,11 +525,18 @@ class MemoryRoundEmitter:
         round_info: Dict[str, "RoundSchedule"],
         emit_detectors: bool = True,
         stab_type: Optional["StabilizerBasis"] = None,
+        per_block_stab_type: Optional[Dict[str, "StabilizerBasis"]] = None,
     ) -> None:
         """
         Emit one round sequentially — each builder emits a full round.
         
         Uses RoundSchedule to set anchor flags and first_basis ordering.
+        
+        Parameters
+        ----------
+        per_block_stab_type : Optional[Dict[str, StabilizerBasis]]
+            Per-block stabilizer basis overrides.  If a block appears in this
+            dict, its StabilizerBasis overrides the global stab_type.
         """
         from qectostim.experiments.stabilizer_rounds import StabilizerBasis as RoundBasis
         from qectostim.gadgets.scheduling import StabilizerBasis as SchedulerBasis
@@ -535,6 +547,11 @@ class MemoryRoundEmitter:
         
         for builder in self.builders:
             rs = round_info[builder.block_name]
+            
+            # Resolve per-block stab_type override
+            block_stab = stab_type
+            if per_block_stab_type and builder.block_name in per_block_stab_type:
+                block_stab = per_block_stab_type[builder.block_name]
             
             emit_z_anchors = rs.is_anchor_round and rs.anchor_basis == SchedulerBasis.Z
             emit_x_anchors = rs.is_anchor_round and rs.anchor_basis == SchedulerBasis.X
@@ -548,7 +565,7 @@ class MemoryRoundEmitter:
             
             builder.emit_round(
                 circuit,
-                stab_type,
+                block_stab,
                 emit_detectors=emit_detectors,
                 emit_z_anchors=emit_z_anchors,
                 emit_x_anchors=emit_x_anchors,
@@ -628,6 +645,7 @@ def emit_scheduled_rounds(
     pre_gadget_meas: Optional[Dict[str, Dict[str, List[int]]]] = None,
     destroyed_blocks: Optional[Set[str]] = None,
     all_builders: Optional[List["BaseStabilizerRoundBuilder"]] = None,
+    per_block_stab_type: Optional[Dict[str, "StabilizerBasis"]] = None,
 ) -> None:
     """
     Convenience function to emit multiple scheduled rounds with optional crossing detectors.
@@ -659,6 +677,9 @@ def emit_scheduled_rounds(
     all_builders : Optional[List[BaseStabilizerRoundBuilder]]
         All builders (including destroyed blocks) needed for crossing detector
         emission. If None, uses builders.
+    per_block_stab_type : Optional[Dict[str, StabilizerBasis]]
+        Per-block stabilizer basis overrides.  Maps block_name -> StabilizerBasis.
+        Blocks not listed fall back to stab_type (or BOTH).
     """
     if not builders or num_rounds == 0:
         return
@@ -682,6 +703,7 @@ def emit_scheduled_rounds(
             parallel=parallel,
             emit_detectors=emit_auto_detectors,
             stab_type=stab_type,
+            per_block_stab_type=per_block_stab_type,
         )
         
         # Emit crossing detectors after the first post-gate round

@@ -51,8 +51,9 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         enable_metachecks: bool = False,
         single_shot_metachecks: bool = True,
         x_stabilizer_mode: str = "cz",
+        coord_offset: Optional[Tuple[float, ...]] = None,
     ):
-        super().__init__(code, ctx, block_name, data_offset, ancilla_offset, measurement_basis)
+        super().__init__(code, ctx, block_name, data_offset, ancilla_offset, measurement_basis, coord_offset=coord_offset)
         
         # X-stabilizer extraction mode:
         # - "cz": Use CZ gates (default, safe for memory experiments)
@@ -1550,19 +1551,29 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
                 circuit.append(gate_name, [ctrl, tgt])
     
     def _get_stab_coord(self, stab_type: str, s_idx: int) -> Tuple[float, float, float]:
-        """Get detector coordinate for a stabilizer."""
+        """Get detector coordinate for a stabilizer.
+        
+        Applies the block's spatial coord_offset so detector coordinates
+        are in the global (layout-level) reference frame.
+        """
         if stab_type == "x":
             coords = self._x_stab_coords
         else:
             coords = self._z_stab_coords
         
+        ox = self._coord_offset[0] if len(self._coord_offset) > 0 else 0.0
+        oy = self._coord_offset[1] if len(self._coord_offset) > 1 else 0.0
+        
         if s_idx < len(coords):
             x, y = coords[s_idx][:2]
-            return (float(x), float(y), self.ctx.current_time)
-        return (0.0, 0.0, self.ctx.current_time)
+            return (float(x) + ox, float(y) + oy, self.ctx.current_time)
+        return (ox, oy, self.ctx.current_time)
     
     def _get_metacheck_coord(self, meta_type: str, meta_idx: int) -> Tuple[float, float, float, float]:
-        """Get detector coordinate for a metacheck."""
+        """Get detector coordinate for a metacheck.
+        
+        Applies the block's spatial coord_offset.
+        """
         if meta_type == "x":
             meta_matrix = self._meta_x
             coords = self._z_stab_coords
@@ -1570,14 +1581,17 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
             meta_matrix = self._meta_z
             coords = self._x_stab_coords
         
+        ox = self._coord_offset[0] if len(self._coord_offset) > 0 else 0.0
+        oy = self._coord_offset[1] if len(self._coord_offset) > 1 else 0.0
+        
         if meta_matrix is None or meta_idx >= meta_matrix.shape[0]:
-            return (0.0, 0.0, self.ctx.current_time, 1.0)
+            return (ox, oy, self.ctx.current_time, 1.0)
         
         row = meta_matrix[meta_idx]
         covered_indices = np.where(row)[0]
         
         if len(covered_indices) == 0 or len(coords) == 0:
-            return (0.0, 0.0, self.ctx.current_time, 1.0)
+            return (ox, oy, self.ctx.current_time, 1.0)
         
         x_sum, y_sum, count = 0.0, 0.0, 0
         for s_idx in covered_indices:
@@ -1587,8 +1601,8 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
                 count += 1
         
         if count > 0:
-            return (x_sum / count, y_sum / count, self.ctx.current_time, 1.0)
-        return (0.0, 0.0, self.ctx.current_time, 1.0)
+            return (x_sum / count + ox, y_sum / count + oy, self.ctx.current_time, 1.0)
+        return (ox, oy, self.ctx.current_time, 1.0)
     
     def get_last_measurement_indices(self) -> dict:
         """Get the last measurement indices for each stabilizer type.

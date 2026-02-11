@@ -15,6 +15,24 @@ Chain Complex Structure:
 
 The chain_length property returns the number of boundary maps + 1.
 E.g., a 3-chain has 2 boundary maps (∂2: C2→C1, ∂1: C1→C0).
+
+Code Parameters:
+    Determined by chain complex dimensions.  For a complex
+    C_n → … → C_0 with qubits on grade g, the number of physical
+    qubits is dim(C_g) and the number of logical qubits follows from
+    the homology group H_g = ker(∂_g) / im(∂_{g+1}).
+
+Stabiliser Structure:
+    Boundary operators ∂_i define stabilisers.  X-stabilisers come from
+    im(∂_{g+1}) and Z-stabilisers from im(∂_gᵀ); the condition ∂² = 0
+    guarantees that Hx·Hzᵀ = 0.
+
+Raises:
+    TypeError
+        If a subclass omits the required ``build_stabilizers`` method.
+    ValueError
+        If the supplied ``ChainComplex`` has inconsistent boundary-map
+        dimensions (∂_{k} columns ≠ ∂_{k+1} rows).
 """
 from __future__ import annotations
 
@@ -67,6 +85,11 @@ class HomologicalCode(StabilizerCode, ABC):
             The chain complex defining the code structure.
         metadata : dict, optional
             Arbitrary metadata (distance, name, etc.).
+
+        Raises
+        ------
+        TypeError
+            If *complex* is not a ``ChainComplex`` instance.
         """
         self._complex = complex
         self._metadata = metadata or {}

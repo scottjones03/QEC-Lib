@@ -61,12 +61,19 @@ class BaseStabilizerRoundBuilder:
         data_offset: int = 0,
         ancilla_offset: Optional[int] = None,
         measurement_basis: str = "Z",
+        coord_offset: Optional[Tuple[float, ...]] = None,
     ):
         self.code = code
         self.ctx = ctx
         self.block_name = block_name
         self.data_offset = data_offset
         self.measurement_basis = measurement_basis.upper()
+        
+        # Spatial coordinate offset for detector coordinates.
+        # When a block is placed at a non-origin position in the layout,
+        # this offset is added to all detector coordinates so they reflect
+        # global (layout-level) positions rather than local code positions.
+        self._coord_offset: Tuple[float, ...] = coord_offset or (0.0, 0.0)
         
         # Compute ancilla offset if not provided
         n = code.n
@@ -78,6 +85,14 @@ class BaseStabilizerRoundBuilder:
         # Cache metadata using Code ABC property
         self._meta = code.metadata or {}
         self._data_coords = self._meta.get('data_coords', [])
+        
+        # Fallback: if data_coords not in metadata, try code.get_data_coords()
+        if not self._data_coords:
+            css = code.as_css() if hasattr(code, 'as_css') else None
+            if css is not None and hasattr(css, 'get_data_coords'):
+                dc = css.get_data_coords()
+                if dc:
+                    self._data_coords = dc
         
         # Periodic boundary support for toric codes
         self._lattice_size = self._meta.get('lattice_size')
@@ -116,6 +131,21 @@ class BaseStabilizerRoundBuilder:
     def z_ancillas(self) -> List[int]:
         """Z-type stabilizer ancilla qubit indices. Override in subclasses."""
         return []
+
+    @property
+    def all_ancillas(self) -> List[int]:
+        """All stabilizer ancilla qubit indices (X + Z + any unified).
+
+        For CSS codes this is ``x_ancillas + z_ancillas``.
+        Non-CSS builders (e.g. :class:`GeneralStabilizerRoundBuilder`)
+        override this to return their unified ancilla pool.
+
+        Returns
+        -------
+        List[int]
+            Global ancilla qubit indices used by this builder.
+        """
+        return self.x_ancillas + self.z_ancillas
 
     @property
     def qubit_coords(self) -> Dict[int, Tuple[float, ...]]:

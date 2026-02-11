@@ -30,6 +30,24 @@ Dimension Mapping:
     - dimension = 2: Planar (surface, toric, color)
     - dimension = 3: 3D (3D toric, 3D color)
     - dimension = 4: 4D (tesseract, hypergraph products)
+
+Code Parameters:
+    Inherited from the ``TopologicalCSSCode`` subclass.  Each concrete
+    subclass (e.g. ``SurfaceCodeBase``, ``ToricCodeBase``) fixes the
+    chain length and dimension; [[n, k, d]] are determined by the
+    lattice size passed at construction time.
+
+Stabiliser Structure:
+    Lattice-derived boundary operators.  Hx and Hz are extracted from
+    the chain complex boundary maps (∂₂ᵀ and ∂₁, respectively, for 2-D
+    codes) and coordinate metadata is auto-computed when not supplied.
+
+Raises:
+    NotImplementedError
+        If a base class factory method (e.g. ``ToricCodeBase.from_lattice``)
+        is called directly instead of through a concrete subclass.
+    TypeError
+        If required chain-complex or embedding arguments are missing.
 """
 from __future__ import annotations
 from abc import ABC
@@ -46,6 +64,65 @@ if TYPE_CHECKING:
 Coord2D = Tuple[float, float]
 Coord3D = Tuple[float, float, float]
 Coord = Tuple[float, ...]
+
+
+def _compute_coord_metadata(
+    hx: np.ndarray,
+    hz: np.ndarray,
+    meta: Dict[str, Any],
+    logical_x: Optional[List[PauliString]] = None,
+    logical_z: Optional[List[PauliString]] = None,
+) -> None:
+    """Compute and inject coordinate metadata into *meta* in-place.
+
+    Adds ``data_coords``, ``x_stab_coords``, ``z_stab_coords``,
+    ``lx_support``, and ``lz_support`` if they are not already present.
+    """
+    n = hx.shape[1]
+    if "data_coords" not in meta:
+        cols = int(np.ceil(np.sqrt(n)))
+        data_coords_list = [(float(i % cols), float(i // cols)) for i in range(n)]
+        meta["data_coords"] = data_coords_list
+    else:
+        data_coords_list = meta["data_coords"]
+
+    if "x_stab_coords" not in meta:
+        x_stab_coords_list = []
+        for row_idx in range(hx.shape[0]):
+            support = np.where(hx[row_idx])[0]
+            if len(support) > 0:
+                cx = np.mean([data_coords_list[q][0] for q in support])
+                cy = np.mean([data_coords_list[q][1] for q in support])
+                x_stab_coords_list.append((float(cx), float(cy)))
+            else:
+                x_stab_coords_list.append((0.0, 0.0))
+        meta["x_stab_coords"] = x_stab_coords_list
+
+    if "z_stab_coords" not in meta:
+        z_stab_coords_list = []
+        for row_idx in range(hz.shape[0]):
+            support = np.where(hz[row_idx])[0]
+            if len(support) > 0:
+                cx = np.mean([data_coords_list[q][0] for q in support])
+                cy = np.mean([data_coords_list[q][1] for q in support])
+                z_stab_coords_list.append((float(cx), float(cy)))
+            else:
+                z_stab_coords_list.append((0.0, 0.0))
+        meta["z_stab_coords"] = z_stab_coords_list
+
+    if "lx_support" not in meta and logical_x:
+        op = logical_x[0]
+        if isinstance(op, dict):
+            meta["lx_support"] = sorted(op.keys())
+        elif isinstance(op, str):
+            meta["lx_support"] = [i for i, c in enumerate(op) if c != 'I']
+
+    if "lz_support" not in meta and logical_z:
+        op = logical_z[0]
+        if isinstance(op, dict):
+            meta["lz_support"] = sorted(op.keys())
+        elif isinstance(op, str):
+            meta["lz_support"] = [i for i, c in enumerate(op) if c != 'I']
 
 
 class SurfaceCodeBase(TopologicalCSSCode):
@@ -225,7 +302,9 @@ class FractonCodeBase(CSSCode):
         meta = dict(metadata or {})
         meta["is_fracton"] = True
         meta.setdefault("chain_length", 3)
-        
+
+        _compute_coord_metadata(hx, hz, meta, logical_x, logical_z)
+
         super().__init__(
             hx=hx,
             hz=hz,

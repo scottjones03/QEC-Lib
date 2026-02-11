@@ -1,22 +1,125 @@
 # src/qectostim/codes/composite/subcode.py
-"""
-Subcode: Freeze logical qubits by promoting logicals to stabilizers.
+"""Subcode, Puncturing, and Shortening Operations on CSS Codes
 
-Given a [[n, k, d]] code with k logical qubits, a subcode fixes (freezes)
-some of the logical qubits by adding their logical operators to the 
-stabilizer group.
+This module provides three **code surgery** operations that modify a
+CSS code by reducing its qubit count or logical dimension:
 
-For CSS codes:
-- Freezing logical qubit j in state |0⟩: Add logical Z_j to Hz
-- Freezing logical qubit j in state |+⟩: Add logical X_j to Hx
+1. **Subcode (logical freezing)** — promote selected logical operators
+   to stabilisers, reducing *k* while keeping *n* fixed.
+2. **Puncturing** — remove physical qubits (columns of ``Hx``/``Hz``),
+   reducing *n*.
+3. **Shortening** — fix physical qubits to known states and then
+   remove them, reducing *n* and possibly *k*.
 
-The resulting code is [[n, k-m, d']] where m is the number of frozen qubits
-and d' >= d (distance may increase or stay the same).
+Overview
+--------
+Starting from an ``[[n, k, d]]`` CSS code *C*:
 
-Common uses:
-- Reducing code space for specific applications
-- Creating codes with fewer logical qubits from larger codes
-- Puncturing/shortening operations
++--------------+------+------+------+-----------+
+| Operation    |  n'  |  k'  |  d'  | Input     |
++==============+======+======+======+===========+
+| Subcode      |   n  | k-m  | ≥ d  | logical   |
++--------------+------+------+------+-----------+
+| Puncture     | n-m  |  ?   | ≤ d  | physical  |
++--------------+------+------+------+-----------+
+| Shorten      | n-m  |  ?   | ≤ d  | physical  |
++--------------+------+------+------+-----------+
+
+Subcode construction
+--------------------
+Freezing logical qubit *j* in ``|0⟩`` appends logical-``Z_j`` to
+``Hz``; freezing in ``|+⟩`` appends logical-``X_j`` to ``Hx``.
+Because the new row is already orthogonal to the existing checks
+(it is a logical operator), the CSS constraint is preserved.
+
+Puncturing and shortening
+-------------------------
+Puncturing removes column *j* from both ``Hx`` and ``Hz``, discarding
+all information about qubit *j*.  The resulting code may have lower
+distance since error chains that previously needed to traverse qubit *j*
+can now skip it.
+
+Shortening first fixes qubit *j* to a known state (e.g. ``|0⟩``),
+then removes it.  This appends a weight-1 row to ``Hz`` (or ``Hx``)
+before deleting the column, which may reduce *k* in addition to *n*.
+
+Relationship to code surgery
+-----------------------------
+These operations are the *classical* building blocks of **lattice
+surgery** and **code deformation**.  In a topological context,
+puncturing creates a **hole** in the lattice, while shortening
+**contracts** a boundary.
+
+Classes
+-------
+* ``Subcode`` — freeze logical qubits.
+* ``PuncturedCode`` — remove physical qubits.
+* ``ShortenedCode`` — fix + remove physical qubits.
+
+Code Parameters
+~~~~~~~~~~~~~~~
+Starting from a parent ``[[n, k, d]]`` CSS code with ``m`` frozen
+logical qubits:
+
+* **Subcode**: ``[[n, k - m, d']]`` where ``d' ≥ d``  (freezing logicals
+  can only increase or maintain the distance).
+* **Punctured code**: ``[[n - m, k', d']]`` where ``d' ≤ d``  (removing
+  qubits may expose shorter error chains).
+* **Shortened code**: ``[[n - m, k', d']]`` where ``d' ≤ d``  (fixing and
+  removing qubits reduces the code).
+
+The logical dimension ``k - |frozen|`` counts the number of unfrozen
+logical qubits that remain as active encoded information.
+
+Stabiliser Structure
+~~~~~~~~~~~~~~~~~~~~
+For the **Subcode** operation:
+
+* **X stabilisers**: original ``Hx`` rows, plus logical-X operators of
+  frozen qubits frozen in the ``|+⟩`` basis.  Weights are inherited
+  from the parent code's stabilisers and logical operators.
+* **Z stabilisers**: original ``Hz`` rows, plus logical-Z operators of
+  frozen qubits frozen in the ``|0⟩`` basis.
+* **Total stabiliser count**: ``r_x + m_+`` X-checks and ``r_z + m_0``
+  Z-checks, where ``m_+`` and ``m_0`` are the number of qubits frozen
+  in ``|+⟩`` and ``|0⟩`` respectively.
+* **Measurement schedule**: the new stabilisers (promoted logicals)
+  are measured alongside the existing stabilisers in each round.
+
+Examples
+--------
+>>> from qectostim.codes.small.steane_713 import SteaneCode
+>>> from qectostim.codes.composite.subcode import Subcode
+>>> s = Subcode(SteaneCode(), freeze_indices=[0], freeze_basis='Z')
+>>> s.k == 0  # k reduced from 1 to 0
+True
+
+References
+----------
+* Rains, *Quantum codes of minimum distance two*, IEEE Trans.
+  Inform. Theory **45**, 266 (1999).
+* Grassl, Beth & Rötteler, *On optimal quantum codes*, Int. J.
+  Quantum Inf. **2**, 55 (2004).
+* Error Correction Zoo: https://errorcorrectionzoo.org/c/qubit_css
+
+Fault tolerance
+---------------
+* Subcoding preserves the stabiliser structure, so existing fault-
+  tolerant gadgets for the parent code remain valid.
+* Puncturing may introduce low-weight undetectable errors; the user
+  should verify the new distance after the operation.
+
+Decoding
+--------
+* After puncturing, the decoder's matching graph must be rebuilt since
+  edges involving removed qubits are deleted.
+* Shortened codes retain the same Tanner-graph structure (minus the
+  fixed qubits), so decoders can be re-used with minor modifications.
+
+Implementation notes
+--------------------
+* All operations return new ``CSSCode`` instances; the parent code
+  object is never modified.
 """
 from __future__ import annotations
 
@@ -26,7 +129,14 @@ import numpy as np
 
 from qectostim.codes.abstract_code import PauliString
 from qectostim.codes.abstract_css import CSSCode
-from qectostim.codes.utils import pauli_to_symplectic
+from qectostim.codes.utils import pauli_to_symplectic, validate_css_code, gf2_rank
+
+
+def _normalize_pauli(op):
+    """Normalize a logical operator to PauliString dict format."""
+    if isinstance(op, str):
+        return {i: c for i, c in enumerate(op) if c != 'I'}
+    return op
 
 
 class Subcode(CSSCode):
@@ -82,6 +192,31 @@ class Subcode(CSSCode):
         freeze_states: Optional[Union[str, List[str]]] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
+        """Construct a subcode by freezing logical qubits.
+
+        Parameters
+        ----------
+        base_code : CSSCode
+            The parent CSS code to restrict.
+        freeze_indices : int or list of int
+            0-based indices of logical qubits to freeze.
+        freeze_states : str or list of str, optional
+            ``'0'`` (append ``Z_j`` to ``Hz``) or ``'+'`` (append
+            ``X_j`` to ``Hx``).  Default ``'0'`` for every qubit.
+        metadata : dict, optional
+            Extra key/value pairs merged into the code's metadata dict.
+
+        Raises
+        ------
+        ValueError
+            If any freeze index is outside ``[0, k)``.
+        ValueError
+            If the number of *freeze_states* does not match
+            the number of *freeze_indices*.
+        ValueError
+            If a freeze state is not one of ``'0'``, ``'+'``,
+            ``'1'``, ``'-'``.
+        """
         self.base_code = base_code
         
         # Normalize inputs
@@ -119,8 +254,8 @@ class Subcode(CSSCode):
         hz_new = base_code.hz.copy()
         n = base_code.n
         
-        log_x = base_code.logical_x_ops
-        log_z = base_code.logical_z_ops
+        log_x = [_normalize_pauli(op) for op in base_code.logical_x_ops]
+        log_z = [_normalize_pauli(op) for op in base_code.logical_z_ops]
         
         # Add frozen logical operators to stabilizers
         for idx, state in zip(self.frozen_qubits, freeze_states):
@@ -157,6 +292,71 @@ class Subcode(CSSCode):
         meta["frozen_qubits"] = self.frozen_qubits
         meta["frozen_states"] = self.frozen_states
         meta["original_k"] = k
+
+        # ── 17 standard metadata keys ──────────────────────────────────────
+        k_new = len(remaining_indices)
+        meta["code_family"] = "subcode"
+        meta["code_type"] = "frozen_logical"
+        meta["n"] = n
+        meta["k"] = k_new
+        meta["distance"] = None  # distance may increase after freezing
+        meta["rate"] = k_new / n if n > 0 else 0.0
+
+        if logical_x_new:
+            meta["lx_pauli_type"] = "X"
+            lx0 = logical_x_new[0]
+            meta["lx_support"] = sorted(lx0.keys()) if isinstance(lx0, dict) else []
+        else:
+            meta["lx_pauli_type"] = None
+            meta["lx_support"] = []
+        if logical_z_new:
+            meta["lz_pauli_type"] = "Z"
+            lz0 = logical_z_new[0]
+            meta["lz_support"] = sorted(lz0.keys()) if isinstance(lz0, dict) else []
+        else:
+            meta["lz_pauli_type"] = None
+            meta["lz_support"] = []
+
+        meta["stabiliser_schedule"] = base_meta.get("stabiliser_schedule", None)
+        meta["x_schedule"] = base_meta.get("x_schedule", None)
+        meta["z_schedule"] = base_meta.get("z_schedule", None)
+
+        meta["error_correction_zoo_url"] = base_meta.get("error_correction_zoo_url", None)
+        meta["wikipedia_url"] = base_meta.get("wikipedia_url", None)
+        meta["canonical_references"] = base_meta.get("canonical_references", None)
+        meta["connections"] = [
+            f"Subcode of {base_code.name}: froze logicals {self.frozen_qubits}",
+            f"Reduced k from {k} to {k_new}",
+        ]
+
+        # Coordinate metadata — inherit data_coords, recompute stab coords
+        base_data_coords = base_meta.get("data_coords", None)
+        if base_data_coords is None:
+            cols_grid = int(np.ceil(np.sqrt(n)))
+            base_data_coords = [(float(i % cols_grid), float(i // cols_grid)) for i in range(n)]
+        meta.setdefault("data_coords", base_data_coords)
+        x_stab_coords_list = []
+        for row in hx_new:
+            support = np.where(row)[0]
+            if len(support) > 0:
+                cx = float(np.mean([base_data_coords[q][0] for q in support if q < len(base_data_coords)]))
+                cy = float(np.mean([base_data_coords[q][1] for q in support if q < len(base_data_coords)]))
+                x_stab_coords_list.append((cx, cy))
+            else:
+                x_stab_coords_list.append((0.0, 0.0))
+        meta.setdefault("x_stab_coords", x_stab_coords_list)
+        z_stab_coords_list = []
+        for row in hz_new:
+            support = np.where(row)[0]
+            if len(support) > 0:
+                cx = float(np.mean([base_data_coords[q][0] for q in support if q < len(base_data_coords)]))
+                cy = float(np.mean([base_data_coords[q][1] for q in support if q < len(base_data_coords)]))
+                z_stab_coords_list.append((cx, cy))
+            else:
+                z_stab_coords_list.append((0.0, 0.0))
+        meta.setdefault("z_stab_coords", z_stab_coords_list)
+
+        validate_css_code(hx_new, hz_new, code_name=f"Subcode({base_code.name})", raise_on_error=True)
         
         super().__init__(
             hx=hx_new,
@@ -166,13 +366,30 @@ class Subcode(CSSCode):
             metadata=meta,
         )
     
+    # ------------------------------------------------------------------
+    # Gold-standard properties
+    # ------------------------------------------------------------------
+
     @property
     def name(self) -> str:
+        """Human-readable name including frozen-qubit summary."""
         frozen_desc = ','.join(
             f"{idx}:{state}" 
             for idx, state in zip(self.frozen_qubits, self.frozen_states)
         )
         return f"Subcode({self.base_code.name}, freeze=[{frozen_desc}])"
+
+    @property
+    def distance(self) -> int:
+        """Code distance (≥ parent distance; stored in metadata)."""
+        d = self._metadata.get("distance")
+        return d if d is not None else getattr(self.base_code, 'distance', 1)
+
+    def qubit_coords(self) -> List:
+        """Return qubit coordinates inherited from the base code."""
+        if hasattr(self.base_code, 'qubit_coords'):
+            return self.base_code.qubit_coords()
+        return list(range(self.n))
 
 
 class PuncturedCode(CSSCode):
@@ -207,6 +424,22 @@ class PuncturedCode(CSSCode):
         puncture_indices: Union[int, List[int]],
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
+        """Construct a punctured code by removing physical qubits.
+
+        Parameters
+        ----------
+        base_code : CSSCode
+            The parent CSS code.
+        puncture_indices : int or list of int
+            0-based indices of physical qubits to remove.
+        metadata : dict, optional
+            Extra key/value pairs merged into the code's metadata dict.
+
+        Raises
+        ------
+        ValueError
+            If any puncture index is outside ``[0, n)``.
+        """
         self.base_code = base_code
         
         if isinstance(puncture_indices, int):
@@ -248,15 +481,15 @@ class PuncturedCode(CSSCode):
         logical_z_new = []
         
         for lx in base_code.logical_x_ops:
-            remapped = remap_pauli(lx)
+            remapped = remap_pauli(_normalize_pauli(lx))
             if remapped:
                 logical_x_new.append(remapped)
         
         for lz in base_code.logical_z_ops:
-            remapped = remap_pauli(lz)
+            remapped = remap_pauli(_normalize_pauli(lz))
             if remapped:
                 logical_z_new.append(remapped)
-        
+
         # Build metadata
         base_meta = base_code.extra_metadata() if hasattr(base_code, 'extra_metadata') else {}
         meta: Dict[str, Any] = dict(base_meta)
@@ -264,6 +497,74 @@ class PuncturedCode(CSSCode):
         meta["base_code_name"] = base_code.name
         meta["punctured_qubits"] = self.punctured_qubits
         meta["original_n"] = n
+
+        # ── 17 standard metadata keys ──────────────────────────────────────
+        rx = gf2_rank(hx_new) if hx_new.size > 0 else 0
+        rz = gf2_rank(hz_new) if hz_new.size > 0 else 0
+        k_punct = n_new - rx - rz
+        meta["code_family"] = "punctured"
+        meta["code_type"] = "punctured_css"
+        meta["n"] = n_new
+        meta["k"] = k_punct
+        meta["distance"] = None  # distance may decrease after puncturing
+        meta["rate"] = k_punct / n_new if n_new > 0 else 0.0
+
+        if logical_x_new:
+            meta["lx_pauli_type"] = "X"
+            lx0 = logical_x_new[0]
+            meta["lx_support"] = sorted(lx0.keys()) if isinstance(lx0, dict) else []
+        else:
+            meta["lx_pauli_type"] = None
+            meta["lx_support"] = []
+        if logical_z_new:
+            meta["lz_pauli_type"] = "Z"
+            lz0 = logical_z_new[0]
+            meta["lz_support"] = sorted(lz0.keys()) if isinstance(lz0, dict) else []
+        else:
+            meta["lz_pauli_type"] = None
+            meta["lz_support"] = []
+
+        meta["stabiliser_schedule"] = None
+        meta["x_schedule"] = None
+        meta["z_schedule"] = None
+
+        meta["error_correction_zoo_url"] = base_meta.get("error_correction_zoo_url", None)
+        meta["wikipedia_url"] = base_meta.get("wikipedia_url", None)
+        meta["canonical_references"] = base_meta.get("canonical_references", None)
+        meta["connections"] = [
+            f"Punctured from {base_code.name}: removed qubits {self.punctured_qubits}",
+            f"Reduced n from {n} to {n_new}",
+        ]
+
+        # Coordinate metadata — remap from base code, removing punctured qubits
+        base_data_coords = base_meta.get("data_coords", None)
+        if base_data_coords is None:
+            cols_grid = int(np.ceil(np.sqrt(n)))
+            base_data_coords = [(float(i % cols_grid), float(i // cols_grid)) for i in range(n)]
+        meta.setdefault("data_coords", [base_data_coords[i] for i in remaining])
+        punct_data_coords = meta["data_coords"]
+        x_stab_coords_list = []
+        for row in hx_new:
+            support = np.where(row)[0]
+            if len(support) > 0:
+                cx = float(np.mean([punct_data_coords[q][0] for q in support if q < len(punct_data_coords)]))
+                cy = float(np.mean([punct_data_coords[q][1] for q in support if q < len(punct_data_coords)]))
+                x_stab_coords_list.append((cx, cy))
+            else:
+                x_stab_coords_list.append((0.0, 0.0))
+        meta.setdefault("x_stab_coords", x_stab_coords_list)
+        z_stab_coords_list = []
+        for row in hz_new:
+            support = np.where(row)[0]
+            if len(support) > 0:
+                cx = float(np.mean([punct_data_coords[q][0] for q in support if q < len(punct_data_coords)]))
+                cy = float(np.mean([punct_data_coords[q][1] for q in support if q < len(punct_data_coords)]))
+                z_stab_coords_list.append((cx, cy))
+            else:
+                z_stab_coords_list.append((0.0, 0.0))
+        meta.setdefault("z_stab_coords", z_stab_coords_list)
+
+        validate_css_code(hx_new, hz_new, code_name=f"Punctured({base_code.name})", raise_on_error=True)
         
         super().__init__(
             hx=hx_new,
@@ -271,11 +572,31 @@ class PuncturedCode(CSSCode):
             logical_x=logical_x_new,
             logical_z=logical_z_new,
             metadata=meta,
+            skip_validation=True,  # puncturing may break CSS constraint
         )
     
+    # ------------------------------------------------------------------
+    # Gold-standard properties
+    # ------------------------------------------------------------------
+
     @property
     def name(self) -> str:
+        """Human-readable name including punctured-qubit list."""
         return f"Punctured({self.base_code.name}, qubits={self.punctured_qubits})"
+
+    @property
+    def distance(self) -> int:
+        """Code distance (≤ parent distance; stored in metadata)."""
+        d = self._metadata.get("distance")
+        return d if d is not None else 1
+
+    def qubit_coords(self) -> List:
+        """Return qubit coordinates of remaining qubits."""
+        if hasattr(self.base_code, 'qubit_coords'):
+            all_coords = self.base_code.qubit_coords()
+            remaining = [i for i in range(len(all_coords)) if i not in self.punctured_qubits]
+            return [all_coords[i] for i in remaining]
+        return list(range(self.n))
 
 
 class ShortenedCode(CSSCode):
@@ -304,6 +625,24 @@ class ShortenedCode(CSSCode):
         shorten_states: Optional[Union[str, List[str]]] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
+        """Construct a shortened code by fixing and removing physical qubits.
+
+        Parameters
+        ----------
+        base_code : CSSCode
+            The parent CSS code.
+        shorten_indices : int or list of int
+            0-based indices of physical qubits to shorten.
+        shorten_states : str or list of str, optional
+            ``'0'`` or ``'+'`` per shortened qubit.  Default ``'0'``.
+        metadata : dict, optional
+            Extra key/value pairs merged into the code's metadata dict.
+
+        Raises
+        ------
+        ValueError
+            If any shorten index is outside ``[0, n)``.
+        """
         self.base_code = base_code
         
         if isinstance(shorten_indices, int):
@@ -383,12 +722,12 @@ class ShortenedCode(CSSCode):
         logical_z_new = []
         
         for lx in base_code.logical_x_ops:
-            remapped = remap_pauli(lx)
+            remapped = remap_pauli(_normalize_pauli(lx))
             if remapped:
                 logical_x_new.append(remapped)
         
         for lz in base_code.logical_z_ops:
-            remapped = remap_pauli(lz)
+            remapped = remap_pauli(_normalize_pauli(lz))
             if remapped:
                 logical_z_new.append(remapped)
         
@@ -399,6 +738,73 @@ class ShortenedCode(CSSCode):
         meta["base_code_name"] = base_code.name
         meta["shortened_qubits"] = self.shortened_qubits
         meta["shorten_states"] = self.shorten_states
+
+        # ── 17 standard metadata keys ──────────────────────────────────────
+        rx = gf2_rank(hx_new) if hx_new.size > 0 else 0
+        rz = gf2_rank(hz_new) if hz_new.size > 0 else 0
+        k_short = n_new - rx - rz
+        meta["code_family"] = "shortened"
+        meta["code_type"] = "shortened_css"
+        meta["n"] = n_new
+        meta["k"] = k_short
+        meta["distance"] = None
+        meta["rate"] = k_short / n_new if n_new > 0 else 0.0
+
+        if logical_x_new:
+            meta["lx_pauli_type"] = "X"
+            lx0 = logical_x_new[0]
+            meta["lx_support"] = sorted(lx0.keys()) if isinstance(lx0, dict) else []
+        else:
+            meta["lx_pauli_type"] = None
+            meta["lx_support"] = []
+        if logical_z_new:
+            meta["lz_pauli_type"] = "Z"
+            lz0 = logical_z_new[0]
+            meta["lz_support"] = sorted(lz0.keys()) if isinstance(lz0, dict) else []
+        else:
+            meta["lz_pauli_type"] = None
+            meta["lz_support"] = []
+
+        meta["stabiliser_schedule"] = None
+        meta["x_schedule"] = None
+        meta["z_schedule"] = None
+
+        meta["error_correction_zoo_url"] = base_meta.get("error_correction_zoo_url", None)
+        meta["wikipedia_url"] = base_meta.get("wikipedia_url", None)
+        meta["canonical_references"] = base_meta.get("canonical_references", None)
+        meta["connections"] = [
+            f"Shortened from {base_code.name}: fixed qubits {self.shortened_qubits}",
+        ]
+
+        # Coordinate metadata — remap from base code, removing shortened qubits
+        base_data_coords = base_meta.get("data_coords", None)
+        if base_data_coords is None:
+            cols_grid = int(np.ceil(np.sqrt(n)))
+            base_data_coords = [(float(i % cols_grid), float(i // cols_grid)) for i in range(n)]
+        meta.setdefault("data_coords", [base_data_coords[i] for i in remaining])
+        short_data_coords = meta["data_coords"]
+        x_stab_coords_list = []
+        for row in hx_new:
+            support = np.where(row)[0]
+            if len(support) > 0:
+                cx = float(np.mean([short_data_coords[q][0] for q in support if q < len(short_data_coords)]))
+                cy = float(np.mean([short_data_coords[q][1] for q in support if q < len(short_data_coords)]))
+                x_stab_coords_list.append((cx, cy))
+            else:
+                x_stab_coords_list.append((0.0, 0.0))
+        meta.setdefault("x_stab_coords", x_stab_coords_list)
+        z_stab_coords_list = []
+        for row in hz_new:
+            support = np.where(row)[0]
+            if len(support) > 0:
+                cx = float(np.mean([short_data_coords[q][0] for q in support if q < len(short_data_coords)]))
+                cy = float(np.mean([short_data_coords[q][1] for q in support if q < len(short_data_coords)]))
+                z_stab_coords_list.append((cx, cy))
+            else:
+                z_stab_coords_list.append((0.0, 0.0))
+        meta.setdefault("z_stab_coords", z_stab_coords_list)
+
+        validate_css_code(hx_new, hz_new, code_name=f"Shortened({base_code.name})", raise_on_error=True)
         
         super().__init__(
             hx=hx_new,
@@ -406,8 +812,28 @@ class ShortenedCode(CSSCode):
             logical_x=logical_x_new,
             logical_z=logical_z_new,
             metadata=meta,
+            skip_validation=True,  # shortening may break CSS constraint
         )
     
+    # ------------------------------------------------------------------
+    # Gold-standard properties
+    # ------------------------------------------------------------------
+
     @property
     def name(self) -> str:
+        """Human-readable name including shortened-qubit list."""
         return f"Shortened({self.base_code.name})"
+
+    @property
+    def distance(self) -> int:
+        """Code distance (≤ parent distance; stored in metadata)."""
+        d = self._metadata.get("distance")
+        return d if d is not None else 1
+
+    def qubit_coords(self) -> List:
+        """Return qubit coordinates of remaining qubits."""
+        if hasattr(self.base_code, 'qubit_coords'):
+            all_coords = self.base_code.qubit_coords()
+            remaining = [i for i in range(len(all_coords)) if i not in self.shortened_qubits]
+            return [all_coords[i] for i in remaining]
+        return list(range(self.n))

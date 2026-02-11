@@ -23,6 +23,21 @@ Examples:
     logical_x = [{0: 'X', 1: 'X', 2: 'X', 3: 'X', 4: 'X'}]  # XXXXX
     logical_z = [{0: 'Z', 1: 'Z', 2: 'Z', 3: 'Z', 4: 'Z'}]  # ZZZZZ
     code = GenericStabilizerCode(stab_mat, logical_x, logical_z)
+
+Code Parameters:
+    [[n, k, d]] from user-supplied stabiliser matrix H.  *n* is half the
+    column count of H, *k* = n − rank_GF(2)(H), and *d* may be provided
+    as metadata.
+
+Stabiliser Structure:
+    User-defined stabiliser generators in symplectic form [X | Z].
+    The code automatically detects whether the generators are CSS
+    (all pure-X or pure-Z) or general non-CSS.
+
+Raises:
+    ValueError
+        If *stabilizer_matrix* is not 2-D, has an odd number of columns,
+        or contains non-commuting generators.
 """
 
 from __future__ import annotations
@@ -212,6 +227,13 @@ class GenericStabilizerCode(StabilizerCode):
         Number of physical qubits. If None, inferred from stabilizer_matrix.
     metadata : Optional[Dict[str, Any]]
         Additional metadata (name, distance, coordinates, etc.)
+
+    Raises
+    ------
+    ValueError
+        If *stabilizer_matrix* is not 2-D, has an odd number of columns,
+        ``n_qubits`` is inconsistent with the matrix width, or the
+        generators do not commute pairwise.
     
     Attributes
     ----------

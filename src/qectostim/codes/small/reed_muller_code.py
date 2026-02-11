@@ -34,6 +34,55 @@ Logical operators (weight 3)
     X̄ = X₉X₁₀X₁₂   (qubits {9, 10, 12})
     Z̄ = Z₉Z₁₀Z₁₂   (qubits {9, 10, 12})  — self-dual
 
+Qubit layout
+------------
+Data qubits arranged in a 3×5 grid.  The stabilisers act in two groups
+(qubits 0–7 and qubits 8–14) with controlled overlaps.
+
+::
+
+    Row 2:    10 ─────── 11 ─────── 12 ─────── 13 ─────── 14
+              │          │          │          │          │
+              │  g₅={8,9,10,11}     │  g₆={8,9,12,13}     │
+              │          │          │          │          │
+    Row 1:    5 ─────── 6 ─────── 7 ─────── 8 ─────── 9
+              │          │          │          │          │
+              │  g₁={0,1,2,3}       │  g₇={8,10,12,14}    │
+              │          │          │          │          │
+    Row 0:    0 ─────── 1 ─────── 2 ─────── 3 ─────── 4
+
+    Data qubit coordinates (3×5 grid):
+      Row 0: 0:(0,0)  1:(1,0)  2:(2,0)  3:(3,0)  4:(4,0)
+      Row 1: 5:(0,1)  6:(1,1)  7:(2,1)  8:(3,1)  9:(4,1)
+      Row 2: 10:(0,2) 11:(1,2) 12:(2,2) 13:(3,2) 14:(4,2)
+
+    Logical operator support: {9, 10, 12} = positions (4,1), (0,2), (2,2)
+
+    Stabiliser structure:
+      Group A (g₁–g₄): act on qubits 0–7 with controlled overlaps
+      Group B (g₅–g₇): act on qubits 8–14 with controlled overlaps
+
+    Note: Stabiliser coordinates are centroids of their qubit supports.
+
+Code Parameters
+~~~~~~~~~~~~~~~
+:math:`[[n, k, d]] = [[15, 1, 3]]` where:
+
+- :math:`n = 15` physical qubits
+- :math:`k = 1` logical qubit (:math:`15 - 7 - 7 = 1`)
+- :math:`d = 3` (minimum weight logical operator has weight 3)
+- Rate :math:`k/n = 1/15 \approx 0.067`
+
+Stabiliser Structure
+~~~~~~~~~~~~~~~~~~~~
+- **X-type stabilisers**: 7 generators, each weight 4; split into
+  two groups acting on qubits 0–7 and 8–14 with controlled overlaps.
+  Self-dual: :math:`H_X = H_Z`.
+- **Z-type stabilisers**: 7 generators, each weight 4; identical
+  supports to the X-type stabilisers (same parity-check matrix).
+- Measurement schedule: all 14 stabilisers (7 X + 7 Z) in parallel;
+  each is a depth-4 CNOT circuit.
+
 Connections to other codes
 --------------------------
 * **Classical Reed–Muller**: quantum CSS lift of RM(1, 4).
@@ -55,7 +104,7 @@ References
 """
 
 from __future__ import annotations
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 
 import numpy as np
 
@@ -182,6 +231,12 @@ class ReedMullerCode151(CSSCode):
             Extra key/value pairs merged into the code's metadata
             dictionary.  User-supplied entries override auto-generated
             ones with the same key.
+
+        Raises
+        ------
+        ValueError
+            If the stabiliser matrix fails self-orthogonality or
+            CSS validation, or if the computed dimension *k* is not 1.
         """
         
         # Build self-orthogonal stabilizer matrix
@@ -227,12 +282,30 @@ class ReedMullerCode151(CSSCode):
         meta["lz_pauli_type"] = "Z"
         meta["lz_support"] = [9, 10, 12]
 
-        # Grid coordinates (3×5 arrangement)
+        # Grid coordinates (3×5 arrangement, see module docstring)
         data_coords = [(float(i % 5), float(i // 5)) for i in range(15)]
         meta["data_coords"] = data_coords
         meta["data_qubits"] = list(range(15))
         meta["x_logical_coords"] = [data_coords[i] for i in [9, 10, 12]]
         meta["z_logical_coords"] = [data_coords[i] for i in [9, 10, 12]]
+        
+        # Stabilizer centroids (computed from support sets)
+        stab_patterns = [
+            [0, 1, 2, 3],      # g₁
+            [0, 1, 4, 5],      # g₂
+            [0, 1, 6, 7],      # g₃
+            [0, 2, 4, 6],      # g₄
+            [8, 9, 10, 11],    # g₅
+            [8, 9, 12, 13],    # g₆
+            [8, 10, 12, 14],   # g₇
+        ]
+        stab_coords = []
+        for pattern in stab_patterns:
+            cx = sum(data_coords[q][0] for q in pattern) / len(pattern)
+            cy = sum(data_coords[q][1] for q in pattern) / len(pattern)
+            stab_coords.append((cx, cy))
+        meta["x_stab_coords"] = stab_coords
+        meta["z_stab_coords"] = stab_coords  # Self-dual
 
         # Schedules
         meta["x_schedule"] = None  # self-dual code → matrix scheduling
@@ -277,3 +350,19 @@ class ReedMullerCode151(CSSCode):
     def name(self) -> str:
         """Human-readable name: ``'ReedMullerCode151'``."""
         return "ReedMullerCode151"
+
+    def qubit_coords(self) -> List:
+        """Return 4-D hypercube coordinates for the 15 data qubits.
+
+        Qubits are labelled by the 15 non-zero elements of GF(2)⁴,
+        represented as 4-tuples.
+        """
+        coords = []
+        for i in range(1, 16):  # non-zero 4-bit strings
+            coords.append((
+                float((i >> 3) & 1),
+                float((i >> 2) & 1),
+                float((i >> 1) & 1),
+                float(i & 1),
+            ))
+        return coords

@@ -32,13 +32,49 @@ Logical operators (weight 5, transversal)
 
 Qubit layout
 ------------
-Five qubits placed at the vertices of a regular pentagon::
+Five qubits placed at the vertices of a regular pentagon, reflecting
+the cyclic symmetry of the code.  No X/Z stabiliser separation exists
+since this is a non-CSS code.
 
-        0
-       / \\
-      4   1
-      |   |
-      3 - 2
+::
+
+              0
+            ╱   ╲
+          ╱       ╲
+        4           1
+        │           │
+        │           │
+        3 ───────── 2
+
+    Data qubit coordinates (unit pentagon, centred at origin):
+      0: (0.0, 1.0)       — top vertex
+      1: (0.951, 0.309)   — upper-right
+      2: (0.588, −0.809)  — lower-right
+      3: (−0.588, −0.809) — lower-left
+      4: (−0.951, 0.309)  — upper-left
+
+    (Coordinates are cos/sin of angles π/2 + 2πk/5 for k=0,1,2,3,4)
+
+    Stabiliser positions are not well-defined geometrically for
+    non-CSS codes (stabilisers mix X and Z on overlapping qubits).
+
+Code Parameters
+~~~~~~~~~~~~~~~
+:math:`[[n, k, d]] = [[5, 1, 3]]` where:
+
+- :math:`n = 5` physical qubits (vertices of a regular pentagon)
+- :math:`k = 1` logical qubit
+- :math:`d = 3` (corrects any single Pauli error; saturates the quantum Hamming bound)
+- Rate :math:`k/n = 1/5 = 0.2`
+
+Stabiliser Structure
+~~~~~~~~~~~~~~~~~~~~
+- **Stabiliser generators** (non-CSS — mixed X/Z): 4 generators, each
+  weight 4, arranged cyclically:
+  ``XZZXI``, ``IXZZX``, ``XIXZZ``, ``ZXIXZ``.
+- No X-type / Z-type separation (non-CSS code).
+- Measurement schedule: all 4 stabilisers measured with joint X/Z
+  ancilla circuits; each requires a depth-4 entangling circuit.
 
 Connections to other codes
 --------------------------
@@ -46,6 +82,24 @@ Connections to other codes
 * **Stabiliser codes**: the smallest non-trivial stabiliser code.
 * **Laflamme code**: sometimes called the Laflamme code after one of
   its discoverers.
+
+Fault tolerance
+---------------
+* All 15 non-trivial single-qubit errors map to distinct syndromes,
+  confirming the perfect-code property (4 syndrome bits → 15 outcomes).
+* Transversal gates are limited; the code does **not** support a
+  transversal Clifford gate set.
+* Fault-tolerant error correction requires Knill or Steane-type
+  ancilla-verification gadgets.
+
+Decoding
+--------
+* Syndrome lookup is the simplest decoder: a 15-entry table maps each
+  non-zero syndrome to the unique correctable single-qubit Pauli error.
+* Because the code is non-CSS, X and Z syndromes cannot be decoded
+  independently; the full 4-bit syndrome must be used jointly.
+* For concatenated [[5,1,3]] codes, level-by-level lookup decoding
+  achieves the threshold theorem's doubly-exponential suppression.
 
 References
 ----------
@@ -126,6 +180,10 @@ class PerfectCode513(StabilizerCode):
             Extra key/value pairs merged into the code's metadata
             dictionary.  User-supplied entries override auto-generated
             ones with the same key.
+
+        Raises
+        ------
+        No ``ValueError`` raised — all code parameters are fixed.
         """
         
         # Full stabilizer generators in symplectic form [X | Z]

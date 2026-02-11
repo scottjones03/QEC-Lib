@@ -27,6 +27,19 @@ Use XYZColorCodeMemoryExperiment to build circuits:
     exp = XYZColorCodeMemoryExperiment(code, rounds=3)
     circuit = exp.to_stim()
 
+Code Parameters:
+    [[n, 1, d]] on a 6.6.6 lattice, where n grows quadratically with the
+    distance d.  Only odd d ≥ 3 are supported.
+
+Stabiliser Structure:
+    Weight-6 mixed XYZ stabilisers.  Each face of the 6.6.6 lattice
+    contributes a single joint XYZ measurement (as opposed to the
+    separate X and Z plaquette measurements used by the standard variant).
+
+Raises:
+    ValueError
+        If *distance* is even or less than 3.
+
 Reference: Stim's color_code:memory_xyz implementation
 """
 

@@ -37,6 +37,64 @@ if TYPE_CHECKING:
     from qectostim.codes.abstract_code import Code
 
 
+def _get_code_stabilizer_counts(code: "Code") -> Tuple[int, int]:
+    """Get (num_x_stabilizers, num_z_stabilizers) for any code type.
+
+    Resolution order:
+    1. CSS codes (``hx``/``hz`` parity-check matrices)
+    2. General stabilizer codes (``stabilizer_matrix`` with CSS check)
+    3. Zero fallback
+
+    For non-CSS stabilizer codes the stabilizers cannot be cleanly split
+    into X-type and Z-type.  In that case we report all stabilizers as
+    "X" (i.e. ``(n_stabs, 0)``) so that the allocation reserves the
+    right total number of ancillas.  The
+    :class:`GeneralStabilizerRoundBuilder` uses a single unified ancilla
+    pool anyway, so the split is irrelevant at runtime.
+
+    Returns
+    -------
+    Tuple[int, int]
+        ``(nx, nz)`` — number of X-type and Z-type stabilizers.
+    """
+    # 1. CSS path: hx/hz parity-check matrices
+    hx_raw = getattr(code, 'hx', None)
+    hz_raw = getattr(code, 'hz', None)
+    if hx_raw is not None or hz_raw is not None:
+        nx = hx_raw.shape[0] if hx_raw is not None and hasattr(hx_raw, 'shape') and hx_raw.size > 0 else 0
+        nz = hz_raw.shape[0] if hz_raw is not None and hasattr(hz_raw, 'shape') and hz_raw.size > 0 else 0
+        if nx > 0 or nz > 0:
+            return nx, nz
+
+    # 2. General stabilizer path: stabilizer_matrix
+    stab_mat = getattr(code, 'stabilizer_matrix', None)
+    if stab_mat is not None and hasattr(stab_mat, 'shape') and stab_mat.size > 0:
+        n_stabs = stab_mat.shape[0]
+        # Check if the code is actually CSS (pure X-type or pure Z-type rows)
+        n = code.n
+        if stab_mat.shape[1] >= 2 * n:
+            x_part = stab_mat[:, :n]
+            z_part = stab_mat[:, n:2*n]
+            nx_count = 0
+            nz_count = 0
+            for i in range(n_stabs):
+                has_x = x_part[i].any()
+                has_z = z_part[i].any()
+                if has_x and not has_z:
+                    nx_count += 1
+                elif has_z and not has_x:
+                    nz_count += 1
+                else:
+                    # Mixed stabilizer — can't split; put all in x bucket
+                    return n_stabs, 0
+            return nx_count, nz_count
+        # Fallback: all stabilizers in x bucket
+        return n_stabs, 0
+
+    # 3. Nothing found
+    return 0, 0
+
+
 @dataclass
 class BlockAllocation:
     """Allocation info for a single code block."""
@@ -133,11 +191,8 @@ class QubitAllocation:
         for i, code in enumerate(codes):
             n = code.n
             
-            # Get stabilizer counts from CSS parity check matrices
-            hx_raw = getattr(code, 'hx', None)
-            hz_raw = getattr(code, 'hz', None)
-            nx = hx_raw.shape[0] if hx_raw is not None and hx_raw.size > 0 else 0
-            nz = hz_raw.shape[0] if hz_raw is not None and hz_raw.size > 0 else 0
+            # Get stabilizer counts with CSS → stabilizer_matrix fallback
+            nx, nz = _get_code_stabilizer_counts(code)
             
             block_name = f"block_{i}"
             
@@ -426,13 +481,12 @@ class GadgetLayout:
         
         n_data = code.n
         
-        # Get stabilizer counts from CSS parity check matrices
-        # CSS codes define hx/hz as @property returning arrays
-        # Non-CSS codes won't have these, so getattr returns None
-        hx = getattr(code, 'hx', None)
-        hz = getattr(code, 'hz', None)
-        n_x = hx.shape[0] if hx is not None and hx.size > 0 else len(x_stab_coords)
-        n_z = hz.shape[0] if hz is not None and hz.size > 0 else len(z_stab_coords)
+        # Get stabilizer counts with CSS → stabilizer_matrix fallback
+        n_x, n_z = _get_code_stabilizer_counts(code)
+        # Use coordinate-based counts as additional fallback
+        if n_x == 0 and n_z == 0:
+            n_x = len(x_stab_coords)
+            n_z = len(z_stab_coords)
         
         # Determine target dimension
         if self.target_dim is None:
@@ -529,7 +583,125 @@ class GadgetLayout:
             )
         
         return data_range
-    
+
+    def add_block_adjacent(
+        self,
+        name: str,
+        code: Any,
+        reference_block: str,
+        my_edge: str,
+        their_edge: str,
+        gap: float = 0.0,
+    ) -> range:
+        """
+        Add a code block adjacent to an existing block with aligned boundaries.
+
+        This enables true lattice surgery where patches share a boundary
+        rather than using bridge ancillas between separated patches.
+
+        Parameters
+        ----------
+        name : str
+            Unique name for this block.
+        code : Code
+            The code object.
+        reference_block : str
+            Name of the existing block to position relative to.
+        my_edge : str
+            Which edge of the NEW block to align: "left", "right", "top", "bottom".
+        their_edge : str
+            Which edge of the REFERENCE block to align to.
+        gap : float
+            Gap between boundaries. 0 = touching, >0 = surgery channel.
+
+        Returns
+        -------
+        range
+            Global data qubit index range for this block.
+
+        Raises
+        ------
+        ValueError
+            If reference_block doesn't exist.
+
+        Examples
+        --------
+        >>> layout.add_block("block_0", code, offset=(0, 0))
+        >>> # Place block_1 so its LEFT edge touches block_0's RIGHT edge
+        >>> layout.add_block_adjacent("block_1", code, "block_0", 
+        ...                           my_edge="left", their_edge="right", gap=0)
+        """
+        if reference_block not in self.blocks:
+            raise ValueError(f"Reference block '{reference_block}' does not exist")
+
+        ref_block = self.blocks[reference_block]
+        ref_coords = []
+        for gidx in ref_block.data_qubit_range:
+            if gidx in self.qubit_map.global_coords:
+                ref_coords.append(self.qubit_map.global_coords[gidx])
+
+        if not ref_coords:
+            # Fall back to standard auto-offset
+            return self.add_block(name, code, auto_offset=True)
+
+        # Get bounding box of reference block
+        ref_min, ref_max = get_bounding_box(ref_coords)
+
+        # Get new block's local coordinates and bounding box
+        local_dim = get_code_dimension(code)
+        data_coords, x_stab_coords, z_stab_coords = get_code_coords(code)
+        if not data_coords:
+            return self.add_block(name, code, auto_offset=True)
+
+        # Pad to current dim
+        data_coords_padded = [pad_coord_to_dim(c, self.dim) for c in data_coords]
+        new_min, new_max = get_bounding_box(data_coords_padded)
+
+        # Compute offset based on edge alignment
+        offset = [0.0] * self.dim
+
+        # Horizontal alignment (left/right edges)
+        if their_edge == "right" and my_edge == "left":
+            # New block's left edge at reference's right edge + gap
+            offset[0] = ref_max[0] - new_min[0] + gap
+        elif their_edge == "left" and my_edge == "right":
+            # New block's right edge at reference's left edge - gap
+            offset[0] = ref_min[0] - new_max[0] - gap
+        elif their_edge == "right" and my_edge == "right":
+            # Align right edges
+            offset[0] = ref_max[0] - new_max[0]
+        elif their_edge == "left" and my_edge == "left":
+            # Align left edges
+            offset[0] = ref_min[0] - new_min[0]
+
+        # Vertical alignment (top/bottom edges)
+        if their_edge == "bottom" and my_edge == "top":
+            # New block's top edge at reference's bottom edge - gap
+            offset[1] = ref_min[1] - new_max[1] - gap
+        elif their_edge == "top" and my_edge == "bottom":
+            # New block's bottom edge at reference's top edge + gap
+            offset[1] = ref_max[1] - new_min[1] + gap
+        elif their_edge == "top" and my_edge == "top":
+            # Align top edges
+            offset[1] = ref_max[1] - new_max[1]
+        elif their_edge == "bottom" and my_edge == "bottom":
+            # Align bottom edges
+            offset[1] = ref_min[1] - new_min[1]
+
+        # For horizontal adjacency, align Y centers
+        if their_edge in ("left", "right") and my_edge in ("left", "right"):
+            ref_center_y = (ref_min[1] + ref_max[1]) / 2
+            new_center_y = (new_min[1] + new_max[1]) / 2
+            offset[1] = ref_center_y - new_center_y
+
+        # For vertical adjacency, align X centers
+        if their_edge in ("top", "bottom") and my_edge in ("top", "bottom"):
+            ref_center_x = (ref_min[0] + ref_max[0]) / 2
+            new_center_x = (new_min[0] + new_max[0]) / 2
+            offset[0] = ref_center_x - new_center_x
+
+        return self.add_block(name, code, offset=tuple(offset), auto_offset=False)
+
     def add_bridge_ancilla(
         self,
         purpose: str,
@@ -598,6 +770,175 @@ class GadgetLayout:
         self.qubit_map.global_coords[global_idx] = coord
         
         return global_idx
+
+    def add_boundary_bridges(
+        self,
+        block_a: str,
+        block_b: str,
+        edge_a: str,
+        edge_b: str,
+        purpose: str,
+        logical_idx: int = 0,
+    ) -> List[int]:
+        """
+        Add bridge ancillas along the shared boundary between two adjacent blocks.
+        
+        For true lattice surgery, we need ancillas that mediate measurements across
+        the boundary. This places bridge ancillas at the midpoint between corresponding
+        boundary qubits on each block.
+        
+        Parameters
+        ----------
+        block_a : str
+            Name of first block.
+        block_b : str
+            Name of second block.
+        edge_a : str
+            Edge of block_a at the boundary ("left", "right", "top", "bottom").
+        edge_b : str
+            Edge of block_b at the boundary (should be opposite of edge_a).
+        purpose : str
+            Purpose of these bridges (e.g., "zz_merge", "xx_merge").
+        logical_idx : int
+            Which logical qubit's boundary to use (default 0).
+            
+        Returns
+        -------
+        List[int]
+            Global indices of the created bridge ancillas.
+        """
+        alloc_a = self.blocks.get(block_a)
+        alloc_b = self.blocks.get(block_b)
+        if alloc_a is None or alloc_b is None:
+            return []
+        
+        code_a = alloc_a.code
+        code_b = alloc_b.code
+        offset_a = pad_coord_to_dim(alloc_a.offset, self.dim)
+        offset_b = pad_coord_to_dim(alloc_b.offset, self.dim)
+        
+        # Get boundary coordinates from each code
+        coords_a = code_a.get_boundary_coords(edge_a, logical_idx)
+        coords_b = code_b.get_boundary_coords(edge_b, logical_idx)
+        
+        # Apply block offsets
+        coords_a_global = [
+            tuple(c[i] + offset_a[i] if i < len(c) else offset_a[i] for i in range(self.dim))
+            for c in coords_a
+        ]
+        coords_b_global = [
+            tuple(c[i] + offset_b[i] if i < len(c) else offset_b[i] for i in range(self.dim))
+            for c in coords_b
+        ]
+        
+        bridge_indices = []
+        
+        # Create bridges at midpoints between corresponding boundary qubits
+        # If boundaries have different sizes, use the smaller set
+        n_bridges = min(len(coords_a_global), len(coords_b_global))
+        
+        if n_bridges == 0:
+            # Fallback: create a single bridge at the midpoint between block centroids
+            idx = self.add_bridge_ancilla(
+                purpose=purpose,
+                connected_blocks=[block_a, block_b]
+            )
+            return [idx]
+        
+        # Sort coordinates to match them up
+        # For horizontal edges (left/right), sort by Y coordinate
+        # For vertical edges (top/bottom), sort by X coordinate
+        if edge_a in ("left", "right"):
+            coords_a_global = sorted(coords_a_global, key=lambda c: c[1] if len(c) > 1 else 0)
+            coords_b_global = sorted(coords_b_global, key=lambda c: c[1] if len(c) > 1 else 0)
+        else:
+            coords_a_global = sorted(coords_a_global, key=lambda c: c[0])
+            coords_b_global = sorted(coords_b_global, key=lambda c: c[0])
+        
+        for i in range(n_bridges):
+            ca = coords_a_global[i]
+            cb = coords_b_global[i]
+            # Midpoint between the two boundary qubits
+            midpoint = tuple((ca[j] + cb[j]) / 2 for j in range(self.dim))
+            
+            idx = self.add_bridge_ancilla(
+                purpose=f"{purpose}_{i}",
+                coord=midpoint,
+                connected_blocks=[block_a, block_b]
+            )
+            bridge_indices.append(idx)
+        
+        return bridge_indices
+
+    def get_boundary_qubit_pairs(
+        self,
+        block_a: str,
+        block_b: str,
+        edge_a: str,
+        edge_b: str,
+        logical_idx: int = 0,
+    ) -> List[Tuple[int, int]]:
+        """
+        Get pairs of (global_idx_a, global_idx_b) for boundary qubits.
+        
+        These are the data qubit pairs that should be involved in a merge operation.
+        
+        Parameters
+        ----------
+        block_a, block_b : str
+            Names of the two blocks.
+        edge_a, edge_b : str
+            Edges at the shared boundary.
+        logical_idx : int
+            Which logical qubit's boundary to use.
+            
+        Returns
+        -------
+        List[Tuple[int, int]]
+            Pairs of global qubit indices, one from each block.
+        """
+        alloc_a = self.blocks.get(block_a)
+        alloc_b = self.blocks.get(block_b)
+        if alloc_a is None or alloc_b is None:
+            return []
+        
+        code_a = alloc_a.code
+        code_b = alloc_b.code
+        
+        # Get boundary qubits (local indices)
+        local_a = code_a.get_boundary_qubits(edge_a, logical_idx)
+        local_b = code_b.get_boundary_qubits(edge_b, logical_idx)
+        
+        # Get their coordinates for matching
+        coords_a = code_a.get_boundary_coords(edge_a, logical_idx)
+        coords_b = code_b.get_boundary_coords(edge_b, logical_idx)
+        
+        # Convert to global indices
+        global_a = [self.local_to_global(block_a, l) for l in local_a]
+        global_b = [self.local_to_global(block_b, l) for l in local_b]
+        
+        # Create (coord, global_idx) pairs and sort
+        pairs_a = list(zip(coords_a, global_a))
+        pairs_b = list(zip(coords_b, global_b))
+        
+        # Sort by perpendicular coordinate
+        if edge_a in ("left", "right"):
+            pairs_a = sorted(pairs_a, key=lambda p: p[0][1] if len(p[0]) > 1 else 0)
+            pairs_b = sorted(pairs_b, key=lambda p: p[0][1] if len(p[0]) > 1 else 0)
+        else:
+            pairs_a = sorted(pairs_a, key=lambda p: p[0][0])
+            pairs_b = sorted(pairs_b, key=lambda p: p[0][0])
+        
+        # Pair up
+        n = min(len(pairs_a), len(pairs_b))
+        result = []
+        for i in range(n):
+            ga = pairs_a[i][1]
+            gb = pairs_b[i][1]
+            if ga is not None and gb is not None:
+                result.append((ga, gb))
+        
+        return result
     
     def get_block_data_qubits(self, block_name: str) -> List[int]:
         """Get global indices of data qubits for a block."""
