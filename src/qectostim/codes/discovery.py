@@ -8,6 +8,22 @@ all available QEC codes in the codebase. This is useful for:
 
 Main function:
 - discover_all_codes(): Returns dict mapping code names to instantiated codes
+
+Code Parameters:
+    Varies by discovered code.  Each entry in the returned dictionary is a
+    fully-instantiated ``Code`` (or subclass) with its own [[n, k, d]].
+
+Stabiliser Structure:
+    Varies.  The discovery module is agnostic to stabiliser structure;
+    it delegates entirely to each code's own constructor.
+
+Raises:
+    CodeInstantiationTimeoutError
+        If a code constructor exceeds the configured timeout.
+    TimeoutError
+        Legacy alias for the same condition.
+    ImportError
+        If a code's backing module cannot be imported.
 """
 
 from __future__ import annotations

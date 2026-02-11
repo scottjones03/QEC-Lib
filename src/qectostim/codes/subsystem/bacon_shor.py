@@ -39,6 +39,42 @@ Logical operators
 * X̄ = X on every qubit in any single row   (weight n)
 * Z̄ = Z on every qubit in any single column (weight m)
 
+Subsystem structure
+-------------------
+The gauge group ``G`` factorises as ``G = S × L_g`` where
+``S = ⟨X-stabs, Z-stabs⟩`` is the stabiliser group and ``L_g``
+contains the independent gauge operators.  The *dressed* distance
+equals ``min(m, n)`` (weight of the minimum-weight dressed logical),
+while the *bare* distance is always 1 (single-qubit errors can
+flip a gauge logical).
+
+Gauge fixing
+------------
+Fixing all gauge operators converts the Bacon–Shor code into a
+standard CSS stabiliser code.  See
+:mod:`qectostim.codes.composite.gauge_fixed` for details.
+
+Code Parameters
+~~~~~~~~~~~~~~~
+:math:`[[n, k, d]]` where:
+
+- :math:`n = m \times n` physical qubits (grid dimensions)
+- :math:`k = 1` logical qubit
+- :math:`d = \min(m, n)` code distance
+- Rate :math:`k/n = 1 / (m \times n)`
+- Gauge qubits: :math:`(m-1)(n-1)`
+
+Stabiliser Structure
+~~~~~~~~~~~~~~~~~~~~
+- **X-type stabilisers**: :math:`m - 1` row-pair stabilisers, each of
+  weight :math:`2n` (X on all qubits in two adjacent rows).
+- **Z-type stabilisers**: :math:`n - 1` column-pair stabilisers, each
+  of weight :math:`2m` (Z on all qubits in two adjacent columns).
+- **Gauge operators**: weight-2 XX on horizontal pairs (per row),
+  weight-2 ZZ on vertical pairs (per column).
+- Measurement schedule: gauge operators are measured independently;
+  stabiliser outcomes are inferred from products of gauge measurements.
+
 Connections
 -----------
 * **Shor code** [[9,1,3]] is the 3 × 3 Bacon–Shor code.
@@ -53,6 +89,30 @@ References
 * Aliferis & Cross, "Subsystem fault tolerance with the Bacon–Shor
   code", Phys. Rev. Lett. **98**, 220502 (2007).  arXiv:quant-ph/0610063
 * Error Correction Zoo: https://errorcorrectionzoo.org/c/bacon_shor_classical
+
+Fault tolerance
+---------------
+* All gauge measurements are weight-2, so they require only a single
+  CNOT gate and one ancilla qubit each — no hook errors arise.
+* The code achieves fault-tolerant error correction with the simplest
+  possible measurement circuits of any known code family.
+* Transversal CNOT is available between two Bacon–Shor blocks of the
+  same geometry.
+
+Decoding
+--------
+* Row and column parity votes: for an m × n code, measure all m(n−1)
+  horizontal XX pairs and n(m−1) vertical ZZ pairs, then majority-vote
+  each row/column parity to infer X- and Z-stabiliser outcomes.
+* The decoding problem separates into independent 1-D repetition-code
+  decoders along rows (for Z errors) and columns (for X errors).
+* Effective distance equals min(m, n) under this voting decoder.
+
+Error budget
+------------
+* With depolarising noise at physical rate p, the logical error rate
+  scales as O(p^{⌈d/2⌉}) where d = min(m, n).
+* The 3 × 3 Bacon–Shor (Shor [[9,1,3]]) code breaks even at p ≈ 1 %.
 """
 
 from __future__ import annotations
@@ -132,6 +192,11 @@ class BaconShorCode(CSSCode):
             Number of columns (default 3, must be ≥ 2).
         metadata : dict, optional
             Extra metadata merged into the code's metadata dictionary.
+
+        Raises
+        ------
+        ValueError
+            If ``m < 2`` or ``n < 2``.
         """
         if m < 2 or n < 2:
             raise ValueError(f"Grid must be at least 2×2, got {m}×{n}")
@@ -204,26 +269,125 @@ class BaconShorCode(CSSCode):
         logical_z: List[PauliString] = [{q: 'Z' for q in lz_support}]
         
         distance = min(m, n)
-        
+
+        # ═══════════════════════════════════════════════════════════════════
+        # CHAIN COMPLEX
+        # ═══════════════════════════════════════════════════════════════════
+        boundary_2 = hx.T.astype(np.uint8)
+        boundary_1 = hz.astype(np.uint8)
+        chain_complex = CSSChainComplex3(boundary_2=boundary_2, boundary_1=boundary_1)
+
+        # ═══════════════════════════════════════════════════════════════════
+        # GEOMETRY — m × n grid
+        # ═══════════════════════════════════════════════════════════════════
+        coords: Dict[int, Coord2D] = {}
+        for r in range(m):
+            for c in range(n):
+                coords[qubit_idx(r, c)] = (float(c), float(m - 1 - r))
+        data_coords = [coords[i] for i in range(n_qubits)]
+
+        # ═══════════════════════════════════════════════════════════════════
+        # METADATA (all 17 standard keys)
+        # ═══════════════════════════════════════════════════════════════════
         meta = dict(metadata or {})
+        meta["code_family"] = "subsystem"
+        meta["code_type"] = "bacon_shor"
         meta["name"] = f"BaconShor_{m}x{n}"
         meta["n"] = n_qubits
         meta["k"] = 1
         meta["distance"] = distance
+        meta["rate"] = 1.0 / n_qubits
         meta["m"] = m
         meta["grid_n"] = n
         meta["is_subsystem"] = True
         meta["x_gauges"] = x_gauges
         meta["z_gauges"] = z_gauges
-        
-        # Grid coordinates
-        coords = {}
-        for r in range(m):
-            for c in range(n):
-                coords[qubit_idx(r, c)] = (c, m - 1 - r)
-        meta["data_coords"] = [coords[i] for i in range(n_qubits)]
-        
+
+        meta["lx_pauli_type"] = "X"
+        meta["lx_support"] = lx_support
+        meta["lz_pauli_type"] = "Z"
+        meta["lz_support"] = lz_support
+        meta["data_coords"] = data_coords
+        meta["data_qubits"] = list(range(n_qubits))
+        meta["x_logical_coords"] = [data_coords[q] for q in lx_support]
+        meta["z_logical_coords"] = [data_coords[q] for q in lz_support]
+
+        _xsc = []
+        for _ri in range(hx.shape[0]):
+            _sup = np.where(hx[_ri])[0]
+            if len(_sup) > 0:
+                _xsc.append((float(np.mean([data_coords[q][0] for q in _sup])), float(np.mean([data_coords[q][1] for q in _sup]))))
+            else:
+                _xsc.append((0.0, 0.0))
+        meta["x_stab_coords"] = _xsc
+        _zsc = []
+        for _ri in range(hz.shape[0]):
+            _sup = np.where(hz[_ri])[0]
+            if len(_sup) > 0:
+                _zsc.append((float(np.mean([data_coords[q][0] for q in _sup])), float(np.mean([data_coords[q][1] for q in _sup]))))
+            else:
+                _zsc.append((0.0, 0.0))
+        meta["z_stab_coords"] = _zsc
+
+        # Schedules — gauge-based extraction uses sequential weight-2 ops
+        meta["x_schedule"] = None   # gauge-based, not plaquette-based
+        meta["z_schedule"] = None
+        meta["stabiliser_schedule"] = {
+            "x_rounds": {i: 0 for i in range(len(x_stabs))},
+            "z_rounds": {i: 0 for i in range(len(z_stabs))},
+            "n_rounds": 1,
+            "description": (
+                "Stabilisers are products of weight-2 gauge operators; "
+                "all row-pair X-stabilisers in round 0, all column-pair "
+                "Z-stabilisers in round 0."
+            ),
+        }
+
+        # ═══════════════════════════════════════════════════════════════════
+        # LITERATURE / PROVENANCE
+        # ═══════════════════════════════════════════════════════════════════
+        meta["error_correction_zoo_url"] = (
+            "https://errorcorrectionzoo.org/c/bacon_shor_classical"
+        )
+        meta["wikipedia_url"] = (
+            "https://en.wikipedia.org/wiki/Bacon%E2%80%93Shor_code"
+        )
+        meta["canonical_references"] = [
+            "Bacon, Phys. Rev. A 73, 012340 (2006). arXiv:quant-ph/0506023",
+            "Aliferis & Cross, Phys. Rev. Lett. 98, 220502 (2007). arXiv:quant-ph/0610063",
+        ]
+        meta["connections"] = [
+            "Subsystem code: syndrome via weight-2 gauge operators only",
+            "3×3 case is equivalent to Shor's [[9,1,3]] code",
+            "Compass codes interpolate between Bacon-Shor and surface codes",
+        ]
+
+        # ── Validate CSS structure ─────────────────────────────────
+        validate_css_code(hx, hz, f"BaconShor_{m}x{n}", raise_on_error=True)
+
         super().__init__(hx=hx, hz=hz, logical_x=logical_x, logical_z=logical_z, metadata=meta)
+        self._m_grid = m
+        self._n_grid = n
+        self._distance = distance
+
+    # ─── Properties ────────────────────────────────────────────────
+    @property
+    def distance(self) -> int:
+        """Code distance (``min(m, n)``)."""
+        return self._distance
+
+    @property
+    def name(self) -> str:
+        """Human-readable name, e.g. ``'BaconShor_3x3'``."""
+        return f"BaconShor_{self._m_grid}x{self._n_grid}"
+
+    def qubit_coords(self) -> List:
+        """Return 2-D grid coordinates for the *m × n* data qubits."""
+        coords = []
+        for r in range(self._m_grid):
+            for c in range(self._n_grid):
+                coords.append((float(c), float(r)))
+        return coords
     
     def gauge_operators(self) -> Tuple[List[PauliString], List[PauliString]]:
         """Return the gauge operators (weight-2).

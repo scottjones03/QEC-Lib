@@ -8,7 +8,7 @@ representation [X|Z].
 """
 from __future__ import annotations
 
-from typing import Any, List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 import numpy as np
 import stim
@@ -58,9 +58,10 @@ class GeneralStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         data_offset: int = 0,
         ancilla_offset: Optional[int] = None,
         measurement_basis: str = "Z",
+        coord_offset: Optional[Tuple[float, ...]] = None,
     ):
-        # Pass measurement_basis to parent for proper first-round detector handling
-        super().__init__(code, ctx, block_name, data_offset, ancilla_offset, measurement_basis)
+        # Pass measurement_basis and coord_offset to parent
+        super().__init__(code, ctx, block_name, data_offset, ancilla_offset, measurement_basis, coord_offset=coord_offset)
         
         # Get symplectic stabilizer matrix
         self._stab_mat = getattr(code, 'stabilizer_matrix', None)
@@ -83,7 +84,21 @@ class GeneralStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
     def ancilla_qubits(self) -> List[int]:
         """Global indices of ancilla qubits."""
         return list(range(self.ancilla_offset, self.ancilla_offset + self._n_stabs))
-    
+
+    @property
+    def all_ancillas(self) -> List[int]:
+        """All ancilla qubits — unified pool for non-CSS codes."""
+        return self.ancilla_qubits
+
+    @property
+    def x_ancillas(self) -> List[int]:
+        """For non-CSS codes, all ancillas are reported as 'x_ancillas'.
+
+        This ensures that callers using ``builder.x_ancillas + builder.z_ancillas``
+        still get the correct total set of ancillas.
+        """
+        return self.ancilla_qubits
+
     @property
     def total_qubits(self) -> int:
         """Total qubits used by this block."""
@@ -292,8 +307,10 @@ class GeneralStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
     
     def _get_stab_coord(self, s_idx: int) -> Tuple[float, float, float]:
         """Get detector coordinate for a stabilizer."""
+        ox = self._coord_offset[0] if len(self._coord_offset) > 0 else 0.0
+        oy = self._coord_offset[1] if len(self._coord_offset) > 1 else 0.0
         # For non-CSS codes, use generic coordinates
-        return (0.0, float(s_idx), self.ctx.current_time)
+        return (ox, float(s_idx) + oy, self.ctx.current_time)
     
     def reset_stabilizer_history(self, swap_xz: bool = False, skip_first_round: bool = False, clear_history: bool = False) -> None:
         """
@@ -304,6 +321,21 @@ class GeneralStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         # Clear measurement history
         self._last_stab_meas = [None] * self._n_stabs
         self._round_number = 0
+
+    def get_last_measurement_indices(self) -> Dict[str, List[int]]:
+        """Return last-round measurement indices.
+
+        For non-CSS codes all stabilizers are measured together.  We report
+        them under the ``"X"`` key so that crossing-detector logic (which
+        iterates ``"X"`` and ``"Z"`` keys) can find them.
+
+        Returns
+        -------
+        Dict[str, List[int]]
+            ``{"X": [...], "Z": []}`` with all stabilizer measurements in X.
+        """
+        indices = [m for m in self._last_stab_meas if m is not None]
+        return {"X": indices, "Z": []}
     
     def emit_space_like_detectors(
         self,

@@ -34,15 +34,75 @@ Two anticommuting pairs (weight 2):
     X̄₁ = X₀X₂ (XIXIII)     Z̄₁ = Z₀Z₁ (ZZIIII)
     X̄₂ = X₃X₅ (IIIXIX)     Z̄₂ = Z₄Z₅ (IIIIZZ)
 
+Qubit layout
+------------
+Data qubits on a 2×3 rectangular grid.  X-stabilisers act on horizontal
+bands; Z-stabilisers act on alternating columns (chequerboard pattern).
+
+::
+
+    Row 1:    3 ─────── 4 ─────── 5
+              │         │         │
+              │  [X₁]   │         │
+              │    ●    │         │
+    Row 0:    0 ─────── 1 ─────── 2
+              │         │         │
+              │  [X₀]   │         │
+              └─────────┴─────────┘
+
+    X-stabilisers (horizontal bands):
+      X₀ = {0,1,2,3}  "XXXXII" → lower-left rectangle
+      X₁ = {0,1,4,5}  "XXIIXX" → spans columns 0,1 on both rows + col 2 row 1
+
+    Z-stabilisers (alternating columns):
+      Z₀ = {0,2,4}    "ZIZIZI" → even-indexed qubits (cols 0,2 rows 0,1)
+      Z₁ = {1,3,5}    "IZIZIZ" → odd-indexed qubits (cols 1,2 rows 0,1)
+
+    Data qubit coordinates:
+      0: (0, 0)   1: (1, 0)   2: (2, 0)   — bottom row
+      3: (0, 1)   4: (1, 1)   5: (2, 1)   — top row
+
+    Stabiliser coordinates (centroids of support):
+      X₀: mean of {0,1,2,3} → (0.75, 0.5)
+      X₁: mean of {0,1,4,5} → (1.0, 0.5)
+      Z₀: mean of {0,2,4} → (1.0, 0.67)
+      Z₁: mean of {1,3,5} → (1.0, 0.67)
+
 Key properties:
 - Detects any single-qubit error (distance 2)
 - Transversal Hadamard swaps the two logical qubits
+
+Code Parameters
+~~~~~~~~~~~~~~~
+:math:`[[n, k, d]] = [[6, 2, 2]]` where:
+
+- :math:`n = 6` physical qubits (2 × 3 rectangular grid)
+- :math:`k = 2` logical qubits
+- :math:`d = 2` (detects single errors; cannot correct)
+- Rate :math:`k/n = 1/3`
+
+Stabiliser Structure
+~~~~~~~~~~~~~~~~~~~~
+- **X-type stabilisers**: 2 generators, each weight 4;
+  ``XXXXII`` (qubits {0,1,2,3}) and ``XXIIXX`` (qubits {0,1,4,5}).
+- **Z-type stabilisers**: 2 generators, each weight 3;
+  ``ZIZIZI`` (qubits {0,2,4}) and ``IZIZIZ`` (qubits {1,3,5}).
+- Measurement schedule: all 4 stabilisers in parallel;
+  X-stabilisers use depth-4 CNOT circuits, Z-stabilisers depth-3.
 
 Connections to other codes
 --------------------------
 * **[[4, 2, 2]] code**: obtained by puncturing two qubits.
 * **Colour codes**: related to small colour code constructions.
 * **Concatenated codes**: can serve as outer code in concatenated schemes.
+* **Surface codes**: the [[6,2,2]] can be viewed as a minimal rotated
+  surface-code patch with two logical qubits.
+
+Fault tolerance
+---------------
+* Like the [[4,2,2]], the [[6,2,2]] is used for post-selection-based
+  error detection rather than error correction.
+* Transversal Hadamard swaps the two logical qubits (X̄₁ ↔ X̄₂).
 
 References
 ----------
@@ -120,6 +180,12 @@ class SixQubit622Code(CSSCode):
             Extra key/value pairs merged into the code's metadata
             dictionary.  User-supplied entries override auto-generated
             ones with the same key.
+
+        Raises
+        ------
+        ValueError
+            If the internally constructed parity-check matrices fail
+            CSS validation (should never happen for a fixed code).
         """
         # ═══════════════════════════════════════════════════════════════════
         # STABILISER MATRICES
@@ -178,11 +244,11 @@ class SixQubit622Code(CSSCode):
         ]
 
         # ═══════════════════════════════════════════════════════════════════
-        # GEOMETRY — 2×3 grid
+        # GEOMETRY — 2×3 grid (see module docstring for ASCII diagram)
         # ═══════════════════════════════════════════════════════════════════
         data_coords = [
-            (0.0, 0.0), (1.0, 0.0), (2.0, 0.0),
-            (0.0, 1.0), (1.0, 1.0), (2.0, 1.0),
+            (0.0, 0.0), (1.0, 0.0), (2.0, 0.0),  # bottom row
+            (0.0, 1.0), (1.0, 1.0), (2.0, 1.0),  # top row
         ]
 
         # ═══════════════════════════════════════════════════════════════════
@@ -197,8 +263,14 @@ class SixQubit622Code(CSSCode):
         meta["rate"] = 2.0 / 6.0
         meta["data_coords"] = data_coords
         meta["data_qubits"] = list(range(6))
-        meta["x_stab_coords"] = [(0.5, -0.5), (1.5, 0.5)]
-        meta["z_stab_coords"] = [(0.5, 0.5), (1.5, 1.5)]
+        # X-stab centroids: X₀={0,1,2,3}, X₁={0,1,4,5}
+        # X₀: mean of (0,0),(1,0),(2,0),(0,1) = (0.75, 0.25)
+        # X₁: mean of (0,0),(1,0),(1,1),(2,1) = (1.0, 0.5)
+        meta["x_stab_coords"] = [(0.75, 0.25), (1.0, 0.5)]
+        # Z-stab centroids: Z₀={0,2,4}, Z₁={1,3,5}
+        # Z₀: mean of (0,0),(2,0),(1,1) = (1.0, 0.33)
+        # Z₁: mean of (1,0),(0,1),(2,1) = (1.0, 0.67)
+        meta["z_stab_coords"] = [(1.0, 0.33), (1.0, 0.67)]
         meta["lx_pauli_type"] = "X"
         meta["lx_support"] = [0, 2]           # first logical X: X₀X₂
         meta["lz_pauli_type"] = "Z"

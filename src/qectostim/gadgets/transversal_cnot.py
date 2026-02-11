@@ -52,6 +52,7 @@ from qectostim.codes.abstract_css import CSSCode
 from qectostim.gadgets.base import (
     Gadget,
     GadgetMetadata,
+    HeisenbergFrame,
     StabilizerTransform,
     ObservableTransform,
     TwoQubitObservableTransform,
@@ -401,80 +402,21 @@ class TransversalCNOTGadget(Gadget):
     
     def get_observable_config(self) -> ObservableConfig:
         """
-        Get observable configuration based on CNOT output states.
-        
-        For most input states, the observable is a two-block XOR:
-            Observable = B_L(ctrl) ⊕ B'_L(tgt) = 0
-        where B, B' are the measurement bases of each block's output state.
-        
-        CNOT truth table:
-            |00⟩ → |00⟩: Z_L(ctrl) ⊕ Z_L(tgt) = 0  (two-block)
-            |+0⟩ → |++⟩: X_L(ctrl) ⊕ X_L(tgt) = 0  (two-block)
-            |0+⟩ → |0+⟩: Z_L(ctrl) ⊕ X_L(tgt) = 0  (two-block)
-            |++⟩ → |+0⟩: X_L(ctrl) = 0              (single-block)
-        
-        For |++⟩, the ideal two-block observable X_L(ctrl) ⊕ Z_L(tgt) is
-        physically deterministic but incompatible with stim's DEM construction.
-        The backward Pauli frame propagation through CNOT creates Y on both
-        blocks (X_ctrl spreads → X on tgt, Z_tgt picks up → Z on ctrl,
-        combined = Y on both), which anti-commutes with the RX preparation
-        of both blocks. No cancellation occurs because both the X and Z
-        terms spread through the CNOT.
-        
-        For the other three inputs, the two-block observable works because
-        one term's backward propagation cancels the other's cross-block
-        contribution:
-        - |00⟩ ZZ: Z_ctrl backward stays, Z_tgt backward picks up Z_ctrl
-          → Z_ctrl × Z_ctrl = I on ctrl → commutes with R ✓
-        - |+0⟩ XX: X_ctrl backward spreads X_tgt, X_tgt backward stays
-          → X_tgt × X_tgt = I on tgt → commutes with R ✓
-        - |0+⟩ ZX: Z_ctrl stays on ctrl, X_tgt stays on tgt
-          → no cross terms → each commutes with its own prep ✓
-        
-        For |++⟩ we use X_L(ctrl) alone, which backward-propagates to
-        X_ctrl × X_tgt (CNOT spreads X), commuting with RX on both blocks.
-        Error coverage: Z errors on either block propagate through CNOT
-        and flip X_L(ctrl); X errors on ctrl flip X_L(ctrl) directly.
-        Tgt-only X errors don't flip the observable but are still correctable
-        via the detector graph (temporal, crossing, boundary detectors).
-        
-        Returns
-        -------
-        ObservableConfig
-            Observable configuration (two-block or single-block).
+        Observable configuration via universal Heisenberg derivation.
+
+        Uses ``HeisenbergFrame.transversal_cnot()`` to automatically derive
+        the correct observable for any input state.
+
+        CNOT truth table (auto-derived)::
+
+            |00⟩ → |00⟩: Z_L(ctrl) ⊕ Z_L(tgt)  (two-block)
+            |+0⟩ → |++⟩: X_L(ctrl) ⊕ X_L(tgt)  (two-block)
+            |0+⟩ → |0+⟩: Z_L(ctrl) ⊕ X_L(tgt)  (two-block)
+            |++⟩ → |+0⟩: X_L(ctrl) only         (single-block, eigenstate det)
         """
-        bases = self._get_output_bases()
-        
-        # Check if the two-block observable's backward Pauli frame commutes
-        # with both blocks' preparations. This fails when BOTH observable
-        # terms spread through the CNOT (X on ctrl spreads, Z on tgt picks
-        # up), creating Y on both blocks. This happens exactly when the
-        # output bases are X(ctrl) and Z(tgt) — i.e., the |++⟩ input.
-        ctrl_output_spreads = (bases["block_0"] == "X")  # X_ctrl → X_ctrl ⊗ X_tgt
-        tgt_output_spreads = (bases["block_1"] == "Z")   # Z_tgt → Z_ctrl ⊗ Z_tgt
-        
-        if ctrl_output_spreads and tgt_output_spreads:
-            # Both terms spread → backward frame is Y on both blocks.
-            # Fall back to single-block observable using the ctrl block,
-            # whose X_L backward frame (X on both blocks) commutes with
-            # RX on both blocks.
-            return ObservableConfig(
-                output_blocks=["block_0"],
-                block_bases=bases,
-                correlation_terms=[
-                    ObservableTerm(block="block_0", basis=bases["block_0"]),
-                ],
-            )
-        
-        # Standard two-block observable — backward frame cancels on one block
-        return ObservableConfig(
-            output_blocks=["block_0", "block_1"],
-            block_bases=bases,
-            correlation_terms=[
-                ObservableTerm(block="block_0", basis=bases["block_0"]),
-                ObservableTerm(block="block_1", basis=bases["block_1"]),
-            ],
-        )
+        input_state = self.control_state + self.target_state
+        frame = HeisenbergFrame.transversal_cnot()
+        return ObservableConfig.from_heisenberg(frame, input_state)
     
     def get_measurement_config(self) -> MeasurementConfig:
         """

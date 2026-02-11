@@ -23,7 +23,7 @@ PROTOCOL SUMMARY
 ════════════════════════════════════════════════════════════════════════════════
 
 CZ H-Teleportation (self-dual codes):
-    |ψ⟩_D ⊗ |+⟩_A → [EC] → [CZ] → [EC] → MX(D), MX/MZ(A)
+    |ψ⟩_D (outside) ⊗ RX→|+⟩_A (inside) → [EC] → [CZ] → [EC] → MX(D inside), MX/MZ(A outside)
     
     |0⟩ input: Observable = X_L(A)
     |+⟩ input: Observable = X_L(D) ⊕ Z_L(A)
@@ -31,12 +31,18 @@ CZ H-Teleportation (self-dual codes):
     Crossing detectors: 3-term for X stabilizers (X_pre ⊕ X_post ⊕ Z_post)
 
 CNOT H-Teleportation (any CSS code):
-    |ψ⟩_D ⊗ |0⟩_A → [EC] → [CNOT(D→A)] → [EC] → MX(D), MZ/MX(A)
+    |ψ⟩_D (outside) ⊗ R→|0⟩_A (inside) → [EC] → [CNOT(D→A)] → [EC] → MX(D inside), MZ/MX(A outside)
     
     |0⟩ input: Observable = Z_L(A)
     |+⟩ input: Observable = X_L(D) ⊕ X_L(A)
     
     Crossing detectors: 2-term for most, 3-term for Z_D when |+⟩ input
+
+Preparation Architecture:
+    - Data block: prepared OUTSIDE gadget (experiments/preparation.py)
+    - Ancilla block: prepared INSIDE gadget (Phase 1 emits RX or R)
+    - Data block: measured INSIDE gadget (Phase 3, MX)
+    - Ancilla block: measured OUTSIDE gadget (experiment final measurement)
 
 ════════════════════════════════════════════════════════════════════════════════
 """
@@ -82,12 +88,12 @@ class CZHTeleportGadget(TeleportationGadgetMixin, Gadget):
     between the data block and an ancilla block prepared in |+⟩.
     
     Protocol:
-        1. Data block prepared in |ψ⟩_L (|0⟩ or |+⟩)
-        2. Ancilla block prepared in |+⟩_L
+        1. Data block prepared in |ψ⟩_L (outside gadget, experiments/preparation.py)
+        2. Ancilla block prepared in |+⟩_L via RX (inside gadget, Phase 1)
         3. EC rounds on both blocks
         4. Transversal CZ
         5. EC rounds on both blocks
-        6. MX on data, MX or MZ on ancilla (depends on input)
+        6. MX on data (inside gadget, Phase 3), MX/MZ on ancilla (outside gadget)
     
     Observable:
         |0⟩ input: X_L(A)
@@ -161,9 +167,9 @@ class CZHTeleportGadget(TeleportationGadgetMixin, Gadget):
     def num_phases(self) -> int:
         """
         CZ H-teleportation has 3 phases:
-        1. PREPARATION: Prepare ancilla block in |+⟩
+        1. PREPARATION: Prepare ancilla in |+⟩ via RX (inside gadget)
         2. GATE: Apply transversal CZ
-        3. MEASUREMENT: Bell measurement on data block (MX)
+        3. MEASUREMENT: MX on data block (inside gadget)
         
         The experiment emits EC rounds between phases.
         """
@@ -184,9 +190,9 @@ class CZHTeleportGadget(TeleportationGadgetMixin, Gadget):
         """
         Emit the next phase of CZ H-teleportation.
         
-        Phase 1 (PREPARATION): Prepare ancilla block in |+⟩_L
+        Phase 1 (PREPARATION): Prepare ancilla in |+⟩ via RX
         Phase 2 (GATE): Apply transversal CZ
-        Phase 3 (MEASUREMENT): Bell measurement on data block (MX)
+        Phase 3 (MEASUREMENT): MX on data block
         
         Parameters
         ----------
@@ -222,15 +228,14 @@ class CZHTeleportGadget(TeleportationGadgetMixin, Gadget):
         
         if self._current_phase == 1:
             # ═══════════════════════════════════════════════════════════
-            # PHASE 1: PREPARATION - Ancilla block in |+⟩_L
+            # PHASE 1: PREPARATION - Ancilla block in |+⟩ via RX
             # ═══════════════════════════════════════════════════════════
-            # Ancilla prep requirements are declared via get_preparation_config()
-            # (PreparationConfig from gadgets/) which specifies:
-            #   ancilla_block: |+⟩, X deterministic, Z indeterminate
-            # The experiment's preparation module (experiments/preparation.py)
-            # executes the actual RX instruction at the correct time (before
-            # any syndrome rounds), ensuring proper detector chain.
-            #
+            # Prepare ancilla in |+⟩ via RX (atomic X-basis preparation).
+            # Data block is prepared OUTSIDE by experiments/preparation.py.
+            # RX subsumes H into preparation — no explicit H gates needed.
+            circuit.append("RX", ancilla_qubits)
+            circuit.append("TICK")
+
             # Request inter-phase rounds for pre-gate EC on both blocks.
             return PhaseResult(
                 phase_type=PhaseType.PREPARATION,
@@ -448,12 +453,12 @@ class CNOTHTeleportGadget(TeleportationGadgetMixin, Gadget):
     prepared in |0⟩.
     
     Protocol:
-        1. Data block prepared in |ψ⟩_L (|0⟩ or |+⟩)
-        2. Ancilla block prepared in |0⟩_L
+        1. Data block prepared in |ψ⟩_L (outside gadget, experiments/preparation.py)
+        2. Ancilla block prepared in |0⟩_L via R (inside gadget, Phase 1)
         3. EC rounds on both blocks
         4. Transversal CNOT (data=control, ancilla=target)
         5. EC rounds on both blocks
-        6. MX on data, MZ or MX on ancilla (depends on input)
+        6. MX on data (inside gadget, Phase 3), MZ/MX on ancilla (outside gadget)
     
     Observable:
         |0⟩ input: Z_L(A)
@@ -532,9 +537,9 @@ class CNOTHTeleportGadget(TeleportationGadgetMixin, Gadget):
     def num_phases(self) -> int:
         """
         CNOT H-teleportation has 3 phases:
-        1. PREPARATION: Prepare ancilla block in |0⟩_L
+        1. PREPARATION: Prepare ancilla in |0⟩ via R (inside gadget)
         2. GATE: Apply transversal CNOT (data=control, ancilla=target)
-        3. MEASUREMENT: Bell measurement on data block (MX)
+        3. MEASUREMENT: MX on data block (inside gadget)
         
         The experiment emits EC rounds between phases.
         """
@@ -555,9 +560,9 @@ class CNOTHTeleportGadget(TeleportationGadgetMixin, Gadget):
         """
         Emit the next phase of CNOT H-teleportation.
         
-        Phase 1 (PREPARATION): Prepare ancilla block in |0⟩_L
+        Phase 1 (PREPARATION): Prepare ancilla in |0⟩ via R
         Phase 2 (GATE): Apply transversal CNOT (data=control, ancilla=target)
-        Phase 3 (MEASUREMENT): Bell measurement on data block (MX)
+        Phase 3 (MEASUREMENT): MX on data block
         
         Parameters
         ----------
@@ -593,15 +598,13 @@ class CNOTHTeleportGadget(TeleportationGadgetMixin, Gadget):
         
         if self._current_phase == 1:
             # ═══════════════════════════════════════════════════════════
-            # PHASE 1: PREPARATION - Ancilla block in |0⟩_L
+            # PHASE 1: PREPARATION - Ancilla block in |0⟩ via R
             # ═══════════════════════════════════════════════════════════
-            # Ancilla prep requirements are declared via get_preparation_config()
-            # (PreparationConfig from gadgets/) which specifies:
-            #   ancilla_block: |0⟩, Z deterministic, X indeterminate
-            # The experiment's preparation module (experiments/preparation.py)
-            # executes the actual R instruction at the correct time (before
-            # any syndrome rounds), ensuring proper detector chain.
-            #
+            # Prepare ancilla in |0⟩ via R (atomic Z-basis reset).
+            # Data block is prepared OUTSIDE by experiments/preparation.py.
+            circuit.append("R", ancilla_qubits)
+            circuit.append("TICK")
+
             # Request inter-phase rounds for pre-gate EC on both blocks.
             return PhaseResult(
                 phase_type=PhaseType.PREPARATION,

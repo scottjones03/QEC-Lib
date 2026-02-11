@@ -1,17 +1,108 @@
 """
-Galois-Qudit Quantum Error Correction Codes.
+Galois-Qudit Quantum Error Correction Codes
+============================================
 
-Implements quantum codes over Galois fields GF(q) where q = p^m for prime p.
-These codes generalize qubit CSS codes to higher-dimensional qudit systems
-while maintaining the CSS structure.
+Overview
+--------
+Implements quantum error correction codes over Galois fields GF(q) where
+q = p^m for prime p and positive integer m.  These codes generalise qubit
+CSS codes to higher-dimensional qudit systems while retaining the CSS
+orthogonality structure Hx · Hz^T = 0.
 
-Galois qudits use the field structure of GF(q) for both X and Z operators,
-allowing for more efficient encoding in some regimes.
+Galois qudits use the *field* structure of GF(q) for both X-type and
+Z-type stabiliser operators.  The field multiplication and addition laws
+enable constructions that are impossible with simple modular (Z_d) qudits.
+
+Galois fields for qudit codes
+-----------------------------
+A Galois field GF(q) with q = p^m is constructed by adjoining a root of
+an irreducible degree-m polynomial over Z_p.  For quantum codes the field
+size q governs the local Hilbert-space dimension: each physical carrier
+is a q-level system.  The CSS orthogonality condition becomes
+
+    Hx · Hz^T = 0   over GF(q).
+
+Because binary CSS validity implies GF(q) CSS validity, all constructions
+in this module build stabiliser matrices with binary (0/1) entries and
+then interpret them over GF(q).
+
+Qudit surface codes
+-------------------
+``GaloisQuditSurfaceCode`` generalises the 2D surface code to GF(q) qudits
+via the hypergraph product (HGP) of two repetition codes.  Stabilisers
+remain weight-4 on the bulk; boundaries reduce the weight.  The lattice
+dimensions Lx, Ly control the code size.
+
+Qudit toric / HGP codes
+-----------------------
+``GaloisQuditHGPCode`` applies the Tillich–Zémor hypergraph product to a
+classical cyclic code over GF(q).  It produces a CSS code whose
+parameters are governed by the classical seed.
+
+Qudit colour codes
+------------------
+``GaloisQuditColorCode`` builds a CSS code inspired by 2D colour-code
+geometry but realised here through HGP for guaranteed CSS validity.  The
+lattice size L determines the overall code parameters.
+
+Qudit expander codes
+--------------------
+``GaloisQuditExpanderCode`` uses an expander-graph adjacency matrix as
+the classical seed inside an HGP, yielding asymptotically good QLDPC
+codes over GF(q).
+
+Code parameters
+---------------
+All four derived classes expose ``n`` (block length), ``k`` (logical
+count), and ``distance`` (code distance).  The qudit dimension ``q`` is
+stored both on the object and in ``metadata['qudit_dim']``.
+
+Stabiliser Structure
+~~~~~~~~~~~~~~~~~~~~
+* **GaloisQuditSurfaceCode**: weight-4 bulk stabilisers (weight-2/3 on
+  boundaries), built from an HGP of two repetition codes over GF(q).
+  ``Lx × Ly`` plaquette (X) and vertex (Z) stabilisers.
+* **GaloisQuditHGPCode**: stabiliser weight inherited from the classical
+  seed code; typically O(1) for LDPC seeds.  Count scales as
+  ``O(n_seed²)`` per type.
+* **GaloisQuditColorCode**: weight-4 colour-code-style stabilisers
+  arranged on an ``(L+1) × (L+1)`` grid (HGP approximation).
+* **GaloisQuditExpanderCode**: bounded-weight stabilisers from the
+  expander adjacency matrix; good spectral gap ensures large distance.
+* All codes admit a single-round parallel measurement schedule.
+
+Connections
+-----------
+* **Modular-qudit codes** — use cyclic groups Z_d rather than fields;
+  see :mod:`qectostim.codes.qudit.modular`.
+* **Standard qubit CSS codes** — the special case q = 2; see
+  :mod:`qectostim.codes.surface.rotated_surface`.
+* **Hypergraph product codes** — the HGP construction underlying most
+  classes here; see :mod:`qectostim.codes.composite.homological_product`.
+* **Expander codes** — qubit-level expander QLDPC codes; see
+  :mod:`qectostim.codes.qldpc.expander_codes`.
+
+References
+----------
+* Ashikhmin & Knill, "Non-binary quantum stabilizer codes",
+  IEEE Trans. Inf. Theory 47, 3065 (2001).
+* Ketkar et al., "Nonbinary stabilizer codes over finite fields",
+  IEEE Trans. Inf. Theory 52, 4892 (2006).  arXiv:quant-ph/0508070
+* Tillich & Zémor, "Quantum LDPC codes with positive rate and
+  minimum distance proportional to sqrt(n)",
+  IEEE Trans. Inf. Theory 60, 1193 (2014).  arXiv:0903.0566
+* Bullock & Brennen, "Qudit surface codes and gauge color codes
+  in all spatial dimensions", New J. Phys. 9, 042 (2007).
+* Error Correction Zoo — Galois-qudit CSS:
+  https://errorcorrectionzoo.org/c/galois_css
+* Wikipedia — Finite field:
+  https://en.wikipedia.org/wiki/Finite_field
 """
 from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 
 from qectostim.codes.utils import compute_css_logicals, vectors_to_paulis_x, vectors_to_paulis_z
+from qectostim.codes.utils import validate_css_code
 
 # Note: For true Galois-qudit codes, we would need GF(q) arithmetic.
 # Here we implement a simplified version that captures the essential structure
@@ -54,6 +145,11 @@ class GaloisQuditCode:
             logical_x: Logical X operator strings
             logical_z: Logical Z operator strings
             metadata: Additional code metadata
+
+        Raises:
+            ValueError: If ``q`` is not a prime power (q = p^m for
+                prime p and m ≥ 1).
+            ValueError: If ``Hx · Hz^T ≠ 0 (mod 2)``.
         """
         self.q = q
         self.hx = np.array(hx, dtype=np.uint8)
@@ -129,15 +225,56 @@ class GaloisQuditSurfaceCode(GaloisQuditCode):
             logical_x = [{0: 'X'}]
             logical_z = [{0: 'Z'}]
         
+        # ── Validate CSS structure ─────────────────────────────────
+        validate_css_code(hx % 2, hz % 2, f"GaloisQuditSurface_{Lx}x{Ly}_GF{q}", raise_on_error=True)
+
+        # ── Standard metadata ─────────────────────────────────────
+        meta: Dict[str, Any] = dict(metadata or {})
+        n_qubits = hx.shape[1]
+        k_log = len(logical_x) if logical_x else 0
+        meta.setdefault("code_family", "qudit_surface")
+        meta.setdefault("code_type", "galois_qudit_surface")
+        meta.setdefault("n", n_qubits)
+        meta.setdefault("k", k_log)
+        meta.setdefault("distance", min(Lx, Ly))
+        meta.setdefault("rate", k_log / n_qubits if n_qubits else 0.0)
+        meta.setdefault("qudit_dim", q)
+        meta.setdefault("lx_pauli_type", "X")
+        meta.setdefault("lz_pauli_type", "Z")
+        meta.setdefault("stabiliser_schedule", None)
+        meta.setdefault("x_schedule", None)
+        meta.setdefault("z_schedule", None)
+        meta.setdefault("error_correction_zoo_url", "https://errorcorrectionzoo.org/c/galois_css")
+        meta.setdefault("wikipedia_url", "https://en.wikipedia.org/wiki/Finite_field")
+        meta.setdefault("canonical_references", [
+            "Ashikhmin & Knill, IEEE Trans. Inf. Theory 47, 3065 (2001)",
+            "Ketkar et al., IEEE Trans. Inf. Theory 52, 4892 (2006). arXiv:quant-ph/0508070",
+        ])
+        meta.setdefault("connections", [
+            "Generalises qubit surface code to GF(q) qudits",
+            "Built via hypergraph product of repetition codes",
+            "Binary CSS validity implies GF(q) CSS validity",
+        ])
+
         super().__init__(
             q=q,
             hx=hx,
             hz=hz,
             logical_x=logical_x,
             logical_z=logical_z,
-            metadata=metadata,
+            metadata=meta,
         )
-    
+
+    @property
+    def name(self) -> str:
+        """Human-readable name."""
+        return f"GaloisQuditSurfaceCode_{self.Lx}x{self.Ly}_GF{self.q}"
+
+    @property
+    def distance(self) -> int:
+        """Code distance."""
+        return min(self.Lx, self.Ly)
+
     @staticmethod
     def _build_galois_surface(
         Lx: int, Ly: int, q: int
@@ -204,9 +341,6 @@ class GaloisQuditSurfaceCode(GaloisQuditCode):
         
         # Now interpret over GF(q) - still valid since binary CSS ⊆ GF(q) CSS
         return hx % q, hz % q, n_qubits
-    
-    def description(self) -> str:
-        return f"Galois-Qudit Surface Code GF({self.q}), {self.Lx}x{self.Ly}, n={self.n}"
 
 
 class GaloisQuditHGPCode(GaloisQuditCode):
@@ -235,6 +369,7 @@ class GaloisQuditHGPCode(GaloisQuditCode):
             metadata: Additional metadata
         """
         self.base_code_n = base_code_n
+        self._code_distance = base_code_n  # HGP distance ≥ seed distance
         
         hx, hz, n_qubits = self._build_galois_hgp(q, base_code_n)
         
@@ -246,14 +381,45 @@ class GaloisQuditHGPCode(GaloisQuditCode):
         except Exception:
             logical_x = [{0: 'X'}]
             logical_z = [{0: 'Z'}]
-        
+
+        # ── Validate CSS structure ─────────────────────────────────
+        validate_css_code(hx % 2, hz % 2, f"GaloisQuditHGP_GF{q}_n{base_code_n}", raise_on_error=True)
+
+        # ── Standard metadata ─────────────────────────────────────
+        meta: Dict[str, Any] = dict(metadata or {})
+        n_total = hx.shape[1]
+        k_log = len(logical_x) if logical_x else 0
+        meta.setdefault("code_family", "qudit_hgp")
+        meta.setdefault("code_type", "galois_qudit_hgp")
+        meta.setdefault("n", n_total)
+        meta.setdefault("k", k_log)
+        meta.setdefault("distance", self._code_distance)
+        meta.setdefault("rate", k_log / n_total if n_total else 0.0)
+        meta.setdefault("qudit_dim", q)
+        meta.setdefault("lx_pauli_type", "X")
+        meta.setdefault("lz_pauli_type", "Z")
+        meta.setdefault("stabiliser_schedule", None)
+        meta.setdefault("x_schedule", None)
+        meta.setdefault("z_schedule", None)
+        meta.setdefault("error_correction_zoo_url", "https://errorcorrectionzoo.org/c/galois_css")
+        meta.setdefault("wikipedia_url", "https://en.wikipedia.org/wiki/Finite_field")
+        meta.setdefault("canonical_references", [
+            "Tillich & Zémor, IEEE Trans. Inf. Theory 60, 1193 (2014). arXiv:0903.0566",
+            "Ketkar et al., IEEE Trans. Inf. Theory 52, 4892 (2006). arXiv:quant-ph/0508070",
+        ])
+        meta.setdefault("connections", [
+            "Hypergraph product of classical cyclic codes over GF(q)",
+            "Generalises qubit HGP to Galois-qudit setting",
+            "Binary CSS seed guarantees GF(q) CSS validity",
+        ])
+
         super().__init__(
             q=q,
             hx=hx,
             hz=hz,
             logical_x=logical_x,
             logical_z=logical_z,
-            metadata=metadata,
+            metadata=meta,
         )
     
     @staticmethod
@@ -315,11 +481,16 @@ class GaloisQuditHGPCode(GaloisQuditCode):
                         hz[z_stab, q_idx] ^= 1
         
         return hx % q, hz % q, n_qubits
-        
-        return hx % q, hz % q, n_qubits
-    
-    def description(self) -> str:
-        return f"Galois-Qudit HGP Code GF({self.q}), n={self.n}"
+
+    @property
+    def name(self) -> str:
+        """Human-readable name."""
+        return f"GaloisQuditHGPCode_GF{self.q}_n{self.base_code_n}"
+
+    @property
+    def distance(self) -> int:
+        """Code distance."""
+        return self._code_distance
 
 
 class GaloisQuditColorCode(GaloisQuditCode):
@@ -359,14 +530,45 @@ class GaloisQuditColorCode(GaloisQuditCode):
         except Exception:
             logical_x = [{0: 'X'}]
             logical_z = [{0: 'Z'}]
-        
+
+        # ── Validate CSS structure ─────────────────────────────────
+        validate_css_code(hx % 2, hz % 2, f"GaloisQuditColor_L{L}_GF{q}", raise_on_error=True)
+
+        # ── Standard metadata ─────────────────────────────────────
+        meta: Dict[str, Any] = dict(metadata or {})
+        n_total = hx.shape[1]
+        k_log = len(logical_x) if logical_x else 0
+        meta.setdefault("code_family", "qudit_color")
+        meta.setdefault("code_type", "galois_qudit_color")
+        meta.setdefault("n", n_total)
+        meta.setdefault("k", k_log)
+        meta.setdefault("distance", L)
+        meta.setdefault("rate", k_log / n_total if n_total else 0.0)
+        meta.setdefault("qudit_dim", q)
+        meta.setdefault("lx_pauli_type", "X")
+        meta.setdefault("lz_pauli_type", "Z")
+        meta.setdefault("stabiliser_schedule", None)
+        meta.setdefault("x_schedule", None)
+        meta.setdefault("z_schedule", None)
+        meta.setdefault("error_correction_zoo_url", "https://errorcorrectionzoo.org/c/galois_css")
+        meta.setdefault("wikipedia_url", "https://en.wikipedia.org/wiki/Finite_field")
+        meta.setdefault("canonical_references", [
+            "Bullock & Brennen, New J. Phys. 9, 042 (2007)",
+            "Ketkar et al., IEEE Trans. Inf. Theory 52, 4892 (2006). arXiv:quant-ph/0508070",
+        ])
+        meta.setdefault("connections", [
+            "Generalises qubit colour code to GF(q) qudits",
+            "Realised via HGP for guaranteed CSS validity",
+            "3-colorable lattice structure over GF(q)",
+        ])
+
         super().__init__(
             q=q,
             hx=hx,
             hz=hz,
             logical_x=logical_x,
             logical_z=logical_z,
-            metadata=metadata,
+            metadata=meta,
         )
     
     @staticmethod
@@ -430,9 +632,16 @@ class GaloisQuditColorCode(GaloisQuditCode):
                         hz[z_stab, idx] ^= 1
         
         return hx % 2, hz % 2, n_qubits
-    
-    def description(self) -> str:
-        return f"Galois-Qudit Color Code GF({self.q}), L={self.L}, n={self.n}"
+
+    @property
+    def name(self) -> str:
+        """Human-readable name."""
+        return f"GaloisQuditColorCode_L{self.L}_GF{self.q}"
+
+    @property
+    def distance(self) -> int:
+        """Code distance."""
+        return self.L
 
 
 class GaloisQuditExpanderCode(GaloisQuditCode):
@@ -472,14 +681,45 @@ class GaloisQuditExpanderCode(GaloisQuditCode):
         except Exception:
             logical_x = [{0: 'X'}]
             logical_z = [{0: 'Z'}]
-        
+
+        # ── Validate CSS structure ─────────────────────────────────
+        validate_css_code(hx % 2, hz % 2, f"GaloisQuditExpander_nv{n_vertices}_GF{q}", raise_on_error=True)
+
+        # ── Standard metadata ─────────────────────────────────────
+        meta: Dict[str, Any] = dict(metadata or {})
+        n_total = hx.shape[1]
+        k_log = len(logical_x) if logical_x else 0
+        meta.setdefault("code_family", "qudit_expander")
+        meta.setdefault("code_type", "galois_qudit_expander")
+        meta.setdefault("n", n_total)
+        meta.setdefault("k", k_log)
+        meta.setdefault("distance", n_vertices)
+        meta.setdefault("rate", k_log / n_total if n_total else 0.0)
+        meta.setdefault("qudit_dim", q)
+        meta.setdefault("lx_pauli_type", "X")
+        meta.setdefault("lz_pauli_type", "Z")
+        meta.setdefault("stabiliser_schedule", None)
+        meta.setdefault("x_schedule", None)
+        meta.setdefault("z_schedule", None)
+        meta.setdefault("error_correction_zoo_url", "https://errorcorrectionzoo.org/c/galois_css")
+        meta.setdefault("wikipedia_url", "https://en.wikipedia.org/wiki/Finite_field")
+        meta.setdefault("canonical_references", [
+            "Tillich & Zémor, IEEE Trans. Inf. Theory 60, 1193 (2014). arXiv:0903.0566",
+            "Sipser & Spielman, IEEE Trans. Inf. Theory 42, 1710 (1996)",
+        ])
+        meta.setdefault("connections", [
+            "Expander-graph QLDPC over GF(q) qudits",
+            "Asymptotically good code family",
+            "Binary HGP seed with extra expansion links",
+        ])
+
         super().__init__(
             q=q,
             hx=hx,
             hz=hz,
             logical_x=logical_x,
             logical_z=logical_z,
-            metadata=metadata,
+            metadata=meta,
         )
     
     @staticmethod
@@ -546,9 +786,16 @@ class GaloisQuditExpanderCode(GaloisQuditCode):
                         hz[z_stab, q_idx] ^= 1
         
         return hx % q, hz % q, n_qubits
-    
-    def description(self) -> str:
-        return f"Galois-Qudit Expander Code GF({self.q}), n_v={self.n_vertices}, n={self.n}"
+
+    @property
+    def name(self) -> str:
+        """Human-readable name."""
+        return f"GaloisQuditExpanderCode_nv{self.n_vertices}_GF{self.q}"
+
+    @property
+    def distance(self) -> int:
+        """Code distance."""
+        return self.n_vertices
 
 
 # Pre-configured instances

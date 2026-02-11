@@ -1,24 +1,111 @@
 """
-Hyperbolic Surface Codes.
+Hyperbolic Surface Codes
+========================
 
-Implements quantum error-correcting codes on hyperbolic surfaces:
-- HyperbolicSurfaceCode: General {p,q} tessellation code
-- Hyperbolic45Code: {4,5} tessellation (4-gons, 5 at each vertex)
-- Hyperbolic57Code: {5,7} tessellation (pentagons, 7 at each vertex)
+Overview
+--------
+Quantum error-correcting codes defined on compact hyperbolic surfaces (Riemann
+surfaces of genus *g* ≥ 2).  Unlike planar or toric codes, hyperbolic codes
+achieve a *constant encoding rate* k/n → const as the block length grows,
+while retaining distance that scales at least logarithmically with n.
 
-Hyperbolic surfaces have constant negative curvature, leading to codes with:
-- Better encoding rate than planar codes: k/n scales as constant
-- Good distance properties
-- Non-trivial topology (genus g ≥ 2)
+This module provides seven concrete code families:
 
-Reference: Freedman, Meyer, Luo "Z2-systolic freedom and quantum codes" (2002)
+* **HyperbolicSurfaceCode** – General {p,q} tessellation on a genus-*g*
+  surface.  Qubits live on edges; X-stabilisers on faces (weight p),
+  Z-stabilisers on vertices (weight q).
+* **Hyperbolic45Code** – {4,5} tessellation (squares, 5 per vertex).
+* **Hyperbolic57Code** – {5,7} tessellation (pentagons, 7 per vertex).
+* **Hyperbolic38Code** – {3,8} tessellation (triangles, 8 per vertex).
+* **FreedmanMeyerLuoCode** – Codes derived from Z₂-systolic freedom on
+  arithmetic hyperbolic surfaces (Freedman, Meyer & Luo 2002).
+* **GuthLubotzkyCode** – Codes from 4-dimensional arithmetic hyperbolic
+  manifolds (Guth & Lubotzky 2014).
+* **GoldenCode** – HGP construction with golden-ratio aspect ratio,
+  giving efficient rate-distance trade-offs.
+
+Hyperbolic geometry background
+------------------------------
+A {p,q} tessellation tiles a surface with regular *p*-gons, *q* meeting at
+each vertex.  The tessellation is hyperbolic whenever
+
+.. math::
+
+   (p - 2)(q - 2) > 4
+
+On a compact surface of genus *g* the Euler characteristic is
+χ = 2 − 2g < 0, and the numbers of vertices *V*, edges *E*, faces *F*
+satisfy V − E + F = χ with the combinatorial constraints qV = 2E and
+pF = 2E.
+
+Code parameters
+---------------
+* *n* (physical qubits) = number of edges in the tessellation.
+* *k* (logical qubits) = 2g for a genuine genus-*g* surface encoding,
+  or as determined by the HGP construction for finite quotient models.
+* *d* (distance) has a well-known lower bound of
+  d ≥ c · log(n) for hyperbolic codes (Delfosse 2013);
+  the simple bound min(p, q) is used here as a conservative floor.
+
+The Freedman-Meyer-Luo construction achieves d = Θ(√n log n) via
+arithmetic surfaces with large systole.  The Guth-Lubotzky construction
+uses 4-manifolds for improved rate × distance².
+
+Stabiliser Structure
+~~~~~~~~~~~~~~~~~~~~
+* **HyperbolicSurfaceCode**: weight-``p`` face (X) stabilisers and
+  weight-``q`` vertex (Z) stabilisers from the {p,q} tessellation.
+  On a genus-*g* surface the stabiliser counts are
+  ``F = 2E/p`` faces and ``V = 2E/q`` vertices (with E edges = qubits).
+* **Hyperbolic45/57/38Code**: fixed {p,q} instances with the same
+  weight structure as the general class.
+* **FreedmanMeyerLuoCode / GuthLubotzkyCode**: stabiliser weights set by
+  the arithmetic-surface or 4-manifold cellulation; typically bounded
+  constants.
+* **GoldenCode**: HGP-derived stabilisers with weights from the
+  classical seed code.
+* All codes admit a single-round parallel measurement schedule.
+
+Construction
+------------
+All classes internally use a **Hypergraph Product (HGP)** of small
+classical codes to guarantee the CSS orthogonality condition
+Hx · Hz^T = 0 mod 2.  The HGP parameters are tuned so that the
+resulting stabiliser weights and qubit count approximate those of the
+target hyperbolic tessellation.
+
+Connections
+-----------
+* Hyperbolic codes connect to the broader landscape of **quantum LDPC
+  codes**: every hyperbolic surface code is LDPC with bounded stabiliser
+  weight.
+* The Freedman-Meyer-Luo codes pioneered constant-rate quantum codes and
+  influenced later breakthroughs (fibre-bundle codes, balanced-product
+  codes).
+* Golden codes bridge tessellation-based and algebraic HGP approaches.
+
+References
+----------
+.. [FML2002] Freedman, M. H., Meyer, D. A. & Luo, F.,
+   "Z₂-systolic freedom and quantum codes",
+   *Mathematics of Quantum Computation*, Chapman & Hall/CRC (2002).
+.. [GL2014] Guth, L. & Lubotzky, A.,
+   "Quantum error correcting codes and 4-dimensional arithmetic
+   hyperbolic manifolds", *J. Math. Phys.* 55, 082202 (2014).
+.. [Del2013] Delfosse, N., "Tradeoffs for reliable quantum information
+   storage in surface codes and color codes",
+   *IEEE ISIT* (2013).
+.. [BPT2010] Bravyi, S., Poulin, D. & Terhal, B.,
+   "Tradeoffs for reliable quantum information storage in 2D systems",
+   *Phys. Rev. Lett.* 104, 050503 (2010).
 """
+import warnings
 from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 
 from ..abstract_css import CSSCode
 from ..abstract_code import PauliString
-from ..utils import compute_css_logicals, vectors_to_paulis_x, vectors_to_paulis_z
+from ..utils import compute_css_logicals, vectors_to_paulis_x, vectors_to_paulis_z, validate_css_code
 
 
 class HyperbolicSurfaceCode(CSSCode):
@@ -55,6 +142,11 @@ class HyperbolicSurfaceCode(CSSCode):
             q: Vertex degree (q ≥ 3)
             genus: Surface genus (g ≥ 2 for hyperbolic)
             name: Code name
+
+        Raises:
+            ValueError: If ``(p-2)(q-2) ≤ 4`` (tessellation is not
+                hyperbolic).
+            ValueError: If ``genus < 2``.
         """
         if (p - 2) * (q - 2) <= 4:
             raise ValueError(f"{{p,q}} = {{{p},{q}}} is not hyperbolic. Need (p-2)(q-2) > 4")
@@ -74,19 +166,88 @@ class HyperbolicSurfaceCode(CSSCode):
         # Distance lower bound: O(log n) for hyperbolic codes
         # Approximate as min(p, q) for simple bound
         distance_lower_bound = min(p, q)
+        self._distance = distance_lower_bound
+        
+        k_est = max(1, 2 * genus)
+        
+        # Coordinate metadata (centroids from parity-check matrices)
+        # Use the actual number of columns in the parity-check matrix,
+        # which may exceed the returned n_qubits if padding was added.
+        n_cols = max(hx.shape[1], hz.shape[1]) if hx.size and hz.size else n_qubits
+        cols = int(np.ceil(np.sqrt(n_cols)))
+        data_coords_list = [(float(i % cols), float(i // cols)) for i in range(n_cols)]
+
+        x_stab_coords_list = []
+        for row_idx in range(hx.shape[0]):
+            support = np.where(hx[row_idx])[0]
+            if len(support) > 0:
+                cx = np.mean([data_coords_list[qi][0] for qi in support])
+                cy = np.mean([data_coords_list[qi][1] for qi in support])
+                x_stab_coords_list.append((float(cx), float(cy)))
+            else:
+                x_stab_coords_list.append((0.0, 0.0))
+
+        z_stab_coords_list = []
+        for row_idx in range(hz.shape[0]):
+            support = np.where(hz[row_idx])[0]
+            if len(support) > 0:
+                cx = np.mean([data_coords_list[qi][0] for qi in support])
+                cy = np.mean([data_coords_list[qi][1] for qi in support])
+                z_stab_coords_list.append((float(cx), float(cy)))
+            else:
+                z_stab_coords_list.append((0.0, 0.0))
+
+        meta: Dict[str, Any] = {
+            "name": name,
+            "p": p,
+            "q": q,
+            "genus": genus,
+            "distance": distance_lower_bound,
+            "n": n_qubits,
+            "k": k_est,
+            "code_family": "hyperbolic_surface",
+            "code_type": f"hyperbolic_{p}_{q}",
+            "rate": k_est / n_qubits if n_qubits > 0 else 0.0,
+            "data_coords": data_coords_list,
+            "x_stab_coords": x_stab_coords_list,
+            "z_stab_coords": z_stab_coords_list,
+            "lx_pauli_type": "X",
+            "lx_support": None,
+            "lz_pauli_type": "Z",
+            "lz_support": None,
+            "stabiliser_schedule": {
+                "x_rounds": None,
+                "z_rounds": None,
+                "n_rounds": 1,
+                "description": (
+                    f"Fully parallel: all X-stabilisers (weight-{p} face operators) "
+                    f"in round 0, all Z-stabilisers (weight-{q} vertex operators) "
+                    f"in round 0."
+                ),
+            },
+            "x_schedule": None,
+            "z_schedule": None,
+            "error_correction_zoo_url": "https://errorcorrectionzoo.org/c/hyperbolic_surface",
+            "wikipedia_url": "https://en.wikipedia.org/wiki/Hyperbolic_surface_code",
+            "canonical_references": [
+                "Freedman, Meyer & Luo, 'Z2-systolic freedom and quantum codes' (2002)",
+                "Delfosse, 'Tradeoffs for reliable quantum information storage' (2013)",
+            ],
+            "connections": [
+                f"{{p,q}} = {{{p},{q}}} tessellation on genus-{genus} surface",
+                "Constant-rate LDPC quantum code family",
+                "Related to quantum LDPC and fibre-bundle codes",
+            ],
+        }
+        
+        validate_css_code(hx, hz, code_name=f"HyperbolicSurface_{p}_{q}_g{genus}", raise_on_error=True)
         
         super().__init__(
             hx=hx,
             hz=hz,
             logical_x=logicals[0],
             logical_z=logicals[1],
-            metadata={
-                "name": name,
-                "p": p,
-                "q": q,
-                "genus": genus,
-                "distance": distance_lower_bound,  # Lower bound
-            }
+            metadata=meta,
         )
     
     @staticmethod
@@ -263,11 +424,33 @@ class HyperbolicSurfaceCode(CSSCode):
         
         return hx % 2, hz % 2
     
+    # --- convenience properties ------------------------------------------------
+
+    @property
+    def name(self) -> str:
+        """Human-readable name, e.g. ``'HyperbolicSurfaceCode({4,5}, g=2)'``."""
+        return f"HyperbolicSurfaceCode({{{self.p},{self.q}}}, g={self.genus})"
+
+    @property
+    def distance(self) -> int:
+        """Code distance lower bound (conservative: min(p, q))."""
+        return self._distance
+
     @staticmethod
     def _compute_logicals(
         hx: np.ndarray, hz: np.ndarray, n_qubits: int, genus: int
     ) -> Tuple[List[PauliString], List[PauliString]]:
-        """Compute logical operators for genus-g surface using CSS kernel/image prescription."""
+        """Compute logical operators for genus-g surface using CSS kernel/image prescription.
+
+        .. note::
+
+           When ``compute_css_logicals`` cannot determine full-rank logical
+           representatives (e.g. due to the approximate HGP construction),
+           the method falls back to single-qubit placeholder logicals
+           ``{0: 'X'}`` / ``{0: 'Z'}``.  These are **not** true minimum-weight
+           logical operators; they serve only as structural placeholders so
+           that the code object can be instantiated for circuit-level studies.
+        """
         # For genus g surface, there are 2g logical qubits
         # Use CSS prescription: Logical Z in ker(Hx)/rowspace(Hz), Logical X in ker(Hz)/rowspace(Hx)
         try:
@@ -275,7 +458,8 @@ class HyperbolicSurfaceCode(CSSCode):
             logical_x = vectors_to_paulis_x(log_x_vecs) if log_x_vecs else [{0: 'X'}]
             logical_z = vectors_to_paulis_z(log_z_vecs) if log_z_vecs else [{0: 'Z'}]
             return logical_x, logical_z
-        except Exception:
+        except Exception as e:
+            warnings.warn(f"Logical operator derivation failed for HyperbolicSurfaceCode: {e}")
             # Fallback to single-qubit placeholder
             return [{0: 'X'}], [{0: 'Z'}]
     
@@ -321,6 +505,16 @@ class Hyperbolic45Code(HyperbolicSurfaceCode):
     def __init__(self, genus: int = 2):
         super().__init__(p=4, q=5, genus=genus, name="Hyperbolic45Code")
 
+    @property
+    def name(self) -> str:
+        """Human-readable name, e.g. ``'Hyperbolic45Code(g=2)'``."""
+        return f"Hyperbolic45Code(g={self.genus})"
+
+    @property
+    def distance(self) -> int:
+        """Code distance lower bound (= min(4, 5) = 4)."""
+        return self._distance
+
 
 class Hyperbolic57Code(HyperbolicSurfaceCode):
     """
@@ -333,6 +527,16 @@ class Hyperbolic57Code(HyperbolicSurfaceCode):
     def __init__(self, genus: int = 2):
         super().__init__(p=5, q=7, genus=genus, name="Hyperbolic57Code")
 
+    @property
+    def name(self) -> str:
+        """Human-readable name, e.g. ``'Hyperbolic57Code(g=2)'``."""
+        return f"Hyperbolic57Code(g={self.genus})"
+
+    @property
+    def distance(self) -> int:
+        """Code distance lower bound (= min(5, 7) = 5)."""
+        return self._distance
+
 
 class Hyperbolic38Code(HyperbolicSurfaceCode):
     """
@@ -344,6 +548,16 @@ class Hyperbolic38Code(HyperbolicSurfaceCode):
     
     def __init__(self, genus: int = 2):
         super().__init__(p=3, q=8, genus=genus, name="Hyperbolic38Code")
+
+    @property
+    def name(self) -> str:
+        """Human-readable name, e.g. ``'Hyperbolic38Code(g=2)'``."""
+        return f"Hyperbolic38Code(g={self.genus})"
+
+    @property
+    def distance(self) -> int:
+        """Code distance lower bound (= min(3, 8) = 3)."""
+        return self._distance
 
 
 # ============================================================================
@@ -376,20 +590,86 @@ class FreedmanMeyerLuoCode(CSSCode):
         k = max(1, L)  # Constant-rate encoding
         logical_x, logical_z = self._build_logicals(n_qubits, k)
         
+        self._distance = int(np.sqrt(n_qubits))
+        
+        # Coordinate metadata (centroids from parity-check matrices)
+        fml_n_cols = max(hx.shape[1], hz.shape[1]) if hx.size and hz.size else n_qubits
+        fml_cols = int(np.ceil(np.sqrt(fml_n_cols)))
+        fml_data_coords = [(float(i % fml_cols), float(i // fml_cols)) for i in range(fml_n_cols)]
+
+        fml_x_stab_coords = []
+        for row_idx in range(hx.shape[0]):
+            support = np.where(hx[row_idx])[0]
+            if len(support) > 0:
+                cx = np.mean([fml_data_coords[qi][0] for qi in support])
+                cy = np.mean([fml_data_coords[qi][1] for qi in support])
+                fml_x_stab_coords.append((float(cx), float(cy)))
+            else:
+                fml_x_stab_coords.append((0.0, 0.0))
+
+        fml_z_stab_coords = []
+        for row_idx in range(hz.shape[0]):
+            support = np.where(hz[row_idx])[0]
+            if len(support) > 0:
+                cx = np.mean([fml_data_coords[qi][0] for qi in support])
+                cy = np.mean([fml_data_coords[qi][1] for qi in support])
+                fml_z_stab_coords.append((float(cx), float(cy)))
+            else:
+                fml_z_stab_coords.append((0.0, 0.0))
+
         meta: Dict[str, Any] = dict(metadata or {})
         meta.update({
             "name": f"FreedmanMeyerLuoCode_{L}",
             "n": n_qubits,
             "k": k,
-            "distance": int(np.sqrt(n_qubits)),
-            "rate": "constant",
+            "distance": self._distance,
+            "rate": k / n_qubits if n_qubits > 0 else 0.0,
+            "code_family": "hyperbolic_surface",
+            "code_type": "freedman_meyer_luo",
+            "data_coords": fml_data_coords,
+            "x_stab_coords": fml_x_stab_coords,
+            "z_stab_coords": fml_z_stab_coords,
+            "lx_pauli_type": "X",
+            "lx_support": None,
+            "lz_pauli_type": "Z",
+            "lz_support": None,
+            "stabiliser_schedule": {
+                "x_rounds": None,
+                "z_rounds": None,
+                "n_rounds": 1,
+                "description": "Fully parallel: all stabilisers in round 0.",
+            },
+            "x_schedule": None,
+            "z_schedule": None,
+            "error_correction_zoo_url": "https://errorcorrectionzoo.org/c/hyperbolic_surface",
+            "wikipedia_url": None,
+            "canonical_references": [
+                "Freedman, Meyer & Luo, 'Z2-systolic freedom and quantum codes' (2002)",
+            ],
+            "connections": [
+                "Constant-rate encoding from arithmetic hyperbolic surfaces",
+                f"Distance scales as sqrt(n) ≈ {self._distance}",
+                "Pioneered constant-rate quantum codes",
+            ],
         })
+        
+        validate_css_code(hx, hz, code_name=f"FreedmanMeyerLuoCode_{L}", raise_on_error=True)
         
         super().__init__(hx, hz, logical_x, logical_z, metadata=meta)
     
     @property
     def L(self) -> int:
         return self._L
+
+    @property
+    def name(self) -> str:
+        """Human-readable name, e.g. ``'FreedmanMeyerLuoCode(L=4)'``."""
+        return f"FreedmanMeyerLuoCode(L={self._L})"
+
+    @property
+    def distance(self) -> int:
+        """Code distance estimate (≈ √n for FML codes)."""
+        return self._distance
     
     @staticmethod
     def _build_fml_code(L: int) -> Tuple[np.ndarray, np.ndarray, int]:
@@ -449,7 +729,15 @@ class FreedmanMeyerLuoCode(CSSCode):
     
     @staticmethod
     def _build_logicals(n_qubits: int, k: int) -> Tuple[np.ndarray, np.ndarray]:
-        """Build logical operators."""
+        """Build logical operators.
+
+        .. note::
+
+           These are **placeholder** single-qubit logical operators and are
+           **not** the true minimum-weight representatives.  They allow the
+           code object to be instantiated for circuit-level simulation but
+           should not be used for distance verification.
+        """
         logical_x = np.zeros((k, n_qubits), dtype=np.uint8)
         logical_z = np.zeros((k, n_qubits), dtype=np.uint8)
         
@@ -514,20 +802,88 @@ class GuthLubotzkyCode(CSSCode):
         k = max(1, L // 2)
         logical_x, logical_z = self._build_logicals(n_qubits, k)
         
+        self._distance = L
+        
+        # Coordinate metadata (centroids from parity-check matrices)
+        gl_n_cols = max(hx.shape[1], hz.shape[1]) if hx.size and hz.size else n_qubits
+        gl_cols = int(np.ceil(np.sqrt(gl_n_cols)))
+        gl_data_coords = [(float(i % gl_cols), float(i // gl_cols)) for i in range(gl_n_cols)]
+
+        gl_x_stab_coords = []
+        for row_idx in range(hx.shape[0]):
+            support = np.where(hx[row_idx])[0]
+            if len(support) > 0:
+                cx = np.mean([gl_data_coords[qi][0] for qi in support])
+                cy = np.mean([gl_data_coords[qi][1] for qi in support])
+                gl_x_stab_coords.append((float(cx), float(cy)))
+            else:
+                gl_x_stab_coords.append((0.0, 0.0))
+
+        gl_z_stab_coords = []
+        for row_idx in range(hz.shape[0]):
+            support = np.where(hz[row_idx])[0]
+            if len(support) > 0:
+                cx = np.mean([gl_data_coords[qi][0] for qi in support])
+                cy = np.mean([gl_data_coords[qi][1] for qi in support])
+                gl_z_stab_coords.append((float(cx), float(cy)))
+            else:
+                gl_z_stab_coords.append((0.0, 0.0))
+
         meta: Dict[str, Any] = dict(metadata or {})
         meta.update({
             "name": f"GuthLubotzkyCode_{L}",
             "n": n_qubits,
             "k": k,
+            "distance": self._distance,
             "dimension": 4,
             "geometry": "arithmetic_hyperbolic",
+            "code_family": "hyperbolic_surface",
+            "code_type": "guth_lubotzky",
+            "rate": k / n_qubits if n_qubits > 0 else 0.0,
+            "data_coords": gl_data_coords,
+            "x_stab_coords": gl_x_stab_coords,
+            "z_stab_coords": gl_z_stab_coords,
+            "lx_pauli_type": "X",
+            "lx_support": None,
+            "lz_pauli_type": "Z",
+            "lz_support": None,
+            "stabiliser_schedule": {
+                "x_rounds": None,
+                "z_rounds": None,
+                "n_rounds": 1,
+                "description": "Fully parallel: all stabilisers in round 0.",
+            },
+            "x_schedule": None,
+            "z_schedule": None,
+            "error_correction_zoo_url": "https://errorcorrectionzoo.org/c/hyperbolic_surface",
+            "wikipedia_url": None,
+            "canonical_references": [
+                "Guth & Lubotzky, 'Quantum error correcting codes and 4-dimensional arithmetic hyperbolic manifolds' (2014)",
+            ],
+            "connections": [
+                "4-dimensional arithmetic hyperbolic manifold construction",
+                "Improved rate × distance² trade-off",
+                "Related to systolic geometry and higher-dimensional topology",
+            ],
         })
+        
+        validate_css_code(hx, hz, code_name=f"GuthLubotzkyCode_{L}", raise_on_error=True)
         
         super().__init__(hx, hz, logical_x, logical_z, metadata=meta)
     
     @property
     def L(self) -> int:
         return self._L
+
+    @property
+    def name(self) -> str:
+        """Human-readable name, e.g. ``'GuthLubotzkyCode(L=4)'``."""
+        return f"GuthLubotzkyCode(L={self._L})"
+
+    @property
+    def distance(self) -> int:
+        """Code distance (= L for the GL construction)."""
+        return self._distance
     
     @staticmethod
     def _build_gl_code(L: int) -> Tuple[np.ndarray, np.ndarray, int]:
@@ -582,7 +938,15 @@ class GuthLubotzkyCode(CSSCode):
     
     @staticmethod
     def _build_logicals(n_qubits: int, k: int) -> Tuple[np.ndarray, np.ndarray]:
-        """Build logical operators."""
+        """Build logical operators.
+
+        .. note::
+
+           These are **placeholder** single-qubit logical operators and are
+           **not** the true minimum-weight representatives.  They allow the
+           code object to be instantiated for circuit-level simulation but
+           should not be used for distance verification.
+        """
         logical_x = np.zeros((k, n_qubits), dtype=np.uint8)
         logical_z = np.zeros((k, n_qubits), dtype=np.uint8)
         
@@ -649,31 +1013,103 @@ class GoldenCode(CSSCode):
         hx, hz, n_qubits = self._build_golden_hgp(n_a, n_b)
         
         # Compute logical operators using CSS prescription
+        # NOTE: When compute_css_logicals fails, the fallback uses single-qubit
+        # placeholder logicals {0: 'X'}/{0: 'Z'} which are NOT true minimum-
+        # weight representatives.  They are structural placeholders only.
         try:
             log_x_vecs, log_z_vecs = compute_css_logicals(hx, hz)
             logical_x = vectors_to_paulis_x(log_x_vecs) if log_x_vecs else [{0: 'X'}]
             logical_z = vectors_to_paulis_z(log_z_vecs) if log_z_vecs else [{0: 'Z'}]
             k = len(logical_x)
-        except Exception:
+        except Exception as e:
+            warnings.warn(f"Logical operator derivation failed for GoldenCode: {e}")
             # Fallback
             k = max(1, L - 1)
             logical_x = [{0: 'X'}]
             logical_z = [{0: 'Z'}]
         
+        self._distance = L
+        
+        # Coordinate metadata (centroids from parity-check matrices)
+        gc_n_cols = max(hx.shape[1], hz.shape[1]) if hx.size and hz.size else n_qubits
+        gc_cols = int(np.ceil(np.sqrt(gc_n_cols)))
+        gc_data_coords = [(float(i % gc_cols), float(i // gc_cols)) for i in range(gc_n_cols)]
+
+        gc_x_stab_coords = []
+        for row_idx in range(hx.shape[0]):
+            support = np.where(hx[row_idx])[0]
+            if len(support) > 0:
+                cx = np.mean([gc_data_coords[qi][0] for qi in support])
+                cy = np.mean([gc_data_coords[qi][1] for qi in support])
+                gc_x_stab_coords.append((float(cx), float(cy)))
+            else:
+                gc_x_stab_coords.append((0.0, 0.0))
+
+        gc_z_stab_coords = []
+        for row_idx in range(hz.shape[0]):
+            support = np.where(hz[row_idx])[0]
+            if len(support) > 0:
+                cx = np.mean([gc_data_coords[qi][0] for qi in support])
+                cy = np.mean([gc_data_coords[qi][1] for qi in support])
+                gc_z_stab_coords.append((float(cx), float(cy)))
+            else:
+                gc_z_stab_coords.append((0.0, 0.0))
+
         meta: Dict[str, Any] = dict(metadata or {})
         meta.update({
             "name": f"GoldenCode_{L}",
             "n": n_qubits,
             "k": k,
+            "distance": self._distance,
             "golden_ratio": phi,
             "dimensions": (n_a, n_b),
+            "code_family": "hyperbolic_surface",
+            "code_type": "golden",
+            "rate": k / n_qubits if n_qubits > 0 else 0.0,
+            "data_coords": gc_data_coords,
+            "x_stab_coords": gc_x_stab_coords,
+            "z_stab_coords": gc_z_stab_coords,
+            "lx_pauli_type": "X",
+            "lx_support": None,
+            "lz_pauli_type": "Z",
+            "lz_support": None,
+            "stabiliser_schedule": {
+                "x_rounds": None,
+                "z_rounds": None,
+                "n_rounds": 1,
+                "description": "Fully parallel: all stabilisers in round 0.",
+            },
+            "x_schedule": None,
+            "z_schedule": None,
+            "error_correction_zoo_url": "https://errorcorrectionzoo.org/c/hyperbolic_surface",
+            "wikipedia_url": None,
+            "canonical_references": [
+                "Freedman, Meyer & Luo, 'Z2-systolic freedom and quantum codes' (2002)",
+            ],
+            "connections": [
+                "Golden-ratio HGP construction for efficient rate-distance trade-off",
+                f"Aspect ratio φ ≈ {phi:.4f}, dimensions ({n_a}, {n_b})",
+                "Related to asymmetric hypergraph product codes",
+            ],
         })
+        
+        validate_css_code(hx, hz, code_name=f"GoldenCode_{L}", raise_on_error=True)
         
         super().__init__(hx, hz, logical_x, logical_z, metadata=meta)
     
     @property
     def L(self) -> int:
         return self._L
+
+    @property
+    def name(self) -> str:
+        """Human-readable name, e.g. ``'GoldenCode(L=5)'``."""
+        return f"GoldenCode(L={self._L})"
+
+    @property
+    def distance(self) -> int:
+        """Code distance (= L for the golden code)."""
+        return self._distance
     
     @staticmethod
     def _build_golden_hgp(na: int, nb: int) -> Tuple[np.ndarray, np.ndarray, int]:
@@ -725,7 +1161,15 @@ class GoldenCode(CSSCode):
     
     @staticmethod
     def _build_logicals(n_qubits: int, k: int) -> Tuple[np.ndarray, np.ndarray]:
-        """Build logical operators."""
+        """Build logical operators.
+
+        .. note::
+
+           These are **placeholder** single-qubit logical operators and are
+           **not** the true minimum-weight representatives.  They allow the
+           code object to be instantiated for circuit-level simulation but
+           should not be used for distance verification.
+        """
         logical_x = np.zeros((k, n_qubits), dtype=np.uint8)
         logical_z = np.zeros((k, n_qubits), dtype=np.uint8)
         

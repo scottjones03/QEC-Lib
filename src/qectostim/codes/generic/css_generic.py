@@ -1,17 +1,101 @@
-# src/qec_to_stim/codes/base/generic_css.py
+# src/qectostim/codes/generic/css_generic.py
 """
-GenericCSSCode: Flexible CSS code construction from Hx and Hz matrices.
+GenericCSSCode — Flexible CSS code construction from Hx and Hz matrices.
+=====================================================================
 
-This module provides a complete implementation for constructing CSS codes from
-parity check matrices, with automatic logical operator inference using GF(2)
-linear algebra. Inspired by the RotatedSurfaceCode implementation.
+Purpose
+-------
+This module provides a complete, general-purpose implementation for constructing
+Calderbank–Shor–Steane (CSS) quantum error-correcting codes from user-supplied
+parity-check matrices **Hx** and **Hz**.  Any CSS code can be instantiated
+through this class, making it the universal entry point for codes that do not
+have a dedicated subclass (e.g. rotated surface, colour, or toric codes).
 
-Features:
-- Automatic logical operator inference from Hx/Hz kernels
-- Automatic logical support computation from operators
-- Code distance estimation
-- Validation of CSS properties and logical operators
-- Compatible with CSSMemoryExperiment and decoders
+Construction
+------------
+The caller supplies:
+
+* ``hx`` — X-type parity-check matrix, shape ``(num_x_checks, n)``.
+* ``hz`` — Z-type parity-check matrix, shape ``(num_z_checks, n)``.
+* Optional logical operators ``logical_x``, ``logical_z``.
+* Optional ``metadata`` dictionary for distance, coordinates, etc.
+
+The constructor validates the CSS constraint ``Hx @ Hz^T = 0 (mod 2)`` via
+:func:`qectostim.codes.utils.validate_css_code` and then delegates to the
+parent :class:`CSSCode`.
+
+Logical operator inference
+--------------------------
+When logical operators are not supplied, the module infers them automatically:
+
+1. Compute the GF(2) kernel of **Hz** — candidates for logical-X operators.
+2. Compute the GF(2) kernel of **Hx** — candidates for logical-Z operators.
+3. Filter out stabiliser-equivalent vectors (those in rowspace(Hx) or
+   rowspace(Hz)).
+4. Pair remaining candidates so that each ``(Lx_i, Lz_i)`` pair
+   anticommutes, producing exactly *k* independent pairs.
+
+Code parameters
+---------------
+* **n** — number of physical qubits (columns of Hx / Hz).
+* **k** — number of logical qubits, ``k = n − rank(Hx) − rank(Hz)``.
+* **distance** — supplied via metadata (brute-force estimation is
+  computationally expensive and is not attempted automatically).
+* **rate** — ``k / n``.
+
+Stabiliser Structure
+~~~~~~~~~~~~~~~~~~~~
+* X-stabiliser count = number of rows in ``Hx``; Z-stabiliser count =
+  number of rows in ``Hz``.
+* Stabiliser weights are arbitrary (determined by the user-supplied
+  matrices); no bounded-weight assumption is imposed.
+* Default measurement schedule: all stabilisers in a single parallel
+  round (round 0 for both X and Z types).
+* When ``Hx == Hz`` the code is *self-dual* CSS, enabling transversal
+  Hadamard gates.
+
+GF(2) linear algebra
+--------------------
+The helper functions ``_gf2_rref``, ``_gf2_kernel``, ``_gf2_rowspace``,
+``_gf2_rank``, and ``_in_rowspace`` implement elementary row operations over
+GF(2) using NumPy with ``uint8`` arithmetic.  They are intentionally kept
+self-contained so that the module has no dependency on external Galois-field
+libraries.
+
+Validation
+----------
+* ``validate_css_code(hx, hz, ...)`` — checks the CSS orthogonality
+  constraint and ``k > 0`` before the parent constructor runs.
+* ``_validate_logicals()`` — post-construction check that every logical
+  operator commutes with the opposite-type stabilisers and that paired
+  logicals anticommute.
+
+Usage examples
+--------------
+>>> import numpy as np
+>>> from qectostim.codes.generic.css_generic import GenericCSSCode
+>>> # Steane [[7,1,3]] code
+>>> hx = np.array([[0,0,0,1,1,1,1],
+...                [0,1,1,0,0,1,1],
+...                [1,0,1,0,1,0,1]], dtype=np.uint8)
+>>> hz = hx.copy()
+>>> code = GenericCSSCode(hx, hz)
+>>> assert code.k == 1
+
+Connections
+-----------
+* Every CSS code (surface, colour, QLDPC, …) can be represented as a
+  ``GenericCSSCode``.
+* Compatible with :class:`CSSMemoryExperiment` and all decoders that
+  accept a :class:`CSSCode`.
+
+References
+----------
+.. [CS96] Calderbank & Shor, *Good quantum error-correcting codes exist*,
+   Phys. Rev. A **54**, 1098 (1996).
+.. [St96] Steane, *Multiple-particle interference and quantum error
+   correction*, Proc. R. Soc. A **452**, 2551 (1996).
+   arXiv:quant-ph/9601029.
 """
 from __future__ import annotations
 from typing import List, Dict, Any, Optional, Tuple
@@ -20,6 +104,7 @@ import numpy as np
 
 from qectostim.codes.abstract_css import CSSCode
 from qectostim.codes.abstract_code import PauliString
+from qectostim.codes.utils import validate_css_code
 
 
 def _gf2_rref(matrix: np.ndarray) -> Tuple[np.ndarray, List[int]]:
@@ -221,6 +306,31 @@ class GenericCSSCode(CSSCode):
         logical_z: Optional[List[PauliString]] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ):
+        """Construct a generic CSS code from parity-check matrices.
+
+        Parameters
+        ----------
+        hx : np.ndarray
+            X-type parity-check matrix, shape ``(num_x_checks, n)``.
+        hz : np.ndarray
+            Z-type parity-check matrix, shape ``(num_z_checks, n)``.
+        logical_x : list of PauliString, optional
+            Logical-X operators (inferred if *None*).
+        logical_z : list of PauliString, optional
+            Logical-Z operators (inferred if *None*).
+        metadata : dict, optional
+            Extra metadata (distance, coordinates, etc.).
+
+        Raises
+        ------
+        ValueError
+            If ``hx`` and ``hz`` have different numbers of columns
+            (i.e. different qubit counts).
+        ValueError
+            If the CSS constraint ``Hx · Hz^T ≠ 0 (mod 2)`` is violated.
+        ValueError
+            If ``hx`` or ``hz`` is not a 2-D array.
+        """
         # Ensure proper array types
         hx = np.asarray(hx, dtype=np.uint8)
         hz = np.asarray(hz, dtype=np.uint8)
@@ -239,6 +349,9 @@ class GenericCSSCode(CSSCode):
             logical_x = logical_x if logical_x is not None else inferred_x
             logical_z = logical_z if logical_z is not None else inferred_z
         
+        # Validate CSS constraint before proceeding
+        validate_css_code(hx, hz, f"GenericCSS_{n}", raise_on_error=True)
+
         # Build metadata
         meta = dict(metadata or {})
         
@@ -255,9 +368,91 @@ class GenericCSSCode(CSSCode):
         if "data_coords" not in meta:
             meta["data_coords"] = [(float(i), 0.0) for i in range(n)]
         
+        # Stabiliser coordinate metadata
+        dc = meta["data_coords"]
+        if "x_stab_coords" not in meta:
+            x_sc = []
+            for row in hx:
+                support = np.where(row)[0]
+                if len(support) > 0:
+                    cx = float(np.mean([dc[q][0] for q in support if q < len(dc)]))
+                    cy = float(np.mean([dc[q][1] for q in support if q < len(dc)]))
+                    x_sc.append((cx, cy))
+                else:
+                    x_sc.append((0.0, 0.0))
+            meta["x_stab_coords"] = x_sc
+        if "z_stab_coords" not in meta:
+            z_sc = []
+            for row in hz:
+                support = np.where(row)[0]
+                if len(support) > 0:
+                    cx = float(np.mean([dc[q][0] for q in support if q < len(dc)]))
+                    cy = float(np.mean([dc[q][1] for q in support if q < len(dc)]))
+                    z_sc.append((cx, cy))
+                else:
+                    z_sc.append((0.0, 0.0))
+            meta["z_stab_coords"] = z_sc
+
+        # Standardised logical support keys
+        if logical_x and len(logical_x) > 0:
+            meta.setdefault("lx_support", get_logical_support(logical_x[0], 'X'))
+        else:
+            meta.setdefault("lx_support", [])
+        if logical_z and len(logical_z) > 0:
+            meta.setdefault("lz_support", get_logical_support(logical_z[0], 'Z'))
+        else:
+            meta.setdefault("lz_support", [])
+        
         # Store dimensions
         meta.setdefault("n", n)
-        
+
+        # --- Tier 1 metadata (use setdefault so callers can override) ---
+        meta.setdefault("code_family", "generic_css")
+        meta.setdefault("code_type", "user_defined_css")
+        meta.setdefault(
+            "k",
+            n
+            - int(np.linalg.matrix_rank(hx.astype(float)))
+            - int(np.linalg.matrix_rank(hz.astype(float))),
+        )
+        meta.setdefault("distance", None)
+        meta.setdefault("rate", meta.get("k", 0) / n if n > 0 else 0)
+        meta.setdefault("lx_pauli_type", "X")
+        meta.setdefault("lz_pauli_type", "Z")
+        meta.setdefault(
+            "stabiliser_schedule",
+            {
+                "x_rounds": {i: 0 for i in range(hx.shape[0])},
+                "z_rounds": {i: 0 for i in range(hz.shape[0])},
+                "n_rounds": 1,
+                "description": "Fully parallel: all stabilisers in round 0.",
+            },
+        )
+        meta.setdefault("x_schedule", None)
+        meta.setdefault("z_schedule", None)
+        meta.setdefault(
+            "error_correction_zoo_url",
+            "https://errorcorrectionzoo.org/c/qubit_css",
+        )
+        meta.setdefault(
+            "wikipedia_url",
+            "https://en.wikipedia.org/wiki/CSS_code",
+        )
+        meta.setdefault(
+            "canonical_references",
+            [
+                "Calderbank & Shor, Phys. Rev. A 54, 1098 (1996)",
+                "Steane, Proc. R. Soc. A 452, 2551 (1996). arXiv:quant-ph/9601029",
+            ],
+        )
+        meta.setdefault(
+            "connections",
+            [
+                "All CSS codes can be constructed via GenericCSSCode",
+                "Surface codes, colour codes, and QLDPC codes are special cases",
+            ],
+        )
+
         # Call parent constructor
         super().__init__(hx=hx, hz=hz, logical_x=logical_x, logical_z=logical_z, metadata=meta)
         
@@ -401,7 +596,12 @@ class GenericCSSCode(CSSCode):
     def distance(self) -> Optional[int]:
         """Return code distance if known from metadata."""
         return self._metadata.get("distance")
-    
+
+    @property
+    def name(self) -> str:
+        """Human-readable name for this code instance."""
+        return self._metadata.get("name", f"GenericCSS_{self.n}")
+
     def qubit_coords(self) -> List[Tuple[float, float]]:
         """Return 2D coordinates for data qubits."""
         return self._metadata.get("data_coords", [(float(i), 0.0) for i in range(self.n)])

@@ -77,6 +77,24 @@ This implementation
 Currently implements the **L = 3** toric code as a concrete [[18, 2, 3]]
 instance.  The lattice size L is not yet parameterised.
 
+Code Parameters
+~~~~~~~~~~~~~~~
+:math:`[[n, k, d]] = [[2L^2, 2, L]]` where:
+
+- :math:`n = 2L^2` physical qubits (edges of the square lattice on a torus)
+- :math:`k = 2` logical qubits (two non-contractible cycles on the torus)
+- :math:`d = L` (minimum-weight non-contractible loop)
+- Rate :math:`k/n = 1/L^2`
+
+Stabiliser Structure
+~~~~~~~~~~~~~~~~~~~~
+- **X-type stabilisers**: weight-4 plaquette (face) operators; :math:`L^2 - 1`
+  independent generators (one global dependency).
+- **Z-type stabilisers**: weight-4 star (vertex) operators; :math:`L^2 - 1`
+  independent generators (one global dependency).
+- Measurement schedule: 4-phase parallel CNOT schedule; all plaquettes
+  and all vertices can be measured simultaneously within each phase.
+
 References
 ----------
 * Kitaev, "Fault-tolerant quantum computation by anyons",
@@ -99,10 +117,33 @@ from qectostim.codes.utils import validate_css_code
 
 
 class ToricCode33(TopologicalCSSCode):
-    """[[18, 2, 3]] Toric code on a 3×3 torus.
+    r"""[[18, 2, 3]] Toric code on a 3x3 torus.
 
     18 data qubits (edges), 8 X-type plaquette stabilisers, 8 Z-type
     vertex stabilisers.  Encodes 2 logical qubits with distance 3.
+
+    Lattice layout (L = 3, periodic boundaries)::
+
+        ○ = Z-vertex (star)   □ = X-plaquette (face)
+        — = horizontal edge   | = vertical edge
+
+        ○——0——○——1——○——2——○        (row 0: h-edges 0,1,2)
+        |      |      |      |
+        9  □  10  □  11  □         (v-edges 9,10,11; plaquettes)
+        |      |      |      |
+        ○——3——○——4——○——5——○        (row 1: h-edges 3,4,5)
+        |      |      |      |
+       12  □  13  □  14  □         (v-edges 12,13,14; plaquettes)
+        |      |      |      |
+        ○——6——○——7——○——8——○        (row 2: h-edges 6,7,8)
+        |      |      |      |
+       15  □  16  □  17  □         (v-edges 15,16,17; plaquettes)
+        |      |      |      |
+        ○——0——○——1——○——2——○        (wraps to row 0)
+
+    Qubit coordinates:
+        h-edge(i,j) → (j+0.5, i)     v-edge(i,j) → (j, i+0.5)
+    Stabiliser coords = centroids of support qubits.
 
     Parameters
     ----------
@@ -150,6 +191,12 @@ class ToricCode33(TopologicalCSSCode):
         Qubit layout on 3x3 torus:
         - Horizontal edges: qubits 0-8 (h[row,col] at edge between vertices)
         - Vertical edges: qubits 9-17 (v[row,col] at edge between vertices)
+
+        Raises
+        ------
+        ValueError
+            If the lattice size L is less than 2 (fixed at L = 3 in this
+            class, so this cannot occur unless subclassed).
         """
         L = 3  # Lattice size
         n_qubits = 2 * L * L  # 18 qubits
@@ -342,9 +389,30 @@ class ToricCode33(TopologicalCSSCode):
         # For CSS: H_Z = ∂1, so ∂1 = H_Z
         boundary_1 = hz
         
-        # Stabilizer coordinates
-        x_stab_coords = [(j + 0.5, i + 0.5) for i in range(L) for j in range(L)][:-1]
-        z_stab_coords = [(float(j), float(i)) for i in range(L) for j in range(L)][:-1]
+        # Stabiliser coordinates: use natural lattice face/vertex positions.
+        # Plaquette (i, j) sits at face centre (j + 0.5, i + 0.5).
+        # Vertex   (i, j) sits at            (j,       i      ).
+        #
+        # The geometric CX schedule uses (±0.5, 0) / (0, ±0.5) offsets
+        # from these positions.  Using centroids of support qubits
+        # produces WRONG positions for wrapping stabilisers because the
+        # centroid of data qubits at opposite edges of the fundamental
+        # domain lands at the centre of the patch, not at the face/vertex.
+        #
+        # The H-matrix rows are ordered (i=0,j=0), (i=0,j=1), ...,
+        # with the last row (i=L-1, j=L-1) removed.  We replicate that
+        # ordering here.
+        x_stab_all = []
+        for i in range(L):
+            for j in range(L):
+                x_stab_all.append((j + 0.5, i + 0.5))
+        x_stab_coords = x_stab_all[:-1]  # match hx (last row removed)
+
+        z_stab_all = []
+        for i in range(L):
+            for j in range(L):
+                z_stab_all.append((float(j), float(i)))
+        z_stab_coords = z_stab_all[:-1]  # match hz (last row removed)
         
         return (data_coords, x_stab_coords, z_stab_coords, hx, hz, boundary_2, boundary_1)
 

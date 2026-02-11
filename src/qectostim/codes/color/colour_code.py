@@ -64,6 +64,23 @@ point towards its four compass neighbours).
 All face overlaps are even (2 shared qubits between any adjacent square
 and octagon, 4 between adjacent octagons), ensuring self-orthogonality.
 
+Code Parameters
+~~~~~~~~~~~~~~~
+:math:`[[n, k, d]]` where:
+
+- :math:`n = 4L^2` physical qubits (for an :math:`L \times L` torus, *L* even)
+- :math:`k = 4` logical qubits
+- :math:`d = 2L` code distance
+- Rate :math:`k/n = 1/L^2`
+
+Stabiliser Structure
+~~~~~~~~~~~~~~~~~~~~
+- **X-type stabilisers**: weight-4 (squares) and weight-8 (octagons); one per face,
+  :math:`L^2` squares + :math:`L^2` octagons = :math:`2L^2` total.
+- **Z-type stabilisers**: identical support (self-dual, :math:`H_X = H_Z`).
+- Measurement schedule: 3-round schedule from the 3-colouring; each colour
+  group can be measured in parallel.
+
 References
 ----------
 .. [1] Bombin & Martin-Delgado, "Topological quantum distillation",
@@ -78,6 +95,20 @@ See Also
 qectostim.codes.color.hexagonal_colour : 2D colour code on the 4.8.8
     tiling (alternative implementation).
 qectostim.codes.small.steane_713 : Smallest colour code ([[7,1,3]]).
+
+Fault tolerance
+~~~~~~~~~~~~~~~
+* Transversal H, S, and CNOT give the full Clifford group without
+  magic-state distillation.
+* For a universal gate set, magic states can be injected via a colour-
+  code-native distillation protocol that exploits triorthogonality.
+
+Decoding
+~~~~~~~~
+* **Chromobius** — the native colour-code decoder; decomposes the
+  matching problem by colour pairs.
+* **Restriction decoder** — projects onto surface-code sub-problems
+  for each colour pair and solves them with MWPM.
 """
 from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
@@ -294,6 +325,20 @@ class ColourCode488(TopologicalCSSCode):
         *,
         metadata: Optional[Dict[str, Any]] = None,
     ):
+        """Initialise the 4.8.8 colour code on a toric lattice.
+
+        Parameters
+        ----------
+        distance : int, optional
+            Target code distance (default 4).  Must be ≥ 2.
+        metadata : dict, optional
+            Additional metadata merged into the code's metadata dict.
+
+        Raises
+        ------
+        ValueError
+            If ``distance < 2``.
+        """
         if distance < 2:
             raise ValueError(f"Distance must be >= 2, got {distance}")
 

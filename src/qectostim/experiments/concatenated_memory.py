@@ -7,17 +7,11 @@ supporting both flat and hierarchical models.
 
 Classes
 -------
-FlatConcatenatedMemoryExperiment
-    Flat model treating concatenated code as single large stabilizer code.
-    Simple but not fault-tolerant at the outer level.
-    
+
 HierarchicalConcatenatedMemoryExperiment  
     Hierarchical model using logical ancilla blocks for outer stabilizer 
     measurement. Provides proper fault tolerance at both levels.
 
-ConcatenatedMemoryExperiment
-    Deprecated alias for FlatConcatenatedMemoryExperiment.
-    
 ConcatenatedCSSMemoryExperiment
     Extended CSS memory experiment for concatenated codes with support
     for both flat and hierarchical round builders.
@@ -34,7 +28,6 @@ from qectostim.experiments.memory import CSSMemoryExperiment
 from qectostim.experiments.stabilizer_rounds import (
     DetectorContext,
     StabilizerBasis,
-    FlatConcatenatedStabilizerRoundBuilder,
 )
 
 if TYPE_CHECKING:
@@ -195,59 +188,8 @@ class ConcatenatedCSSMemoryExperiment(CSSMemoryExperiment):
         stim.Circuit
             The complete memory experiment circuit.
         """
-        if self.use_hierarchical:
-            return self._to_stim_hierarchical()
-        else:
-            return self._to_stim_flat()
+        return self._to_stim_hierarchical()
     
-    def _to_stim_flat(self) -> stim.Circuit:
-        """Build circuit using flat (non-hierarchical) round builder."""
-        basis = self.basis.upper()
-        
-        # Create detector context for tracking
-        ctx = DetectorContext()
-        
-        # Create flat concatenated round builder
-        builder = FlatConcatenatedStabilizerRoundBuilder(
-            self.code, ctx,
-            block_name="concat",
-            measurement_basis=basis,
-            block_contiguous=self.block_contiguous,
-        )
-        
-        c = stim.Circuit()
-        
-        # Emit qubit coordinates
-        builder.emit_qubit_coords(c)
-        
-        # Reset all qubits
-        builder.emit_reset_all(c)
-        
-        # Prepare logical state
-        initial_state = "+" if basis == "X" else "0"
-        builder.emit_prepare_logical_state(c, state=initial_state, logical_idx=self.logical_qubit)
-        
-        # First stabilizer round
-        builder.emit_round(c, stab_type=StabilizerBasis.BOTH, emit_detectors=True)
-        
-        # Subsequent rounds in REPEAT block for DEM time-translation invariance
-        if self.rounds > 1:
-            repeat_body = stim.Circuit()
-            builder.emit_round(repeat_body, stab_type=StabilizerBasis.BOTH, emit_detectors=True)
-            c.append(stim.CircuitRepeatBlock(self.rounds - 1, repeat_body))
-        
-        # Final measurement
-        logical_meas = builder.emit_final_measurement(c, basis=basis, logical_idx=self.logical_qubit)
-        
-        # If block-contiguous mode, emit deferred detectors
-        if self.block_contiguous:
-            data_meas = builder.get_data_meas_mapping(ctx.measurement_index - self.code.n)
-            builder.emit_deferred_detectors(c, data_meas)
-        
-        # Emit observable
-        ctx.emit_observable(c, observable_idx=0)
-        
-        return c
     
     def _to_stim_hierarchical(self) -> stim.Circuit:
         """Build circuit using hierarchical round builder with logical ancillas."""
@@ -399,50 +341,6 @@ class ConcatenatedCSSMemoryExperiment(CSSMemoryExperiment):
         }
 
 
-class FlatConcatenatedMemoryExperiment(ConcatenatedCSSMemoryExperiment):
-    """
-    Flat model memory experiment for concatenated CSS codes.
-    
-    This is equivalent to ConcatenatedCSSMemoryExperiment with use_hierarchical=False.
-    The concatenated code is treated as a single large CSS code, which is simple
-    but does not provide fault tolerance at the outer level.
-    
-    For fault-tolerant concatenation, use HierarchicalConcatenatedMemoryExperiment.
-    
-    Parameters
-    ----------
-    code : ConcatenatedCSSCode
-        The concatenated CSS code.
-    rounds : int
-        Number of syndrome measurement rounds.
-    noise_model : NoiseModel | Dict | None
-        Noise model to apply.
-    basis : str
-        Measurement basis ("Z" or "X").
-    block_contiguous : bool
-        If True, emit detectors in block-contiguous order.
-    metadata : Dict | None
-        Additional experiment metadata.
-    """
-    
-    def __init__(
-        self,
-        code: "ConcatenatedCSSCode",
-        rounds: int,
-        noise_model: Optional[Any] = None,
-        basis: str = "Z",
-        block_contiguous: bool = False,
-        metadata: Optional[Dict[str, Any]] = None,
-    ):
-        super().__init__(
-            code=code,
-            rounds=rounds,
-            noise_model=noise_model,
-            basis=basis,
-            use_hierarchical=False,
-            block_contiguous=block_contiguous,
-            metadata=metadata,
-        )
 
 
 class HierarchicalConcatenatedMemoryExperiment(ConcatenatedCSSMemoryExperiment):
@@ -494,19 +392,6 @@ class HierarchicalConcatenatedMemoryExperiment(ConcatenatedCSSMemoryExperiment):
         )
 
 
-class ConcatenatedMemoryExperiment(FlatConcatenatedMemoryExperiment):
-    """
-    DEPRECATED: Use FlatConcatenatedMemoryExperiment or HierarchicalConcatenatedMemoryExperiment.
-    
-    This class is an alias for FlatConcatenatedMemoryExperiment for backward compatibility.
-    It will be removed in a future version.
-    """
-    
-    def __init__(self, *args, **kwargs):
-        warnings.warn(
-            "ConcatenatedMemoryExperiment is deprecated. Use FlatConcatenatedMemoryExperiment "
-            "for flat model or HierarchicalConcatenatedMemoryExperiment for hierarchical model.",
-            DeprecationWarning,
-            stacklevel=2
-        )
-        super().__init__(*args, **kwargs)
+# Aliases for naming consistency
+FlatConcatenatedMemoryExperiment = ConcatenatedCSSMemoryExperiment
+ConcatenatedMemoryExperiment = ConcatenatedCSSMemoryExperiment  # Deprecated

@@ -220,6 +220,10 @@ class PhaseOrchestrator:
         # Reset gadget phase counter
         self.gadget.reset_phases()
         
+        # Pass builders to gadget for interleaved EC (lattice surgery)
+        if hasattr(self.gadget, 'set_builders'):
+            self.gadget.set_builders(self.builders)
+        
         # Track prep measurement start for hybrid decoding
         prep_meas_start = None
         
@@ -245,6 +249,14 @@ class PhaseOrchestrator:
                 if phase_result.destroyed_blocks:
                     for block_name in phase_result.destroyed_blocks:
                         result.destroyed_block_meas_starts[block_name] = meas_start
+            
+            # Also check for gadget-internal measurement tracking.
+            # Some gadgets (e.g., surgery CNOT) call ctx.add_measurement()
+            # internally and pass destroyed_block_meas_starts via extra.
+            if phase_result.extra.get("destroyed_block_meas_starts"):
+                result.destroyed_block_meas_starts.update(
+                    phase_result.extra["destroyed_block_meas_starts"]
+                )
                 
                 # For hybrid decoding, track prep measurement start
                 if use_hybrid_decoding and phase_result.phase_type == PhaseType.PREPARATION:
@@ -277,23 +289,57 @@ class PhaseOrchestrator:
             
             # Process Pauli frame updates
             if phase_result.pauli_frame_update is not None:
-                self._process_frame_update(phase_result.pauli_frame_update, meas_start)
+                # Use meas_start from either the orchestrator's tracking
+                # or from gadget-internal tracking via extra field.
+                frame_meas_base = meas_start
+                if frame_meas_base is None and phase_result.extra.get("destroyed_block_meas_starts"):
+                    # Gadget tracked measurements internally; use the first
+                    # destroyed block's meas_start as the frame base.
+                    dbms = phase_result.extra["destroyed_block_meas_starts"]
+                    if dbms:
+                        frame_meas_base = min(dbms.values())
+                self._process_frame_update(phase_result.pauli_frame_update, frame_meas_base)
             
             # Handle inter-phase stabilizer rounds if needed
             if phase_result.needs_stabilizer_rounds > 0 and not phase_result.is_final:
                 # After the GATE phase, pass pre_gadget_meas so crossing
-                # detectors are emitted after the first post-gate round
+                # detectors are emitted after the first post-gate round.
+                # Only pass pre_gadget_meas ONCE — the first time crossing
+                # detectors fire.  Multi-phase gadgets (e.g. lattice surgery)
+                # have several GATE phases; crossing detectors should only
+                # compare pre-gadget vs the first post-gate round, not every
+                # inter-phase boundary.
                 gate_pre_meas = None
-                if phase_result.phase_type == PhaseType.GATE and pre_gadget_meas is not None:
+                if (phase_result.phase_type == PhaseType.GATE
+                        and pre_gadget_meas is not None
+                        and not result.crossing_handled):
                     gate_pre_meas = pre_gadget_meas
                 self._emit_inter_phase_rounds(
                     circuit,
                     phase_result.needs_stabilizer_rounds,
                     result.destroyed_blocks,
                     pre_gadget_meas=gate_pre_meas,
+                    stab_constraints=phase_result.stab_constraints,
                 )
                 if gate_pre_meas is not None:
                     result.crossing_handled = True
+                
+                # After PREPARATION inter-phase rounds, update pre_gadget_meas
+                # for blocks that were freshly prepared inside the gadget
+                # (i.e. blocks that skipped pre-gadget rounds and thus had
+                # empty measurement records).  Their first syndrome measurements
+                # are now available from the inter-phase rounds after Phase 1.
+                # Without this update, crossing detectors after the GATE phase
+                # would reference empty "pre" measurements → degenerate
+                # detectors → non-determinism.
+                if (phase_result.phase_type == PhaseType.PREPARATION
+                        and pre_gadget_meas is not None):
+                    skipped_blocks = self.gadget.get_blocks_to_skip_pre_rounds()
+                    for builder in self.builders:
+                        if builder.block_name in skipped_blocks:
+                            last_meas = builder.get_last_measurement_indices()
+                            if any(len(v) > 0 for v in last_meas.values()):
+                                pre_gadget_meas[builder.block_name] = last_meas
             
             # Store final result
             if phase_result.is_final:
@@ -412,6 +458,12 @@ class PhaseOrchestrator:
         """
         Apply stabilizer transform to surviving blocks.
         
+        Supports per-block overrides via transform.per_block:
+        - per_block[block_name]["clear_history"]: override global clear_history
+        - per_block[block_name]["skip_first_round"]: override global skip_first_round
+        - per_block[block_name]["skip_z"]: skip first-round Z detectors only
+        - per_block[block_name]["skip_x"]: skip first-round X detectors only
+        
         Parameters
         ----------
         transform : StabilizerTransform
@@ -419,24 +471,42 @@ class PhaseOrchestrator:
         destroyed_blocks : Set[str]
             Blocks to skip (already destroyed).
         """
-        if not (transform.clear_history or transform.swap_xz or transform.skip_first_round):
+        has_per_block = transform.per_block is not None
+        if not (transform.clear_history or transform.swap_xz or
+                transform.skip_first_round or has_per_block):
             return
         
         # Clear history in detector context
         for block_name in self.alloc_dict:
             if block_name != "total" and block_name not in destroyed_blocks:
-                self.ctx.clear_stabilizer_history(
-                    block_name=block_name,
-                    swap_xz=transform.swap_xz,
-                )
+                # Check per-block override for clear_history
+                block_clear = transform.clear_history
+                if has_per_block and block_name in transform.per_block:
+                    block_clear = transform.per_block[block_name].get(
+                        "clear_history", block_clear
+                    )
+                if block_clear or transform.swap_xz:
+                    self.ctx.clear_stabilizer_history(
+                        block_name=block_name,
+                        swap_xz=transform.swap_xz,
+                    )
         
         # Reset builder history
         for builder in self.builders:
             if builder.block_name not in destroyed_blocks:
-                builder.reset_stabilizer_history(
-                    swap_xz=transform.swap_xz,
-                    skip_first_round=transform.skip_first_round,
-                )
+                # Check per-block override for skip_first_round
+                block_skip = transform.skip_first_round
+                block_clear = transform.clear_history
+                if has_per_block and builder.block_name in transform.per_block:
+                    bp = transform.per_block[builder.block_name]
+                    block_skip = bp.get("skip_first_round", block_skip)
+                    block_clear = bp.get("clear_history", block_clear)
+                
+                if block_clear or transform.swap_xz or block_skip:
+                    builder.reset_stabilizer_history(
+                        swap_xz=transform.swap_xz,
+                        skip_first_round=block_skip,
+                    )
     
     def _process_frame_update(
         self,
@@ -498,6 +568,7 @@ class PhaseOrchestrator:
         num_rounds: int,
         destroyed_blocks: Set[str],
         pre_gadget_meas: Optional[Dict[str, Dict[str, Any]]] = None,
+        stab_constraints: Optional[Dict[str, str]] = None,
     ) -> None:
         """
         Emit stabilizer rounds between gadget phases with proper scheduling.
@@ -516,8 +587,14 @@ class PhaseOrchestrator:
         pre_gadget_meas : Optional[Dict]
             Pre-gadget measurement indices for crossing detector emission.
             When provided, crossing detectors are emitted after the first round.
+        stab_constraints : Optional[Dict[str, str]]
+            Per-block stabilizer basis constraints.  Maps block_name -> "X" | "Z" | "BOTH".
+            Blocks not listed default to "BOTH".  Used by lattice surgery to
+            restrict EC during merge phases (e.g. X-only on blocks involved
+            in XX merge because bridge CX corrupts Z parity).
         """
         from qectostim.experiments.detector_emission import emit_scheduled_rounds
+        from qectostim.experiments.stabilizer_rounds import StabilizerBasis
         from qectostim.gadgets.scheduling import BlockSchedule
         
         active_builders = [
@@ -554,6 +631,20 @@ class PhaseOrchestrator:
         if pre_gadget_meas is not None:
             crossing_config = self.gadget.get_crossing_detector_config()
         
+        # Apply per-block stab_constraints if provided
+        # This allows surgery phases to restrict EC basis per-block
+        # (e.g. XX merge → blocks 1,2 use X-only EC).
+        per_block_stab_type: Optional[Dict[str, StabilizerBasis]] = None
+        if stab_constraints:
+            per_block_stab_type = {}
+            for bname, basis_str in stab_constraints.items():
+                if basis_str.upper() == "X":
+                    per_block_stab_type[bname] = StabilizerBasis.X
+                elif basis_str.upper() == "Z":
+                    per_block_stab_type[bname] = StabilizerBasis.Z
+                else:
+                    per_block_stab_type[bname] = StabilizerBasis.BOTH
+        
         # Delegate to emit_scheduled_rounds — eliminates duplicated round loop
         emit_scheduled_rounds(
             circuit, active_builders, schedules, num_rounds,
@@ -562,6 +653,7 @@ class PhaseOrchestrator:
             pre_gadget_meas=pre_gadget_meas,
             destroyed_blocks=destroyed_blocks,
             all_builders=self.builders,
+            per_block_stab_type=per_block_stab_type,
         )
 
 

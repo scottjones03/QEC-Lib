@@ -32,11 +32,52 @@ Two anticommuting pairs (weight 2 each):
 
 Qubit layout
 ------------
-Data qubits at corners of a unit square::
+Data qubits at corners of a unit square.  Both stabilisers (X and Z)
+act on all 4 qubits, so their "plaquette" is the entire square.
 
-    3 --- 2
-    |     |
-    0 --- 1
+::
+
+    3 ─────── 2
+    │         │
+    │  [X,Z]  │       [X,Z] = single face where both
+    │    ●    │              XXXX and ZZZZ act
+    │         │
+    0 ─────── 1
+
+    Data qubits (vertices):
+      0: (0, 0)   bottom-left
+      1: (1, 0)   bottom-right
+      2: (1, 1)   top-right
+      3: (0, 1)   top-left
+
+    Stabiliser coord (face centre):
+      X-stab [0]: (0.5, 0.5)   — centre of square
+      Z-stab [0]: (0.5, 0.5)   — same centre (self-dual structure)
+
+Error detection
+---------------
+The [[4,2,2]] code can *detect* but not *correct* single-qubit errors.
+It is the smallest example of a **quantum error-detecting code** and
+forms the basis of **post-selection** based fault-tolerance schemes,
+where detected errors cause the computation to be discarded and restarted.
+
+Code Parameters
+~~~~~~~~~~~~~~~
+:math:`[[n, k, d]] = [[4, 2, 2]]` where:
+
+- :math:`n = 4` physical qubits (corners of a unit square)
+- :math:`k = 2` logical qubits
+- :math:`d = 2` (detects single errors; cannot correct)
+- Rate :math:`k/n = 1/2`
+
+Stabiliser Structure
+~~~~~~~~~~~~~~~~~~~~
+- **X-type stabilisers**: 1 generator, weight 4 — ``XXXX``
+  (acts on all 4 qubits).
+- **Z-type stabilisers**: 1 generator, weight 4 — ``ZZZZ``
+  (acts on all 4 qubits).
+- Measurement schedule: both stabilisers measured in parallel;
+  each requires a depth-4 CNOT circuit with one ancilla.
 
 Connections to other codes
 --------------------------
@@ -45,6 +86,17 @@ Connections to other codes
   code with all gauge operators fixed.
 * **Quantum error detection**: foundational building block for flag-based
   fault-tolerant gadgets and post-selection experiments.
+* **Concatenated codes**: frequently used as the inner code in
+  concatenated constructions.
+
+Fault tolerance
+---------------
+* Post-selection on the two stabiliser outcomes provides error detection.
+* Transversal CNOT between two [[4,2,2]] blocks acts on both logical qubits.
+* The code has been experimentally demonstrated on superconducting and
+  trapped-ion platforms as an error-detection primitive.
+* Weight-4 stabilisers keep the ancilla circuit depth low (4 CNOTs each).
+* Flag-qubit techniques are unnecessary since all stabilisers have equal weight.
 
 References
 ----------
@@ -123,6 +175,12 @@ class FourQubit422Code(TopologicalCSSCode):
             Extra key/value pairs merged into the code's metadata
             dictionary.  User-supplied entries override auto-generated
             ones with the same key.
+
+        Raises
+        ------
+        ValueError
+            If the internally constructed parity-check matrices fail
+            CSS validation (should never happen for a fixed code).
         """
         # ═══════════════════════════════════════════════════════════════════
         # STABILISER MATRICES
@@ -181,8 +239,8 @@ class FourQubit422Code(TopologicalCSSCode):
         meta["rate"] = 2.0 / 4.0
         meta["data_coords"] = data_coords
         meta["data_qubits"] = list(range(4))
-        meta["x_stab_coords"] = [(0.5, 0.5)]   # face centre
-        meta["z_stab_coords"] = [(0.5, -0.5)]   # below the square
+        meta["x_stab_coords"] = [(0.5, 0.5)]   # face centre (XXXX acts on all 4)
+        meta["z_stab_coords"] = [(0.5, 0.5)]   # face centre (ZZZZ acts on all 4)
         meta["lx_pauli_type"] = "X"
         meta["lx_support"] = [0, 1]           # first logical X: XXII
         meta["lz_pauli_type"] = "Z"

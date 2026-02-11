@@ -35,6 +35,55 @@ Three anticommuting pairs (Lx weight 4, Lz weight 2):
     X̄₂ = X₀X₁X₄X₅  (XXIIXXII)     Z̄₂ = Z₀Z₂  (ZIZIIIII)
     X̄₃ = X₀X₂X₄X₆  (XIXIXIXI)     Z̄₃ = Z₀Z₁  (ZZIIIIII)
 
+Qubit layout
+------------
+Data qubits on a 2×4 grid (viewed as two rows of 4).  The X-stabiliser
+acts on all 8 qubits.  Z-stabilisers partition qubits in binary patterns.
+
+::
+
+    Row 1:    4 ─────── 5 ─────── 6 ─────── 7
+              │         │         │         │
+              │  [X: acts on all 8 qubits]  │
+              │                             │
+    Row 0:    0 ─────── 1 ─────── 2 ─────── 3
+
+    Z-stabilisers (extended Hamming structure):
+      Z₀ = {0,1,2,3}  "ZZZZIIII" — left half
+      Z₁ = {0,1,4,5}  "ZZIIZZII" — even columns
+      Z₂ = {0,2,4,6}  "ZIZIZIZI" — even positions
+      Z₃ = {4,5,6,7}  "IIIIZZZZ" — right half
+
+    Data qubit coordinates (2×4 grid):
+      0: (0, 0)   1: (1, 0)   2: (2, 0)   3: (3, 0)   — row 0
+      4: (0, 1)   5: (1, 1)   6: (2, 1)   7: (3, 1)   — row 1
+
+    X-stabiliser centroid: (1.5, 0.5) — centre of grid
+    Z-stabiliser centroids:
+      Z₀: mean of {0,1,2,3} → (1.5, 0.0)
+      Z₁: mean of {0,1,4,5} → (0.5, 0.5)
+      Z₂: mean of {0,2,4,6} → (1.0, 0.5)
+      Z₃: mean of {4,5,6,7} → (1.5, 1.0)
+
+Code Parameters
+~~~~~~~~~~~~~~~
+:math:`[[n, k, d]] = [[8, 3, 2]]` where:
+
+- :math:`n = 8` physical qubits (2 × 4 grid)
+- :math:`k = 3` logical qubits
+- :math:`d = 2` (detects single errors; cannot correct)
+- Rate :math:`k/n = 3/8 = 0.375`
+
+Stabiliser Structure
+~~~~~~~~~~~~~~~~~~~~
+- **X-type stabilisers**: 1 generator, weight 8 — ``XXXXXXXX``
+  (overall parity check on all 8 qubits).
+- **Z-type stabilisers**: 4 generators, each weight 4;
+  ``ZZZZIIII``, ``ZZIIZZII``, ``ZIZIZIZI``, ``IIIIZZZZ``
+  (extended Hamming parity-check structure).
+- Measurement schedule: all 5 stabilisers in parallel;
+  X-stabiliser uses a depth-8 CNOT circuit, Z-stabilisers depth-4.
+
 Connections to other codes
 --------------------------
 * **Extended Hamming code**: Z-stabilisers are the parity-check matrix
@@ -42,6 +91,19 @@ Connections to other codes
 * **[[4, 2, 2]] code**: obtained by puncturing (removing 4 qubits).
 * **Colour codes**: related to colour code constructions through the
   Reed–Muller hierarchy.
+
+Fault tolerance
+---------------
+* The code detects any weight-1 error but cannot correct it.
+* In a **post-selection** scheme, detected errors trigger a restart.
+* Transversal CCZ gate can be implemented on the three logical qubits.
+* The high encoding rate (3/8) makes it attractive for magic-state factories.
+
+Implementation notes
+--------------------
+* Stabiliser measurements use one weight-8 X ancilla and four weight-4 Z ancillas.
+* The Z-stabiliser circuit depth is 4 (one CNOT per support qubit).
+* Hook errors on the X ancilla have weight ≤ 4, which is still detectable.
 
 References
 ----------
@@ -119,6 +181,10 @@ class EightThreeTwoCode(CSSCode):
             dictionary.  User-supplied entries override auto-generated
             ones with the same key.
 
+        Raises
+        ------
+        No ``ValueError`` raised — all code parameters are fixed.
+
         Notes
         -----
         The logical X operators have weight 4 (codewords of the [8, 4, 4]
@@ -184,9 +250,12 @@ class EightThreeTwoCode(CSSCode):
         ]
 
         # ═══════════════════════════════════════════════════════════════════
-        # GEOMETRY — linear layout
+        # GEOMETRY — 2×4 grid layout (see module docstring for ASCII diagram)
         # ═══════════════════════════════════════════════════════════════════
-        data_coords = [(float(i), 0.0) for i in range(8)]
+        data_coords = [
+            (0.0, 0.0), (1.0, 0.0), (2.0, 0.0), (3.0, 0.0),  # row 0
+            (0.0, 1.0), (1.0, 1.0), (2.0, 1.0), (3.0, 1.0),  # row 1
+        ]
 
         # ═══════════════════════════════════════════════════════════════════
         # METADATA (all 17 standard keys)
@@ -200,10 +269,18 @@ class EightThreeTwoCode(CSSCode):
         meta["rate"] = 3.0 / 8.0
         meta["data_coords"] = data_coords
         meta["data_qubits"] = list(range(8))
-        meta["x_stab_coords"] = [(3.5, 0.5)]       # single X-stab centroid
+        # X-stab spans all 8 qubits; centroid at grid center
+        meta["x_stab_coords"] = [(1.5, 0.5)]
+        # Z-stab centroids (calculated from support sets)
+        # Z₀={0,1,2,3}: mean of (0,0),(1,0),(2,0),(3,0) = (1.5, 0.0)
+        # Z₁={0,1,4,5}: mean of (0,0),(1,0),(0,1),(1,1) = (0.5, 0.5)
+        # Z₂={0,2,4,6}: mean of (0,0),(2,0),(0,1),(2,1) = (1.0, 0.5)
+        # Z₃={4,5,6,7}: mean of (0,1),(1,1),(2,1),(3,1) = (1.5, 1.0)
         meta["z_stab_coords"] = [
-            (1.5, -0.5), (2.5, -0.5),               # Z stab centroids
-            (3.5, -0.5), (5.5, -0.5),
+            (1.5, 0.0),   # Z₀ = {0,1,2,3}
+            (0.5, 0.5),   # Z₁ = {0,1,4,5}
+            (1.0, 0.5),   # Z₂ = {0,2,4,6}
+            (1.5, 1.0),   # Z₃ = {4,5,6,7}
         ]
         meta["lx_pauli_type"] = "X"
         meta["lx_support"] = [0, 1, 2, 3]          # first logical X
@@ -254,6 +331,10 @@ class EightThreeTwoCode(CSSCode):
     def name(self) -> str:
         """Human-readable name: ``'EightThreeTwoCode'``."""
         return "EightThreeTwoCode"
+
+    def qubit_coords(self) -> List:
+        """Return 2×4 grid coordinates for the 8 data qubits."""
+        return self._metadata.get("data_coords", list(range(8)))
 
 
 # Convenience alias

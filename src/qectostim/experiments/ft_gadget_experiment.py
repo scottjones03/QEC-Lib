@@ -171,6 +171,12 @@ class FaultTolerantGadgetExperiment(Experiment):
         Number of stabilizer rounds before gadget.
     num_rounds_after : int
         Number of stabilizer rounds after gadget.
+    auto_detectors : bool or None
+        If True, enable automatic detector/observable emission via flow
+        matching (replaces all manual DETECTOR/OBSERVABLE_INCLUDE with
+        auto-discovered ones).  If None (default), defers to
+        ``gadget.use_auto_detectors()``.  Explicit True/False overrides
+        the gadget's preference.
     metadata : Optional[Dict]
         Additional experiment metadata.
     """
@@ -183,6 +189,7 @@ class FaultTolerantGadgetExperiment(Experiment):
         num_rounds_before: int = 3,
         num_rounds_after: int = 3,
         metadata: Optional[Dict[str, Any]] = None,
+        auto_detectors: Optional[bool] = None,
     ):
         # Use first code as primary for base class
         super().__init__(codes[0], noise_model, metadata)
@@ -191,9 +198,17 @@ class FaultTolerantGadgetExperiment(Experiment):
         self.gadget = gadget
         self.num_rounds_before = num_rounds_before
         self.num_rounds_after = num_rounds_after
+        # Infer auto_detectors from gadget when not explicitly set
+        if auto_detectors is None:
+            self.auto_detectors = gadget.use_auto_detectors()
+        else:
+            self.auto_detectors = auto_detectors
         
         # Check for placeholder logicals (QLDPC codes without proper logical operators)
         self._validate_codes(codes)
+        
+        # Validate gadget-code compatibility (CSS requirements, etc.)
+        gadget.validate_codes(codes)
         
         # Initialize stabilizer scheduler and detector coverage resolver
         self._scheduler = StabilizerScheduler()
@@ -298,6 +313,7 @@ class FaultTolerantGadgetExperiment(Experiment):
         self,
         alloc: Dict[str, Any],
         ctx: DetectorContext,
+        unified_alloc: Optional["QubitAllocation"] = None,
     ) -> List[BaseStabilizerRoundBuilder]:
         """Create appropriate StabilizerRoundBuilder for each code block.
         
@@ -330,6 +346,13 @@ class FaultTolerantGadgetExperiment(Experiment):
             data_start, _ = block_info["data"]
             x_anc_start, _ = block_info["x_anc"]
             
+            # Get block spatial offset for detector coordinates
+            block_coord_offset = None
+            if unified_alloc is not None:
+                block_alloc = unified_alloc.blocks.get(block_name)
+                if block_alloc is not None:
+                    block_coord_offset = block_alloc.offset
+            
             # Use per-block measurement basis if available from MeasurementConfig,
             # otherwise fall back to gadget's measurement_basis.
             # This is important for gadgets like TransversalCNOT where each block
@@ -352,6 +375,7 @@ class FaultTolerantGadgetExperiment(Experiment):
                     ancilla_offset=x_anc_start,
                     measurement_basis=block_meas_basis,
                     x_stabilizer_mode=x_stabilizer_mode,
+                    coord_offset=block_coord_offset,
                 )
             elif code.is_stabilizer:
                 builder = GeneralStabilizerRoundBuilder(
@@ -361,6 +385,7 @@ class FaultTolerantGadgetExperiment(Experiment):
                     data_offset=data_start,
                     ancilla_offset=x_anc_start,
                     measurement_basis=block_meas_basis,
+                    coord_offset=block_coord_offset,
                 )
             else:
                 # Code base class only: CSS builder fallback
@@ -372,6 +397,7 @@ class FaultTolerantGadgetExperiment(Experiment):
                     ancilla_offset=x_anc_start,
                     measurement_basis=block_meas_basis,
                     x_stabilizer_mode=x_stabilizer_mode,
+                    coord_offset=block_coord_offset,
                 )
             
             builders.append(builder)
@@ -568,11 +594,11 @@ class FaultTolerantGadgetExperiment(Experiment):
         # Skip for teleportation-style transforms where history is cleared
         if not skip_ancilla_reset:
             for builder in active_builders:
-                all_ancillas = builder.x_ancillas + builder.z_ancillas
+                anc = builder.all_ancillas
                 if builder.has_metachecks:
-                    all_ancillas += builder.meta_x_ancillas + builder.meta_z_ancillas
-                if all_ancillas:
-                    circuit.append("R", all_ancillas)
+                    anc = anc + builder.meta_x_ancillas + builder.meta_z_ancillas
+                if anc:
+                    circuit.append("R", anc)
             if active_builders:
                 circuit.append("TICK")
         
@@ -791,7 +817,7 @@ class FaultTolerantGadgetExperiment(Experiment):
         # Phase 1.5: Create builders BEFORE reset to know which qubits need H
         # =====================================================================
         # We need builders to know which data qubits belong to which block
-        builders = self._create_builders(alloc, ctx)
+        builders = self._create_builders(alloc, ctx, unified_alloc)
         self._builders = builders
         
         # =====================================================================
@@ -909,12 +935,82 @@ class FaultTolerantGadgetExperiment(Experiment):
             circuit, builders, alloc, ctx, destroyed_blocks,
             destroyed_block_meas_starts=phase_result.destroyed_block_meas_starts,
         )
-        
+
+        # =====================================================================
+        # Phase 7: Auto detector / observable emission
+        # =====================================================================
+        # When auto_detectors is enabled (explicitly or via
+        # gadget.use_auto_detectors()), replace all manual DETECTOR and
+        # OBSERVABLE_INCLUDE instructions with flow-matched auto-discovered
+        # ones.  This runs BEFORE noise so the bare circuit is analysed.
+        if self.auto_detectors:
+            circuit = self._apply_auto_detectors(circuit)
+
         # Apply noise model
         circuit = apply_noise_to_circuit(circuit, self.noise_model)
         
         return circuit
-    
+
+    # -----------------------------------------------------------------
+    # Auto detector / observable pipeline
+    # -----------------------------------------------------------------
+
+    def _apply_auto_detectors(self, circuit: stim.Circuit) -> stim.Circuit:
+        """Replace manual DETECTOR / OBSERVABLE_INCLUDE with auto-discovered ones.
+
+        1. Strip all existing DETECTOR and OBSERVABLE_INCLUDE instructions.
+        2. Call ``discover_detectors()`` to find all deterministic detectors
+           via Stim flow matching + GF(2) pruning.
+        3. Call ``discover_observables()`` to find valid logical observables.
+        4. Emit the discovered annotations into the bare circuit.
+
+        Parameters
+        ----------
+        circuit : stim.Circuit
+            The fully built (but pre-noise) circuit with manual annotations.
+
+        Returns
+        -------
+        stim.Circuit
+            Circuit with auto-discovered DETECTOR and OBSERVABLE_INCLUDE.
+        """
+        from qectostim.experiments.auto_detector_emission import (
+            discover_detectors,
+            discover_observables,
+        )
+
+        # Strip existing annotations
+        bare = stim.Circuit()
+        for inst in circuit.flattened():
+            if inst.name not in ("DETECTOR", "OBSERVABLE_INCLUDE"):
+                bare.append(inst)
+
+        # Discover detectors
+        det_result = discover_detectors(bare, use_cache=False)
+        n_meas = det_result.num_measurements
+
+        # Emit auto detectors
+        for det in det_result.detectors:
+            targets = [
+                stim.target_rec(-(n_meas - idx))
+                for idx in sorted(det.measurement_indices)
+            ]
+            bare.append("DETECTOR", targets, det.coordinates)
+
+        # Discover observables
+        obs_list = discover_observables(bare)
+
+        if obs_list:
+            # Pick best: prefer most blocks spanned, then lowest weight
+            best = max(obs_list, key=lambda o: (o.n_blocks, -o.weight))
+            targets = [
+                stim.target_rec(-(n_meas - idx))
+                for idx in sorted(best.measurement_indices)
+            ]
+            bare.append("OBSERVABLE_INCLUDE", targets, [0])
+
+        return bare
+
     def run_decode(
         self,
         decoder_name: Optional[str] = None,

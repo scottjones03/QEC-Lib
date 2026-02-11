@@ -20,67 +20,66 @@ PROTOCOL
 ════════════════════════════════════════════════════════════════════════════════
 
 Three-block protocol:
-    Block 0: Data block (input state |ψ⟩)
-    Block 1: Bell pair qubit A (half of |Φ⁺⟩)
-    Block 2: Bell pair qubit B (half of |Φ⁺⟩)
+    data_block:  Input state |ψ⟩
+    bell_a:      Bell pair qubit A (half of |Φ⁺⟩)
+    bell_b:      Bell pair qubit B (half of |Φ⁺⟩, carries output)
 
 Steps:
-    1. Prepare data block in |ψ⟩
-    2. Prepare Bell pair |Φ⁺⟩ = (|00⟩ + |11⟩)/√2 across blocks 1 and 2
+    1. Prepare data block in |ψ⟩ (outside gadget, via experiments/preparation.py)
+    2. Prepare bell_a in |+⟩ via RX, bell_b in |0⟩ via R (inside gadget, Phase 1)
     3. EC rounds on all three blocks
-    4. Bell measurement: CNOT(data→Bell_A), then measure data(X), Bell_A(Z)
-    5. Apply corrections to Bell_B based on measurement outcomes
-    6. Output is on Block 2 (Bell_B)
+    4. Bell pair creation: CNOT(bell_a → bell_b)   [bell_a already |+⟩]
+    5. EC rounds on all three blocks
+    6. Bell measurement: CNOT(data → bell_a), MX(data), M(bell_a)
+    7. Apply corrections to bell_b based on measurement outcomes
+    8. Output is on bell_b
 
 Bell State Preparation:
     |Φ⁺⟩ = (|00⟩ + |11⟩)/√2
-    
-    Transversal: H on block_1, then CNOT(block_1 → block_2)
-    
+
+    bell_a prepared in |+⟩ via RX (subsumes H into preparation)
+    then CNOT(bell_a → bell_b) creates Bell pair from |+⟩|0⟩
+
     For self-dual CSS codes, this creates the logical Bell state:
     |Φ⁺⟩_L = (|0⟩_L|0⟩_L + |1⟩_L|1⟩_L)/√2
 
 Bell Measurement:
-    CNOT(data → bell_A) followed by MX(data), MZ(bell_A)
-    
+    CNOT(data → bell_a) followed by MX(data), MZ(bell_a)
+
     Outcomes:
     - MX(data) = ±1 → Z correction on output
-    - MZ(bell_A) = ±1 → X correction on output
+    - MZ(bell_a) = ±1 → X correction on output
 
 ════════════════════════════════════════════════════════════════════════════════
-STABILIZER TRANSFORMATIONS
+ARCHITECTURE NOTES
 ════════════════════════════════════════════════════════════════════════════════
 
-Bell Prep (H on block_1, CNOT(1→2)):
-    After H: X_1 ↔ Z_1
-    After CNOT: 
-        X_1 → X_1
-        Z_1 → Z_1 ⊗ Z_2
-        X_2 → X_1 ⊗ X_2
-        Z_2 → Z_2
+This gadget is designed for AUTOMATIC detector and observable emission:
+- Crossing detectors: discovered via discover_detectors()
+- Boundary detectors: discovered via discover_detectors()
+- Observables: discovered via discover_observables()
 
-    Combined stabilizer: X_1 ⊗ X_2 and Z_1 ⊗ Z_2 are the Bell stabilizers
-    
-Bell Measurement (CNOT(0→1), MX(0), MZ(1)):
-    Before measurement:
-        X_0 → X_0              (unchanged)
-        Z_0 → Z_0 ⊗ Z_1        (spreads to bell_A)
-        X_1 → X_0 ⊗ X_1        (picks up data)
-        Z_1 → Z_1              (unchanged)
-        
-    After measuring MX(0), MZ(1):
-        - Block 0 destroyed (measured out)
-        - Block 1 destroyed (measured out)
-        - Block 2 retains output with Pauli frame corrections
+The gadget returns None/minimal configs for crossing/boundary/observable
+to let the experiment produce a bare circuit. Auto discovery is then
+applied post-hoc by the user or test harness (as in test_end_to_end.py).
+
+Preparation architecture:
+    - data_block: prepared OUTSIDE gadget (experiments/preparation.py)
+    - bell_a, bell_b: prepared INSIDE gadget (RX/R in Phase 1)
+    - data_block + bell_a: measured INSIDE gadget (Phase 3)
+    - bell_b: measured OUTSIDE gadget (experiment final measurement)
+
+3-phase structure (matching TeleportationGadgetMixin pattern):
+    Phase 1 (PREPARATION): Prepare bell blocks: RX(bell_a) + R(bell_b), request EC
+    Phase 2 (GATE):        Bell pair entangle: CNOT(bell_a → bell_b)
+    Phase 3 (MEASUREMENT): Bell measurement: CNOT(data → bell_a), MX(data), M(bell_a)
 
 ════════════════════════════════════════════════════════════════════════════════
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import List, Literal, Optional, Dict, Any, TYPE_CHECKING
+from typing import List, Literal, Optional, Dict, Any, Set, TYPE_CHECKING
 
-import numpy as np
 import stim
 
 from qectostim.codes.abstract_code import Code
@@ -88,16 +87,18 @@ from qectostim.codes.abstract_css import CSSCode
 from qectostim.gadgets.base import (
     Gadget,
     GadgetMetadata,
+    HeisenbergFrame,
     StabilizerTransform,
     TwoQubitObservableTransform,
     PhaseResult,
     PhaseType,
+    FrameUpdate,
     ObservableConfig,
     PreparationConfig,
     BlockPreparationConfig,
+    MeasurementConfig,
+    BoundaryDetectorConfig,
     CrossingDetectorConfig,
-    CrossingDetectorFormula,
-    CrossingDetectorTerm,
 )
 from qectostim.gadgets.layout import GadgetLayout, QubitAllocation
 
@@ -108,24 +109,25 @@ if TYPE_CHECKING:
 class KnillECGadget(Gadget):
     """
     Knill Error Correction Gadget using Bell-state teleportation.
-    
+
     This gadget implements fault-tolerant error correction via teleportation.
     It uses three code blocks:
-    - Block 0: Input data block
-    - Block 1: Bell pair qubit A (measured out)
-    - Block 2: Bell pair qubit B (output)
-    
-    Protocol:
-        1. Prepare Bell pair across blocks 1 and 2
-        2. Bell measurement: CNOT(0→1), MX(0), MZ(1)
-        3. Apply corrections to block 2 based on outcomes
-        4. Output on block 2
-    
-    This is a 2-phase gadget:
-        Phase 1: Bell pair preparation (H on block_1, CNOT(1→2))
-        Phase 2: Bell measurement and teleportation
+    - data_block:  Input data block (measured out)
+    - bell_a:      Bell pair qubit A (measured out)
+    - bell_b:      Bell pair qubit B (output)
+
+    Protocol (3 phases):
+        Phase 1 (PREPARATION): Prepare bell blocks (RX on bell_a, R on bell_b)
+        Phase 2 (GATE):        Entangle Bell pair: CNOT(bell_a → bell_b)
+        Phase 3 (MEASUREMENT): CNOT(data → bell_a), MX(data), M(bell_a)
+
+    Preparation split:
+        - data_block: prepared by experiment (outside gadget)
+        - bell_a/bell_b: prepared by gadget internally (inside, Phase 1)
+
+    Designed for automatic detector/observable emission.
     """
-    
+
     def __init__(
         self,
         input_state: Literal["0", "+"] = "0",
@@ -133,7 +135,7 @@ class KnillECGadget(Gadget):
     ):
         """
         Initialize Knill EC gadget.
-        
+
         Parameters
         ----------
         input_state : Literal["0", "+"]
@@ -144,46 +146,51 @@ class KnillECGadget(Gadget):
         super().__init__(input_state=input_state)
         self.input_state = input_state
         self.num_ec_rounds = num_ec_rounds
-        
-        # Cache
         self._code: Optional[CSSCode] = None
         self._current_phase = 0
-    
+
     # =========================================================================
-    # Gadget interface implementation
+    # Core Gadget interface
     # =========================================================================
-    
+
     @property
     def gate_name(self) -> str:
-        """Knill EC uses transversal CNOT for Bell measurement."""
         return "CNOT"
-    
+
     @property
     def num_phases(self) -> int:
-        """Knill EC has 2 phases: Bell prep and Bell measurement."""
-        return 2
-    
+        """3 phases: PREPARATION → GATE → MEASUREMENT."""
+        return 3
+
     @property
     def num_blocks(self) -> int:
-        """Three blocks: data, bell_A, bell_B."""
         return 3
-    
+
     def reset_phases(self) -> None:
-        """Reset phase counter for new circuit generation."""
         self._current_phase = 0
-    
+
     def is_teleportation_gadget(self) -> bool:
-        """Yes - this is a teleportation gadget."""
         return True
-    
-    def get_destroyed_blocks(self) -> List[str]:
-        """Blocks 0 and 1 are destroyed (measured out)."""
-        return ["block_0", "block_1"]
-    
+
+    def use_auto_detectors(self) -> bool:
+        """Knill EC always uses automatic detector/observable emission."""
+        return True
+
+    def get_destroyed_blocks(self) -> Set[str]:
+        """data_block and bell_a are measured out."""
+        return {"data_block", "bell_a"}
+
     def get_output_block_name(self) -> str:
-        """Output is on block 2 (Bell pair qubit B)."""
-        return "block_2"
-    
+        return "bell_b"
+
+    def requires_parallel_extraction(self) -> bool:
+        """All 3 blocks need coordinated syndrome extraction."""
+        return True
+
+    # =========================================================================
+    # Phase emission (3-phase pattern)
+    # =========================================================================
+
     def emit_next_phase(
         self,
         circuit: stim.Circuit,
@@ -192,399 +199,380 @@ class KnillECGadget(Gadget):
     ) -> PhaseResult:
         """
         Emit the next phase of the Knill EC protocol.
-        
-        Phase 1: Bell pair preparation
-        Phase 2: Bell measurement and teleportation
-        
-        Parameters
-        ----------
-        circuit : stim.Circuit
-            Circuit to emit into.
-        alloc : QubitAllocation
-            Qubit allocation with block_0, block_1, block_2.
-        ctx : DetectorContext
-            Detector context for Pauli frame tracking.
-            
-        Returns
-        -------
-        PhaseResult
-            Result from the phase.
+
+        Phase 1 (PREPARATION): Prepare bell blocks (RX+R), request EC rounds.
+        Phase 2 (GATE): Entangle Bell pair: CNOT(bell_a → bell_b).
+        Phase 3 (MEASUREMENT): CNOT(data→bell_a), MX(data), M(bell_a).
         """
         self._current_phase += 1
-        
+
         if self._current_phase == 1:
-            return self._emit_bell_preparation(circuit, alloc, ctx)
+            return self._emit_preparation(circuit, alloc)
         elif self._current_phase == 2:
-            return self._emit_bell_measurement(circuit, alloc, ctx)
+            return self._emit_bell_entangle(circuit, alloc)
+        elif self._current_phase == 3:
+            return self._emit_bell_measurement(circuit, alloc)
         else:
             return PhaseResult.complete()
-    
-    def _emit_bell_preparation(
+
+    def _emit_preparation(
         self,
         circuit: stim.Circuit,
         alloc: QubitAllocation,
-        ctx: "DetectorContext",
     ) -> PhaseResult:
         """
-        Emit Bell pair preparation: H on block_1, CNOT(1→2).
-        
-        Creates |Φ⁺⟩ = (|00⟩ + |11⟩)/√2 across blocks 1 and 2.
+        Phase 1: Prepare bell blocks internally and request EC rounds.
+
+        bell_a is prepared in |+⟩ via RX (subsumes H into preparation).
+        bell_b is prepared in |0⟩ via R.
+        data_block is NOT prepared here — the experiment handles it.
         """
-        block_1 = alloc.get_block("block_1")
-        block_2 = alloc.get_block("block_2")
-        
-        if block_1 is None or block_2 is None:
-            raise ValueError("Knill EC requires block_1 and block_2")
-        
-        qubits_1 = block_1.get_data_qubits()
-        qubits_2 = block_2.get_data_qubits()
-        n = min(len(qubits_1), len(qubits_2))
-        
-        # H on block_1 (creates |+⟩ from |0⟩)
-        circuit.append("H", qubits_1[:n])
+        bell_a = alloc.get_block("bell_a")
+        bell_b = alloc.get_block("bell_b")
+
+        if bell_a is None or bell_b is None:
+            raise ValueError("Knill EC requires bell_a and bell_b blocks")
+
+        qubits_a = bell_a.get_data_qubits()
+        qubits_b = bell_b.get_data_qubits()
+
+        # Prepare bell_a in |+⟩ via RX (atomic X-basis preparation)
+        circuit.append("RX", qubits_a)
+
+        # Prepare bell_b in |0⟩ via R (atomic Z-basis reset)
+        circuit.append("R", qubits_b)
+
         circuit.append("TICK")
-        
-        # CNOT(block_1 → block_2) creates Bell pair
-        for i in range(n):
-            circuit.append("CNOT", [qubits_1[i], qubits_2[i]])
-        circuit.append("TICK")
-        
-        # After Bell prep, blocks 1 and 2 are entangled.
-        # X_1, X_2 become joint stabilizer X_1 ⊗ X_2
-        # Z_1, Z_2 become joint stabilizer Z_1 ⊗ Z_2
-        
+
         return PhaseResult(
             phase_type=PhaseType.PREPARATION,
             is_final=False,
             needs_stabilizer_rounds=self.num_ec_rounds,
-            stabilizer_transform=StabilizerTransform.identity(clear_history=True),
+            stabilizer_transform=None,
+            pauli_frame_update=None,
         )
-    
+
+    def _emit_bell_entangle(
+        self,
+        circuit: stim.Circuit,
+        alloc: QubitAllocation,
+    ) -> PhaseResult:
+        """
+        Phase 2 (GATE): Bell pair entanglement.
+
+        CNOT(bell_a → bell_b) entangles the pair.
+        bell_a is already in |+⟩ from Phase 1 (RX), bell_b is |0⟩ from R.
+        Result: |Φ⁺⟩ = (|00⟩ + |11⟩)/√2 across bell_a and bell_b.
+
+        No H gates needed — the |+⟩ state is subsumed into RX preparation.
+        """
+        bell_a = alloc.get_block("bell_a")
+        bell_b = alloc.get_block("bell_b")
+
+        if bell_a is None or bell_b is None:
+            raise ValueError("Knill EC requires bell_a and bell_b blocks")
+
+        qubits_a = bell_a.get_data_qubits()
+        qubits_b = bell_b.get_data_qubits()
+        n = min(len(qubits_a), len(qubits_b))
+
+        # CNOT(bell_a → bell_b) creates Bell pair from |+⟩|0⟩
+        for i in range(n):
+            circuit.append("CNOT", [qubits_a[i], qubits_b[i]])
+        circuit.append("TICK")
+
+        return PhaseResult.gate_phase(
+            is_final=False,
+            transform=self.get_stabilizer_transform(),
+            needs_stabilizer_rounds=self.num_ec_rounds,
+        )
+
     def _emit_bell_measurement(
         self,
         circuit: stim.Circuit,
         alloc: QubitAllocation,
-        ctx: "DetectorContext",
     ) -> PhaseResult:
         """
-        Emit Bell measurement: CNOT(0→1), MX(0), MZ(1).
-        
-        Teleports the data state to block_2 with Pauli corrections.
-        Uses MX directly instead of H+M for cleaner determinism.
+        Phase 3 (MEASUREMENT): Bell measurement.
+
+        CNOT(data → bell_a), then MX(data), M(bell_a).
+        Teleports the data state to bell_b with Pauli corrections.
         """
-        block_0 = alloc.get_block("block_0")
-        block_1 = alloc.get_block("block_1")
-        
-        if block_0 is None or block_1 is None:
-            raise ValueError("Knill EC requires block_0 and block_1")
-        
-        qubits_0 = block_0.get_data_qubits()
-        qubits_1 = block_1.get_data_qubits()
-        n = min(len(qubits_0), len(qubits_1))
-        
-        # CNOT(data → bell_A)
+        data_block = alloc.get_block("data_block")
+        bell_a = alloc.get_block("bell_a")
+
+        if data_block is None or bell_a is None:
+            raise ValueError("Knill EC requires data_block and bell_a")
+
+        data_qubits = data_block.get_data_qubits()
+        qubits_a = bell_a.get_data_qubits()
+        n = min(len(data_qubits), len(qubits_a))
+
+        # CNOT(data → bell_a)
         for i in range(n):
-            circuit.append("CNOT", [qubits_0[i], qubits_1[i]])
+            circuit.append("CNOT", [data_qubits[i], qubits_a[i]])
         circuit.append("TICK")
-        
-        # Measure data in X-basis directly (MX) - cleaner than H+M
-        circuit.append("MX", qubits_0[:n])
-        
-        # Measure bell_A in Z-basis
-        circuit.append("M", qubits_1[:n])
-        
+
+        # MX on data (Bell measurement, X-basis)
+        circuit.append("MX", data_qubits[:n])
+
+        # M on bell_a (Z-basis)
+        circuit.append("M", qubits_a[:n])
+
         circuit.append("TICK")
-        
-        # Track measurements for Pauli frame
+
         total_meas = 2 * n
-        all_measured = qubits_0[:n] + qubits_1[:n]
-        
+
+        # Frame update: teleportation corrections propagate to bell_b
+        frame_update = FrameUpdate(
+            block_name="bell_b",
+            x_meas=list(range(n)),              # MX(data) outcomes
+            z_meas=list(range(n, total_meas)),   # M(bell_a) outcomes
+            teleport=True,
+            source_block="data_block",
+        )
+
         return PhaseResult(
             phase_type=PhaseType.MEASUREMENT,
             is_final=True,
+            needs_stabilizer_rounds=0,
+            stabilizer_transform=None,
+            destroyed_blocks={"data_block", "bell_a"},
+            pauli_frame_update=frame_update,
             measurement_count=total_meas,
-            measurement_qubits=all_measured,
-            measured_blocks=["block_0", "block_1"],
-            pauli_frame_update={
-                "block_name": "block_2",
-                "x_meas": list(range(n)),  # MX outcomes for Z correction
-                "z_meas": list(range(n, total_meas)),  # MZ outcomes for X correction
-                "teleport": True,
-            },
         )
-    
+
+    # =========================================================================
+    # Stabilizer / observable transforms
+    # =========================================================================
+
     def get_stabilizer_transform(self) -> StabilizerTransform:
         """
         Overall stabilizer transform for Knill EC.
-        
-        The output block has the same stabilizer structure as input
-        (modulo Pauli corrections), so no swap_xz needed.
+
+        Output on bell_b has the same stabilizer structure as the input
+        (modulo Pauli corrections), so this is a teleportation identity.
         """
         return StabilizerTransform.teleportation(swap_xz=False)
-    
+
     def get_observable_transform(self) -> TwoQubitObservableTransform:
         """
-        Return the observable transform for Knill EC.
-        
-        For teleportation, the observable transforms depend on the
-        combined Bell measurement and correction process. Simplified
-        here as identity since output has same logical content as input.
+        Observable transform for Knill EC.
+
+        Teleportation passes observable through unchanged (corrections
+        handled by Pauli frame).
         """
-        # Knill EC is teleportation - observable passes through unchanged
-        # The frame corrections handle the actual transform
         return TwoQubitObservableTransform.identity()
-    
-    def get_preparation_config(self, input_state: str) -> PreparationConfig:
+
+    # =========================================================================
+    # Configuration methods
+    # =========================================================================
+
+    def get_preparation_config(self, input_state: str = "0") -> PreparationConfig:
         """
-        Get preparation configuration for all three blocks.
-        
-        - Block 0: Data block, prepared based on input_state
-        - Block 1: Bell pair A, prepared in |0⟩ (will get H for Bell prep)
-        - Block 2: Bell pair B, prepared in |0⟩
+        Preparation config for all three blocks.
+
+        - data_block: prepared OUTSIDE gadget (experiments/preparation.py)
+        - bell_a: prepared INSIDE gadget in |+⟩ via RX (Phase 1)
+        - bell_b: prepared INSIDE gadget in |0⟩ via R (Phase 1)
         """
-        blocks = {}
-        
-        # Data block
-        data_z_det = (self.input_state == "0")
-        data_x_det = (self.input_state == "+")
-        blocks["block_0"] = BlockPreparationConfig(
-            initial_state=self.input_state,
-            z_deterministic=data_z_det,
-            x_deterministic=data_x_det,
-            skip_experiment_prep=False,
-        )
-        
-        # Bell pair block A - starts in |0⟩, gets H during gadget
-        blocks["block_1"] = BlockPreparationConfig(
-            initial_state="0",
-            z_deterministic=True,
-            x_deterministic=False,
-            skip_experiment_prep=True,  # Gadget handles Bell prep
-        )
-        
-        # Bell pair block B - starts in |0⟩
-        blocks["block_2"] = BlockPreparationConfig(
-            initial_state="0",
-            z_deterministic=True,
-            x_deterministic=False,
-            skip_experiment_prep=True,  # Part of Bell prep
-        )
-        
+        actual_input = self.input_state
+
+        data_z_det = (actual_input == "0")
+        data_x_det = (actual_input == "+")
+
+        blocks = {
+            "data_block": BlockPreparationConfig(
+                initial_state=actual_input,
+                z_deterministic=data_z_det,
+                x_deterministic=data_x_det,
+                skip_experiment_prep=False,  # Experiment prepares data block
+            ),
+            "bell_a": BlockPreparationConfig(
+                initial_state="+",       # Prepared in |+⟩ via RX inside gadget
+                z_deterministic=False,
+                x_deterministic=True,    # |+⟩ → X stabilizers deterministic
+                skip_experiment_prep=True,  # Gadget prepares bell_a
+            ),
+            "bell_b": BlockPreparationConfig(
+                initial_state="0",       # Prepared in |0⟩ via R inside gadget
+                z_deterministic=True,    # |0⟩ → Z stabilizers deterministic
+                x_deterministic=False,
+                skip_experiment_prep=True,  # Gadget prepares bell_b
+            ),
+        }
+
         return PreparationConfig(blocks=blocks)
-    
-    def get_crossing_detector_config(self) -> CrossingDetectorConfig:
+
+    def get_measurement_config(self) -> MeasurementConfig:
         """
-        Get crossing detector configuration for Knill EC.
-        
-        Knill EC has TWO entangling operations that need crossing detectors:
-        
-        1. Bell Prep (H on block_1, CNOT(1→2)):
-           - X_1: H transforms to Z_1, then CNOT keeps it Z_1
-           - Z_1: H transforms to X_1, CNOT spreads to X_1 ⊗ X_2
-           - X_2: CNOT spreads to X_1 ⊗ X_2
-           - Z_2: Unchanged
-           
-        2. Bell Measurement (CNOT(0→1)):
-           - X_0: Unchanged
-           - Z_0: Spreads to Z_0 ⊗ Z_1
-           - X_1: Spreads to X_0 ⊗ X_1
-           - Z_1: Unchanged
-           
-        For the Bell measurement CNOT(0→1):
-        - X_0: 2-term (unchanged)
-        - Z_0: 3-term (spreads to Z_1)
-        - X_1: 3-term (picks up X_0)
-        - Z_1: 2-term (unchanged)
-        
-        Note: block_1 stabilizers after Bell prep are joint (X_1⊗X_2, Z_1⊗Z_2).
-        The Bell measurement CNOT further transforms these correlations.
+        Final measurement config.
+
+        Only bell_b survives — the experiment measures it.
+        data_block and bell_a are destroyed during the gadget.
         """
-        formulas = []
-        
-        # For the Bell measurement CNOT(data=block_0 → bell_A=block_1):
-        
-        # X_0 (data X): 2-term, unchanged through CNOT
-        formulas.append(CrossingDetectorFormula(
-            name="X_data",
-            terms=[
-                CrossingDetectorTerm(block="block_0", stabilizer_type="X", timing="pre"),
-                CrossingDetectorTerm(block="block_0", stabilizer_type="X", timing="post"),
-            ],
-        ))
-        
-        # Z_0 (data Z): 3-term, spreads to bell_A (block_1)
-        # Z_0(pre) ⊕ Z_0(post) ⊕ Z_1(post)
-        formulas.append(CrossingDetectorFormula(
-            name="Z_data",
-            terms=[
-                CrossingDetectorTerm(block="block_0", stabilizer_type="Z", timing="pre"),
-                CrossingDetectorTerm(block="block_0", stabilizer_type="Z", timing="post"),
-                CrossingDetectorTerm(block="block_1", stabilizer_type="Z", timing="post"),
-            ],
-        ))
-        
-        # X_1 (bell_A X): 3-term, picks up data X
-        # After Bell prep, X_1 is part of joint stabilizer X_1⊗X_2
-        # Through CNOT: X_1 → X_0 ⊗ X_1
-        # So: X_1(pre) ⊕ X_0(post) ⊕ X_1(post)
-        formulas.append(CrossingDetectorFormula(
-            name="X_bellA",
-            terms=[
-                CrossingDetectorTerm(block="block_1", stabilizer_type="X", timing="pre"),
-                CrossingDetectorTerm(block="block_0", stabilizer_type="X", timing="post"),
-                CrossingDetectorTerm(block="block_1", stabilizer_type="X", timing="post"),
-            ],
-        ))
-        
-        # Z_1 (bell_A Z): 2-term, unchanged through CNOT
-        # (Note: after Bell prep, Z_1 is part of joint Z_1⊗Z_2, but the local
-        # measurement on block_1 still gives a deterministic crossing detector)
-        formulas.append(CrossingDetectorFormula(
-            name="Z_bellA",
-            terms=[
-                CrossingDetectorTerm(block="block_1", stabilizer_type="Z", timing="pre"),
-                CrossingDetectorTerm(block="block_1", stabilizer_type="Z", timing="post"),
-            ],
-        ))
-        
-        # Block 2 (bell_B): No crossing detectors needed (not involved in CNOT)
-        # But for completeness, emit temporal detectors
-        formulas.append(CrossingDetectorFormula(
-            name="X_bellB",
-            terms=[
-                CrossingDetectorTerm(block="block_2", stabilizer_type="X", timing="pre"),
-                CrossingDetectorTerm(block="block_2", stabilizer_type="X", timing="post"),
-            ],
-        ))
-        
-        formulas.append(CrossingDetectorFormula(
-            name="Z_bellB",
-            terms=[
-                CrossingDetectorTerm(block="block_2", stabilizer_type="Z", timing="pre"),
-                CrossingDetectorTerm(block="block_2", stabilizer_type="Z", timing="post"),
-            ],
-        ))
-        
-        return CrossingDetectorConfig(formulas=formulas)
-    
+        basis = "X" if self.input_state == "+" else "Z"
+        return MeasurementConfig(
+            block_bases={"bell_b": basis},
+            destroyed_blocks={"data_block", "bell_a"},
+        )
+
     def get_observable_config(self) -> ObservableConfig:
         """
-        Get observable configuration for Knill EC.
-        
-        The output is on block_2. The observable depends on input state
-        and measurement basis, with frame corrections from the Bell measurement.
-        
-        |0⟩ input → measure Z on block_2, no frame correction needed
-        |+⟩ input → measure X on block_2, Z frame from MX(block_0)
+        Observable configuration via universal Heisenberg derivation.
+
+        Uses ``HeisenbergFrame.knill_ec()`` to automatically derive
+        the correct observable for any input state.
+
+        Knill EC output (auto-derived)::
+
+            |0⟩: Z_L(bell_b)   (eigenstate determinism)
+            |+⟩: X_L(bell_b)   (trivially deterministic)
         """
-        return ObservableConfig.bell_teleportation(
-            output_block="block_2",
-            bell_blocks=["block_0", "block_1"],
-            frame_basis="XZ",
+        frame = HeisenbergFrame.knill_ec()
+        return ObservableConfig.from_heisenberg(frame, self.input_state)
+
+    def get_crossing_detector_config(self) -> Optional[CrossingDetectorConfig]:
+        """
+        Return None — auto detection via discover_detectors() handles this.
+
+        The Knill EC protocol has complex crossing detector requirements
+        across 3 blocks, which are better discovered automatically than
+        manually specified.
+        """
+        return None
+
+    def get_boundary_detector_config(self) -> BoundaryDetectorConfig:
+        """
+        Boundary detector config for surviving block (bell_b).
+
+        Only bell_b survives; data_block and bell_a are destroyed.
+        """
+        basis = "X" if self.input_state == "+" else "Z"
+        return BoundaryDetectorConfig(
+            block_configs={
+                "data_block": {"X": False, "Z": False},  # Destroyed
+                "bell_a": {"X": False, "Z": False},       # Destroyed
+                "bell_b": {
+                    "X": basis == "X",
+                    "Z": basis == "Z",
+                },
+            },
         )
-    
+
     def get_space_like_detector_config(self) -> Dict[str, Optional[str]]:
-        """
-        Return per-block space-like detector configuration.
-        
-        - Blocks 0 and 1 are destroyed, so no space-like detectors
-        - Block 2 survives, emit based on measurement basis
-        """
-        if self.input_state == "0":
-            # |0⟩ input → measure Z on output
-            return {
-                "block_0": None,  # Destroyed
-                "block_1": None,  # Destroyed
-                "block_2": "Z",   # Output measured in Z
-            }
-        else:
-            # |+⟩ input → measure X on output
-            return {
-                "block_0": None,  # Destroyed
-                "block_1": None,  # Destroyed
-                "block_2": "X",   # Output measured in X
-            }
-    
-    def requires_parallel_extraction(self) -> bool:
-        """
-        Knill EC requires parallel extraction due to Bell entanglement.
-        
-        After Bell prep, blocks 1 and 2 are entangled. After Bell measurement,
-        the corrections depend on joint outcomes.
-        """
+        """Per-block space-like detector config."""
+        basis = "X" if self.input_state == "+" else "Z"
+        return {
+            "data_block": None,   # Destroyed
+            "bell_a": None,       # Destroyed
+            "bell_b": basis,      # Output block
+        }
+
+    # =========================================================================
+    # Teleportation-specific interface methods
+    # =========================================================================
+
+    def get_x_stabilizer_mode(self) -> str:
+        """Use CX for X stabilizer measurement (matches teleportation pattern)."""
+        return "cx"
+
+    def get_blocks_to_skip_preparation(self) -> Set[str]:
+        """Bell blocks are prepared inside the gadget (Phase 1)."""
+        return {"bell_a", "bell_b"}
+
+    def get_blocks_to_skip_pre_rounds(self) -> Set[str]:
+        """Bell blocks skip pre-gadget rounds (prepared inside gadget)."""
+        return {"bell_a", "bell_b"}
+
+    def get_blocks_to_skip_post_rounds(self) -> Set[str]:
+        """All blocks participate in post-gadget EC rounds."""
+        return set()
+
+    def get_ancilla_block_names(self) -> Set[str]:
+        """Return the Bell pair block names."""
+        return {"bell_a", "bell_b"}
+
+    def get_initial_state_for_block(self, block_name: str, requested_state: str) -> str:
+        """Initial state per block."""
+        if block_name == "bell_a":
+            return "+"  # Prepared in |+⟩ via RX inside gadget
+        if block_name == "bell_b":
+            return "0"  # Prepared in |0⟩ via R inside gadget
+        return requested_state
+
+    def should_skip_state_preparation(self) -> bool:
+        return False
+
+    def should_emit_space_like_detectors(self) -> bool:
         return True
-    
+
+    # =========================================================================
+    # Layout
+    # =========================================================================
+
     def compute_layout(self, codes: List[Code]) -> GadgetLayout:
         """
         Compute layout for three code blocks.
-        
+
         Parameters
         ----------
         codes : List[Code]
             List containing 1 code (used for all three blocks).
-            
+
         Returns
         -------
         GadgetLayout
-            Layout with block_0, block_1, block_2.
+            Layout with data_block, bell_a, bell_b.
         """
         if len(codes) != 1:
             raise ValueError(
                 f"Knill EC requires exactly 1 code (for all blocks), got {len(codes)}"
             )
-        
+
         code = codes[0]
         self._code = code
-        
+
         layout = GadgetLayout(target_dim=2)
-        
-        # Margin based on code distance
+
         margin = max(3.0, code.d * 1.5)
-        
-        # Block 0 (data) at origin
+
+        # data_block at origin
         layout.add_block(
-            name="block_0",
+            name="data_block",
             code=code,
             offset=(0.0, 0.0),
         )
-        
-        # Block 1 (Bell A) to the right
+
+        # bell_a to the right
         layout.add_block(
-            name="block_1",
+            name="bell_a",
             code=code,
             auto_offset=True,
             margin=margin,
         )
-        
-        # Block 2 (Bell B, output) further right
+
+        # bell_b further right
         layout.add_block(
-            name="block_2",
+            name="bell_b",
             code=code,
             auto_offset=True,
             margin=margin,
         )
-        
+
         return layout
-    
+
     def get_metadata(self) -> GadgetMetadata:
-        """
-        Return metadata about the gadget.
-        
-        Returns
-        -------
-        GadgetMetadata
-            Metadata including gate type, blocks, and protocol info.
-        """
         return GadgetMetadata(
             gadget_type="teleportation_ec",
             logical_operation="KnillEC",
             extra={
                 "num_blocks": 3,
-                "block_names": ["block_0", "block_1", "block_2"],
+                "block_names": ["data_block", "bell_a", "bell_b"],
                 "input_state": self.input_state,
                 "is_teleportation": True,
-                "destroyed_blocks": ["block_0", "block_1"],
-                "output_block": "block_2",
+                "destroyed_blocks": ["data_block", "bell_a"],
+                "output_block": "bell_b",
             },
         )
 
@@ -599,14 +587,14 @@ def create_knill_ec(
 ) -> KnillECGadget:
     """
     Create a Knill Error Correction gadget.
-    
+
     Parameters
     ----------
     input_state : str
         Initial state of data block ("0" or "+").
     num_ec_rounds : int
         Number of EC rounds between phases.
-        
+
     Returns
     -------
     KnillECGadget

@@ -332,6 +332,10 @@ def emit_observable(
             )
             observable_meas.extend(frame_meas)
     
+    # Bridge frame corrections (lattice surgery: merge measurement parity)
+    if obs_config.bridge_frame_meas_indices:
+        observable_meas.extend(obs_config.bridge_frame_meas_indices)
+    
     # Emit the observable
     _emit_targets(circuit, observable_meas, ctx.measurement_index, obs_idx=0)
     return None

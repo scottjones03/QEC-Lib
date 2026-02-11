@@ -52,7 +52,7 @@ touching the *same* data qubit never interfere:
 * X-ancilla (ancilla controls data): SE → SW → NE → NW
 * Z-ancilla (data controls ancilla): SE → NE → SW → NW
 
-All stabilisers of the same type are measured in parallel within each
+All stabilisers can be measured in parallel within each
 layer — there is **no inter-stabiliser ordering dependency** within X
 or within Z.
 
@@ -81,6 +81,25 @@ The code arises from a **2-chain complex on a cellulation of the disk**:
 
 For this implementation, ∂₁ is left as a dummy zero matrix because the
 boundary vertices are implicit in the planar patch.
+
+Code Parameters
+~~~~~~~~~~~~~~~
+:math:`[[n, k, d]] = [[d^2, 1, d]]` where:
+
+- :math:`n = d^2` physical data qubits
+- :math:`k = 1` logical qubit
+- :math:`d` = code distance (minimum-weight logical operator)
+- Rate :math:`k/n = 1/d^2`
+
+Stabiliser Structure
+~~~~~~~~~~~~~~~~~~~~
+- **X-type stabilisers**: weight-4 in the bulk, weight-2 on smooth boundaries;
+  :math:`(d^2 - 1)/2` total generators.
+- **Z-type stabilisers**: weight-4 in the bulk, weight-2 on rough boundaries;
+  :math:`(d^2 - 1)/2` total generators.
+- Measurement schedule: 4-phase parallel CNOT schedule (SE → SW → NE → NW
+  for X-ancillas; SE → NE → SW → NW for Z-ancillas).  All stabilisers of
+  the same type are measured simultaneously within each phase.
 
 References
 ----------
@@ -197,6 +216,22 @@ class RotatedSurfaceCode(TopologicalCSSCode):
         hx = boundary_2_x.T.astype(np.uint8)
         hz = boundary_2_z.T.astype(np.uint8)
 
+        # Use the original even-even lattice positions for stabiliser
+        # ancilla coordinates.  Boundary stabilisers (weight 2) sit at the
+        # lattice edge, outside the convex hull of their data qubits.  This
+        # is intentional: the geometric CX schedule uses (±1,±1) offsets
+        # from the ancilla coordinate to find data qubits, and this only
+        # works when boundary ancillae are at the even-even grid position
+        # (matching Stim's convention), NOT at the centroid of their support.
+        #
+        # Previously centroids were used, which moved boundary ancillae
+        # inward (e.g. (0,4) → (1,4) for a weight-2 Z-stab with data at
+        # (1,3) and (1,5)).  That broke the (±1,±1) validation, causing
+        # the scheduler to fall through to arbitrary graph-colouring and
+        # producing hook errors that reduced effective distance.
+        x_stab_lattice_coords: List[Coord2D] = sorted(x_stab_coords)
+        z_stab_lattice_coords: List[Coord2D] = sorted(z_stab_coords)
+
         # For a square surface code with qubits on vertices, C1 is “data” and
         # C2 is both X and Z faces. You can either build a single C2 with a
         # colour label per face, or keep two disconnected “layers”.
@@ -234,8 +269,8 @@ class RotatedSurfaceCode(TopologicalCSSCode):
                 # ── Geometry ───────────────────────────────────────────
                 "data_qubits": list(range(len(data_coords_sorted))),
                 "data_coords": data_coords_sorted,
-                "x_stab_coords": sorted(list(x_stab_coords)),
-                "z_stab_coords": sorted(list(z_stab_coords)),
+                "x_stab_coords": x_stab_lattice_coords,
+                "z_stab_coords": z_stab_lattice_coords,
                 "x_logical_coords": sorted(list(x_logical_coords)),
                 "z_logical_coords": sorted(list(z_logical_coords)),
                 "logical_x_support": x_support,
@@ -354,18 +389,29 @@ class RotatedSurfaceCode(TopologicalCSSCode):
 
         # Data qubits at odd-odd coordinates (x, y) both odd, within [1, 2d-1] range.
         # This matches Stim's rotated surface code: exactly d×d data qubits on vertices.
+        x_max = 2 * d - 1  # rightmost data-qubit column
         for x in range(1, 2 * d, 2):
             for y in range(1, 2 * d, 2):
                 q = (float(x), float(y))
                 data_coords.add(q)
-                # Track logical operator support for rotated surface code (Stim convention):
+                # Track logical operator support for rotated surface code:
                 # - Logical Z runs horizontally along top row (y=1) - rough boundary
-                # - Logical X runs vertically along left column (x=1) - smooth boundary
-                # This matches Stim's surface_code:rotated_memory_z/x observables.
+                # - Logical X runs vertically along the RIGHTMOST column (x=2d-1)
+                #
+                # We deliberately choose the rightmost column instead of the
+                # traditional leftmost column (x=1).  Both are equally valid
+                # minimum-weight representatives of the same homology class
+                # (they differ by a product of X-stabilisers).  The rightmost
+                # column is preferred because in lattice surgery the leftmost
+                # column is adjacent to the ZZ merge boundary; placing the
+                # observable there creates weight-2 graphlike errors that
+                # reduce the effective distance to d − 1.  Using the rightmost
+                # column keeps the observable far from merge bridges, restoring
+                # full distance protection.
                 if y == 1:
                     z_logical_coords.add(q)  # Top row for Z (rough boundary)
-                if x == 1:
-                    x_logical_coords.add(q)  # Left column for X (smooth boundary)
+                if x == x_max:
+                    x_logical_coords.add(q)  # Right column for X (smooth boundary)
 
         x_stab_coords: Set[Coord2D] = set()
         z_stab_coords: Set[Coord2D] = set()
@@ -448,12 +494,15 @@ class RotatedSurfaceCode(TopologicalCSSCode):
     ) -> Tuple[List[PauliString], List[PauliString], List[int], List[int]]:
         """Derive minimum-weight logical X̄ and Z̄ operators.
 
-        For the rotated surface code (Stim convention):
+        For the rotated surface code:
 
         * **Z̄** = Z on every data qubit in the top row (y = 1).
           This is a weight-*d* string connecting the two rough boundaries.
-        * **X̄** = X on every data qubit in the left column (x = 1).
+        * **X̄** = X on every data qubit in the right column (x = 2d−1).
           This is a weight-*d* string connecting the two smooth boundaries.
+          The rightmost column is chosen (instead of the equivalent leftmost
+          column) because it keeps the X-logical far from the ZZ merge boundary
+          in lattice surgery, preventing weight-2 graphlike errors.
 
         Both are minimum-weight representatives of their homology classes.
 

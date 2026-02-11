@@ -45,12 +45,48 @@ Logical operators
   This commutes with all Z-stabilisers (trivially, since Z·Z = I on
   shared qubits and Z·I = Z otherwise).
 
+Qubit layout (example: N=5)
+---------------------------
+Data qubits on a 1D chain.  Z-stabilisers sit between adjacent data qubits.
+
+::
+
+    Data qubits:    0       1       2       3       4
+                    ●───────●───────●───────●───────●
+                        │       │       │       │
+    Z-stabilisers:    [Z₀]    [Z₁]    [Z₂]    [Z₃]
+
+    Data qubit coordinates:
+      i: (i, 0)   for i = 0, 1, …, N−1
+
+    Z-stabiliser coordinates (midpoint between adjacent data qubits):
+      Zⱼ: (j + 0.5, 0)   for j = 0, 1, …, N−2
+
+    No X-stabilisers (one-directional code).
+
 Chain complex (2-term)
 ----------------------
     C₁ (qubits, N) —∂₁→ C₀ (checks, N−1)
 
 where ∂₁ is the bidiagonal (N−1)×N matrix.  This is the simplest
 non-trivial chain complex and the seed for all hypergraph products.
+
+Code Parameters
+~~~~~~~~~~~~~~~
+:math:`[[n, k, d]] = [[N, 1, N]]` where:
+
+- :math:`n = N` physical qubits (linear chain)
+- :math:`k = 1` logical qubit
+- :math:`d = N` for X errors; distance 1 for Z errors
+- Rate :math:`k/n = 1/N`
+
+Stabiliser Structure
+~~~~~~~~~~~~~~~~~~~~
+- **X-type stabilisers**: none (one-directional code; ``H_X`` is empty).
+- **Z-type stabilisers**: :math:`N - 1` generators, each weight 2;
+  ``ZᵢZᵢ₊₁`` for :math:`i = 0, 1, \ldots, N-2` (adjacent-pair parity).
+- Measurement schedule: all :math:`N - 1` Z-stabilisers in a single
+  parallel round; each is a depth-2 CNOT circuit.
 
 Connections to other codes
 --------------------------
@@ -145,6 +181,11 @@ class RepetitionCode(CSSCodeWithComplex):
             Code size. Must be >= 3.
         metadata : dict, optional
             Additional metadata to store about the code.
+
+        Raises
+        ------
+        ValueError
+            If ``N < 3``.
         """
         if N < 3:
             raise ValueError(f"N must be >= 3. Got N={N}")
@@ -220,7 +261,7 @@ class RepetitionCode(CSSCodeWithComplex):
         # commutativity check is trivially satisfied.
         hz_mat = chain_complex.boundary_maps[1]
         hx_mat = np.zeros((0, N), dtype=np.uint8)
-        validate_css_code(hx_mat, hz_mat, f"Repetition_{N}")
+        validate_css_code(hx_mat, hz_mat, f"Repetition_{N}", raise_on_error=True)
 
         # Call parent CSSCodeWithComplex constructor
         super().__init__(

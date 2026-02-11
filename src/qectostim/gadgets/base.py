@@ -1,18 +1,22 @@
 # src/qectostim/gadgets/base.py
 """
-Enhanced Gadget base class for fault-tolerant logical gate implementations.
+Gadget base class and core types for fault-tolerant logical gate implementations.
 
-This module provides the abstract base class for all gadgets (logical operations),
-with support for:
-- N-dimensional topology tracking (2D, 3D, 4D + temporal)
-- Phase-based circuit emission for fault-tolerant experiments
-- Detector coordinate emission for decoder integration
-- Metadata storage both in circuit and as separate dict
+This module provides:
 
-Architecture:
-- Gadgets define WHAT they do via emit_next_phase() (multi-phase interface)
-- Experiments (FaultTolerantGadgetExperiment) handle HOW to build the full circuit
-- Experiment handles stabilizer rounds between phases for fault tolerance
+* The abstract base class :class:`Gadget` for all logical operations.
+* Core value types: :class:`PhaseType`, :class:`PhaseResult`, :class:`FrameUpdate`,
+  :class:`StabilizerTransform`, :class:`ObservableTransform`,
+  :class:`TwoQubitObservableTransform`, :class:`GadgetMetadata`.
+* Block-name normalisation utilities.
+
+Configuration data classes (``ObservableConfig``, ``PreparationConfig``, etc.)
+live in :mod:`qectostim.gadgets.configs` and are **re-exported** here for
+backward compatibility.
+
+Mixin classes (``AutoCSSGadgetMixin``, ``TransversalGadgetMixin``,
+``TeleportationGadgetMixin``) live in :mod:`qectostim.gadgets.mixins` and are
+likewise **re-exported** from this module.
 """
 from __future__ import annotations
 from abc import ABC, abstractmethod
@@ -34,6 +38,27 @@ import stim
 from qectostim.codes.abstract_code import Code
 from qectostim.gadgets.coordinates import CoordND, get_code_dimension
 from qectostim.gadgets.layout import GadgetLayout, QubitIndexMap, QubitAllocation
+
+# ── Re-exports from configs.py (backward compatibility) ─────────────────
+from qectostim.gadgets.configs import (  # noqa: F401
+    HeisenbergFrame,
+    ObservableTerm,
+    ObservableConfig,
+    BlockPreparationConfig,
+    PreparationConfig,
+    MeasurementConfig,
+    CrossingDetectorTerm,
+    CrossingDetectorFormula,
+    CrossingDetectorConfig,
+    BoundaryDetectorConfig,
+)
+
+# ── Re-exports from mixins.py (backward compatibility) ──────────────────
+from qectostim.gadgets.mixins import (  # noqa: F401
+    AutoCSSGadgetMixin,
+    TransversalGadgetMixin,
+    TeleportationGadgetMixin,
+)
 
 if TYPE_CHECKING:
     from qectostim.experiments.stabilizer_rounds import DetectorContext
@@ -238,6 +263,11 @@ class PhaseResult:
     destroyed_blocks: Set[str] = field(default_factory=set)
     pauli_frame_update: Optional[Union[FrameUpdate, Dict[str, Any]]] = None
     extra: Dict[str, Any] = field(default_factory=dict)
+    # Per-block stabilizer basis constraints for inter-phase EC rounds.
+    # Maps block_name -> "X" | "Z" | "BOTH".  Blocks not listed default to
+    # "BOTH".  E.g. during XX merge, blocks 1 & 2 must be X-only because
+    # bridge CX corrupts their Z parity.
+    stab_constraints: Optional[Dict[str, str]] = None
     
     def get_frame_update(self) -> Optional[FrameUpdate]:
         """Get frame update as typed FrameUpdate, converting from dict if needed."""
@@ -300,9 +330,22 @@ class StabilizerTransform:
     clear_history: bool = False
     swap_xz: bool = False
     skip_first_round: bool = False
+    # Per-block override for skip_first_round and clear_history.
+    # Maps block_name -> dict with optional keys:
+    #   "skip_first_round": bool  (override the global skip_first_round)
+    #   "clear_history": bool     (override the global clear_history)
+    #   "skip_z": bool            (skip first-round Z detectors only)
+    #   "skip_x": bool            (skip first-round X detectors only)
+    # Blocks not listed use the global settings.
+    per_block: Optional[Dict[str, Dict[str, bool]]] = None
     
     @classmethod
-    def identity(cls, clear_history: bool = False, skip_first_round: bool = False) -> "StabilizerTransform":
+    def identity(
+        cls,
+        clear_history: bool = False,
+        skip_first_round: bool = False,
+        per_block: Optional[Dict[str, Dict[str, bool]]] = None,
+    ) -> "StabilizerTransform":
         """No transformation of stabilizer types.
         
         Parameters
@@ -316,8 +359,16 @@ class StabilizerTransform:
             needed for partial entangling gates (like lattice surgery XX merge)
             where the blocks become entangled such that individual stabilizer
             measurements are non-deterministic.
+        per_block : dict or None
+            Per-block overrides for skip_first_round, clear_history, skip_z, skip_x.
         """
-        return cls(x_becomes="X", z_becomes="Z", clear_history=clear_history, skip_first_round=skip_first_round)
+        return cls(
+            x_becomes="X",
+            z_becomes="Z",
+            clear_history=clear_history,
+            skip_first_round=skip_first_round,
+            per_block=per_block,
+        )
     
     @classmethod
     def hadamard(cls) -> "StabilizerTransform":
@@ -535,773 +586,6 @@ class TwoQubitObservableTransform:
         
         return ctrl_transform, tgt_transform
 
-
-@dataclass
-class ObservableTerm:
-    """
-    A single term in an observable formula.
-    
-    Used to specify multi-block correlation observables like X_L(D) ⊕ Z_L(A).
-    
-    Attributes
-    ----------
-    block : str
-        Block name ("data_block", "ancilla_block").
-    basis : str
-        Pauli basis for this term ("X", "Z", or "Y").
-    """
-    block: str
-    basis: str  # "X", "Z", or "Y"
-
-
-@dataclass
-class ObservableConfig:
-    """
-    Configuration for how observables should be constructed for a gadget.
-    
-    This provides a DECLARATIVE interface for gadgets to specify their
-    observable requirements, allowing the experiment to handle observable
-    emission generically without type-specific branching.
-    
-    The key insight is that different gadgets have different observable structures:
-    - Transversal gates: Output on same block(s), may have basis transforms
-    - Teleportation: Output on ancilla block, may need frame corrections from measurements
-    - Two-qubit gates: Observable may spread across blocks (CNOT Z→Z⊗Z)
-    - Surgery: Similar to teleportation, output on merged/split blocks
-    
-    By having gadgets return an ObservableConfig, the experiment can handle
-    all cases uniformly without `isinstance` checks.
-    
-    Attributes
-    ----------
-    output_blocks : List[str]
-        Which blocks contribute to the output observable.
-        For transversal single-qubit gates: ["data_block"] or ["block_0"]
-        For teleportation: ["ancilla_block"] or ["block_1"]
-        For two-qubit gates: ["block_0", "block_1"] (if observable spreads)
-        
-    block_bases : Dict[str, str]
-        The Pauli basis to use for each output block.
-        Keys are block names, values are "X", "Z", or "Y".
-        If a block is not in this dict, the experiment's measurement_basis is used.
-        Example for CNOT Z observable: {"block_0": "Z", "block_1": "Z"}
-        
-    frame_correction_blocks : List[str]
-        Blocks whose measurements contribute to frame correction.
-        For teleportation, this is typically the destroyed data block.
-        The experiment will include these measurements in OBSERVABLE_INCLUDE.
-        
-    frame_correction_basis : str
-        The Pauli type of the frame correction ("X", "Z", or "XZ").
-        - "Z": Include Z logical measurements for Z correction
-        - "X": Include X logical measurements for X correction  
-        - "XZ": Include both (for Bell-state teleportation)
-        
-    requires_raw_sampling : bool
-        If True, skip OBSERVABLE_INCLUDE entirely. The gadget needs raw
-        measurement sampling with classical post-processing instead.
-        This is for gadgets where measurement outcomes are random and
-        cannot be expressed as deterministic Stim observables.
-        
-    two_qubit_transform : Optional[TwoQubitObservableTransform]
-        For two-qubit gates, how observables transform across blocks.
-        If provided, the experiment uses this to determine which blocks
-        contribute to the observable and in which basis.
-        
-    use_hybrid_decoding : bool
-        If True, emit clean observables without frame measurements for
-        DEM-based decoding. Frame corrections applied classically after.
-    """
-    output_blocks: List[str] = field(default_factory=lambda: ["data_block"])
-    block_bases: Dict[str, str] = field(default_factory=dict)
-    frame_correction_blocks: List[str] = field(default_factory=list)
-    frame_correction_basis: str = "Z"
-    requires_raw_sampling: bool = False
-    two_qubit_transform: Optional[TwoQubitObservableTransform] = None
-    use_hybrid_decoding: bool = False
-    
-    # NEW: Support multi-block correlation observables
-    # e.g., X_L(D) ⊕ Z_L(A) for CZ |+⟩ teleportation
-    correlation_terms: List[ObservableTerm] = field(default_factory=list)
-    
-    @classmethod
-    def transversal_single_qubit(cls, basis_transform: Optional[Dict[str, str]] = None) -> "ObservableConfig":
-        """
-        Config for transversal single-qubit gates (H, S, T, X, Y, Z).
-        
-        Output is on the same data block, optionally with basis transform.
-        
-        Parameters
-        ----------
-        basis_transform : Optional[Dict[str, str]]
-            How measurement bases transform, e.g. {"X": "Z", "Z": "X"} for H.
-            If None, no transformation (identity gate).
-        """
-        return cls(
-            output_blocks=["data_block"],
-            block_bases={},  # Use experiment's measurement_basis, possibly transformed
-        )
-    
-    @classmethod
-    def transversal_two_qubit(cls, transform: TwoQubitObservableTransform) -> "ObservableConfig":
-        """
-        Config for transversal two-qubit gates (CNOT, CZ, SWAP).
-        
-        Observable may spread across blocks based on the gate's transform.
-        
-        Parameters
-        ----------
-        transform : TwoQubitObservableTransform
-            How observables transform across the two blocks.
-        """
-        return cls(
-            output_blocks=["block_0", "block_1"],  # May use both
-            two_qubit_transform=transform,
-        )
-    
-    @classmethod
-    def teleportation(
-        cls,
-        output_block: str = "ancilla_block",
-        destroyed_block: str = "data_block",
-        frame_basis: str = "Z",
-        use_hybrid: bool = False,
-        requires_raw: bool = False,
-    ) -> "ObservableConfig":
-        """
-        Config for teleportation gadgets.
-        
-        Output is on the ancilla block. Frame corrections come from
-        the destroyed (measured out) data block.
-        
-        Parameters
-        ----------
-        output_block : str
-            Block containing the output logical state.
-        destroyed_block : str
-            Block that was measured out (provides frame correction).
-        frame_basis : str
-            Which Pauli frame corrections to include ("Z", "X", or "XZ").
-        use_hybrid : bool
-            Use hybrid decoding mode (DEM + classical frame).
-        requires_raw : bool
-            Require raw sampling (skip OBSERVABLE_INCLUDE entirely).
-        """
-        return cls(
-            output_blocks=[output_block],
-            frame_correction_blocks=[destroyed_block],
-            frame_correction_basis=frame_basis,
-            requires_raw_sampling=requires_raw,
-            use_hybrid_decoding=use_hybrid,
-        )
-    
-    @classmethod
-    def bell_teleportation(
-        cls,
-        output_block: str = "block_2",
-        bell_blocks: List[str] = None,
-        frame_basis: str = "XZ",
-    ) -> "ObservableConfig":
-        """
-        Config for Bell-state teleportation (3-block protocol).
-        
-        Output is on ancilla2 (block_2). Frame corrections come from
-        the Bell measurement on data + ancilla1.
-        
-        Parameters
-        ----------
-        output_block : str
-            Block containing the output (typically "block_2").
-        bell_blocks : List[str]
-            Blocks involved in Bell measurement (typically ["block_0", "block_1"]).
-        frame_basis : str
-            Frame correction basis ("XZ" for both X and Z corrections).
-        """
-        if bell_blocks is None:
-            bell_blocks = ["block_0", "block_1"]
-        return cls(
-            output_blocks=[output_block],
-            frame_correction_blocks=bell_blocks,
-            frame_correction_basis=frame_basis,
-        )
-    
-    @classmethod
-    def cz_teleportation_zero(cls) -> "ObservableConfig":
-        """
-        CZ H-teleportation with |0⟩ input: Observable = X_L(A).
-        
-        The output is on the ancilla block, measured in X basis.
-        No frame correction needed (deterministic at p=0).
-        """
-        return cls(
-            output_blocks=["ancilla_block"],
-            correlation_terms=[
-                ObservableTerm(block="ancilla_block", basis="X"),
-            ],
-        )
-    
-    @classmethod
-    def cz_teleportation_plus(cls) -> "ObservableConfig":
-        """
-        CZ H-teleportation with |+⟩ input: Observable = X_L(D) ⊕ Z_L(A).
-        
-        Bell correlation: MX on data, MZ on ancilla.
-        Both blocks contribute to the observable.
-        """
-        return cls(
-            output_blocks=["data_block", "ancilla_block"],
-            correlation_terms=[
-                ObservableTerm(block="data_block", basis="X"),
-                ObservableTerm(block="ancilla_block", basis="Z"),
-            ],
-        )
-    
-    @classmethod
-    def cnot_teleportation_zero(cls) -> "ObservableConfig":
-        """
-        CNOT H-teleportation with |0⟩ input: Observable = Z_L(A).
-        
-        The output is on the ancilla block, measured in Z basis.
-        """
-        return cls(
-            output_blocks=["ancilla_block"],
-            correlation_terms=[
-                ObservableTerm(block="ancilla_block", basis="Z"),
-            ],
-        )
-    
-    @classmethod
-    def cnot_teleportation_plus(cls) -> "ObservableConfig":
-        """
-        CNOT H-teleportation with |+⟩ input: Observable = X_L(D) ⊕ X_L(A).
-        
-        Bell correlation: MX on both blocks.
-        """
-        return cls(
-            output_blocks=["data_block", "ancilla_block"],
-            correlation_terms=[
-                ObservableTerm(block="data_block", basis="X"),
-                ObservableTerm(block="ancilla_block", basis="X"),
-            ],
-        )
-
-
-@dataclass
-class BlockPreparationConfig:
-    """
-    Configuration for preparing a single code block.
-    
-    Attributes
-    ----------
-    initial_state : str
-        The logical initial state: "0", "1", "+", "-".
-    z_deterministic : bool
-        Whether Z stabilizers are deterministic after preparation.
-        True for |0⟩ and |1⟩ inputs (Z eigenstate).
-    x_deterministic : bool
-        Whether X stabilizers are deterministic after preparation.
-        True for |+⟩ and |-⟩ inputs (X eigenstate).
-    skip_experiment_prep : bool
-        If True, the gadget handles this block's preparation itself.
-        The experiment should not emit preparation for this block.
-    """
-    initial_state: str = "0"
-    z_deterministic: bool = True
-    x_deterministic: bool = False
-    skip_experiment_prep: bool = False
-    
-    @classmethod
-    def zero_state(cls, skip_prep: bool = False) -> "BlockPreparationConfig":
-        """|0⟩ state: Z deterministic, X random."""
-        return cls(initial_state="0", z_deterministic=True, x_deterministic=False, 
-                   skip_experiment_prep=skip_prep)
-    
-    @classmethod
-    def plus_state(cls, skip_prep: bool = False) -> "BlockPreparationConfig":
-        """|+⟩ state: X deterministic, Z random."""
-        return cls(initial_state="+", z_deterministic=False, x_deterministic=True,
-                   skip_experiment_prep=skip_prep)
-
-
-@dataclass
-class PreparationConfig:
-    """
-    Configuration for state preparation across all blocks.
-    
-    Gadgets return this to declare per-block initial states and determinism.
-    The experiment and library modules (preparation.py, StabilizerRoundBuilder)
-    consume this config generically.
-    
-    Block Name Normalization
-    ------------------------
-    Teleportation gadgets use semantic names ("data_block", "ancilla_block")
-    while the experiment's QubitAllocation may use generic names ("block_0", "block_1").
-    
-    The get_block_config() method handles this normalization automatically:
-    - "block_0" → "data_block" (first block is data)
-    - "block_1" → "ancilla_block" (second block is ancilla)
-    
-    Attributes
-    ----------
-    blocks : Dict[str, BlockPreparationConfig]
-        Per-block preparation configuration.
-        Keys are block names ("data_block", "ancilla_block", etc.)
-    """
-    blocks: Dict[str, BlockPreparationConfig] = field(default_factory=dict)
-    
-    # Class-level block name aliases for normalization
-    BLOCK_ALIASES: Dict[str, str] = field(default_factory=lambda: {
-        "block_0": "data_block",
-        "block_1": "ancilla_block",
-        "block_2": "ancilla_block_2",
-    }, repr=False, init=False)
-    
-    def __post_init__(self):
-        """Initialize block aliases after dataclass init."""
-        # Use class-level aliases
-        object.__setattr__(self, 'BLOCK_ALIASES', {
-            "block_0": "data_block",
-            "block_1": "ancilla_block",
-            "block_2": "ancilla_block_2",
-        })
-    
-    def get_block_config(self, block_name: str) -> Optional[BlockPreparationConfig]:
-        """
-        Get configuration for a block with name normalization.
-        
-        Handles the mapping between generic names (block_0, block_1) and
-        semantic names (data_block, ancilla_block).
-        
-        Parameters
-        ----------
-        block_name : str
-            The block name (can be generic or semantic).
-            
-        Returns
-        -------
-        Optional[BlockPreparationConfig]
-            The block configuration, or None if not found.
-        """
-        # Try direct lookup first
-        if block_name in self.blocks:
-            return self.blocks[block_name]
-        
-        # Try alias lookup (block_0 → data_block, etc.)
-        alias = self.BLOCK_ALIASES.get(block_name)
-        if alias and alias in self.blocks:
-            return self.blocks[alias]
-        
-        # Try reverse alias (data_block → block_0)
-        for generic, semantic in self.BLOCK_ALIASES.items():
-            if block_name == semantic and generic in self.blocks:
-                return self.blocks[generic]
-        
-        return None
-    
-    def get_normalized_block_name(self, block_name: str) -> str:
-        """
-        Normalize a block name to the name used in this config.
-        
-        Parameters
-        ----------
-        block_name : str
-            The block name to normalize.
-            
-        Returns
-        -------
-        str
-            The normalized name that exists in self.blocks, or the original
-            name if no normalization is possible.
-        """
-        if block_name in self.blocks:
-            return block_name
-        
-        alias = self.BLOCK_ALIASES.get(block_name)
-        if alias and alias in self.blocks:
-            return alias
-        
-        for generic, semantic in self.BLOCK_ALIASES.items():
-            if block_name == semantic and generic in self.blocks:
-                return generic
-        
-        return block_name
-    
-    @classmethod
-    def single_block(cls, state: str = "0") -> "PreparationConfig":
-        """Config for single-block gadget (transversal gates)."""
-        if state in ("0", "1"):
-            return cls(blocks={"data_block": BlockPreparationConfig.zero_state()})
-        else:  # "+", "-"
-            return cls(blocks={"data_block": BlockPreparationConfig.plus_state()})
-    
-    @classmethod
-    def cz_teleportation(cls, input_state: str = "0") -> "PreparationConfig":
-        """
-        Config for CZ H-teleportation: data=input, ancilla=|+⟩.
-        
-        For CZ protocol:
-        - Data block: input state (|0⟩ has Z deterministic, |+⟩ has X deterministic)
-        - Ancilla block: |+⟩ (X deterministic, Z indeterminate)
-        
-        This enables anchor detectors on the first prep round for:
-        - Z_D (|0⟩ input) or X_D (|+⟩ input)
-        - X_A (ancilla always |+⟩)
-        """
-        if input_state in ("0", "1"):
-            # |0⟩ input: Z_D deterministic
-            data_config = BlockPreparationConfig.zero_state()
-        else:
-            # |+⟩ input: X_D deterministic
-            data_config = BlockPreparationConfig.plus_state()
-        
-        # Ancilla |+⟩: X_A deterministic
-        # Ancilla prep is declared here by the gadget (gadgets/preparation.py
-        # principle) and executed by experiment's preparation module at the
-        # correct time (before any syndrome rounds).
-        ancilla_config = BlockPreparationConfig.plus_state()
-        
-        return cls(blocks={
-            "data_block": data_config,
-            "ancilla_block": ancilla_config,
-        })
-    
-    @classmethod
-    def cnot_teleportation(cls, input_state: str = "0") -> "PreparationConfig":
-        """
-        Config for CNOT H-teleportation: data=input, ancilla=|0⟩.
-        
-        For CNOT protocol:
-        - Data block: input state (|0⟩ has Z deterministic, |+⟩ has X deterministic)
-        - Ancilla block: |0⟩ (Z deterministic, X indeterminate)
-        
-        This enables anchor detectors on the first prep round for:
-        - Z_D (|0⟩ input) or X_D (|+⟩ input)
-        - Z_A (ancilla always |0⟩)
-        """
-        if input_state in ("0", "1"):
-            # |0⟩ input: Z_D deterministic
-            data_config = BlockPreparationConfig.zero_state()
-        else:
-            # |+⟩ input: X_D deterministic
-            data_config = BlockPreparationConfig.plus_state()
-        
-        # Ancilla |0⟩: Z_A deterministic
-        # Ancilla prep is declared here by the gadget (gadgets/preparation.py
-        # principle) and executed by experiment's preparation module at the
-        # correct time (before any syndrome rounds).
-        ancilla_config = BlockPreparationConfig.zero_state()
-        
-        return cls(blocks={
-            "data_block": data_config,
-            "ancilla_block": ancilla_config,
-        })
-
-
-@dataclass
-class MeasurementConfig:
-    """
-    Configuration for final measurements across all blocks.
-    
-    Gadgets return this to declare per-block measurement bases.
-    The experiment uses this in _emit_final_measurement() to apply
-    correct basis rotations before measuring.
-    
-    Attributes
-    ----------
-    block_bases : Dict[str, str]
-        Per-block measurement basis ("X", "Z", or "Y").
-        Keys are block names.
-    destroyed_blocks : Set[str]
-        Blocks that are destroyed (measured out) during the gadget.
-        These blocks are NOT measured at the end.
-    """
-    block_bases: Dict[str, str] = field(default_factory=dict)
-    destroyed_blocks: Set[str] = field(default_factory=set)
-    
-    @classmethod
-    def single_block(cls, basis: str = "Z") -> "MeasurementConfig":
-        """Config for single-block gadget."""
-        return cls(block_bases={"data_block": basis})
-    
-    @classmethod
-    def cz_teleportation(cls, input_state: str = "0") -> "MeasurementConfig":
-        """
-        Config for CZ H-teleportation measurements.
-        
-        Data is always measured in X (Bell-like measurement).
-        Ancilla basis depends on input state:
-        - |0⟩ input: ancilla measured X (output is X_L)
-        - |+⟩ input: ancilla measured Z (output is Z_L after H)
-        
-        NOTE: data_block is NOT destroyed - it gets EC rounds after CZ
-        and participates in the final measurement. The logical information
-        is transferred to ancilla, but the data block is still measured
-        (in X basis) to complete the Bell measurement.
-        """
-        ancilla_basis = "X" if input_state in ("0", "1") else "Z"
-        return cls(
-            block_bases={"data_block": "X", "ancilla_block": ancilla_basis},
-            # No destroyed_blocks - both blocks are measured
-        )
-    
-    @classmethod
-    def cnot_teleportation(cls, input_state: str = "0") -> "MeasurementConfig":
-        """
-        Config for CNOT H-teleportation measurements.
-        
-        Data is always measured in X.
-        Ancilla basis depends on input state:
-        - |0⟩ input: ancilla measured Z
-        - |+⟩ input: ancilla measured X
-        
-        NOTE: data_block is NOT destroyed - it gets EC rounds after CNOT
-        and participates in the final measurement.
-        """
-        ancilla_basis = "Z" if input_state in ("0", "1") else "X"
-        return cls(
-            block_bases={"data_block": "X", "ancilla_block": ancilla_basis},
-            # No destroyed_blocks - both blocks are measured
-        )
-
-
-@dataclass
-class CrossingDetectorTerm:
-    """
-    A single term in a crossing detector formula.
-    
-    Attributes
-    ----------
-    block : str
-        Block name ("data_block", "ancilla_block").
-    stabilizer_type : str
-        "X" or "Z" stabilizer.
-    timing : str
-        "pre" (before gate) or "post" (after gate).
-    """
-    block: str
-    stabilizer_type: str  # "X" or "Z"
-    timing: str  # "pre" or "post"
-
-
-@dataclass
-class CrossingDetectorFormula:
-    """
-    Formula for a crossing detector.
-    
-    A crossing detector compares stabilizer measurements before and after
-    a transversal gate. The formula specifies which measurements to XOR.
-    
-    Example for CZ X_D crossing (3-term):
-        terms = [
-            CrossingDetectorTerm("data_block", "X", "pre"),
-            CrossingDetectorTerm("data_block", "X", "post"),
-            CrossingDetectorTerm("ancilla_block", "Z", "post"),
-        ]
-    
-    Attributes
-    ----------
-    name : str
-        Human-readable name (e.g., "X_D", "Z_A").
-    terms : List[CrossingDetectorTerm]
-        Terms to XOR for this detector.
-    num_stabilizers : Optional[int]
-        Number of stabilizers of this type (if None, infer from code).
-    """
-    name: str
-    terms: List[CrossingDetectorTerm]
-    num_stabilizers: Optional[int] = None
-
-
-@dataclass
-class CrossingDetectorConfig:
-    """
-    Configuration for crossing detectors across a transversal gate.
-    
-    Gadgets return this to declare the crossing detector formulas.
-    The detector_tracking module emits detectors from this config.
-    
-    Attributes
-    ----------
-    formulas : List[CrossingDetectorFormula]
-        List of crossing detector formulas to emit.
-    """
-    formulas: List[CrossingDetectorFormula] = field(default_factory=list)
-    
-    @classmethod
-    def identity(cls) -> "CrossingDetectorConfig":
-        """No crossing (identity gate) - simple 2-term temporal detectors."""
-        return cls(formulas=[
-            CrossingDetectorFormula("Z_D", [
-                CrossingDetectorTerm("data_block", "Z", "pre"),
-                CrossingDetectorTerm("data_block", "Z", "post"),
-            ]),
-            CrossingDetectorFormula("X_D", [
-                CrossingDetectorTerm("data_block", "X", "pre"),
-                CrossingDetectorTerm("data_block", "X", "post"),
-            ]),
-        ])
-    
-    @classmethod
-    def cz_teleportation(cls) -> "CrossingDetectorConfig":
-        """
-        Crossing detectors for CZ H-teleportation.
-        
-        CZ preserves Z stabilizers but mixes X with Z:
-        - Z_D, Z_A: 2-term (unchanged through CZ)
-        - X_D: 3-term (pre_X_D ⊕ post_X_D ⊕ post_Z_A)
-        - X_A: 3-term (pre_X_A ⊕ post_Z_D ⊕ post_X_A)
-        """
-        return cls(formulas=[
-            # Z stabilizers: 2-term (unchanged through CZ)
-            CrossingDetectorFormula("Z_D", [
-                CrossingDetectorTerm("data_block", "Z", "pre"),
-                CrossingDetectorTerm("data_block", "Z", "post"),
-            ]),
-            CrossingDetectorFormula("Z_A", [
-                CrossingDetectorTerm("ancilla_block", "Z", "pre"),
-                CrossingDetectorTerm("ancilla_block", "Z", "post"),
-            ]),
-            # X stabilizers: 3-term (X picks up Z from other block)
-            CrossingDetectorFormula("X_D", [
-                CrossingDetectorTerm("data_block", "X", "pre"),
-                CrossingDetectorTerm("data_block", "X", "post"),
-                CrossingDetectorTerm("ancilla_block", "Z", "post"),
-            ]),
-            CrossingDetectorFormula("X_A", [
-                CrossingDetectorTerm("ancilla_block", "X", "pre"),
-                CrossingDetectorTerm("data_block", "Z", "post"),
-                CrossingDetectorTerm("ancilla_block", "X", "post"),
-            ]),
-        ])
-    
-    @classmethod
-    def cnot_teleportation(cls, input_state: str = "0") -> "CrossingDetectorConfig":
-        """
-        Crossing detectors for CNOT H-teleportation.
-        
-        CNOT (data=control, ancilla=target) Heisenberg transformation:
-        - Z_D → Z_D              (control Z unchanged)
-        - Z_A → Z_D ⊗ Z_A        (target Z picks up control Z)
-        - X_D → X_D ⊗ X_A        (control X picks up target X)
-        - X_A → X_A              (target X unchanged)
-        
-        Crossing formulas:
-        - Z_D: ALWAYS 2-term (Z_D unchanged through CNOT)
-        - Z_A: 2-term for |0⟩ (Z_D deterministic = +1), 3-term for |+⟩
-        - X_D: ALWAYS 3-term (X_D_pre = X_D_post ⊕ X_A_post)
-        - X_A: ALWAYS 2-term (X_A unchanged)
-        """
-        formulas = []
-        
-        # Z_D crossing: ALWAYS 2-term (Z_D is unchanged through CNOT)
-        formulas.append(CrossingDetectorFormula("Z_D", [
-            CrossingDetectorTerm("data_block", "Z", "pre"),
-            CrossingDetectorTerm("data_block", "Z", "post"),
-        ]))
-        
-        # Z_A crossing: Z_A → Z_D ⊗ Z_A
-        if input_state in ("0", "1"):
-            # |0⟩: Z_D deterministic (+1), so Z_A crossing is 2-term
-            formulas.append(CrossingDetectorFormula("Z_A", [
-                CrossingDetectorTerm("ancilla_block", "Z", "pre"),
-                CrossingDetectorTerm("ancilla_block", "Z", "post"),
-            ]))
-        else:
-            # |+⟩: Z_D random, need 3-term: Z_A_pre ⊕ Z_D_post ⊕ Z_A_post = 0
-            formulas.append(CrossingDetectorFormula("Z_A", [
-                CrossingDetectorTerm("ancilla_block", "Z", "pre"),
-                CrossingDetectorTerm("data_block", "Z", "post"),
-                CrossingDetectorTerm("ancilla_block", "Z", "post"),
-            ]))
-        
-        # X_D crossing: ALWAYS 3-term (X_D → X_D ⊗ X_A)
-        formulas.append(CrossingDetectorFormula("X_D", [
-            CrossingDetectorTerm("data_block", "X", "pre"),
-            CrossingDetectorTerm("data_block", "X", "post"),
-            CrossingDetectorTerm("ancilla_block", "X", "post"),
-        ]))
-        
-        # X_A crossing: ALWAYS 2-term (X_A unchanged)
-        formulas.append(CrossingDetectorFormula("X_A", [
-            CrossingDetectorTerm("ancilla_block", "X", "pre"),
-            CrossingDetectorTerm("ancilla_block", "X", "post"),
-        ]))
-        
-        return cls(formulas=formulas)
-
-
-@dataclass
-class BoundaryDetectorConfig:
-    """
-    Configuration for boundary (space-like) detectors.
-    
-    Boundary detectors compare final data measurements to last syndrome round.
-    
-    Attributes
-    ----------
-    block_configs : Dict[str, Dict[str, bool]]
-        Per-block configuration: {block_name: {"X": emit_x_boundary, "Z": emit_z_boundary}}
-        Only emit boundary detector if the measurement basis is compatible
-        (e.g., MX data can have X_D boundary but NOT Z_D boundary).
-    """
-    block_configs: Dict[str, Dict[str, bool]] = field(default_factory=dict)
-    
-    @classmethod
-    def single_block(cls, measurement_basis: str = "Z") -> "BoundaryDetectorConfig":
-        """Config for single-block gadget."""
-        # Only emit boundary for compatible basis
-        return cls(block_configs={
-            "data_block": {
-                "X": measurement_basis == "X",
-                "Z": measurement_basis == "Z",
-            }
-        })
-    
-    @classmethod
-    def cz_teleportation(cls, input_state: str = "0") -> "BoundaryDetectorConfig":
-        """
-        Boundary detectors for CZ H-teleportation.
-        
-        Data measured MX:
-        - X_D boundary: NO — CZ transforms X_D → X_D ⊗ Z_A, so the
-          post-CZ X_D syndrome is X_D ⊗ Z_A. A simple 2-term boundary
-          comparing last X_D syndrome to MX(data) = X_D would leave
-          the Z_A contribution unmatched.
-        - Z_D boundary: NO — MX anticommutes with Z
-        
-        Ancilla:
-        - |0⟩ input: MX → X_A boundary YES (X_A → Z_D ⊗ X_A through CZ,
-          but the post-CZ X_A syndrome tracks the transformed stabilizer,
-          and MX on ancilla matches X_A)
-        - |+⟩ input: MZ → Z_A boundary YES (Z_A unchanged through CZ)
-        """
-        ancilla_basis = "X" if input_state in ("0", "1") else "Z"
-        return cls(block_configs={
-            "data_block": {"X": False, "Z": False},  # No data boundary for CZ
-            "ancilla_block": {
-                "X": ancilla_basis == "X",
-                "Z": ancilla_basis == "Z",
-            },
-        })
-    
-    @classmethod
-    def cnot_teleportation(cls, input_state: str = "0") -> "BoundaryDetectorConfig":
-        """
-        Boundary detectors for CNOT H-teleportation.
-        
-        Data measured MX → X_D boundary YES, Z_D boundary NO
-        Ancilla:
-        - |0⟩ input: MZ → Z_A boundary YES
-        - |+⟩ input: MX → X_A boundary YES
-        """
-        ancilla_basis = "Z" if input_state in ("0", "1") else "X"
-        return cls(block_configs={
-            "data_block": {"X": True, "Z": False},  # MX data
-            "ancilla_block": {
-                "X": ancilla_basis == "X",
-                "Z": ancilla_basis == "Z",
-            },
-        })
 
 
 @dataclass
@@ -1550,6 +834,41 @@ class Gadget(ABC):
         """
         if not codes:
             raise ValueError("At least one code is required")
+        
+        # Check code-type compatibility
+        req = self.required_code_properties
+        for i, code in enumerate(codes):
+            if "css" in req and not code.is_css:
+                raise ValueError(
+                    f"{self.__class__.__name__} requires CSS codes, but "
+                    f"codes[{i}] ({code.name}) is not CSS."
+                )
+            if "stabilizer" in req and not code.is_stabilizer:
+                raise ValueError(
+                    f"{self.__class__.__name__} requires stabilizer codes, but "
+                    f"codes[{i}] ({code.name}) is not a stabilizer code."
+                )
+    
+    @property
+    def required_code_properties(self) -> Set[str]:
+        """Code properties required by this gadget.
+
+        Return a set of strings describing what the gadget needs.
+        Recognised values:
+
+        * ``"css"`` — codes must satisfy ``code.is_css``
+        * ``"stabilizer"`` — codes must satisfy ``code.is_stabilizer``
+
+        The default is ``{"stabilizer"}`` (works with any
+        :class:`StabilizerCode`, CSS or not).  Gadgets that require
+        CSS structure (e.g. surgery CNOT with separate X/Z merge
+        rounds) should override and return ``{"css"}``.
+
+        Returns
+        -------
+        Set[str]
+        """
+        return {"stabilizer"}
     
     def supports_code(self, code: Code) -> bool:
         """
@@ -1769,6 +1088,32 @@ class Gadget(ABC):
         """
         return False
     
+    def use_auto_detectors(self) -> bool:
+        """
+        Return True if this gadget should use automatic detector/observable
+        emission via flow matching instead of manual config-based emission.
+
+        When True, ``FaultTolerantGadgetExperiment.to_stim()`` will:
+
+        1. Build the circuit normally (with whatever manual detectors the
+           config methods produce).
+        2. Strip all DETECTOR and OBSERVABLE_INCLUDE instructions.
+        3. Call ``discover_detectors()`` and ``discover_observables()`` from
+           :mod:`qectostim.experiments.auto_detector_emission`.
+        4. Emit the discovered annotations into the circuit.
+
+        This replaces the previous pattern of calling auto-discovery
+        *after* ``to_stim()`` in test harnesses.
+
+        Default: False (use manual config-based emission)
+
+        Returns
+        -------
+        bool
+            True to use automatic detector/observable emission.
+        """
+        return False
+
     def should_emit_space_like_detectors(self) -> bool:
         """
         Return True if the experiment should emit space-like detectors at the end.
@@ -2231,406 +1576,4 @@ class Gadget(ABC):
             Returns None if no ancilla preparation needed.
         """
         return None
-
-
-class TransversalGadgetMixin:
-    """
-    Mixin for gadgets that apply gates transversally (qubit-by-qubit).
-    
-    Provides helper methods for transversal gate application where
-    the logical gate is implemented by applying physical gates to
-    each qubit in parallel.
-    """
-    
-    def get_transversal_gate_pairs(
-        self,
-        code: Code,
-        gate_name: str,
-    ) -> List[Tuple[int, ...]]:
-        """
-        Get qubit indices for transversal gate application.
-        
-        For single-qubit gates, returns list of (qubit_idx,) tuples.
-        For two-qubit gates like CZ, returns list of (ctrl, tgt) pairs.
-        
-        Args:
-            code: The code to apply gate to
-            gate_name: Gate name (H, S, T, CZ, CNOT, etc.)
-            
-        Returns:
-            List of qubit index tuples for gate application
-        """
-        n = code.n  # Number of data qubits
-        
-        if gate_name in ("H", "S", "T", "X", "Y", "Z", "S_DAG", "T_DAG"):
-            # Single-qubit gates: apply to all data qubits
-            return [(i,) for i in range(n)]
-        elif gate_name == "CZ":
-            # CZ between corresponding qubits of two codes
-            # Caller should handle multi-code case
-            return [(i,) for i in range(n)]
-        elif gate_name == "CNOT":
-            # CNOT between corresponding qubits
-            return [(i,) for i in range(n)]
-        else:
-            raise ValueError(f"Unknown transversal gate: {gate_name}")
-    
-    def check_transversal_support(self, code: Code, gate_name: str) -> bool:
-        """
-        Check if a code supports a transversal implementation of a gate.
-        
-        Uses Code ABC transversal_gates() method directly.
-        
-        Args:
-            code: The code to check
-            gate_name: The gate name to check
-            
-        Returns:
-            True if gate is supported transversally
-        """
-        supported = code.transversal_gates()
-        return gate_name in supported
-
-
-
-class TeleportationGadgetMixin:
-    """
-    Mixin for gadgets that use teleportation protocols.
-    
-    Provides helper methods and default implementations of the Gadget
-    generic interface methods for teleportation-based logical gate
-    implementations using Bell pairs and measurements.
-    
-    Subclasses should set:
-        self._data_block_name: str = "data_block"
-        self._ancilla_block_name: str = "ancilla_block"
-        self._ancilla_initial_state: str = "+" or "0"
-    """
-    
-    # Subclasses should set these
-    _data_block_name: str = "data_block"
-    _ancilla_block_name: str = "ancilla_block"
-    _ancilla_initial_state: str = "+"  # Override in CNOT gadget to "0"
-    input_state: str = "0"  # Set by subclass __init__
-    _use_hybrid_decoding: bool = False  # Set by subclass __init__
-    
-    # =========================================================================
-    # Generic interface implementations for teleportation
-    # =========================================================================
-    
-    def is_teleportation_gadget(self) -> bool:
-        """Return True - this is a teleportation gadget."""
-        return True
-    
-    def get_input_block_name(self) -> str:
-        """Return data block name (consumed during teleportation)."""
-        return self._data_block_name
-    
-    def get_output_block_name(self) -> str:
-        """Return ancilla block name (carries output after teleportation)."""
-        return self._ancilla_block_name
-    
-    def get_x_stabilizer_mode(self) -> str:
-        """
-        Return 'cx' for teleportation gadgets.
-        
-        Teleportation requires CX (CNOT) for X stabilizer measurement to match
-        the ground truth builder and ensure X anchor detectors are deterministic.
-        
-        With CZ, backward Pauli trace goes: X_syndrome → X_syndrome ⊗ Z_data,
-        and Z_data through H on data becomes X_data on |0⟩ (non-deterministic).
-        
-        With CX, backward trace goes: X_syndrome → X_syndrome (no data coupling),
-        so the X anchor traces back cleanly to syndrome |0⟩ (deterministic).
-        """
-        return "cx"
-    
-    def requires_parallel_extraction(self) -> bool:
-        """
-        Teleportation gadgets require parallel syndrome extraction.
-        
-        This ensures:
-        1. Both blocks measured together per round: [D_Z, A_Z, D_X, A_X]
-        2. 3-term crossing detectors can reference both blocks in same round
-        3. Matches ground truth CZHTeleportationBuilder/CNOTHTeleportationBuilder
-        """
-        return True
-    
-    def get_blocks_to_skip_preparation(self) -> Set[str]:
-        """Return ancilla blocks - gadget prepares them."""
-        return {self._ancilla_block_name}
-    
-    def get_blocks_to_skip_pre_rounds(self) -> Set[str]:
-        """
-        Return blocks to skip in pre-gadget EC rounds.
-        
-        For teleportation with crossing detectors, we MUST measure BOTH
-        blocks before the gate so that crossing detectors can reference
-        both pre-gate X and Z measurements.
-        
-        The ground truth builder (CZHTeleportationBuilder) measures BOTH
-        blocks in pre-CZ rounds. We match that behavior by returning an
-        empty set.
-        """
-        return set()  # Measure BOTH blocks before the gate
-    
-    def get_blocks_to_skip_post_rounds(self) -> Set[str]:
-        """
-        Return blocks to skip in post-gadget EC rounds.
-        
-        The data block is destroyed (measured MX) during teleportation,
-        but we need to run post-gadget rounds on both blocks BEFORE the
-        destructive measurement to get crossing detector coverage.
-        
-        IMPORTANT: The data block's post-CZ rounds provide X_D(post)
-        measurements needed for X_D crossing detectors.
-        """
-        return set()  # Measure BOTH blocks after the gate (before final measurement)
-    
-    def get_destroyed_blocks(self) -> Set[str]:
-        """Return data block - measured and destroyed during teleportation."""
-        return {self._data_block_name}
-    
-    def get_ancilla_block_names(self) -> Set[str]:
-        """Return ancilla block name."""
-        return {self._ancilla_block_name}
-    
-    def get_initial_state_for_block(self, block_name: str, requested_state: str) -> str:
-        """
-        Get initial state for a block.
-        
-        For data block: use requested state
-        For ancilla block: use _ancilla_initial_state (|+⟩ for CZ, |0⟩ for CNOT)
-        """
-        if block_name == self._ancilla_block_name:
-            return self._ancilla_initial_state
-        return requested_state
-    
-    def should_skip_state_preparation(self) -> bool:
-        """
-        Return False - experiment handles preparation using PreparationConfig.
-        
-        The gadget declares preparation requirements via get_preparation_config().
-        The experiment handles initial state prep (R, H) based on that config.
-        """
-        return False
-    
-    def should_emit_space_like_detectors(self) -> bool:
-        """
-        Return True - space-like detectors provide additional error detection.
-        
-        Teleportation uses space-like detectors for boundary detection when
-        the measurement basis matches the stabilizer type (e.g., Z_A boundary
-        when ancilla is measured in Z basis for |+⟩ input CZ).
-        """
-        return True
-    
-    def get_observable_config(self) -> ObservableConfig:
-        """
-        Return observable configuration for teleportation gadgets.
-        
-        Uses the specific factory methods for each gate type and input state:
-        - CZ |0⟩: X_L(A)
-        - CZ |+⟩: X_L(D) ⊕ Z_L(A)
-        - CNOT |0⟩: Z_L(A)
-        - CNOT |+⟩: X_L(D) ⊕ X_L(A)
-        
-        Returns
-        -------
-        ObservableConfig
-            Teleportation-specific observable configuration with correlation_terms.
-        """
-        # Use gadget's explicit input_state, not inference from measurement_basis
-        input_state = self.input_state
-        
-        # Detect gadget type from ancilla initial state
-        ancilla_state = self._ancilla_initial_state
-        
-        # Check for hybrid decoding mode
-        use_hybrid = self._use_hybrid_decoding
-        
-        # Check for raw sampling requirement
-        requires_raw = self.requires_raw_sampling()
-        
-        if ancilla_state == '+':
-            # CZ teleportation
-            if input_state == "0":
-                config = ObservableConfig.cz_teleportation_zero()
-            else:
-                config = ObservableConfig.cz_teleportation_plus()
-        else:
-            # CNOT teleportation
-            if input_state == "0":
-                config = ObservableConfig.cnot_teleportation_zero()
-            else:
-                config = ObservableConfig.cnot_teleportation_plus()
-        
-        # Update config with mode flags
-        config.use_hybrid_decoding = use_hybrid
-        config.requires_raw_sampling = requires_raw
-        
-        return config
-    
-    def get_preparation_config(self, input_state: str = "0") -> PreparationConfig:
-        """
-        Return preparation configuration for teleportation gadgets.
-        
-        Teleportation gadgets handle preparation internally with proper
-        detector placement. They prepare:
-        - Data block: input state (|0⟩ or |+⟩)
-        - Ancilla block: gadget-specific state (|+⟩ for CZ, |0⟩ for CNOT)
-        
-        Parameters
-        ----------
-        input_state : str
-            The logical input state from experiment (ignored for teleportation -
-            we use self.input_state directly since the gadget knows its input).
-            
-        Returns
-        -------
-        PreparationConfig
-            Teleportation-specific preparation configuration.
-        """
-        # Use gadget's explicit input_state, not inference from experiment
-        # The gadget knows what input state it was constructed with
-        actual_input_state = self.input_state
-        
-        # Detect gadget type from ancilla initial state
-        ancilla_state = self._ancilla_initial_state
-        
-        if ancilla_state == '+':
-            # CZ teleportation: ancilla |+⟩
-            return PreparationConfig.cz_teleportation(actual_input_state)
-        else:
-            # CNOT teleportation: ancilla |0⟩
-            return PreparationConfig.cnot_teleportation(actual_input_state)
-    
-    def get_measurement_config(self) -> MeasurementConfig:
-        """
-        Return measurement configuration for teleportation gadgets.
-        
-        Teleportation gadgets have block-dependent measurements:
-        - Data block: always MX (destroyed in Bell-like measurement)
-        - Ancilla block: depends on input state and gadget type
-        
-        Returns
-        -------
-        MeasurementConfig
-            Teleportation-specific measurement configuration.
-        """
-        # Use gadget's explicit input_state, not inference from measurement_basis
-        # The gadget knows what input state it was constructed with
-        input_state = self.input_state
-        
-        # Detect gadget type from ancilla initial state
-        ancilla_state = self._ancilla_initial_state
-        
-        if ancilla_state == '+':
-            # CZ teleportation
-            return MeasurementConfig.cz_teleportation(input_state)
-        else:
-            # CNOT teleportation
-            return MeasurementConfig.cnot_teleportation(input_state)
-    
-    def get_crossing_detector_config(self) -> Optional[CrossingDetectorConfig]:
-        """
-        Return crossing detector configuration for teleportation gadgets.
-        
-        Teleportation gadgets have specific crossing detector requirements
-        based on how the entangling gate (CZ or CNOT) transforms stabilizers.
-        
-        Returns
-        -------
-        CrossingDetectorConfig
-            Configuration for crossing detectors around the gate.
-        """
-        input_state = self.input_state
-        
-        # Detect gadget type from ancilla initial state
-        ancilla_state = self._ancilla_initial_state
-        
-        if ancilla_state == '+':
-            # CZ teleportation - same crossing formulas for both input states
-            return CrossingDetectorConfig.cz_teleportation()
-        else:
-            # CNOT teleportation - Z_D formula depends on input state
-            return CrossingDetectorConfig.cnot_teleportation(input_state)
-    
-    def get_boundary_detector_config(self) -> BoundaryDetectorConfig:
-        """
-        Return boundary detector configuration for teleportation gadgets.
-        
-        Teleportation gadgets need specific boundary detectors based on
-        which blocks are measured in which basis.
-        
-        Returns
-        -------
-        BoundaryDetectorConfig
-            Teleportation-specific boundary detector configuration.
-        """
-        # Use gadget's explicit input_state, not inference from measurement_basis
-        input_state = self.input_state
-        
-        # Detect gadget type from ancilla initial state
-        ancilla_state = self._ancilla_initial_state
-        
-        if ancilla_state == '+':
-            # CZ teleportation
-            return BoundaryDetectorConfig.cz_teleportation(input_state)
-        else:
-            # CNOT teleportation
-            return BoundaryDetectorConfig.cnot_teleportation(input_state)
-    
-    # =========================================================================
-    # Teleportation-specific helper methods
-    # =========================================================================
-    
-    def get_bell_pair_qubits(
-        self,
-        code: Code,
-        layout: GadgetLayout,
-    ) -> List[Tuple[int, int]]:
-        """
-        Get qubit pairs for Bell pair preparation.
-        
-        Args:
-            code: The code for teleportation
-            layout: Current layout
-            
-        Returns:
-            List of (data_qubit, ancilla_qubit) pairs
-        """
-        # Default: pair each data qubit with corresponding ancilla
-        n = code.n
-        return [(i, n + i) for i in range(n)]
-    
-    def compute_correction_pauli(
-        self,
-        x_measurement: int,
-        z_measurement: int,
-    ) -> str:
-        """
-        Compute Pauli correction based on measurement outcomes.
-        
-        Standard teleportation corrections:
-        - m_x=0, m_z=0: I
-        - m_x=1, m_z=0: Z
-        - m_x=0, m_z=1: X
-        - m_x=1, m_z=1: Y
-        
-        Args:
-            x_measurement: X-basis measurement result (0 or 1)
-            z_measurement: Z-basis measurement result (0 or 1)
-            
-        Returns:
-            Pauli operator name ("I", "X", "Y", "Z")
-        """
-        if x_measurement == 0 and z_measurement == 0:
-            return "I"
-        elif x_measurement == 1 and z_measurement == 0:
-            return "Z"
-        elif x_measurement == 0 and z_measurement == 1:
-            return "X"
-        else:
-            return "Y"
 

@@ -12,6 +12,22 @@ The convention is:
     - boundary_k (sigma_k): C_k → C_{k-1}, shape (#C_{k-1}, #C_k)
     - Hx comes from the boundary map above qubit_grade
     - Hz comes from the transpose of the boundary map at qubit_grade
+
+Code Parameters:
+    Determined by ∂₁, ∂₂ (and higher) dimensions.  The number of physical
+    qubits equals the number of columns shared between successive boundary
+    maps at the qubit grade.
+
+Stabiliser Structure:
+    Hx = ∂₂ᵀ (transpose of the boundary map above the qubit grade) and
+    Hz = ∂₁ (the boundary map at the qubit grade).  Higher-chain
+    complexes provide additional meta-check matrices from the remaining
+    boundary operators.
+
+Raises:
+    ValueError
+        If boundary-map dimensions are inconsistent (e.g. ∂₁ columns ≠ ∂₂
+        rows) or if an unsupported ``qubit_grade`` is requested.
 """
 from dataclasses import dataclass
 from typing import Optional

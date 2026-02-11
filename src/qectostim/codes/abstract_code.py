@@ -14,9 +14,28 @@ Key Design Principles:
 3. Stabilizers() is NOT abstract on Code - only StabilizerCode has it
 4. HomologicalCode (in abstract_homological.py) adds chain complex structure
 5. CSSCode (in abstract_css.py) inherits from both StabilizerCode and HomologicalCode
+
+Code Parameters:
+    Derived classes define [[n, k, d]].  The abstract base only requires
+    ``n`` (physical qubits) and ``k`` (logical qubits); ``d`` (distance)
+    is optional metadata that concrete codes populate.
+
+Stabiliser Structure:
+    Derived classes provide Hx, Hz (for CSS codes) or a full symplectic
+    stabiliser matrix (for non-CSS codes).  The base ``Code`` ABC imposes
+    no stabiliser-specific constraints.
+
+Raises:
+    NotImplementedError
+        Instantiating ``Code`` or ``StabilizerCode`` directly (they are
+        abstract) or calling stabiliser accessors on a non-stabiliser code.
+    TypeError
+        If a subclass fails to implement the required abstract properties
+        (``n``, ``k``, ``logical_x_ops``, ``logical_z_ops``).
 """
 from __future__ import annotations
 
+import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
@@ -29,6 +48,82 @@ if TYPE_CHECKING:
 
 PauliString = Dict[int, str]  # e.g. {0: 'X', 3: 'Z'} means X on qubit0, Z on qubit3
 Coord = Tuple[float, ...]  # D-dimensional coordinates
+
+
+def compute_coordinate_metadata(
+    hx: np.ndarray,
+    hz: np.ndarray,
+    meta: Dict[str, Any],
+    logical_x: Optional[List[PauliString]] = None,
+    logical_z: Optional[List[PauliString]] = None,
+) -> None:
+    """Compute coordinate metadata from parity-check matrices and inject into *meta*.
+
+    This utility is intended to be called by CSS-code constructors to populate
+    ``data_coords``, ``x_stab_coords``, ``z_stab_coords``, ``lx_support``,
+    and ``lz_support`` when they are not already present.
+
+    For algebraically-constructed codes the data-qubit coordinates are laid
+    out on a grid with ``cols = ceil(sqrt(n))`` columns.  Stabiliser coords
+    are centroids of their support qubits.
+
+    Parameters
+    ----------
+    hx : np.ndarray
+        X-stabiliser parity-check matrix, shape ``(num_x_stabs, n)``.
+    hz : np.ndarray
+        Z-stabiliser parity-check matrix, shape ``(num_z_stabs, n)``.
+    meta : dict
+        Metadata dictionary to update **in-place**.
+    logical_x, logical_z : list of PauliString, optional
+        Logical operators; used to derive ``lx_support`` / ``lz_support``.
+    """
+    n = hx.shape[1]
+
+    if "data_coords" not in meta:
+        cols = int(np.ceil(np.sqrt(n)))
+        data_coords_list = [(float(i % cols), float(i // cols)) for i in range(n)]
+        meta["data_coords"] = data_coords_list
+    else:
+        data_coords_list = meta["data_coords"]
+
+    if "x_stab_coords" not in meta:
+        x_stab_coords_list = []
+        for row_idx in range(hx.shape[0]):
+            support = np.where(hx[row_idx])[0]
+            if len(support) > 0:
+                cx = np.mean([data_coords_list[q][0] for q in support])
+                cy = np.mean([data_coords_list[q][1] for q in support])
+                x_stab_coords_list.append((float(cx), float(cy)))
+            else:
+                x_stab_coords_list.append((0.0, 0.0))
+        meta["x_stab_coords"] = x_stab_coords_list
+
+    if "z_stab_coords" not in meta:
+        z_stab_coords_list = []
+        for row_idx in range(hz.shape[0]):
+            support = np.where(hz[row_idx])[0]
+            if len(support) > 0:
+                cx = np.mean([data_coords_list[q][0] for q in support])
+                cy = np.mean([data_coords_list[q][1] for q in support])
+                z_stab_coords_list.append((float(cx), float(cy)))
+            else:
+                z_stab_coords_list.append((0.0, 0.0))
+        meta["z_stab_coords"] = z_stab_coords_list
+
+    if "lx_support" not in meta and logical_x:
+        op = logical_x[0]
+        if isinstance(op, dict):
+            meta["lx_support"] = sorted(op.keys())
+        elif isinstance(op, str):
+            meta["lx_support"] = [i for i, c in enumerate(op) if c != 'I']
+
+    if "lz_support" not in meta and logical_z:
+        op = logical_z[0]
+        if isinstance(op, dict):
+            meta["lz_support"] = sorted(op.keys())
+        elif isinstance(op, str):
+            meta["lz_support"] = [i for i, c in enumerate(op) if c != 'I']
 
 
 # =============================================================================

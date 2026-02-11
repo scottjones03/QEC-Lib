@@ -69,7 +69,26 @@ Connections to other codes
   become loop-like, enabling full self-correction.
 * **Homological product**: ToricCode ⊗ RepetitionCode yields 3D-like codes.
 * **Haah’s cubic code**: another 3D topological code with fractal
-  excitations (very different from the toric code's loop-like excitations).
+  excitations (very different from the toric code’s loop-like excitations).
+
+Code Parameters
+~~~~~~~~~~~~~~~
+:math:`[[n, k, d]] = [[3L^3, 3, L]]` where:
+
+- :math:`n = 3L^3` physical qubits (edges in x, y, z directions)
+- :math:`k = 3` logical qubits (three non-contractible 1-cycles on the 3-torus)
+- :math:`d = L` (minimum-weight non-contractible loop)
+- Rate :math:`k/n = 1/L^3`
+
+Stabiliser Structure
+~~~~~~~~~~~~~~~~~~~~
+- **X-type stabilisers**: weight-4 plaquette (face) operators; :math:`3L^3 - 3`
+  independent generators across xy, xz, yz orientations.
+- **Z-type stabilisers**: weight-6 star (vertex) operators; :math:`L^3 - 1`
+  independent generators.
+- Measurement schedule: parallel measurement of all plaquettes in one round
+  and all vertices in one round.  Meta-checks from :math:`\partial_3` (cubes)
+  enable single-shot error correction.
 
 References
 ----------
@@ -81,6 +100,8 @@ References
   thresholds for topological codes", Phys. Rev. Lett. 123, 020501 (2019).
 * Error Correction Zoo: https://errorcorrectionzoo.org/c/3d_surface
 * Wikipedia: https://en.wikipedia.org/wiki/Toric_code (3D section)
+* Vasmer & Browne, "Universal quantum computing with 3D surface
+  codes", arXiv:1801.04255 (2018).
 """
 
 from __future__ import annotations
@@ -162,6 +183,11 @@ class ToricCode3D(TopologicalCSSCode3D):
             Linear lattice size (must be ≥ 2).
         metadata : dict, optional
             Extra key/value pairs merged into auto-generated metadata.
+
+        Raises
+        ------
+        ValueError
+            If ``L < 2``.
         """
         if L < 2:
             raise ValueError("L must be at least 2")
@@ -353,7 +379,6 @@ class ToricCode3D(TopologicalCSSCode3D):
         # X stabilizers (face/plaquette operators) - weight 4
         # Each face has 4 edges as boundary
         hx_list = []
-        x_stab_coords = []
         
         # xy-faces
         for i in range(L):
@@ -366,7 +391,6 @@ class ToricCode3D(TopologicalCSSCode3D):
                     row[edge_y(i, j, k)] = 1      # left y-edge
                     row[edge_y((i+1) % L, j, k)] = 1  # right y-edge
                     hx_list.append(row)
-                    x_stab_coords.append((i + 0.5, j + 0.5, float(k)))
         
         # xz-faces
         for i in range(L):
@@ -378,7 +402,6 @@ class ToricCode3D(TopologicalCSSCode3D):
                     row[edge_z(i, j, k)] = 1
                     row[edge_z((i+1) % L, j, k)] = 1
                     hx_list.append(row)
-                    x_stab_coords.append((i + 0.5, float(j), k + 0.5))
         
         # yz-faces
         for i in range(L):
@@ -390,14 +413,12 @@ class ToricCode3D(TopologicalCSSCode3D):
                     row[edge_z(i, j, k)] = 1
                     row[edge_z(i, (j+1) % L, k)] = 1
                     hx_list.append(row)
-                    x_stab_coords.append((float(i), j + 0.5, k + 0.5))
         
         hx_full = np.array(hx_list, dtype=np.uint8)
         
         # Z stabilizers (vertex/star operators) - weight 6
         # Each vertex has 6 incident edges (±x, ±y, ±z)
         hz_list = []
-        z_stab_coords = []
         
         for i in range(L):
             for j in range(L):
@@ -411,7 +432,6 @@ class ToricCode3D(TopologicalCSSCode3D):
                     row[edge_z(i, j, k)] = 1           # +z direction
                     row[edge_z(i, j, (k-1) % L)] = 1   # -z direction
                     hz_list.append(row)
-                    z_stab_coords.append((float(i), float(j), float(k)))
         
         hz_full = np.array(hz_list, dtype=np.uint8)
         
@@ -420,9 +440,22 @@ class ToricCode3D(TopologicalCSSCode3D):
         hx = hx_full[:-3]  # Remove last 3 faces (one per orientation)
         hz = hz_full[:-1]  # Remove last vertex
         
-        # Trim coord lists to match
-        x_stab_coords = x_stab_coords[:-3]
-        z_stab_coords = z_stab_coords[:-1]
+        # Compute stab coords as centroids of support qubits
+        def _centroid_3d(h, coords):
+            out = []
+            for row in h:
+                sup = np.nonzero(row)[0]
+                if len(sup) > 0:
+                    cx = np.mean([coords[q][0] for q in sup])
+                    cy = np.mean([coords[q][1] for q in sup])
+                    cz = np.mean([coords[q][2] for q in sup])
+                    out.append((float(cx), float(cy), float(cz)))
+                else:
+                    out.append((0.0, 0.0, 0.0))
+            return out
+        
+        x_stab_coords = _centroid_3d(hx, data_coords)
+        z_stab_coords = _centroid_3d(hz, data_coords)
         
         # Build boundary matrices for chain complex
         # ∂2: faces -> edges, shape (n_edges, n_faces)

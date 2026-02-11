@@ -1,23 +1,116 @@
-"""Fracton Codes
+"""Fracton Codes — 3D Stabiliser Codes with Restricted Excitation Mobility
 
-Fracton codes are a class of 3D stabilizer codes with unusual excitation
-dynamics - some excitations (fractons) cannot move freely but are 
-confined to subdimensional manifolds.
+Fracton codes are a class of 3D stabiliser codes whose excitations
+exhibit **restricted mobility**: some quasi-particles (fractons) cannot
+move freely but are confined to subdimensional manifolds.  This
+property leads to sub-extensive ground-state degeneracy and potential
+applications for self-correcting quantum memory.
 
-This module provides implementations of:
-    - XCubeCode: The X-cube model with lineon and planon excitations
-    - HaahCode: Haah's cubic code with fracton excitations
-    - CheckerboardCode: Foliated fracton code on cubic lattice
+Overview
+--------
+Unlike topological codes in 2D (e.g. surface codes), where anyonic
+excitations can move freely in the plane, fracton codes in 3D have
+three excitation categories:
 
-Key properties of fracton codes:
-    - Sub-extensive ground state degeneracy
-    - Excitations with restricted mobility
-    - Potential for self-correction beyond 3D toric code
+* **Fractons** — fully immobile point-like excitations (can only be
+  created/annihilated in groups).
+* **Lineons** — excitations mobile along 1-dimensional lines.
+* **Planons** — excitations mobile within 2-dimensional planes.
 
-References:
-    - Haah, "Local stabilizer codes in three dimensions without string logical operators" (2011)
-    - Vijay et al., "A new kind of topological quantum order" (2015)  
-    - Shirley et al., "Foliated fracton order from gauging subsystem symmetries" (2019)
+Fracton codes are further classified into:
+
+* **Type-I** (foliated): Have both mobile and immobile excitations.
+  Examples: X-cube, Checkerboard, Chamon.
+* **Type-II** (fractal): All excitations are immobile.  Logical
+  operators have fractal geometry.  Example: Haah's cubic code.
+
+Codes in this module
+--------------------
+* ``XCubeCode`` — type-I fracton on a cubic lattice (lineons + planons)
+* ``HaahCode`` — type-II fracton with fractal logical operators
+* ``CheckerboardCode`` — foliated type-I on alternating cubes
+* ``ChamonCode`` — type-I fracton on a BCC lattice
+* ``FibonacciFractalCode`` — HGP-based code with Fibonacci sizing
+* ``SierpinskiPrismCode`` — HGP-based code on a fractal prism
+
+Code Parameters
+~~~~~~~~~~~~~~~
+* **XCubeCode(L)**: ``[[3L³, 6L−3, L]]`` — sub-extensive k scaling.
+* **HaahCode(L)**: ``[[2L³, 2L, L]]`` — type-II fracton with fractal
+  logical operators and system-size-dependent k.
+* **CheckerboardCode(L)**: ``[[L³, O(L), L]]`` — type-I on alternating
+  cubes.
+* **ChamonCode(L)**: ``[[3L³, O(L), L]]`` — type-I on a BCC lattice.
+* **FibonacciFractalCode(L)** and **SierpinskiPrismCode(L)**: HGP-based
+  approximations with ``n = O(L²)`` and ``k ≥ 1``.
+
+Stabiliser Structure
+~~~~~~~~~~~~~~~~~~~~
+* **XCubeCode**: 12-body cube operators (X-type) and 4-body cross
+  operators in 3 orthogonal planes at each vertex (Z-type).  Total:
+  ``L³ − 1`` X-stabilisers, ``3(L³ − L)`` Z-stabilisers.
+* **HaahCode**: 8-body cubic-vertex operators for both X and Z types;
+  each stabiliser touches 8 qubits at the corners of a unit cube.
+  Total: ``L³ − 1`` stabilisers per type.
+* **CheckerboardCode**: 12-body cube operators on alternating cubes for
+  X; 4-body vertex operators for Z.  Measurement: single parallel round.
+* **ChamonCode**: 6-body X and 6-body Z stabilisers on a BCC lattice;
+  stabiliser weight is constant.
+* All fracton codes admit a single-round parallel measurement schedule.
+
+Ground-state degeneracy
+-----------------------
+Fracton codes have **sub-extensive** ground-state degeneracy:
+``k ∝ L`` (or ``6L − 3`` for X-cube) rather than the constant ``k``
+typical of topological codes.  This is a hallmark of fracton order
+and has implications for quantum memory capacity.
+
+Stabiliser scheduling
+---------------------
+For all codes in this module, X-stabilisers and Z-stabilisers are
+assigned to parallel measurement rounds (round 0 for each type).
+In a hardware implementation the stabilisers may need to be
+partitioned into non-overlapping subsets that avoid qubit conflicts.
+
+Implementation caveats
+----------------------
+``FibonacciFractalCode`` and ``SierpinskiPrismCode`` use a homological
+product (HGP) construction internally rather than building genuine
+fractal lattice geometry.  They are pedagogical approximations of the
+true fracton codes.  See the class docstrings for details.
+
+Connections to other codes
+--------------------------
+* **Toric/surface codes**: fracton codes are 3D generalisations with
+  richer excitation structure.
+* **Subsystem codes**: X-cube can be viewed as a subsystem code whose
+  gauge group generates the fracton constraints.
+* **Classical fractal codes**: type-II fracton logical operators have
+  fractal support (Sierpinski-triangle-like patterns).
+
+References
+----------
+* Vijay, Haah & Fu, "A new kind of topological quantum order",
+  Phys. Rev. B 92, 235136 (2015).  arXiv:1505.02576
+* Haah, "Local stabilizer codes in three dimensions without string
+  logical operators", J. Math. Phys. 52, 095101 (2011).  arXiv:1101.1962
+* Shirley, Slagle & Chen, "Foliated fracton order from gauging
+  subsystem symmetries", SciPost Phys. 6, 015 (2019).  arXiv:1806.08679
+* Chamon, "Quantum Glassiness in Strongly Correlated Clean Systems",
+  Phys. Rev. Lett. 94, 040402 (2005).
+* Yoshida, "Exotic topological order in fractal spin liquids",
+  Phys. Rev. B 88, 125122 (2013).  arXiv:1302.6248
+* Error Correction Zoo: https://errorcorrectionzoo.org/c/fracton
+
+Decoding
+--------
+* Renormalisation-group (RG) decoders exploit the hierarchical structure
+  of fracton excitations to decode in O(n log n) time.
+* Peeling decoders can handle the lineon and planon sectors separately.
+* BP-OSD is applicable but convergence may be slow due to the high
+  weight of stabilisers in some fracton models.
+* Cellular-automaton decoders can exploit the local constraints for
+  parallel hardware-friendly decoding.
 """
 
 from __future__ import annotations
@@ -27,7 +120,7 @@ from itertools import product
 
 from qectostim.codes.abstract_css import CSSCode, Coord2D
 from qectostim.codes.complexes.css_complex import CSSChainComplex3
-from qectostim.codes.utils import compute_css_logicals, vectors_to_paulis_x, vectors_to_paulis_z
+from qectostim.codes.utils import compute_css_logicals, vectors_to_paulis_x, vectors_to_paulis_z, validate_css_code
 
 Coord3D = Tuple[float, float, float]
 
@@ -59,6 +152,20 @@ class XCubeCode(CSSCode):
     """
     
     def __init__(self, L: int = 3, metadata: Optional[Dict[str, Any]] = None):
+        """Construct an X-cube fracton code on an L × L × L cubic lattice.
+
+        Parameters
+        ----------
+        L : int
+            Linear lattice size (must be ≥ 2).  Default 3.
+        metadata : dict, optional
+            Extra key/value pairs merged into the code's metadata dictionary.
+
+        Raises
+        ------
+        ValueError
+            If ``L < 2``.
+        """
         if L < 2:
             raise ValueError("L must be at least 2")
         
@@ -93,10 +200,55 @@ class XCubeCode(CSSCode):
                 "Z_sector": "fractons + planons"
             },
             "data_coords": data_coords,
+            "x_stab_coords": x_stab_coords,
+            "z_stab_coords": z_stab_coords,
+            # 17 standard metadata keys
+            "code_family": "fracton",
+            "code_type": "x_cube",
+            "rate": k / n_qubits if n_qubits > 0 else 0.0,
+            "lx_pauli_type": "X",
+            "lx_support": None,  # fractal/membrane operators
+            "lz_pauli_type": "Z",
+            "lz_support": None,
+            "stabiliser_schedule": {
+                "x_rounds": {i: 0 for i in range(L**3 - 1)},
+                "z_rounds": {i: 0 for i in range(3 * L**3 - 3 * L)},
+                "n_rounds": 1,
+                "description": (
+                    "Fully parallel: all X-stabilisers (12-body cube operators) "
+                    "in round 0, all Z-stabilisers (4-body cross operators in "
+                    "3 planes at each vertex) in round 0."
+                ),
+            },
+            "x_schedule": None,
+            "z_schedule": None,
+            "error_correction_zoo_url": "https://errorcorrectionzoo.org/c/xcube",
+            "wikipedia_url": None,
+            "canonical_references": [
+                "Vijay, Haah & Fu, 'A new kind of topological quantum order' (2015)",
+                "Vijay, Haah & Fu, 'Fracton topological order, generalized lattice gauge theory, and duality' (2016)",
+            ],
+            "connections": [
+                "Type-I fracton model with lineon and planon excitations",
+                "Sub-extensive ground state degeneracy k = 6L - 3",
+                "Related to foliated fracton order and p-string condensation",
+            ],
         })
         
+        validate_css_code(hx, hz, code_name=f"XCubeCode_{L}", raise_on_error=True)
+        
         super().__init__(hx, hz, logical_x, logical_z, metadata=meta)
-    
+
+    @property
+    def name(self) -> str:
+        """Human-readable name, e.g. ``'XCubeCode(L=3)'``."""
+        return f"XCubeCode(L={self._L})"
+
+    @property
+    def distance(self) -> int:
+        """Code distance (= L for the X-cube model)."""
+        return self._L
+
     def qubit_coords(self) -> List[Coord2D]:
         """Return 2D projection of qubit coordinates."""
         return self._metadata.get("data_coords", [])
@@ -141,7 +293,6 @@ class XCubeCode(CSSCode):
         
         # X stabilizers: cube operators (12 edges per cube)
         hx_list = []
-        x_stab_coords = []
         
         for i, j, k in product(range(L), repeat=3):
             row = np.zeros(n_qubits, dtype=np.uint8)
@@ -165,12 +316,10 @@ class XCubeCode(CSSCode):
             row[edge_z((i+1) % L, (j+1) % L, k)] = 1
             
             hx_list.append(row)
-            x_stab_coords.append((i + 0.5, j + 0.5))
         
         # Z stabilizers: cross operators in each plane at each vertex
         # Three types: xy-cross, xz-cross, yz-cross
         hz_list = []
-        z_stab_coords = []
         
         # xy-plane crosses (at each vertex, 4 edges in xy plane)
         for i, j, k in product(range(L), repeat=3):
@@ -180,7 +329,6 @@ class XCubeCode(CSSCode):
             row[edge_y(i, j, k)] = 1
             row[edge_y(i, (j-1) % L, k)] = 1
             hz_list.append(row)
-            z_stab_coords.append((float(i), float(j)))
         
         # xz-plane crosses
         for i, j, k in product(range(L), repeat=3):
@@ -190,7 +338,6 @@ class XCubeCode(CSSCode):
             row[edge_z(i, j, k)] = 1
             row[edge_z(i, j, (k-1) % L)] = 1
             hz_list.append(row)
-            z_stab_coords.append((float(i), float(k)))
         
         # yz-plane crosses
         for i, j, k in product(range(L), repeat=3):
@@ -200,7 +347,6 @@ class XCubeCode(CSSCode):
             row[edge_z(i, j, k)] = 1
             row[edge_z(i, j, (k-1) % L)] = 1
             hz_list.append(row)
-            z_stab_coords.append((float(j), float(k)))
         
         hx = np.array(hx_list, dtype=np.uint8)
         hz = np.array(hz_list, dtype=np.uint8)
@@ -209,8 +355,20 @@ class XCubeCode(CSSCode):
         # For X-cube: 1 dependent X stabilizer, L dependent Z stabilizers per type
         hx = hx[:-1]
         hz = hz[:-3*L]
-        x_stab_coords = x_stab_coords[:-1]
-        z_stab_coords = z_stab_coords[:-3*L]
+        
+        # Compute stab coords as centroids of support qubits
+        def _centroid(h, coords):
+            out = []
+            for row in h:
+                sup = np.nonzero(row)[0]
+                if len(sup) > 0:
+                    out.append(tuple(np.mean([coords[q] for q in sup], axis=0)))
+                else:
+                    out.append(tuple(0.0 for _ in range(len(coords[0]))))
+            return out
+        
+        x_stab_coords = _centroid(hx, data_coords)
+        z_stab_coords = _centroid(hz, data_coords)
         
         boundary_2 = hx.T
         boundary_1 = hz
@@ -286,6 +444,20 @@ class HaahCode(CSSCode):
     """
     
     def __init__(self, L: int = 2, metadata: Optional[Dict[str, Any]] = None):
+        """Construct Haah's cubic code on an L × L × L lattice.
+
+        Parameters
+        ----------
+        L : int
+            Linear size of the cubic lattice (must be ≥ 2).  Default 2.
+        metadata : dict, optional
+            Extra key/value pairs merged into the code's metadata dictionary.
+
+        Raises
+        ------
+        ValueError
+            If ``L < 2``.
+        """
         if L < 2:
             raise ValueError("L must be at least 2")
         
@@ -316,12 +488,57 @@ class HaahCode(CSSCode):
             "excitations": "all fractons (immobile)",
             "string_operators": False,
             "data_coords": data_coords,
+            "x_stab_coords": x_stab_coords,
+            "z_stab_coords": z_stab_coords,
+            # 17 standard metadata keys
+            "code_family": "fracton",
+            "code_type": "haah_cubic",
+            "rate": k / n_qubits if n_qubits > 0 else 0.0,
+            "lx_pauli_type": "X",
+            "lx_support": None,  # fractal operators
+            "lz_pauli_type": "Z",
+            "lz_support": None,
+            "stabiliser_schedule": {
+                "x_rounds": {i: 0 for i in range(L**3 - 1)},
+                "z_rounds": {i: 0 for i in range(L**3 - 1)},
+                "n_rounds": 1,
+                "description": (
+                    "Fully parallel: all X-stabilisers (8-body on 'a' qubits "
+                    "at cube corners) in round 0, all Z-stabilisers (8-body "
+                    "on 'b' qubits at cube corners) in round 0."
+                ),
+            },
+            "x_schedule": None,
+            "z_schedule": None,
+            "error_correction_zoo_url": "https://errorcorrectionzoo.org/c/haah_cubic",
+            "wikipedia_url": None,
+            "canonical_references": [
+                "Haah, 'Local stabilizer codes in three dimensions without string logical operators' (2011)",
+                "Bravyi, Haah & Hastings, 'Quantum self-correction in the 3D cubic code model' (2013)",
+            ],
+            "connections": [
+                "Type-II fracton model: all excitations are immobile",
+                "No string logical operators — fractal structure only",
+                "Candidate for self-correcting quantum memory",
+            ],
         })
+        
+        validate_css_code(hx, hz, code_name=f"HaahCode_{L}", raise_on_error=True)
         
         super().__init__(hx=hx, hz=hz, logical_x=logical_x, logical_z=logical_z, metadata=meta)
         self._hx = hx
         self._hz = hz
-    
+
+    @property
+    def name(self) -> str:
+        """Human-readable name, e.g. ``'HaahCode(L=2)'``."""
+        return f"HaahCode(L={self._L})"
+
+    @property
+    def distance(self) -> int:
+        """Code distance (approximately L for Haah's code)."""
+        return self._L
+
     def qubit_coords(self) -> List[Coord2D]:
         """Return 2D projection of qubit coordinates."""
         return self._metadata.get("data_coords", [])
@@ -369,8 +586,6 @@ class HaahCode(CSSCode):
         
         hx_list = []
         hz_list = []
-        x_stab_coords = []
-        z_stab_coords = []
         
         for i, j, k in product(range(L), repeat=3):
             # X stabilizer on "a" qubits at cube corners
@@ -385,7 +600,6 @@ class HaahCode(CSSCode):
             row_x[qa((i+1) % L, (j+1) % L, (k+1) % L)] = 1
             
             hx_list.append(row_x)
-            x_stab_coords.append((i + 0.5, j + 0.5))
             
             # Z stabilizer on "b" qubits at cube corners
             row_z = np.zeros(n_qubits, dtype=np.uint8)
@@ -399,7 +613,6 @@ class HaahCode(CSSCode):
             row_z[qb((i+1) % L, (j+1) % L, (k+1) % L)] = 1
             
             hz_list.append(row_z)
-            z_stab_coords.append((i + 0.5, j + 0.5))
         
         hx = np.array(hx_list, dtype=np.uint8)
         hz = np.array(hz_list, dtype=np.uint8)
@@ -408,8 +621,20 @@ class HaahCode(CSSCode):
         if len(hx_list) > 1:
             hx = hx[:-1]
             hz = hz[:-1]
-            x_stab_coords = x_stab_coords[:-1]
-            z_stab_coords = z_stab_coords[:-1]
+        
+        # Compute stab coords as centroids of support qubits
+        def _centroid_haah(h, coords):
+            out = []
+            for row in h:
+                sup = np.nonzero(row)[0]
+                if len(sup) > 0:
+                    out.append(tuple(np.mean([coords[q] for q in sup], axis=0)))
+                else:
+                    out.append(tuple(0.0 for _ in range(len(coords[0]))))
+            return out
+        
+        x_stab_coords = _centroid_haah(hx, data_coords)
+        z_stab_coords = _centroid_haah(hz, data_coords)
         
         return (data_coords, x_stab_coords, z_stab_coords, hx, hz)
     
@@ -459,6 +684,20 @@ class CheckerboardCode(CSSCode):
     """
     
     def __init__(self, L: int = 4, metadata: Optional[Dict[str, Any]] = None):
+        """Construct a checkerboard fracton code on an L × L × L lattice.
+
+        Parameters
+        ----------
+        L : int
+            Linear lattice size (must be even and ≥ 2).  Default 4.
+        metadata : dict, optional
+            Extra key/value pairs merged into the code's metadata dictionary.
+
+        Raises
+        ------
+        ValueError
+            If ``L`` is odd or ``L < 2``.
+        """
         if L < 2 or L % 2 != 0:
             raise ValueError("L must be even and >= 2")
         
@@ -488,10 +727,54 @@ class CheckerboardCode(CSSCode):
             "lattice_size": L,
             "fracton_type": "foliated type-I",
             "data_coords": data_coords,
+            "x_stab_coords": x_stab_coords,
+            "z_stab_coords": z_stab_coords,
+            # 17 standard metadata keys
+            "code_family": "fracton",
+            "code_type": "checkerboard",
+            "rate": k / n_qubits if n_qubits > 0 else 0.0,
+            "lx_pauli_type": "X",
+            "lx_support": None,  # membrane operators
+            "lz_pauli_type": "Z",
+            "lz_support": None,
+            "stabiliser_schedule": {
+                "x_rounds": {0: 0},
+                "z_rounds": {0: 0},
+                "n_rounds": 1,
+                "description": (
+                    "Fully parallel: all X- and Z-stabilisers (8-body cube "
+                    "operators on alternating cubes) in round 0."
+                ),
+            },
+            "x_schedule": None,
+            "z_schedule": None,
+            "error_correction_zoo_url": None,
+            "wikipedia_url": None,
+            "canonical_references": [
+                "Vijay, Haah & Fu, 'Fracton topological order, generalized lattice gauge theory, and duality' (2016)",
+                "Shirley, Slagle & Chen, 'Foliated fracton order from gauging subsystem symmetries' (2019)",
+            ],
+            "connections": [
+                "Foliated type-I fracton model with lineon and planon excitations",
+                "Self-dual CSS code (Hx = Hz up to row operations)",
+                "Sub-extensive ground state degeneracy k = 3L - 2",
+            ],
         })
         
+        validate_css_code(hx, hz, code_name=f"CheckerboardCode_{L}", raise_on_error=True)
+        
         super().__init__(hx, hz, logical_x, logical_z, metadata=meta)
-    
+
+    @property
+    def name(self) -> str:
+        """Human-readable name, e.g. ``'CheckerboardCode(L=4)'``."""
+        return f"CheckerboardCode(L={self._L})"
+
+    @property
+    def distance(self) -> int:
+        """Code distance (= L/2 for the checkerboard model)."""
+        return self._L // 2
+
     def qubit_coords(self) -> List[Coord2D]:
         """Return 2D projection of qubit coordinates."""
         return self._metadata.get("data_coords", [])
@@ -518,8 +801,6 @@ class CheckerboardCode(CSSCode):
         # Stabilizers on alternating cubes (checkerboard pattern)
         hx_list = []
         hz_list = []
-        x_stab_coords = []
-        z_stab_coords = []
         
         for i, j, k in product(range(L - 1), repeat=3):
             # Checkerboard: only cubes where i+j+k is even
@@ -532,8 +813,6 @@ class CheckerboardCode(CSSCode):
                 
                 hx_list.append(row.copy())
                 hz_list.append(row.copy())
-                x_stab_coords.append((i + 0.5, j + 0.5))
-                z_stab_coords.append((i + 0.5, j + 0.5))
         
         hx = np.array(hx_list, dtype=np.uint8) if hx_list else np.zeros((1, n_qubits), dtype=np.uint8)
         hz = np.array(hz_list, dtype=np.uint8) if hz_list else np.zeros((1, n_qubits), dtype=np.uint8)
@@ -542,8 +821,20 @@ class CheckerboardCode(CSSCode):
         if len(hx) > 1:
             hx = hx[:-1]
             hz = hz[:-1]
-            x_stab_coords = x_stab_coords[:-1]
-            z_stab_coords = z_stab_coords[:-1]
+        
+        # Compute stab coords as centroids of support qubits
+        def _centroid_cb(h, coords):
+            out = []
+            for row in h:
+                sup = np.nonzero(row)[0]
+                if len(sup) > 0:
+                    out.append(tuple(np.mean([coords[q] for q in sup], axis=0)))
+                else:
+                    out.append(tuple(0.0 for _ in range(len(coords[0]))))
+            return out
+        
+        x_stab_coords = _centroid_cb(hx, data_coords)
+        z_stab_coords = _centroid_cb(hz, data_coords)
         
         boundary_2 = hx.T
         boundary_1 = hz
@@ -604,6 +895,20 @@ class ChamonCode(CSSCode):
     """
     
     def __init__(self, L: int = 3, metadata: Optional[Dict[str, Any]] = None):
+        """Construct a Chamon fracton code on an L × L × L BCC lattice.
+
+        Parameters
+        ----------
+        L : int
+            Linear lattice size (must be ≥ 2).  Default 3.
+        metadata : dict, optional
+            Extra key/value pairs merged into the code's metadata dictionary.
+
+        Raises
+        ------
+        ValueError
+            If ``L < 2``.
+        """
         if L < 2:
             raise ValueError("L must be at least 2")
         
@@ -629,10 +934,51 @@ class ChamonCode(CSSCode):
             "lattice_size": L,
             "lattice_type": "BCC",
             "fracton_type": "type-I",
+            # 17 standard metadata keys
+            "code_family": "fracton",
+            "code_type": "chamon",
+            "rate": k / n_qubits if n_qubits > 0 else 0.0,
+            "lx_pauli_type": "X",
+            "lx_support": None,
+            "lz_pauli_type": "Z",
+            "lz_support": None,
+            "stabiliser_schedule": {
+                "x_rounds": {0: 0},
+                "z_rounds": {0: 0},
+                "n_rounds": 1,
+                "description": (
+                    "Fully parallel: all X- (body-center-to-corners, 9-body) "
+                    "and Z- (corner-to-body-centers, 9-body) stabilisers in round 0."
+                ),
+            },
+            "x_schedule": None,
+            "z_schedule": None,
+            "error_correction_zoo_url": None,
+            "wikipedia_url": None,
+            "canonical_references": [
+                "Chamon, 'Quantum Glassiness in Strongly Correlated Clean Systems' (2005)",
+                "Bravyi, Leemhuis & Terhal, 'Topological order in an exactly solvable 3D spin model' (2011)",
+            ],
+            "connections": [
+                "Type-I fracton model on body-centered cubic lattice",
+                "Related to X-cube model via lattice duality",
+            ],
         })
         
+        validate_css_code(hx, hz, code_name=f"ChamonCode_{L}", raise_on_error=True)
+        
         super().__init__(hx, hz, logical_x, logical_z, metadata=meta)
-    
+
+    @property
+    def name(self) -> str:
+        """Human-readable name, e.g. ``'ChamonCode(L=3)'``."""
+        return f"ChamonCode(L={self._L})"
+
+    @property
+    def distance(self) -> int:
+        """Code distance (= L for the Chamon model)."""
+        return self._L
+
     @property
     def k(self) -> int:
         """Number of logical qubits.
@@ -644,7 +990,23 @@ class ChamonCode(CSSCode):
     @property
     def L(self) -> int:
         return self._L
-    
+
+    def qubit_coords(self) -> List[Tuple[float, float, float]]:
+        """Return 3-D BCC lattice coordinates (corners then body-centres)."""
+        L = self._L
+        coords: List[Tuple[float, float, float]] = []
+        # Corner sites
+        for i in range(L):
+            for j in range(L):
+                for k in range(L):
+                    coords.append((float(i), float(j), float(k)))
+        # Body-centre sites
+        for i in range(L):
+            for j in range(L):
+                for k in range(L):
+                    coords.append((i + 0.5, j + 0.5, k + 0.5))
+        return coords
+
     @staticmethod
     def _build_chamon_stabilizers(L: int, n_qubits: int) -> Tuple[np.ndarray, np.ndarray]:
         """Build Chamon model stabilizers using HGP-like construction."""
@@ -750,6 +1112,20 @@ class FibonacciFractalCode(CSSCode):
     """
     
     def __init__(self, n_gen: int = 4, metadata: Optional[Dict[str, Any]] = None):
+        """Construct a Fibonacci fractal code with *n_gen* generations.
+
+        Parameters
+        ----------
+        n_gen : int
+            Number of Fibonacci generations (must be ≥ 2).  Default 4.
+        metadata : dict, optional
+            Extra key/value pairs merged into the code's metadata dictionary.
+
+        Raises
+        ------
+        ValueError
+            If ``n_gen < 2``.
+        """
         if n_gen < 2:
             raise ValueError("n_gen must be at least 2")
         
@@ -778,9 +1154,41 @@ class FibonacciFractalCode(CSSCode):
             "n_gen": n_gen,
             "fib_sizes": (n_a, n_b),
             "structure": "fractal",
+            # 17 standard metadata keys
+            "code_family": "fracton",
+            "code_type": "fibonacci_fractal",
+            "rate": k / n_qubits if n_qubits > 0 else 0.0,
+            "lx_pauli_type": "X",
+            "lx_support": None,
+            "lz_pauli_type": "Z",
+            "lz_support": None,
+            "stabiliser_schedule": None,
+            "x_schedule": None,
+            "z_schedule": None,
+            "error_correction_zoo_url": None,
+            "wikipedia_url": None,
+            "canonical_references": [
+                "Yoshida, 'Exotic topological order in fractal spin liquids' (2013)",
+            ],
+            "connections": [
+                "HGP-based fractal code with Fibonacci-sized components",
+                f"Built from classical codes of size {n_a} x {n_b}",
+            ],
         })
         
+        validate_css_code(hx, hz, code_name=f"FibonacciFractalCode_{n_gen}", raise_on_error=True)
+        
         super().__init__(hx, hz, logical_x, logical_z, metadata=meta)
+
+    @property
+    def name(self) -> str:
+        """Human-readable name, e.g. ``'FibonacciFractalCode(gen=4)'``."""
+        return f"FibonacciFractalCode(gen={self._n_gen})"
+
+    @property
+    def distance(self) -> int:
+        """Code distance (lower bound = n_gen)."""
+        return self._n_gen
     
     @property
     def k(self) -> int:
@@ -790,7 +1198,22 @@ class FibonacciFractalCode(CSSCode):
     @property
     def n_gen(self) -> int:
         return self._n_gen
-    
+
+    def qubit_coords(self) -> List[Tuple[float, float]]:
+        """Return 2-D grid coordinates for the HGP qubit layout."""
+        n = self.n
+        fib_a, fib_b = self._metadata.get("fib_sizes", (1, 1))
+        n_left = fib_a * fib_b
+        coords: List[Tuple[float, float]] = []
+        # Left sector: grid layout
+        for q in range(n_left):
+            coords.append((float(q % fib_b), float(q // fib_b)))
+        # Right sector: offset grid
+        for q in range(n - n_left):
+            coords.append((float(q % max(1, fib_b - 1)) + 0.5,
+                           float(q // max(1, fib_b - 1)) + 0.5))
+        return coords
+
     @staticmethod
     def _build_fibonacci_hgp(na: int, nb: int) -> Tuple[np.ndarray, np.ndarray, int]:
         """Build HGP from Fibonacci-sized classical codes."""
@@ -884,6 +1307,22 @@ class SierpinskiPrismCode(CSSCode):
     """
     
     def __init__(self, depth: int = 3, height: int = 2, metadata: Optional[Dict[str, Any]] = None):
+        """Construct a Sierpinski prism code.
+
+        Parameters
+        ----------
+        depth : int
+            Depth of the Sierpinski recursion (must be ≥ 1).  Default 3.
+        height : int
+            Height of the prism in layers (must be ≥ 1).  Default 2.
+        metadata : dict, optional
+            Extra key/value pairs merged into the code's metadata dictionary.
+
+        Raises
+        ------
+        ValueError
+            If ``depth < 1`` or ``height < 1``.
+        """
         if depth < 1:
             raise ValueError("depth must be at least 1")
         if height < 1:
@@ -910,9 +1349,41 @@ class SierpinskiPrismCode(CSSCode):
             "depth": depth,
             "height": height,
             "fractal_dimension": np.log(3) / np.log(2),
+            # 17 standard metadata keys
+            "code_family": "fracton",
+            "code_type": "sierpinski_prism",
+            "rate": k / n_qubits if n_qubits > 0 else 0.0,
+            "lx_pauli_type": "X",
+            "lx_support": None,
+            "lz_pauli_type": "Z",
+            "lz_support": None,
+            "stabiliser_schedule": None,
+            "x_schedule": None,
+            "z_schedule": None,
+            "error_correction_zoo_url": None,
+            "wikipedia_url": None,
+            "canonical_references": [
+                "Yoshida, 'Exotic topological order in fractal spin liquids' (2013)",
+            ],
+            "connections": [
+                "Sierpinski gasket prism with fractal dimension log2(3) ≈ 1.585",
+                "HGP-based construction combining 2D fractal with 1D chain",
+            ],
         })
         
+        validate_css_code(hx, hz, code_name=f"SierpinskiPrismCode_{depth}_{height}", raise_on_error=True)
+        
         super().__init__(hx, hz, logical_x, logical_z, metadata=meta)
+
+    @property
+    def name(self) -> str:
+        """Human-readable name, e.g. ``'SierpinskiPrismCode(d=3,h=2)'``."""
+        return f"SierpinskiPrismCode(d={self._depth},h={self._height})"
+
+    @property
+    def distance(self) -> int:
+        """Code distance (lower bound = depth + 1)."""
+        return self._depth + 1
     
     @property
     def k(self) -> int:
@@ -926,7 +1397,23 @@ class SierpinskiPrismCode(CSSCode):
     @property
     def height(self) -> int:
         return self._height
-    
+
+    def qubit_coords(self) -> List[Tuple[float, float, float]]:
+        """Return 3-D coordinates: Sierpinski layers stacked along z."""
+        n_per_layer = 3 ** self._depth
+        coords: List[Tuple[float, float, float]] = []
+        # Left sector: layer × height grid
+        for v in range(n_per_layer):
+            for h in range(self._height):
+                coords.append((float(v), 0.0, float(h)))
+        # Right sector: check qubits
+        ma = n_per_layer - 1
+        mb = max(1, self._height - 1)
+        for ca in range(ma):
+            for cb in range(mb):
+                coords.append((ca + 0.5, 1.0, cb + 0.5))
+        return coords
+
     @staticmethod
     def _build_sierpinski_stabilizers(depth: int, height: int, n_qubits: int) -> Tuple[np.ndarray, np.ndarray]:
         """Build stabilizers using HGP-style construction."""

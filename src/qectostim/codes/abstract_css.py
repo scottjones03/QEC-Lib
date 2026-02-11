@@ -1018,6 +1018,73 @@ class CSSCode(HomologicalCode):
     # FT Gadget Experiment Hooks (CSS-specific)
     # =========================================================================
 
+    def get_data_coords(self) -> Optional[List[Tuple[float, ...]]]:
+        """
+        Get coordinates for data qubits.
+        
+        Checks metadata['data_coords'] first, then falls back to
+        qubit_coords() if available. This ensures codes that only
+        implement qubit_coords() (without populating metadata) still
+        provide data positions for scheduling and detector assignment.
+        
+        Returns
+        -------
+        Optional[List[Tuple[float, ...]]]
+            Coordinates for each data qubit, or None if not available.
+        """
+        meta = self._metadata or {}
+        if 'data_coords' in meta:
+            return [tuple(c) for c in meta['data_coords']]
+        # Fall back to qubit_coords() if available
+        if hasattr(self, 'qubit_coords'):
+            qc = self.qubit_coords()
+            if qc is not None and len(qc) > 0:
+                return [tuple(c) for c in qc]
+        return None
+
+    def _compute_stabilizer_centroids(
+        self,
+        h_matrix: np.ndarray,
+        data_coords: List[Tuple[float, ...]],
+    ) -> List[Tuple[float, ...]]:
+        """
+        Compute stabilizer ancilla coordinates as centroids of supported data qubits.
+        
+        For each row of the parity check matrix, finds the data qubits in
+        its support and computes the centroid (mean position) of those qubits.
+        This provides a reasonable default placement for stabilizer ancillas
+        that works with graph-coloring-based CNOT scheduling.
+        
+        Parameters
+        ----------
+        h_matrix : np.ndarray
+            Parity check matrix, shape (num_stabs, n).
+        data_coords : list of tuple
+            Coordinates for each data qubit.
+            
+        Returns
+        -------
+        list of tuple
+            Centroid coordinates for each stabilizer.
+        """
+        centroids = []
+        n_coords = len(data_coords)
+        ndim = len(data_coords[0]) if data_coords else 2
+        
+        for row_idx in range(h_matrix.shape[0]):
+            support = np.where(h_matrix[row_idx])[0]
+            # Filter to valid indices
+            valid_support = [s for s in support if s < n_coords]
+            if valid_support:
+                coords_arr = np.array([data_coords[s] for s in valid_support], dtype=float)
+                centroid = tuple(float(x) for x in coords_arr.mean(axis=0))
+            else:
+                # Fallback: place at origin with a unique offset
+                centroid = tuple([float(row_idx)] + [0.0] * (ndim - 1))
+            centroids.append(centroid)
+        
+        return centroids
+
     def stabilizer_coords(self) -> Optional[List[Tuple[float, ...]]]:
         """
         Combined stabilizer coordinates (X then Z) for detector assignment.
@@ -1040,7 +1107,8 @@ class CSSCode(HomologicalCode):
         Get coordinates for X stabilizer ancillas.
         
         Override in subclasses to provide custom coordinate layouts.
-        Default implementation checks metadata.
+        Default implementation checks metadata first, then auto-computes
+        centroids from data qubit positions and Hx matrix support.
         
         Returns
         -------
@@ -1050,6 +1118,12 @@ class CSSCode(HomologicalCode):
         meta = self._metadata or {}
         if 'x_stab_coords' in meta:
             return [tuple(c) for c in meta['x_stab_coords']]
+        # Auto-compute centroids from data coords + Hx
+        hx = getattr(self, '_hx', None)
+        if hx is not None and hx.size > 0:
+            data_coords = self.get_data_coords()
+            if data_coords is not None and len(data_coords) > 0:
+                return self._compute_stabilizer_centroids(hx, data_coords)
         return None
     
     def get_z_stabilizer_coords(self) -> Optional[List[Tuple[float, ...]]]:
@@ -1057,7 +1131,8 @@ class CSSCode(HomologicalCode):
         Get coordinates for Z stabilizer ancillas.
         
         Override in subclasses to provide custom coordinate layouts.
-        Default implementation checks metadata.
+        Default implementation checks metadata first, then auto-computes
+        centroids from data qubit positions and Hz matrix support.
         
         Returns
         -------
@@ -1067,6 +1142,12 @@ class CSSCode(HomologicalCode):
         meta = self._metadata or {}
         if 'z_stab_coords' in meta:
             return [tuple(c) for c in meta['z_stab_coords']]
+        # Auto-compute centroids from data coords + Hz
+        hz = getattr(self, '_hz', None)
+        if hz is not None and hz.size > 0:
+            data_coords = self.get_data_coords()
+            if data_coords is not None and len(data_coords) > 0:
+                return self._compute_stabilizer_centroids(hz, data_coords)
         return None
     
     def get_stabilizer_schedule(
@@ -1115,6 +1196,191 @@ class CSSCode(HomologicalCode):
             Order of stabilizer indices, or None for default (0, 1, 2, ...).
         """
         return None  # Use default order
+
+    # =========================================================================
+    # Boundary API (for lattice surgery)
+    # =========================================================================
+
+    def has_physical_boundaries(self) -> bool:
+        """
+        Check if this code has well-defined physical boundaries in 2D/3D.
+
+        True for topological codes (surface, color) where qubits live on a
+        lattice with geometric edges.  False for algebraic codes (Steane,
+        Hamming, random LDPC) where "boundary" is a virtual concept based
+        on logical operator support.
+
+        Returns
+        -------
+        bool
+            True if `get_boundary_qubits()` returns geometrically meaningful
+            boundary qubits; False if it falls back to logical operator support.
+
+        Notes
+        -----
+        Subclasses (RotatedSurfaceCode, ColorCode, etc.) should override this
+        to return True and provide proper `get_boundary_qubits()` implementations.
+        """
+        return False
+
+    def get_boundary_qubits(
+        self,
+        edge: str,
+        logical_idx: int = 0,
+    ) -> List[int]:
+        """
+        Get data qubit indices on the specified boundary edge.
+
+        For topological codes (surface, color), returns physical qubits along
+        the left/right/top/bottom geometric boundary.
+
+        For algebraic codes (Steane, Hamming, LDPC), falls back to returning
+        the logical operator support as a "virtual boundary":
+          - left/right → Z logical support (rough boundary equivalent)
+          - top/bottom → X logical support (smooth boundary equivalent)
+
+        Parameters
+        ----------
+        edge : str
+            Which edge: "left", "right", "top", or "bottom".
+        logical_idx : int
+            Index of the logical qubit (for multi-logical codes).
+
+        Returns
+        -------
+        List[int]
+            Data qubit indices on the boundary.
+
+        Notes
+        -----
+        For surface codes:
+          - left/right boundaries are "smooth" (X-type logical runs along them)
+          - top/bottom boundaries are "rough" (Z-type logical runs along them)
+
+        For lattice surgery, ZZ merge requires rough↔rough alignment,
+        XX merge requires smooth↔smooth alignment.
+        """
+        # Default: fall back to logical operator support
+        if edge in ("left", "right"):
+            # Z logical runs along rough boundaries
+            return self.logical_z_support(logical_idx)
+        else:  # top, bottom
+            # X logical runs along smooth boundaries
+            return self.logical_x_support(logical_idx)
+
+    def get_boundary_type(self, edge: str) -> str:
+        """
+        Get the boundary type (smooth or rough) for a given edge.
+
+        Parameters
+        ----------
+        edge : str
+            Which edge: "left", "right", "top", or "bottom".
+
+        Returns
+        -------
+        str
+            "smooth" (X-type logical can terminate) or "rough" (Z-type).
+
+        Notes
+        -----
+        For the standard rotated surface code:
+          - left/right → smooth (X logical)
+          - top/bottom → rough (Z logical)
+
+        For lattice surgery merges:
+          - ZZ merge couples two rough boundaries
+          - XX merge couples two smooth boundaries
+        """
+        # Default: standard surface code convention
+        if edge in ("left", "right"):
+            return "smooth"
+        return "rough"
+
+    def get_boundary_coords(
+        self,
+        edge: str,
+        logical_idx: int = 0,
+    ) -> List[Tuple[float, ...]]:
+        """
+        Get coordinates of data qubits on the specified boundary.
+
+        Parameters
+        ----------
+        edge : str
+            Which edge: "left", "right", "top", or "bottom".
+        logical_idx : int
+            Index of the logical qubit (for multi-logical codes).
+
+        Returns
+        -------
+        List[Tuple[float, ...]]
+            Coordinates of boundary qubits.
+
+        Raises
+        ------
+        ValueError
+            If data coordinates are not available.
+        """
+        boundary_qubits = self.get_boundary_qubits(edge, logical_idx)
+        data_coords = self._metadata.get("data_coords")
+
+        if data_coords is None:
+            raise ValueError(
+                f"{self.__class__.__name__} does not have data_coords in metadata"
+            )
+
+        return [tuple(data_coords[q]) for q in boundary_qubits if q < len(data_coords)]
+
+    def get_merge_compatibility(
+        self,
+        other: "CSSCode",
+        merge_type: str,
+        self_edge: str,
+        other_edge: str,
+    ) -> Tuple[bool, str]:
+        """
+        Check if two codes can be merged along specified edges.
+
+        Parameters
+        ----------
+        other : CSSCode
+            The other code block.
+        merge_type : str
+            "ZZ" (rough↔rough) or "XX" (smooth↔smooth).
+        self_edge : str
+            Which edge of this code to use.
+        other_edge : str
+            Which edge of the other code to use.
+
+        Returns
+        -------
+        Tuple[bool, str]
+            (is_compatible, reason_if_not)
+        """
+        self_type = self.get_boundary_type(self_edge)
+        other_type = other.get_boundary_type(other_edge)
+
+        if merge_type == "ZZ":
+            # ZZ merge requires rough↔rough
+            if self_type != "rough" or other_type != "rough":
+                return False, f"ZZ merge requires rough↔rough, got {self_type}↔{other_type}"
+        elif merge_type == "XX":
+            # XX merge requires smooth↔smooth
+            if self_type != "smooth" or other_type != "smooth":
+                return False, f"XX merge requires smooth↔smooth, got {self_type}↔{other_type}"
+        else:
+            return False, f"Unknown merge type: {merge_type}"
+
+        # Check boundary sizes match
+        self_boundary = self.get_boundary_qubits(self_edge)
+        other_boundary = other.get_boundary_qubits(other_edge)
+        if len(self_boundary) != len(other_boundary):
+            return False, (
+                f"Boundary size mismatch: {len(self_boundary)} vs {len(other_boundary)}"
+            )
+
+        return True, ""
 
 
 class CSSCodeWithComplex(CSSCode):
@@ -1414,6 +1680,97 @@ class TopologicalCSSCode(CSSCodeWithComplex, TopologicalCode):
         """Return 2D coordinates for data qubits."""
         coords = self.cell_coords(1)  # Qubits on edges (grade 1)
         return coords if coords else None
+
+    # -------------------------------------------------------------------------
+    # Boundary API overrides for topological codes
+    # -------------------------------------------------------------------------
+
+    def has_physical_boundaries(self) -> bool:
+        """
+        Topological codes have well-defined physical boundaries.
+        
+        For surface codes with open boundaries, qubits along the edges
+        form the physical boundaries used for lattice surgery.
+        
+        Note: Toric codes (periodic boundary conditions) may want to
+        override this to return False since they don't have open boundaries.
+        """
+        return True
+
+    def get_boundary_qubits(
+        self,
+        edge: str,
+        logical_idx: int = 0,
+    ) -> List[int]:
+        """
+        Get data qubit indices on the specified boundary edge.
+        
+        For 2D topological codes with coordinates, finds qubits at the
+        geometric boundary:
+        - "left": qubits with minimum x coordinate
+        - "right": qubits with maximum x coordinate
+        - "top": qubits with maximum y coordinate  
+        - "bottom": qubits with minimum y coordinate
+        
+        Parameters
+        ----------
+        edge : str
+            Which edge: "left", "right", "top", or "bottom".
+        logical_idx : int
+            Index of the logical qubit (for multi-logical codes).
+            
+        Returns
+        -------
+        List[int]
+            Data qubit indices along this boundary.
+        """
+        coords = self.qubit_coords()
+        if not coords or len(coords) == 0:
+            # Fall back to base class (logical operator support)
+            return super().get_boundary_qubits(edge, logical_idx)
+        
+        n_qubits = len(coords)
+        
+        # Find extremal coordinates
+        x_coords = [c[0] for c in coords]
+        y_coords = [c[1] if len(c) > 1 else 0 for c in coords]
+        
+        x_min, x_max = min(x_coords), max(x_coords)
+        y_min, y_max = min(y_coords), max(y_coords)
+        
+        # Tolerance for floating point comparison
+        tol = 0.1
+        
+        if edge == "left":
+            return [i for i in range(n_qubits) if abs(coords[i][0] - x_min) < tol]
+        elif edge == "right":
+            return [i for i in range(n_qubits) if abs(coords[i][0] - x_max) < tol]
+        elif edge == "top":
+            y_val = y_max
+            return [i for i in range(n_qubits) if len(coords[i]) > 1 and abs(coords[i][1] - y_val) < tol]
+        elif edge == "bottom":
+            y_val = y_min
+            return [i for i in range(n_qubits) if len(coords[i]) > 1 and abs(coords[i][1] - y_val) < tol]
+        else:
+            return []
+
+    def get_boundary_coords(
+        self,
+        edge: str,
+        logical_idx: int = 0,
+    ) -> List[Tuple[float, ...]]:
+        """
+        Get coordinates of boundary qubits.
+        
+        For topological codes with embeddings, returns actual geometric
+        coordinates of boundary qubits.
+        """
+        coords = self.qubit_coords()
+        if not coords:
+            return super().get_boundary_coords(edge, logical_idx)
+        
+        boundary_indices = self.get_boundary_qubits(edge, logical_idx)
+        return [coords[i] for i in boundary_indices]
 
 
 class TopologicalCSSCode3D(CSSCode, TopologicalCode):

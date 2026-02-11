@@ -454,6 +454,26 @@
 			"type": "shell",
 			"command": "\"/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/my_venv/bin/python\" \"/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/test_encoded_fix.py\"",
 			"group": "test"
+		},
+		{
+			"label": "Debug Teleport Observable",
+			"type": "shell",
+			"command": "\"/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/my_venv/bin/python\" \"/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/debug_teleport_obs.py\""
+		},
+		{
+			"label": "Debug Teleport Obs Pattern",
+			"type": "shell",
+			"command": "\"/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/my_venv/bin/python\" \"/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/debug_teleport_obs2.py\""
+		},
+		{
+			"label": "Debug Teleport Obs Pattern2",
+			"type": "shell",
+			"command": "\"/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/my_venv/bin/python\" \"/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/debug_teleport_obs2.py\""
+		},
+		{
+			"label": "Trace Observable Targets",
+			"type": "shell",
+			"command": "\"/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/my_venv/bin/python\" \"/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/debug_teleport_obs3.py\""
 		}
 	]
 }

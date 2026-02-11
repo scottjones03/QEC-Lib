@@ -33,10 +33,63 @@ Code parameters
 * **d** = 3
 * **Rate** R = 1/9 ≈ 0.111
 
+Qubit layout
+------------
+Data qubits on a 3×3 grid.  Z-stabilisers are weight-2 checks within
+each row; X-stabilisers are weight-6 checks spanning adjacent row-pairs.
+
+::
+
+            col 0     col 1     col 2
+              │         │         │
+    row 2:    6 ─ [Z₄] ─ 7 ─ [Z₅] ─ 8
+              │         │         │
+              ├─────────┴─────────┤
+              │       [X₁]        │   X₁ = X₃X₄X₅X₆X₇X₈
+              ├─────────┬─────────┤
+    row 1:    3 ─ [Z₂] ─ 4 ─ [Z₃] ─ 5
+              │         │         │
+              ├─────────┴─────────┤
+              │       [X₀]        │   X₀ = X₀X₁X₂X₃X₄X₅
+              ├─────────┬─────────┤
+    row 0:    0 ─ [Z₀] ─ 1 ─ [Z₁] ─ 2
+
+    Data qubit coordinates (col, row):
+      0: (0, 0)   1: (1, 0)   2: (2, 0)   — row 0
+      3: (0, 1)   4: (1, 1)   5: (2, 1)   — row 1
+      6: (0, 2)   7: (1, 2)   8: (2, 2)   — row 2
+
+    Z-stabiliser coordinates (between adjacent qubits in row):
+      Z₀: (0.5, 0)   Z₁: (1.5, 0)   — row 0
+      Z₂: (0.5, 1)   Z₃: (1.5, 1)   — row 1
+      Z₄: (0.5, 2)   Z₅: (1.5, 2)   — row 2
+
+    X-stabiliser coordinates (between row pairs):
+      X₀: (1.0, 0.5)   — between rows 0 and 1
+      X₁: (1.0, 1.5)   — between rows 1 and 2
+
 Encoding circuits
 -----------------
 |0⟩_L: Apply H to qubits {0, 3, 6}, then CNOT within each block to
 create (|000⟩ + |111⟩)^⊗3 / 2√2.
+
+Code Parameters
+~~~~~~~~~~~~~~~
+:math:`[[n, k, d]] = [[9, 1, 3]]` where:
+
+- :math:`n = 9` physical qubits (3 × 3 grid)
+- :math:`k = 1` logical qubit
+- :math:`d = 3` (corrects any single Pauli error)
+- Rate :math:`k/n = 1/9 \approx 0.111`
+
+Stabiliser Structure
+~~~~~~~~~~~~~~~~~~~~
+- **X-type stabilisers**: 2 generators, each weight 6;
+  ``X₀X₁X₂X₃X₄X₅`` and ``X₃X₄X₅X₆X₇X₈`` (span adjacent row-block pairs).
+- **Z-type stabilisers**: 6 generators, each weight 2;
+  ``ZᵢZᵢ₊₁`` within each row-block (adjacent-pair parity checks).
+- Measurement schedule: Z-stabilisers are depth-2 circuits within each
+  block; X-stabilisers are depth-6 circuits across blocks.
 
 Connections to other codes
 --------------------------
@@ -127,6 +180,12 @@ class ShorCode91(TopologicalCSSCode):
             Extra key/value pairs merged into the code's metadata
             dictionary.  User-supplied entries override auto-generated
             ones with the same key.
+
+        Raises
+        ------
+        ValueError
+            If the internally constructed parity-check matrices fail
+            CSS validation (should never happen for a fixed code).
         """
 
         # ═══════════════════════════════════════════════════════════════════

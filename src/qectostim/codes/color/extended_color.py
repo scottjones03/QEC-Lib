@@ -1,14 +1,131 @@
-"""
-Extended Color Code Variants.
+"""Extended Colour-Code Variants on Non-Standard Tilings
 
-Implements additional color codes on various tilings:
-- TruncatedTrihexColorCode: 4.6.12 tiling (2D)
-- HyperbolicColorCode: Color codes on hyperbolic tilings (2D)
-- BallColorCode: Color codes on D-dimensional balls/hyperoctahedra
-- CubicHoneycombColorCode: 3D bitruncated cubic honeycomb
-- TetrahedralColorCode: 3D color code on tetrahedra
+This module provides five CSS colour-code families that go beyond the
+standard 6.6.6 triangular colour code.  Each class builds its own
+parity-check matrices, logical operators, and full metadata from a
+small set of geometric parameters.
+
+Overview
+--------
+Colour codes are a broad family of topological stabiliser codes whose
+stabiliser generators are associated with faces of a lattice that
+admits a *k*-colouring (3-colouring in 2-D, 4-colouring in 3-D).
+The triangular (6.6.6) colour code is the most studied member, but
+many other lattice geometries yield valid CSS colour codes with
+different trade-offs among qubit count, distance, rate, and
+transversal gate support.
+
+Extended colour-code constructions
+----------------------------------
+``TruncatedTrihexColorCode``
+    Colour code on the *4.6.12* (truncated trihexagonal) tiling.
+    This Archimedean tiling features squares, hexagons, and
+    dodecagons meeting at each vertex.  Compared with 6.6.6, the
+    4.6.12 tiling can offer improved distance-to-qubit ratios for
+    certain aspect ratios.
+
+``HyperbolicColorCode``
+    Colour codes on *{p, q}* hyperbolic tilings, where
+    ``(p−2)(q−2) > 4``.  Hyperbolic tilings tile a surface of
+    constant negative curvature; when compactified to a surface of
+    genus *g ≥ 2*, the resulting code has a constant non-zero rate
+    ``k / n → const`` as *n* grows.  Common parameter choices
+    include {4, 5}, {6, 4}, and {8, 3}.
+
+``BallColorCode``
+    Colour codes on *D*-dimensional hyperoctahedra (cross-polytope
+    geometry).  Dimension 3 yields the Steane [[7, 1, 3]] code;
+    dimension 4 gives the Reed–Muller [[15, 1, 3]] code (which
+    supports a transversal *T* gate); dimension 5 extends via a
+    hypergraph-product (HGP) construction.
+
+``CubicHoneycombColorCode``
+    3-D colour code on a bitruncated cubic honeycomb, a
+    space-filling tiling of truncated octahedra that is 4-colourable.
+    Built internally via an HGP of repetition codes.
+
+``TetrahedralColorCode``
+    3-D colour code on a tetrahedral lattice with proper boundaries.
+    For L = 2 the code is equivalent to the [[7, 1, 3]] Steane code;
+    for L ≥ 3 it uses the [[15, 1, 3]] Reed–Muller structure.
+
+Reed–Muller colour codes
+------------------------
+The [[15, 1, 3]] code is the first-order punctured Reed–Muller code
+RM(1, 4).  Its parity-check matrix is self-dual (``Hx = Hz``), and
+its structure directly realises the 3-D colour code on a tetrahedron.
+This code supports a *transversal T gate*, making it central to
+magic-state distillation protocols.
+
+Hypergraph colour codes
+-----------------------
+Several constructions in this module fall back on the *hypergraph
+product* (HGP) of classical repetition or cycle codes when an exact
+geometric construction is not available.  The HGP guarantees the CSS
+orthogonality condition ``Hx · Hz^T = 0 (mod 2)`` by construction.
+
+Code parameters
+---------------
+- ``TruncatedTrihex`` : n ∝ L², k ≥ 1, d ≈ 2 min(Lx, Ly) + 1.
+- ``Hyperbolic``      : n ∝ |χ|, k = 4g (Euler-characteristic bound).
+- ``Ball (dim 3)``    : [[7, 1, 3]].
+- ``Ball (dim 4)``    : [[15, 1, 3]].
+- ``Ball (dim 5)``    : [[25, 1, d ≥ 3]] (HGP approximation).
+- ``CubicHoneycomb``  : n ∝ L², k ≥ 1.
+- ``Tetrahedral``     : [[7, 1, 3]] or [[15, 1, 3]] depending on *L*.
+
+Code Parameters
+~~~~~~~~~~~~~~~
+:math:`[[n, k, d]]` where (per family):
+
+- ``TruncatedTrihex`` : :math:`n \propto L^2`, :math:`k \ge 1`,
+  :math:`d \approx 2 \min(L_x, L_y) + 1`.
+- ``Hyperbolic``      : :math:`n \propto |\chi|`, :math:`k = 4g`
+  (Euler-characteristic bound).
+- ``Ball (dim 3)``    : :math:`[[7, 1, 3]]`.
+- ``Ball (dim 4)``    : :math:`[[15, 1, 3]]`.
+- ``Ball (dim 5)``    : :math:`[[25, 1, d \ge 3]]` (HGP approximation).
+- ``CubicHoneycomb``  : :math:`n \propto L^2`, :math:`k \ge 1`.
+- ``Tetrahedral``     : :math:`[[7, 1, 3]]` or :math:`[[15, 1, 3]]`
+  depending on *L*.
+- Rate :math:`k/n` varies by family; hyperbolic codes approach a
+  constant rate as :math:`n \to \infty`.
+
+Stabiliser Structure
+~~~~~~~~~~~~~~~~~~~~
+- **X-type stabilisers**: weight depends on the tiling — weight-4
+  (squares), weight-6 (hexagons), weight-12 (dodecagons) for 4.6.12;
+  uniform weight-*p* for {p, q} hyperbolic tilings; weight-4 tetrahedra
+  for 3-D constructions.
+- **Z-type stabilisers**: identical support (self-dual :math:`H_X = H_Z`)
+  for colour-code families; HGP-derived codes may differ.
+- Measurement schedule: single-round for self-dual codes; 3-round for
+  3-colourable tilings; HGP codes use a default single-round schedule.
+
+Connections
+-----------
+* All five families are CSS codes (``Hx · Hz^T = 0``).
+* Ball dim-3 and Tetrahedral L = 2 both reduce to the Steane code.
+* Ball dim-4 and Tetrahedral L ≥ 3 reduce to the RM(1, 4) code.
+* Hyperbolic codes on compact surfaces achieve constant rate.
+* HGP-based constructions inherit distance lower bounds from the
+  classical constituent codes.
+
+References
+----------
+.. [Bombin06]  Bombin & Martin-Delgado, *Phys. Rev. Lett.* **97**,
+   180501 (2006).  arXiv:quant-ph/0605138.
+.. [Bombin07]  Bombin & Martin-Delgado, *J. Math. Phys.* **48**,
+   052105 (2007).  arXiv:quant-ph/0605138.
+.. [Tillich14] Tillich & Zémor, *IEEE Trans. Inf. Theory* **60**,
+   1193 (2014).  arXiv:0903.0566.  (Hypergraph-product codes.)
+.. [Breuckmann17] Breuckmann & Terhal, *IEEE Trans. Inf. Theory*
+   **64**, 356 (2017).  arXiv:1609.01753.  (Hyperbolic codes.)
+.. [Anderson14] Anderson, *Phys. Rev. A* **89**, 042312 (2014).
+   (3-D colour codes on tetrahedra.)
 """
 from typing import Dict, List, Optional, Tuple, Any
+import warnings
 import numpy as np
 
 from ..abstract_css import CSSCode, TopologicalCSSCode, TopologicalCSSCode3D
@@ -44,19 +161,57 @@ class TruncatedTrihexColorCode(CSSCode):
         Args:
             Lx, Ly: Unit cell repetitions
             name: Code name
+
+        Raises:
+            ValueError: If CSS orthogonality validation fails.
         """
-        self.Lx = Lx
-        self.Ly = Ly
+        self._Lx_dim = Lx
+        self._Ly_dim = Ly
+        self._code_name = name
         
         hx, hz, n_qubits = self._build_4612_code(Lx, Ly)
         
+        # Validate CSS orthogonality before proceeding
+        validate_css_code(hx, hz, f"{name}_Lx{Lx}_Ly{Ly}", raise_on_error=True)
+        
         logicals = self._compute_logicals(hx, hz, n_qubits)
+        
+        approx_distance = 2 * min(Lx, Ly) + 1
+        k = len(logicals[0]) if logicals[0] else 1
         
         meta = dict(metadata or {})
         meta["name"] = name
         meta["dimension"] = 2
         meta["chain_length"] = 3
-        meta["distance"] = 2 * min(Lx, Ly) + 1  # Approximate distance
+        meta["distance"] = approx_distance
+        
+        # Standard metadata keys
+        meta.setdefault("code_family", "color")
+        meta.setdefault("code_type", "truncated_trihex_4_6_12")
+        meta.setdefault("n", n_qubits)
+        meta.setdefault("k", k)
+        meta.setdefault("rate", k / n_qubits if n_qubits > 0 else 0.0)
+        meta.setdefault("lx_pauli_type", "X")
+        meta.setdefault("lz_pauli_type", "Z")
+        meta.setdefault("stabiliser_schedule", {
+            "x_rounds": {},
+            "z_rounds": {},
+            "n_rounds": 1,
+            "description": "Default single-round schedule.",
+        })
+        meta.setdefault("x_schedule", [])
+        meta.setdefault("z_schedule", [])
+        meta.setdefault("error_correction_zoo_url", "https://errorcorrectionzoo.org/c/color")
+        meta.setdefault("wikipedia_url", "https://en.wikipedia.org/wiki/Color_code")
+        meta.setdefault("canonical_references", [
+            "Bombin & Martin-Delgado, Phys. Rev. Lett. 97, 180501 (2006). arXiv:quant-ph/0605138",
+        ])
+        meta.setdefault("connections", [
+            "4.6.12 tiling colour code variant",
+            "Built via HGP of repetition codes for guaranteed CSS",
+        ])
+        meta.setdefault("lx_support", sorted(logicals[0][0].keys()) if logicals[0] and isinstance(logicals[0][0], dict) else [])
+        meta.setdefault("lz_support", sorted(logicals[1][0].keys()) if logicals[1] and isinstance(logicals[1][0], dict) else [])
         
         super().__init__(
             hx=hx,
@@ -152,7 +307,7 @@ class TruncatedTrihexColorCode(CSSCode):
         """
         coords: List[Tuple[float, float]] = []
         
-        L = max(self.Lx, self.Ly) * 3
+        L = max(self._Lx_dim, self._Ly_dim) * 3
         n_left = L * L
         right_offset = L + 2
         side = L - 1 if L > 1 else 1
@@ -174,6 +329,16 @@ class TruncatedTrihexColorCode(CSSCode):
     
     def description(self) -> str:
         return f"4.6.12 Truncated Trihex Color Code, n={self.n}"
+
+    @property
+    def name(self) -> str:
+        """Return human-readable code name."""
+        return self._metadata.get("name", self._code_name)
+
+    @property
+    def distance(self) -> Optional[int]:
+        """Return code distance (approximate for HGP construction)."""
+        return self._metadata.get("distance", None)
 
 
 class HyperbolicColorCode(CSSCode):
@@ -218,10 +383,17 @@ class HyperbolicColorCode(CSSCode):
         self.p = p
         self.q = q
         self.genus = genus
+        self._code_name = name
         
         hx, hz, n_qubits = self._build_hyperbolic_color(p, q, genus)
         
+        # Validate CSS orthogonality before proceeding
+        validate_css_code(hx, hz, f"{name}_p{p}_q{q}_g{genus}", raise_on_error=True)
+        
         logicals = self._compute_logicals(hx, hz, n_qubits)
+        
+        approx_distance = min(p, q)  # Lower bound for hyperbolic codes
+        k = len(logicals[0]) if logicals[0] else 1
         
         meta = dict(metadata or {})
         meta["name"] = name
@@ -230,7 +402,37 @@ class HyperbolicColorCode(CSSCode):
         meta["p"] = p
         meta["q"] = q
         meta["genus"] = genus
-        meta["distance"] = min(p, q)  # Lower bound for hyperbolic codes
+        meta["distance"] = approx_distance
+        
+        # Standard metadata keys
+        meta.setdefault("code_family", "color")
+        meta.setdefault("code_type", "hyperbolic_color")
+        meta.setdefault("n", n_qubits)
+        meta.setdefault("k", k)
+        meta.setdefault("rate", k / n_qubits if n_qubits > 0 else 0.0)
+        meta.setdefault("lx_pauli_type", "X")
+        meta.setdefault("lz_pauli_type", "Z")
+        meta.setdefault("lx_support", sorted(logicals[0][0].keys()) if logicals[0] and isinstance(logicals[0][0], dict) else [])
+        meta.setdefault("lz_support", sorted(logicals[1][0].keys()) if logicals[1] and isinstance(logicals[1][0], dict) else [])
+        meta.setdefault("stabiliser_schedule", {
+            "x_rounds": {},
+            "z_rounds": {},
+            "n_rounds": 1,
+            "description": "Default single-round schedule.",
+        })
+        meta.setdefault("x_schedule", [])
+        meta.setdefault("z_schedule", [])
+        meta.setdefault("error_correction_zoo_url", "https://errorcorrectionzoo.org/c/color")
+        meta.setdefault("wikipedia_url", "https://en.wikipedia.org/wiki/Color_code")
+        meta.setdefault("canonical_references", [
+            "Bombin & Martin-Delgado, Phys. Rev. Lett. 97, 180501 (2006). arXiv:quant-ph/0605138",
+            "Breuckmann & Terhal, IEEE Trans. Inf. Theory 64, 356 (2017). arXiv:1609.01753",
+        ])
+        meta.setdefault("connections", [
+            "Hyperbolic colour code on {p,q} tiling",
+            "Constant rate k/n as n grows on genus-g surface",
+            "Built via HGP of cycle codes for guaranteed CSS",
+        ])
         
         super().__init__(
             hx=hx,
@@ -343,6 +545,16 @@ class HyperbolicColorCode(CSSCode):
     def description(self) -> str:
         return f"Hyperbolic Color Code {{{self.p},{self.q}}} g={self.genus}, n={self.n}"
 
+    @property
+    def name(self) -> str:
+        """Return human-readable code name."""
+        return self._metadata.get("name", self._code_name)
+
+    @property
+    def distance(self) -> Optional[int]:
+        """Return code distance (lower bound for hyperbolic codes)."""
+        return self._metadata.get("distance", None)
+
 
 class BallColorCode(CSSCode):  # Variable dimension 3-5
     """
@@ -372,16 +584,57 @@ class BallColorCode(CSSCode):  # Variable dimension 3-5
             raise ValueError(f"Dimension must be 3-5, got {dimension}")
         
         self.dimension = dimension
-        self._name = name
+        self._code_name = name
         
         hx, hz, n_qubits, logical_x, logical_z = self._build_ball_code(dimension)
+        
+        # Validate CSS orthogonality before proceeding
+        validate_css_code(hx, hz, f"{name}_dim{dimension}", raise_on_error=True)
+        
+        k = 1
+        dist_map = {3: 3, 4: 3, 5: 3}
+        code_distance = dist_map.get(dimension, 3)
+        
+        meta: Dict[str, Any] = {
+            "name": name,
+            "n": n_qubits,
+            "dimension": dimension,
+            "k": k,
+            "distance": code_distance,
+        }
+        meta.setdefault("code_family", "color")
+        meta.setdefault("code_type", f"ball_color_{dimension}d")
+        meta.setdefault("rate", k / n_qubits if n_qubits > 0 else 0.0)
+        meta.setdefault("lx_pauli_type", "X")
+        meta.setdefault("lz_pauli_type", "Z")
+        meta.setdefault("lx_support", sorted(logical_x[0].keys()) if logical_x and isinstance(logical_x[0], dict) else ([i for i, c in enumerate(logical_x[0]) if c == 'X'] if logical_x and isinstance(logical_x[0], str) else []))
+        meta.setdefault("lz_support", sorted(logical_z[0].keys()) if logical_z and isinstance(logical_z[0], dict) else ([i for i, c in enumerate(logical_z[0]) if c == 'Z'] if logical_z and isinstance(logical_z[0], str) else []))
+        meta.setdefault("stabiliser_schedule", {
+            "x_rounds": {},
+            "z_rounds": {},
+            "n_rounds": 1,
+            "description": "Self-dual: Hx = Hz, fully parallel.",
+        })
+        meta.setdefault("x_schedule", [])
+        meta.setdefault("z_schedule", [])
+        meta.setdefault("error_correction_zoo_url", "https://errorcorrectionzoo.org/c/color")
+        meta.setdefault("wikipedia_url", "https://en.wikipedia.org/wiki/Color_code")
+        meta.setdefault("canonical_references", [
+            "Bombin & Martin-Delgado, Phys. Rev. Lett. 97, 180501 (2006). arXiv:quant-ph/0605138",
+            "Anderson, Phys. Rev. A 89, 042312 (2014)",
+        ])
+        meta.setdefault("connections", [
+            "dim=3 equivalent to [[7,1,3]] Steane code",
+            "dim=4 equivalent to [[15,1,3]] Reed-Muller RM(1,4) code with transversal T",
+            "dim=5 built via HGP of repetition codes",
+        ])
         
         super().__init__(
             hx=hx,
             hz=hz,
             logical_x=logical_x,
             logical_z=logical_z,
-            metadata={"name": name, "n": n_qubits, "dimension": dimension}
+            metadata=meta,
         )
     
     @staticmethod
@@ -488,6 +741,16 @@ class BallColorCode(CSSCode):  # Variable dimension 3-5
     def description(self) -> str:
         return f"Ball Color Code dim={self.dimension}, n={self.n}"
 
+    @property
+    def name(self) -> str:
+        """Return human-readable code name."""
+        return self._metadata.get("name", self._code_name)
+
+    @property
+    def distance(self) -> Optional[int]:
+        """Return code distance."""
+        return self._metadata.get("distance", None)
+
 
 class CubicHoneycombColorCode(CSSCode):
     """
@@ -514,18 +777,59 @@ class CubicHoneycombColorCode(CSSCode):
             name: Code name
         """
         self.L = L
-        self._name = name
+        self._code_name = name
         
         hx, hz, n_qubits = self._build_cubic_honeycomb(L)
         
+        # Validate CSS orthogonality before proceeding
+        validate_css_code(hx, hz, f"{name}_L{L}", raise_on_error=True)
+        
         logicals = self._compute_logicals(hx, hz, n_qubits)
+        
+        k = len(logicals[0]) if logicals[0] else 1
+        approx_distance = 2 * L + 1  # Approximate
+        
+        meta: Dict[str, Any] = {
+            "name": name,
+            "n": n_qubits,
+            "L": L,
+            "k": k,
+            "distance": approx_distance,
+            "dimension": 3,
+        }
+        meta.setdefault("code_family", "color")
+        meta.setdefault("code_type", "cubic_honeycomb_3d")
+        meta.setdefault("rate", k / n_qubits if n_qubits > 0 else 0.0)
+        meta.setdefault("lx_pauli_type", "X")
+        meta.setdefault("lz_pauli_type", "Z")
+        meta.setdefault("lx_support", sorted(logicals[0][0].keys()) if logicals[0] and isinstance(logicals[0][0], dict) else [])
+        meta.setdefault("lz_support", sorted(logicals[1][0].keys()) if logicals[1] and isinstance(logicals[1][0], dict) else [])
+        meta.setdefault("stabiliser_schedule", {
+            "x_rounds": {},
+            "z_rounds": {},
+            "n_rounds": 1,
+            "description": "Default single-round schedule for 3D colour code.",
+        })
+        meta.setdefault("x_schedule", [])
+        meta.setdefault("z_schedule", [])
+        meta.setdefault("error_correction_zoo_url", "https://errorcorrectionzoo.org/c/3d_color")
+        meta.setdefault("wikipedia_url", "https://en.wikipedia.org/wiki/Color_code")
+        meta.setdefault("canonical_references", [
+            "Bombin & Martin-Delgado, Phys. Rev. Lett. 97, 180501 (2006). arXiv:quant-ph/0605138",
+            "Bombin, New J. Phys. 17, 083002 (2015). arXiv:1311.0879",
+        ])
+        meta.setdefault("connections", [
+            "3D colour code on bitruncated cubic honeycomb (truncated octahedra)",
+            "4-colourable tiling supporting transversal T gate",
+            "Built via HGP of repetition codes for guaranteed CSS",
+        ])
         
         super().__init__(
             hx=hx,
             hz=hz,
             logical_x=logicals[0],
             logical_z=logicals[1],
-            metadata={"name": name, "n": n_qubits, "L": L}
+            metadata=meta,
         )
     
     @staticmethod
@@ -587,7 +891,8 @@ class CubicHoneycombColorCode(CSSCode):
             logical_x = vectors_to_paulis_x(log_x_vecs) if log_x_vecs else [{0: 'X'}]
             logical_z = vectors_to_paulis_z(log_z_vecs) if log_z_vecs else [{0: 'Z'}]
             return logical_x, logical_z
-        except Exception:
+        except Exception as e:
+            warnings.warn(f"Logical operator derivation failed for CubicHoneycombColorCode: {e}")
             return [{0: 'X'}], [{0: 'Z'}]
     
     def qubit_coords(self) -> List[Tuple[float, float]]:
@@ -621,6 +926,16 @@ class CubicHoneycombColorCode(CSSCode):
     def description(self) -> str:
         return f"Cubic Honeycomb Color Code L={self.L}, n={self.n}"
 
+    @property
+    def name(self) -> str:
+        """Return human-readable code name."""
+        return self._metadata.get("name", self._code_name)
+
+    @property
+    def distance(self) -> Optional[int]:
+        """Return code distance (approximate for HGP construction)."""
+        return self._metadata.get("distance", None)
+
 
 class TetrahedralColorCode(CSSCode):
     """
@@ -648,28 +963,33 @@ class TetrahedralColorCode(CSSCode):
             raise ValueError("L must be >= 2")
         
         self.L = L
-        self._name = name
+        self._code_name = name
         
         hx, hz, n_qubits, logical_x, logical_z = self._build_tetrahedral(L)
         
-        # Validate CSS code structure
-        is_valid, computed_k, validation_msg = validate_css_code(hx, hz, f"{name}_L{L}")
+        # Validate CSS code structure (raise on critical errors)
+        is_valid, computed_k, validation_msg = validate_css_code(hx, hz, f"{name}_L{L}", raise_on_error=True)
         
         # Generate coordinates for circuit construction
         data_coords = self._compute_qubit_coords(n_qubits)
         x_stab_coords = self._compute_stab_coords(n_qubits, hx, data_coords)
         z_stab_coords = self._compute_stab_coords(n_qubits, hz, data_coords)
         
-        meta = {
+        k_val = computed_k if computed_k > 0 else 1
+        dist_map = {2: 3, 3: 3}  # Steane / Reed-Muller distances
+        code_distance = dist_map.get(L, 3)
+        
+        meta: Dict[str, Any] = {
             "name": name,
             "n": n_qubits,
             "L": L,
-            "k": computed_k if computed_k > 0 else 1,  # Report actual k (min 1 for compatibility)
-            "actual_k": computed_k,  # Store the true k value
+            "k": k_val,
+            "actual_k": computed_k,
+            "distance": code_distance,
             "data_coords": data_coords,
             "x_stab_coords": x_stab_coords,
             "z_stab_coords": z_stab_coords,
-            "is_colour_code": True,  # For Chromobius compatibility
+            "is_colour_code": True,
         }
         
         # Mark codes with k<=0 to skip standard testing
@@ -677,12 +997,40 @@ class TetrahedralColorCode(CSSCode):
             meta["skip_standard_test"] = True
             meta["validation_warning"] = validation_msg
         
+        # Standard metadata keys
+        meta.setdefault("code_family", "color")
+        meta.setdefault("code_type", "tetrahedral_3d")
+        meta.setdefault("rate", k_val / n_qubits if n_qubits > 0 else 0.0)
+        meta.setdefault("lx_pauli_type", "X")
+        meta.setdefault("lz_pauli_type", "Z")
+        meta.setdefault("stabiliser_schedule", {
+            "x_rounds": {},
+            "z_rounds": {},
+            "n_rounds": 1,
+            "description": "Self-dual: Hx = Hz, fully parallel.",
+        })
+        meta.setdefault("x_schedule", [])
+        meta.setdefault("z_schedule", [])
+        meta.setdefault("error_correction_zoo_url", "https://errorcorrectionzoo.org/c/3d_color")
+        meta.setdefault("wikipedia_url", "https://en.wikipedia.org/wiki/Color_code")
+        meta.setdefault("canonical_references", [
+            "Bombin & Martin-Delgado, Phys. Rev. Lett. 97, 180501 (2006). arXiv:quant-ph/0605138",
+            "Anderson, Phys. Rev. A 89, 042312 (2014)",
+        ])
+        meta.setdefault("connections", [
+            "L=2 equivalent to [[7,1,3]] Steane code",
+            "L>=3 uses [[15,1,3]] Reed-Muller (RM(1,4)) with transversal T",
+            "3D colour code on tetrahedral lattice",
+        ])
+        meta.setdefault("lx_support", [i for i, c in enumerate(logical_x[0]) if c == 'X'] if logical_x and isinstance(logical_x[0], str) else (sorted(logical_x[0].keys()) if logical_x and isinstance(logical_x[0], dict) else []))
+        meta.setdefault("lz_support", [i for i, c in enumerate(logical_z[0]) if c == 'Z'] if logical_z and isinstance(logical_z[0], str) else (sorted(logical_z[0].keys()) if logical_z and isinstance(logical_z[0], dict) else []))
+        
         super().__init__(
             hx=hx,
             hz=hz,
             logical_x=logical_x,
             logical_z=logical_z,
-            metadata=meta
+            metadata=meta,
         )
     
     @staticmethod
@@ -761,6 +1109,16 @@ class TetrahedralColorCode(CSSCode):
     
     def description(self) -> str:
         return f"Tetrahedral Color Code L={self.L}, n={self.n}"
+
+    @property
+    def name(self) -> str:
+        """Return human-readable code name."""
+        return self._metadata.get("name", self._code_name)
+
+    @property
+    def distance(self) -> Optional[int]:
+        """Return code distance."""
+        return self._metadata.get("distance", None)
 
 
 # Pre-configured instances

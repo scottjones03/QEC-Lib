@@ -147,6 +147,18 @@ from qectostim.gadgets.teleportation_h_gadgets import (
     create_h_teleport_gadget,
 )
 
+# CSS Surgery CNOT gadget (3-block measurement-based)
+from qectostim.gadgets.css_surgery_cnot import (
+    CSSSurgeryCNOTGadget,
+    create_surgery_cnot,
+)
+
+# Knill EC gadget (3-block teleportation EC)
+from qectostim.gadgets.knill_ec import (
+    KnillECGadget,
+    create_knill_ec,
+)
+
 
 __all__ = [
     # Base
@@ -225,6 +237,12 @@ __all__ = [
     "CZHTeleportGadget",
     "CNOTHTeleportGadget",
     "create_h_teleport_gadget",
+    # CSS Surgery CNOT gadget
+    "CSSSurgeryCNOTGadget",
+    "create_surgery_cnot",
+    # Knill EC gadget
+    "KnillECGadget",
+    "create_knill_ec",
     # Two-DEM Teleportation (commented out - modules don't exist)
     # "TwoDEMCircuitBuilder",
     # "TwoDEMTeleportedHadamard",
