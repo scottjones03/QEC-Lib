@@ -295,6 +295,123 @@ class Zone:
 
 
 @dataclass
+class MutableZone:
+    """A mutable zone that can hold and track qubits.
+    
+    Unlike the frozen Zone class, MutableZone tracks which qubits
+    are currently in the zone. This is used for architectures with
+    mobile qubits (trapped ions, neutral atoms) where qubit occupancy
+    changes during circuit execution.
+    
+    Platform implementations like ManipulationTrap or StorageTrap
+    inherit from this class.
+    
+    Attributes
+    ----------
+    id : str
+        Unique identifier for the zone.
+    zone_type : ZoneType
+        Type of zone determining allowed operations.
+    capacity : int
+        Maximum number of qubits that can occupy this zone.
+    position : Optional[Tuple[float, ...]]
+        Physical coordinates.
+    qubit_ids : List[str]
+        IDs of qubits currently in this zone.
+    metadata : Dict[str, Any]
+        Platform-specific additional properties.
+    """
+    id: str
+    zone_type: ZoneType
+    capacity: int = 1
+    position: Optional[Tuple[float, ...]] = None
+    qubit_ids: List[str] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    @property
+    def num_qubits(self) -> int:
+        """Number of qubits currently in this zone."""
+        return len(self.qubit_ids)
+    
+    @property
+    def is_full(self) -> bool:
+        """Whether the zone is at capacity."""
+        return self.num_qubits >= self.capacity
+    
+    @property
+    def is_empty(self) -> bool:
+        """Whether the zone has no qubits."""
+        return self.num_qubits == 0
+    
+    def can_accept(self, count: int = 1) -> bool:
+        """Check if zone can accept `count` more qubits."""
+        return self.num_qubits + count <= self.capacity
+    
+    def add_qubit(self, qubit_id: str) -> None:
+        """Add a qubit to this zone.
+        
+        Raises
+        ------
+        ValueError
+            If zone is at capacity.
+        """
+        if self.is_full:
+            raise ValueError(f"Zone {self.id} is at capacity ({self.capacity})")
+        self.qubit_ids.append(qubit_id)
+    
+    def remove_qubit(self, qubit_id: Optional[str] = None) -> str:
+        """Remove and return a qubit from this zone.
+        
+        Parameters
+        ----------
+        qubit_id : Optional[str]
+            If provided, remove specific qubit. Otherwise remove last.
+            
+        Returns
+        -------
+        str
+            ID of removed qubit.
+            
+        Raises
+        ------
+        ValueError
+            If zone is empty or qubit not found.
+        """
+        if self.is_empty:
+            raise ValueError(f"Zone {self.id} is empty")
+        if qubit_id is None:
+            return self.qubit_ids.pop()
+        if qubit_id not in self.qubit_ids:
+            raise ValueError(f"Qubit {qubit_id} not in zone {self.id}")
+        self.qubit_ids.remove(qubit_id)
+        return qubit_id
+    
+    def contains(self, qubit_id: str) -> bool:
+        """Check if a qubit is in this zone."""
+        return qubit_id in self.qubit_ids
+    
+    def clear(self) -> List[str]:
+        """Remove all qubits from this zone.
+        
+        Returns
+        -------
+        List[str]
+            IDs of removed qubits.
+        """
+        removed = list(self.qubit_ids)
+        self.qubit_ids.clear()
+        return removed
+    
+    def __hash__(self) -> int:
+        return hash(self.id)
+    
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, MutableZone):
+            return NotImplemented
+        return self.id == other.id
+
+
+@dataclass
 class ConnectivityGraph:
     """Graph representation of hardware connectivity.
     
@@ -1332,15 +1449,16 @@ class TransportCost:
         Estimated fidelity reduction (1.0 - final_fidelity).
     num_operations : int
         Number of primitive operations (moves, splits, etc.).
-    heating_added : float
-        Motional excitation added (for trapped ions).
+    error_metric : float
+        Platform-specific error accumulation during transport
+        (e.g. motional excitation for ions, T1 decay for SC).
     path : List[str]
         Sequence of zones traversed.
     """
     time_us: float
     fidelity_loss: float
     num_operations: int
-    heating_added: float = 0.0
+    error_metric: float = 0.0
     path: List[str] = field(default_factory=list)
 
 

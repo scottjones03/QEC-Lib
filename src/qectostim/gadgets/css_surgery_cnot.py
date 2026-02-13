@@ -165,6 +165,32 @@ class CSSSurgeryCNOTGadget(Gadget):
         return {"css"}
 
     # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _emit_ec_round(builder, circuit, **kwargs):
+        """Emit an EC round during merge phases.
+
+        For hierarchical builders, uses inner-only rounds to avoid
+        intermediate outer CX operations.  These outer operations would
+        introduce sensitivities on outer ancilla qubits at each merge
+        round, making post-gadget inner crossing detectors non-deterministic
+        (they cannot compensate for *all* intermediate outer preparations).
+
+        For flat builders, uses the standard full round with anchor control.
+        """
+        if hasattr(builder, 'emit_inner_only_round'):
+            # Hierarchical: inner-only preserves crossing detector flow.
+            builder.emit_inner_only_round(
+                circuit,
+                emit_detectors=kwargs.get('emit_detectors', True),
+            )
+        else:
+            # Flat: full round with anchor control.
+            builder.emit_round(circuit, **kwargs)
+
+    # ------------------------------------------------------------------
     # emit_next_phase
     # ------------------------------------------------------------------
 
@@ -234,9 +260,7 @@ class CSSSurgeryCNOTGadget(Gadget):
         Block anchors based on prep state (round 0 only).
         """
         code = self._code
-        d = self.merge_rounds if self.merge_rounds is not None else code.d
-
-        # Get bridge qubit indices
+        d = self.merge_rounds if self.merge_rounds is not None else (code.d or 3)
         bridge_zz = [
             gi for gi, _, purpose in alloc.bridge_ancillas
             if purpose.startswith("zz_merge")
@@ -312,8 +336,8 @@ class CSSSurgeryCNOTGadget(Gadget):
                     # Z temporals from R1+.
                     if rnd == 0:
                         # R0: X anchors (|+⟩ prep), Z baseline (no anchor)
-                        builder.emit_round(
-                            circuit,
+                        self._emit_ec_round(
+                            builder, circuit,
                             emit_detectors=True,
                             emit_x_anchors=True,   # X deterministic from |+⟩
                             emit_z_anchors=False,   # Z random from |+⟩
@@ -322,8 +346,8 @@ class CSSSurgeryCNOTGadget(Gadget):
                     else:
                         # R1+: BOTH temporals (X preserved by even overlap,
                         # Z stable round-to-round)
-                        builder.emit_round(
-                            circuit,
+                        self._emit_ec_round(
+                            builder, circuit,
                             emit_detectors=True,
                         )
                 elif block_name == "block_0":
@@ -333,8 +357,8 @@ class CSSSurgeryCNOTGadget(Gadget):
                     z_det = block_prep.z_deterministic if block_prep else False
                     x_det = block_prep.x_deterministic if block_prep else False
                     if rnd == 0:
-                        builder.emit_round(
-                            circuit,
+                        self._emit_ec_round(
+                            builder, circuit,
                             emit_detectors=True,
                             emit_z_anchors=z_det,
                             emit_x_anchors=x_det,  # X stabs preserved by even overlap
@@ -342,8 +366,8 @@ class CSSSurgeryCNOTGadget(Gadget):
                         )
                     else:
                         # R1+: BOTH temporal detectors (X and Z both stable)
-                        builder.emit_round(
-                            circuit,
+                        self._emit_ec_round(
+                            builder, circuit,
                             emit_detectors=True,
                         )
                 else:
@@ -351,8 +375,8 @@ class CSSSurgeryCNOTGadget(Gadget):
                     if rnd == 0:
                         z_det = block_prep.z_deterministic if block_prep else False
                         x_det = block_prep.x_deterministic if block_prep else False
-                        builder.emit_round(
-                            circuit,
+                        self._emit_ec_round(
+                            builder, circuit,
                             emit_detectors=True,
                             emit_z_anchors=z_det,
                             emit_x_anchors=x_det,
@@ -360,7 +384,7 @@ class CSSSurgeryCNOTGadget(Gadget):
                         )
                     else:
                         # Subsequent rounds: temporal detectors
-                        builder.emit_round(circuit, emit_detectors=True)
+                        self._emit_ec_round(builder, circuit, emit_detectors=True)
 
         # ZZ merge done. EC already interleaved, so no additional rounds needed.
         # NOTE: Do NOT set stabilizer_transform here - let get_stabilizer_transform()
@@ -441,9 +465,7 @@ class CSSSurgeryCNOTGadget(Gadget):
             5. EC: all blocks BOTH (X + Z) with full detectors
         """
         code = self._code
-        d = self.merge_rounds if self.merge_rounds is not None else code.d
-
-        # NOTE: We do NOT reset stabilizer history for block_1/2 here.
+        d = self.merge_rounds if self.merge_rounds is not None else (code.d or 3)
         # The ZZ merge phase preserved ALL stabilizers (both X and Z) because
         # the CSS weight parity ensures all stabilizer-bridge overlaps are EVEN.
         # After ZZ split (destructive M on bridge qubits, which doesn't touch
@@ -518,13 +540,13 @@ class CSSSurgeryCNOTGadget(Gadget):
                 block_name = builder.block_name
                 if block_name == "block_0":
                     # Ctrl: not coupled to XX bridge, full EC
-                    builder.emit_round(circuit, emit_detectors=True)
+                    self._emit_ec_round(builder, circuit, emit_detectors=True)
                 else:
                     # Anc, Tgt: BOTH X and Z are preserved by even overlap.
                     # No history reset needed — temporals trace back to ZZ merge
                     # last round, which is valid (data unchanged by ZZ split).
-                    builder.emit_round(
-                        circuit,
+                    self._emit_ec_round(
+                        builder, circuit,
                         emit_detectors=True,  # Full temporal detectors
                     )
 
@@ -603,28 +625,34 @@ class CSSSurgeryCNOTGadget(Gadget):
         #      Z-bridge supports means dressing cancels at stabilizer level)
         #   2. XX split (MX on bridge) doesn't touch data qubits
         #   3. MX on data directly measures X eigenvalues
+        #
+        # NOTE: This manual boundary detector emission only works for flat
+        # CSS builders that expose _last_x_meas as a list.  Hierarchical
+        # builders use a different multi-level measurement tracking structure
+        # and their boundary detectors are handled by auto_detectors instead.
         anc_builder = self._builders[1]  # block_1 builder
-        hx = self._code.hx
-        n_x_stab = hx.shape[0]
-        
-        for s_idx in range(n_x_stab):
-            last_x = anc_builder._last_x_meas[s_idx]
-            if last_x is None:
-                continue  # No previous measurement to compare against
+        if hasattr(anc_builder, '_last_x_meas'):
+            hx = self._code.hx
+            n_x_stab = hx.shape[0]
             
-            support = list(np.where(hx[s_idx])[0])
-            rec_targets = []
-            
-            # MX data outcomes for this stabilizer's support
-            for local_idx in support:
-                mx_global = self._anc_meas_indices[local_idx]
-                rec_targets.append(stim.target_rec(mx_global - ctx.measurement_index))
-            
-            # Last X stabilizer measurement from XX merge
-            rec_targets.append(stim.target_rec(last_x - ctx.measurement_index))
-            
-            coord = (s_idx + 0.5, 0.5, 200)  # Distinctive coord for anc boundary
-            circuit.append("DETECTOR", rec_targets, coord)
+            for s_idx in range(n_x_stab):
+                last_x = anc_builder._last_x_meas[s_idx]
+                if last_x is None:
+                    continue  # No previous measurement to compare against
+                
+                support = list(np.where(hx[s_idx])[0])
+                rec_targets = []
+                
+                # MX data outcomes for this stabilizer's support
+                for local_idx in support:
+                    mx_global = self._anc_meas_indices[local_idx]
+                    rec_targets.append(stim.target_rec(mx_global - ctx.measurement_index))
+                
+                # Last X stabilizer measurement from XX merge
+                rec_targets.append(stim.target_rec(last_x - ctx.measurement_index))
+                
+                coord = (s_idx + 0.5, 0.5, 200)  # Distinctive coord for anc boundary
+                circuit.append("DETECTOR", rec_targets, coord)
 
         return PhaseResult(
             phase_type=PhaseType.MEASUREMENT,
@@ -646,26 +674,20 @@ class CSSSurgeryCNOTGadget(Gadget):
         measurements. Post-gadget rounds must NOT emit temporal detectors comparing
         against those old measurements, as they would trace through the bridges.
         
-        block_0: Clear history, do NOT skip first round. After all 5 phases,
-                 block_0 data is in a definite state. The builder's
-                 measurement_basis logic will emit correct anchors:
-                   ctrl=0 → measurement_basis="Z" → Z anchors
-                   ctrl=+ → measurement_basis="X" → X anchors
+        Flat codes: block_0/block_2 do NOT skip first round — post-gadget
+        anchor detectors are deterministic and provide proper boundary coverage.
         
-        block_2: Clear history, do NOT skip first round. After all 5 phases
-                 (including XX split + ancilla MX), the XX bridge is fully
-                 disentangled. Both X and Z stabilizers on block_2 are back
-                 to definite eigenvalues. The builder's measurement_basis
-                 logic will emit correct anchors:
-                   tgt=0 → measurement_basis="Z" → Z anchors
-                   tgt=+ → measurement_basis="X" → X anchors
+        Hierarchical codes: block_0/block_2 skip first round — outer-ancilla
+        prep measurements conflict with bridge-coupled merge-phase history,
+        making anchors non-deterministic. Crossing detectors cover the gap.
         """
+        _hier = self._code is not None and self._code.d is None
         return StabilizerTransform.identity(
-            clear_history=True,  # Clear measurement history from merge phases
-            skip_first_round=True,  # Default: skip (overridden per-block below)
+            clear_history=True,
+            skip_first_round=True,  # Default for block_1
             per_block={
-                "block_0": {"clear_history": True, "skip_first_round": False},
-                "block_2": {"clear_history": True, "skip_first_round": False},
+                "block_0": {"clear_history": True, "skip_first_round": _hier},
+                "block_2": {"clear_history": True, "skip_first_round": _hier},
             },
         )
 
@@ -810,7 +832,21 @@ class CSSSurgeryCNOTGadget(Gadget):
         far_support = sorted(
             i for i, c in enumerate(data_coords) if c[0] == x_max
         )
-        return far_support if far_support else self._code.get_logical_x_support(0)
+        if not far_support:
+            return self._code.get_logical_x_support(0)
+
+        # Validate that far_support is in ker(H_Z) — required for a valid
+        # X_L representative.  For surface codes every column works, but for
+        # general CSS codes (e.g. Steane [[7,1,3]]) a single column may
+        # anti-commute with Z stabilizers.
+        if hasattr(self._code, 'hz') and self._code.hz is not None:
+            vec = np.zeros(self._code.n, dtype=int)
+            for idx in far_support:
+                vec[idx] = 1
+            if np.any((self._code.hz @ vec) % 2 != 0):
+                return self._code.get_logical_x_support(0)
+
+        return far_support
 
     def _get_anc_x_logical_meas(self) -> List[int]:
         """Get ancilla MX indices for logical X support (far-edge representative)."""
@@ -886,7 +922,18 @@ class CSSSurgeryCNOTGadget(Gadget):
         return {"block_1"}
 
     def get_blocks_to_skip_pre_rounds(self) -> Set[str]:
-        """Skip all pre-gadget EC - the gadget handles EC during merge phases."""
+        """Skip pre-gadget EC rounds.
+
+        Flat codes: skip all blocks — the gadget handles EC during merge
+        phases via builder.emit_round() calls, which produce temporal
+        detectors bridging the pre → post boundary.
+
+        Hierarchical codes: skip only block_1 (ancilla).  Block_0/block_2
+        need pre-gadget rounds to establish measurement baselines for
+        crossing detectors.
+        """
+        if self._code is not None and self._code.d is None:
+            return {"block_1"}
         return {"block_0", "block_1", "block_2"}
 
     def get_blocks_to_skip_post_rounds(self) -> Set[str]:
@@ -951,11 +998,18 @@ class CSSSurgeryCNOTGadget(Gadget):
 
     def get_crossing_detector_config(self) -> Optional[CrossingDetectorConfig]:
         """
-        Return None - surgery gadget handles all detectors internally.
-        
-        Returning None (not empty config) ensures the orchestrator emits normal
-        temporal detectors for post-gadget rounds. An empty CrossingDetectorConfig
-        would cause emit_auto_detectors=False with no formulas to compensate.
+        Crossing detectors for the net CNOT(block_0 → block_2) operation.
+
+        Return ``None`` for all code types.
+
+        - **Flat codes**: merge-phase temporal detectors plus post-gadget
+          anchor detectors provide full coverage.
+        - **Hierarchical codes**: the builder's native temporal detector
+          emission on the first post-gadget round already handles inner
+          and outer stabiliser comparisons correctly.  Explicit crossing
+          formulas fail ``has_flow`` for inner stabilisers because they
+          reference raw inner measurement indices across the gadget
+          boundary where the concatenated stabiliser structure changes.
         """
         return None
 

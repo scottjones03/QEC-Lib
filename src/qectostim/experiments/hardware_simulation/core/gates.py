@@ -164,7 +164,7 @@ STANDARD_GATES = {
     "MZ": GateSpec("MZ", GateType.MEASUREMENT, 1, stim_name="M"),
     "MR": GateSpec("MR", GateType.MEASUREMENT, 1),  # Measure and reset
     "R": GateSpec("R", GateType.RESET, 1),
-    "RX": GateSpec("RX", GateType.RESET, 1),  # Reset to |+⟩
+    "RX_RESET": GateSpec("RX_RESET", GateType.RESET, 1, stim_name="RX"),  # Reset to |+⟩
 }
 
 
@@ -224,6 +224,31 @@ class NativeGateSet:
     def clifford_gates(self) -> List[GateSpec]:
         """Get all native Clifford gates."""
         return [g for g in self._gates.values() if g.is_clifford]
+
+    def validate_circuit(
+        self,
+        gate_names: Sequence[str],
+    ) -> List[str]:
+        """Check that every gate in a circuit is natively supported.
+
+        Parameters
+        ----------
+        gate_names : Sequence[str]
+            Ordered list of gate names appearing in a circuit.
+
+        Returns
+        -------
+        List[str]
+            Names of gates that are NOT in this native set
+            (empty list means the circuit is fully native).
+        """
+        unsupported: List[str] = []
+        seen: set = set()
+        for name in gate_names:
+            if name not in seen and not self.has_gate(name):
+                unsupported.append(name)
+                seen.add(name)
+        return unsupported
     
     def __iter__(self):
         return iter(self._gates.values())
@@ -301,3 +326,51 @@ class GateDecomposer(ABC):
         """Check if a gate is native (no decomposition needed)."""
         name = gate.name if isinstance(gate, GateSpec) else gate.spec.name
         return self.native_gates.has_gate(name)
+
+    def decompose_via_table(
+        self,
+        gate: Union[GateSpec, ParameterizedGate],
+        qubits: Tuple[int, ...],
+        table: Dict[str, Callable],
+    ) -> GateDecomposition:
+        """Look up a decomposition in a name → factory table.
+
+        Convenience method for subclasses that maintain a pre-built dict
+        of ``{ gate_name: callable(qubits) -> GateDecomposition }``.
+
+        Parameters
+        ----------
+        gate : GateSpec or ParameterizedGate
+            Gate to decompose.
+        qubits : Tuple[int, ...]
+            Target qubits.
+        table : Dict[str, Callable]
+            Mapping from gate name to a factory that accepts ``qubits``
+            and returns a ``GateDecomposition``.
+
+        Returns
+        -------
+        GateDecomposition
+            Result from the table lookup.
+
+        Raises
+        ------
+        NotImplementedError
+            If the gate name is not in the table and is not native.
+        """
+        name = gate.name if isinstance(gate, GateSpec) else gate.spec.name
+
+        if self.is_native(gate):
+            return GateDecomposition(
+                original=gate if isinstance(gate, GateSpec) else gate.spec,
+                sequence=[(gate, qubits)],
+                cost=0.0,
+            )
+
+        factory = table.get(name)
+        if factory is not None:
+            return factory(qubits)
+
+        raise NotImplementedError(
+            f"{self.__class__.__name__}: decomposition for {name!r} not available."
+        )

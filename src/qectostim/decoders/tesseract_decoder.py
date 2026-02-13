@@ -61,12 +61,7 @@ class TesseractDecoder(Decoder):
                 f"got {dets.shape[1]}"
             )
 
-        shots = dets.shape[0]
-        corrections = np.zeros((shots, self.num_observables), dtype=np.uint8)
-        
-        for i in range(shots):
-            # decode returns a list of bools for each observable
-            corr = self._decoder.decode(dets[i].astype(bool))
-            corrections[i, :] = np.asarray(corr, dtype=np.uint8)
-            
-        return corrections
+        # Use native batch decoding for speed
+        dets_bool = dets.astype(bool)
+        corr = self._decoder.decode_batch(dets_bool)
+        return np.asarray(corr, dtype=np.uint8)

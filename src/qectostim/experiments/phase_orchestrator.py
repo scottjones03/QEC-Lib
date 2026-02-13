@@ -249,6 +249,14 @@ class PhaseOrchestrator:
                 if phase_result.destroyed_blocks:
                     for block_name in phase_result.destroyed_blocks:
                         result.destroyed_block_meas_starts[block_name] = meas_start
+                
+                # Apply per-block measurement offsets if provided.
+                # When a phase measures multiple blocks in sequence (e.g. KnillEC
+                # Phase 3: MX(data) then MZ(bell_a)), each block's measurements
+                # start at a different offset within the batch.
+                if phase_result.extra.get("destroyed_block_meas_offsets") and meas_start is not None:
+                    for block_name, offset in phase_result.extra["destroyed_block_meas_offsets"].items():
+                        result.destroyed_block_meas_starts[block_name] = meas_start + offset
             
             # Also check for gadget-internal measurement tracking.
             # Some gadgets (e.g., surgery CNOT) call ctx.add_measurement()
@@ -339,6 +347,15 @@ class PhaseOrchestrator:
                         if builder.block_name in skipped_blocks:
                             last_meas = builder.get_last_measurement_indices()
                             if any(len(v) > 0 for v in last_meas.values()):
+                                # Apply hierarchical compensation if needed
+                                # (same as ft_gadget_experiment does for
+                                #  pre-gadget measurements)
+                                from qectostim.experiments.ft_gadget_experiment import (
+                                    FaultTolerantGadgetExperiment,
+                                )
+                                last_meas = FaultTolerantGadgetExperiment._compensate_hierarchical_pre_meas(
+                                    builder, last_meas
+                                )
                                 pre_gadget_meas[builder.block_name] = last_meas
             
             # Store final result
@@ -506,6 +523,7 @@ class PhaseOrchestrator:
                     builder.reset_stabilizer_history(
                         swap_xz=transform.swap_xz,
                         skip_first_round=block_skip,
+                        clear_history=block_clear,
                     )
     
     def _process_frame_update(

@@ -258,9 +258,19 @@ class CZHTeleportGadget(TeleportationGadgetMixin, Gadget):
             # Z_A → Z_A (unchanged)
             # X_D → X_D ⊗ Z_A (X stabilizer picks up Z from partner)
             # X_A → Z_D ⊗ X_A (X stabilizer picks up Z from partner)
-            return PhaseResult.gate_phase(
+            #
+            # After CZ, X stabilizers become cross-block (2-body).
+            # However, measuring single-block X on data gives the
+            # eigenvalue of X_D ⊗ Z_A, which is (+1)(+1) = +1 since
+            # both blocks are in the code space.  So all single-block
+            # measurements remain deterministic.  Full BOTH measurement
+            # is needed for hierarchical codes so that outer ancilla
+            # preparation is performed for all bases, enabling proper
+            # compensation of inner measurements in crossing detectors.
+            return PhaseResult(
+                phase_type=PhaseType.GATE,
                 is_final=False,
-                transform=self.get_stabilizer_transform(),
+                stabilizer_transform=self.get_stabilizer_transform(),
                 needs_stabilizer_rounds=self.num_ec_rounds,  # EC after gate
             )
             
@@ -623,14 +633,25 @@ class CNOTHTeleportGadget(TeleportationGadgetMixin, Gadget):
                 circuit.append("CNOT", [data_qubits[i], ancilla_qubits[i]])
             circuit.append("TICK")
             
-            # CNOT(D→A) transformation:
-            # X_D → X_D (control X unchanged)
-            # Z_D → Z_D ⊗ Z_A (control Z picks up target Z)
-            # X_A → X_D ⊗ X_A (target X picks up control X)
-            # Z_A → Z_A (target Z unchanged)
-            return PhaseResult.gate_phase(
+            # CNOT(D→A) Heisenberg transformation:
+            # X_D → X_D ⊗ X_A (control X spreads to target)
+            # Z_D → Z_D        (control Z unchanged)
+            # X_A → X_A        (target X unchanged)
+            # Z_A → Z_D ⊗ Z_A  (target Z picks up control Z)
+            #
+            # After CNOT, X_D and Z_A become cross-block (2-body).
+            # However, measuring single-block X on data gives the
+            # eigenvalue of X_D ⊗ X_A = (+1)(+1) = +1 since both
+            # blocks are in the code space.  Similarly Z on ancilla
+            # gives Z_D ⊗ Z_A = +1.  All single-block measurements
+            # are deterministic.  Full BOTH measurement is needed
+            # for hierarchical codes so that outer ancilla preparation
+            # is performed for all bases, enabling proper compensation
+            # of inner measurements in crossing detectors.
+            return PhaseResult(
+                phase_type=PhaseType.GATE,
                 is_final=False,
-                transform=self.get_stabilizer_transform(),
+                stabilizer_transform=self.get_stabilizer_transform(),
                 needs_stabilizer_rounds=self.num_ec_rounds,  # EC after gate
             )
             

@@ -227,6 +227,7 @@ class CSSStatePreparation:
         num_rounds: int = 1,
         emit_detectors: bool = True,
         noise_model=None,
+        skip_reset: bool = False,
     ) -> ProjectionResult:
         """
         Prepare |0⟩_L by initializing |0⟩^⊗n and measuring stabilizers.
@@ -251,14 +252,20 @@ class CSSStatePreparation:
             Whether to emit detectors comparing consecutive rounds.
         noise_model : NoiseModel, optional
             Noise model for adding errors to operations.
+        skip_reset : bool
+            If True, skip the initial R (reset) on data_qubits.  Use this
+            when the caller has already reset all qubits (e.g. via
+            emit_reset_all) to avoid non-deterministic detectors caused
+            by duplicate resets.
             
         Returns
         -------
         ProjectionResult
             Contains measurement indices for Pauli frame tracking.
         """
-        # Reset all data qubits to |0⟩
-        circuit.append("R", data_qubits)
+        # Reset all data qubits to |0⟩ (skip if caller already did this)
+        if not skip_reset:
+            circuit.append("R", data_qubits)
         circuit.append("TICK")
         
         return self._measure_stabilizers(
@@ -274,6 +281,7 @@ class CSSStatePreparation:
         num_rounds: int = 1,
         emit_detectors: bool = True,
         noise_model=None,
+        skip_reset: bool = False,
     ) -> ProjectionResult:
         """
         Prepare |+⟩_L by initializing |+⟩^⊗n and measuring stabilizers.
@@ -297,14 +305,20 @@ class CSSStatePreparation:
             Whether to emit detectors comparing consecutive rounds.
         noise_model : NoiseModel, optional
             Noise model for adding errors to operations.
+        skip_reset : bool
+            If True, skip the initial R (reset) on data_qubits.  Use this
+            when the caller has already reset all qubits (e.g. via
+            emit_reset_all) to avoid non-deterministic detectors caused
+            by duplicate resets.
             
         Returns
         -------
         ProjectionResult
             Contains measurement indices for Pauli frame tracking.
         """
-        # Reset all data qubits to |0⟩, then H to get |+⟩
-        circuit.append("R", data_qubits)
+        # Reset all data qubits to |0⟩, then H to get |+⟩ (skip reset if caller already did this)
+        if not skip_reset:
+            circuit.append("R", data_qubits)
         circuit.append("H", data_qubits)
         circuit.append("TICK")
         

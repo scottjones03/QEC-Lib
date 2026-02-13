@@ -69,7 +69,7 @@ class SATRoutingConfig:
     ...     patch_height: int = 4
     ...     bt_soft_weight: int = 0  # WISE-specific
     """
-    timeout_seconds: float = 60.0
+    timeout_seconds: float = 4800.0
     max_passes: int = 10
     use_maxsat: bool = True
     debug_mode: bool = False
@@ -480,6 +480,167 @@ class SATSolverProtocol(ABC):
     def delete(self) -> None:
         """Clean up solver resources."""
         pass
+
+
+# =============================================================================
+# Generic Grid Data Structures  
+# =============================================================================
+
+@dataclass
+class GridLayout:
+    """Generic item layout on a 2D grid.
+    
+    Technology-agnostic representation of items (ions, atoms, qubits)
+    arranged on a grid. Used by SAT-based routing algorithms.
+    
+    Attributes
+    ----------
+    grid : Any
+        2D array of item indices (n_rows x n_cols). Typically numpy array.
+    item_positions : Dict[int, Tuple[int, int]]
+        Mapping from item index to (row, col) position.
+    n_rows : int
+        Number of rows in the grid.
+    n_cols : int
+        Number of columns in the grid.
+    """
+    grid: Any  # np.ndarray but we don't require numpy import in core
+    item_positions: Dict[int, Tuple[int, int]] = field(default_factory=dict)
+    
+    def __post_init__(self):
+        self.n_rows, self.n_cols = self.grid.shape
+        self._rebuild_positions()
+    
+    def _rebuild_positions(self) -> None:
+        """Rebuild item_positions from grid."""
+        self.item_positions.clear()
+        for r in range(self.n_rows):
+            for c in range(self.n_cols):
+                item_idx = int(self.grid[r, c])
+                self.item_positions[item_idx] = (r, c)
+    
+    def get_item_at(self, row: int, col: int) -> int:
+        """Get item index at position."""
+        return int(self.grid[row, col])
+    
+    def get_position(self, item_idx: int) -> Optional[Tuple[int, int]]:
+        """Get position of item."""
+        return self.item_positions.get(item_idx)
+    
+    def swap_horizontal(self, row: int, col: int) -> None:
+        """Swap items at (row, col) and (row, col+1)."""
+        if col + 1 >= self.n_cols:
+            return
+        item_a = self.grid[row, col]
+        item_b = self.grid[row, col + 1]
+        self.grid[row, col] = item_b
+        self.grid[row, col + 1] = item_a
+        self.item_positions[int(item_a)] = (row, col + 1)
+        self.item_positions[int(item_b)] = (row, col)
+    
+    def swap_vertical(self, row: int, col: int) -> None:
+        """Swap items at (row, col) and (row+1, col)."""
+        if row + 1 >= self.n_rows:
+            return
+        item_a = self.grid[row, col]
+        item_b = self.grid[row + 1, col]
+        self.grid[row, col] = item_b
+        self.grid[row + 1, col] = item_a
+        self.item_positions[int(item_a)] = (row + 1, col)
+        self.item_positions[int(item_b)] = (row, col)
+    
+    def copy(self) -> "GridLayout":
+        """Create a deep copy."""
+        return GridLayout(
+            grid=self.grid.copy(),
+            item_positions=dict(self.item_positions),
+        )
+
+
+@dataclass
+class SortingPass:
+    """A single sorting pass (horizontal or vertical phase).
+    
+    Used in odd-even transposition sort networks for grid routing.
+    Technology-agnostic - works for any grid-based routing.
+    
+    Attributes
+    ----------
+    phase : str
+        "H" for horizontal, "V" for vertical.
+    h_swaps : List[Tuple[int, int]]
+        Horizontal swap positions (row, col).
+    v_swaps : List[Tuple[int, int]]
+        Vertical swap positions (row, col).
+    """
+    phase: str = "H"
+    h_swaps: List[Tuple[int, int]] = field(default_factory=list)
+    v_swaps: List[Tuple[int, int]] = field(default_factory=list)
+    
+    @property
+    def has_swaps(self) -> bool:
+        return bool(self.h_swaps if self.phase == "H" else self.v_swaps)
+    
+    @property
+    def swap_count(self) -> int:
+        return len(self.h_swaps) + len(self.v_swaps)
+
+
+@dataclass
+class RoutingSchedule:
+    """Schedule of routing passes for multiple rounds.
+    
+    Technology-agnostic schedule representation that can be used
+    by any grid-based routing system.
+    
+    Attributes
+    ----------
+    passes_per_round : List[List[SortingPass]]
+        For each round, list of sorting passes.
+    layouts : List[GridLayout]
+        Layout after each round.
+    """
+    passes_per_round: List[List[SortingPass]] = field(default_factory=list)
+    layouts: List[GridLayout] = field(default_factory=list)
+    
+    @property
+    def total_passes(self) -> int:
+        return sum(len(passes) for passes in self.passes_per_round)
+    
+    @property
+    def total_swaps(self) -> int:
+        return sum(
+            p.swap_count
+            for passes in self.passes_per_round
+            for p in passes
+        )
+
+
+@dataclass
+class InteractionRequirement:
+    """Requirement for items to interact (be adjacent/near).
+    
+    Technology-agnostic representation of gate or interaction requirements.
+    
+    Attributes
+    ----------
+    item_a : int
+        First item index.
+    item_b : int
+        Second item index.
+    round_idx : int
+        Which round this interaction is in.
+    interaction_type : str
+        Type of interaction (e.g., "gate", "swap", "entangle").
+    """
+    item_a: int
+    item_b: int
+    round_idx: int = 0
+    interaction_type: str = "gate"
+    
+    @property
+    def pair(self) -> Tuple[int, int]:
+        return (min(self.item_a, self.item_b), max(self.item_a, self.item_b))
 
 
 # =============================================================================

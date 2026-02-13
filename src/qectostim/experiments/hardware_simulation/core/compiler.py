@@ -7,6 +7,7 @@ into hardware-executable sequences of physical operations.
 """
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -34,6 +35,9 @@ if TYPE_CHECKING:
         QubitMapping,
     )
     from qectostim.experiments.hardware_simulation.core.gates import NativeGateSet
+
+
+_logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -305,13 +309,15 @@ class RoutingStrategy(Enum):
     depends on the platform capabilities (fixed vs. mobile qubits).
     
     Strategies:
-    - LOCAL_EXCHANGE: Exchange-based routing (SWAPs on fixed, local moves on mobile)
+    - SWAP_BASED: Exchange-based routing via SWAP gates (fixed connectivity)
+    - TRANSPORT_BASED: Physical qubit transport (mobile qubits)
     - GLOBAL_OPTIMIZATION: SAT/ILP-based optimal routing
     - GREEDY: Fast greedy heuristic
     - LOOKAHEAD: Consider future gates for better routing decisions
     - HIERARCHICAL: Multi-level routing (coarse then fine)
     """
-    LOCAL_EXCHANGE = auto()    # Local qubit exchanges (SWAP or transport)
+    SWAP_BASED = auto()        # SWAP gates on fixed connectivity
+    TRANSPORT_BASED = auto()   # Physical qubit transport
     GLOBAL_OPTIMIZATION = auto()  # SAT/ILP-based global optimization
     GREEDY = auto()            # Fast greedy routing
     LOOKAHEAD = auto()         # Consider future gates
@@ -695,7 +701,7 @@ class TransportRouter(Router):
             final_mapping=current_mapping,  # Logical mapping unchanged
             metrics={
                 "transport_time_us": cost.time_us,
-                "heating_added": cost.heating_added,
+                "error_metric": cost.error_metric,
             },
         )
 
@@ -839,6 +845,7 @@ class HardwareCompiler(ABC):
         compiled = CompiledCircuit(
             scheduled=scheduled,
             mapping=routed.final_mapping or mapped.mapping,
+            original_circuit=circuit,
         )
         
         # Compute metrics
@@ -860,3 +867,85 @@ class HardwareCompiler(ABC):
 
 # Convenience type aliases
 CompilerFactory = Callable[["HardwareArchitecture"], HardwareCompiler]
+
+
+# =============================================================================
+# Concrete defaults — usable out-of-the-box for testing / simple pipelines
+# =============================================================================
+
+class PassthroughDecomposer(DecompositionPass):
+    """Decomposition pass that assumes all gates are already native.
+
+    Useful for testing and for circuits produced by code generators
+    that already target the native gate set.
+    """
+
+    def __init__(self, name: str = "passthrough_decompose"):
+        super().__init__(name)
+
+    def decompose_gate(
+        self,
+        gate_name: str,
+        qubits: Tuple[int, ...],
+        native_gates: "NativeGateSet",
+    ) -> List[Tuple[str, Tuple[int, ...]]]:
+        """Return the gate unchanged."""
+        return [(gate_name, qubits)]
+
+    def run(self, input_data: Any, context: "CompilationContext") -> CompilationResult:
+        """Pass through — treat the input circuit as already native."""
+        from qectostim.experiments.hardware_simulation.core.pipeline import NativeCircuit
+        if isinstance(input_data, NativeCircuit):
+            return CompilationResult(success=True, stage=self.stage, data=input_data)
+        # Wrap raw stim.Circuit into NativeCircuit
+        native = NativeCircuit(circuit=input_data, gate_set=None)
+        return CompilationResult(success=True, stage=self.stage, data=native)
+
+
+class IdentityMapper(MappingPass):
+    """Mapping pass that maps logical qubit *i* → physical qubit *i*.
+
+    Suitable when logical and physical qubit indices are identical
+    (e.g. hardware-aware circuit generation).
+    """
+
+    def __init__(self, name: str = "identity_map"):
+        super().__init__(name)
+
+    def compute_initial_mapping(
+        self,
+        circuit: "NativeCircuit",
+        architecture: "HardwareArchitecture",
+    ) -> "QubitMapping":
+        """Identity mapping — qubit *i* → qubit *i*."""
+        from qectostim.experiments.hardware_simulation.core.pipeline import QubitMapping
+        n = circuit.num_qubits if hasattr(circuit, "num_qubits") else 0
+        mapping = {i: i for i in range(n)}
+        return QubitMapping(logical_to_physical=mapping)
+
+    def run(self, input_data: Any, context: "CompilationContext") -> CompilationResult:
+        from qectostim.experiments.hardware_simulation.core.pipeline import MappedCircuit
+        mapping = self.compute_initial_mapping(input_data, context.architecture)
+        mapped = MappedCircuit(native=input_data, mapping=mapping)
+        return CompilationResult(success=True, stage=self.stage, data=mapped)
+
+
+def run_pipeline(
+    circuit: stim.Circuit,
+    compiler: HardwareCompiler,
+) -> "CompiledCircuit":
+    """Convenience: run the full compile pipeline in one call.
+
+    Parameters
+    ----------
+    circuit : stim.Circuit
+        Input Stim circuit.
+    compiler : HardwareCompiler
+        A configured hardware compiler.
+
+    Returns
+    -------
+    CompiledCircuit
+        Compiled output with metrics.
+    """
+    return compiler.compile(circuit)

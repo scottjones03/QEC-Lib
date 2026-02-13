@@ -48,9 +48,17 @@ class OperationTiming:
     fidelity : float
         Expected fidelity from calibration data (1.0 = perfect).
     zone_id : Optional[int]
-        For QCCD: which zone this operation executes in.
-    chain_length : Optional[int]
-        For trapped ions: number of ions in the chain during operation.
+        Which zone this operation executes in (if applicable).
+    batch_index : Optional[int]
+        Which parallel batch this operation belongs to.
+    num_native_ops : int
+        Number of native operations this instruction decomposes into.
+    platform_context : Optional[Dict[str, Any]]
+        Platform-specific data for physics-based fidelity models.
+        Trapped-ion stores ``{"chain_length": N, "motional_quanta": q,
+        "mode_snapshot": ...}``; other platforms store their own parameters.
+    metadata : Dict[str, Any]
+        General-purpose metadata.
     """
     instruction_index: int
     gate_name: str
@@ -59,7 +67,9 @@ class OperationTiming:
     duration: float
     fidelity: float = 1.0
     zone_id: Optional[int] = None
-    chain_length: Optional[int] = None
+    batch_index: Optional[int] = None
+    num_native_ops: int = 1
+    platform_context: Optional[Dict[str, Any]] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
     
     @property
@@ -80,12 +90,12 @@ class OperationTiming:
 
 @dataclass
 class GateSwapInfo:
-    """Information about ion transport/swaps required for a gate.
-    
-    In QCCD architectures, executing a two-qubit gate may require
-    moving ions between zones. This captures the overhead and
-    associated error from that transport.
-    
+    """Information about transport/swaps required for a two-qubit gate.
+
+    In zoned architectures, executing a two-qubit gate may require
+    moving qubits between zones.  The noise model can compute
+    physics-based fidelity using the ``platform_context`` dict.
+
     Attributes
     ----------
     instruction_index : int
@@ -95,13 +105,19 @@ class GateSwapInfo:
     num_swaps : int
         Number of SWAP-equivalent transport operations.
     swap_fidelity : float
-        Fidelity per swap operation.
+        Fixed fidelity per swap (fallback when platform_context is absent).
     transport_time : float
         Total time for transport in microseconds.
     source_zone : Optional[int]
-        Zone where ion started.
+        Zone where qubit started.
     target_zone : Optional[int]
-        Zone where ion ended up.
+        Zone where qubit ended up.
+    platform_context : Optional[Dict[str, Any]]
+        Platform-specific transport data. Trapped-ion stores
+        ``{"chain_length": N, "motional_quanta": q, "mode_snapshot": ...}``;
+        other platforms store their own transport error parameters.
+    metadata : Dict[str, Any]
+        General-purpose metadata.
     """
     instruction_index: int
     qubits: Tuple[int, int]
@@ -110,6 +126,7 @@ class GateSwapInfo:
     transport_time: float = 0.0
     source_zone: Optional[int] = None
     target_zone: Optional[int] = None
+    platform_context: Optional[Dict[str, Any]] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
     
     @property
@@ -157,9 +174,9 @@ class ExecutionPlan:
     modifying the original circuit. The noise model uses this to:
     
     1. Calculate idle dephasing between operations
-    2. Add gate swap noise from ion transport  
+    2. Add gate swap noise from qubit transport
     3. Apply per-qubit calibrated gate fidelities
-    4. Account for chain-length-dependent MS gate errors
+    4. Account for platform-specific fidelity models
     
     The instruction indices MUST align with circuit.flattened().
     
@@ -221,7 +238,39 @@ class ExecutionPlan:
             if op.start_time < 0 or op.duration < 0:
                 return False
         
+        # Check idle intervals reference valid instruction indices
+        valid_indices = set(indices)
+        for idle in self.idle_intervals:
+            if idle.following_instruction not in valid_indices:
+                # Allow out-of-range (may reference future ops)
+                pass
+            if idle.duration < 0:
+                return False
+        
         return True
+    
+    def validate_against_circuit(self, circuit: stim.Circuit) -> bool:
+        """Check that plan indices align with the gate instructions in a circuit.
+
+        Counts only gate/measurement/reset instructions (skipping
+        TICK, DETECTOR, OBSERVABLE_INCLUDE, etc.) and checks that the
+        plan's max instruction_index doesn't exceed the gate count.
+        """
+        gate_count = 0
+        skip_names = {
+            "TICK", "DETECTOR", "OBSERVABLE_INCLUDE",
+            "SHIFT_COORDS", "QUBIT_COORDS", "BARRIER",
+        }
+        for inst in circuit.flattened():
+            if inst.name.upper() not in skip_names:
+                targets = inst.targets_copy()
+                if any(t.is_qubit_target for t in targets):
+                    gate_count += 1
+        
+        if not self.operations:
+            return True
+        max_idx = max(op.instruction_index for op in self.operations)
+        return max_idx < gate_count
 
 
 def build_execution_plan_from_compiled(
@@ -247,7 +296,6 @@ def build_execution_plan_from_compiled(
     """
     plan = ExecutionPlan(
         total_duration=compiled.total_duration if hasattr(compiled, 'total_duration') else 0.0,
-        num_qubits=compiled.num_qubits if hasattr(compiled, 'num_qubits') else 0,
     )
     
     # Extract from scheduled circuit if available
@@ -255,16 +303,26 @@ def build_execution_plan_from_compiled(
         scheduled = compiled.scheduled
         
         # Build operation timings from scheduled operations
-        for i, sched_op in enumerate(scheduled.operations if hasattr(scheduled, 'operations') else []):
+        qubit_last_end: Dict[int, float] = {}
+        
+        for i, sched_op in enumerate(scheduled.scheduled_ops or []):
+            op = sched_op.operation
+            gate_name = getattr(op, 'gate_name', None)
+            if gate_name is None:
+                # Try extracting name from the operation type
+                gate_name = getattr(getattr(op, 'gate', None), 'name', 'UNKNOWN')
+            
+            qubits = tuple(op.qubits) if hasattr(op, 'qubits') else ()
+            
             timing = OperationTiming(
                 instruction_index=i,
-                gate_name=sched_op.gate_name if hasattr(sched_op, 'gate_name') else "UNKNOWN",
-                qubits=tuple(sched_op.qubits) if hasattr(sched_op, 'qubits') else (),
-                start_time=sched_op.start_time if hasattr(sched_op, 'start_time') else 0.0,
-                duration=sched_op.duration if hasattr(sched_op, 'duration') else 0.0,
+                gate_name=gate_name,
+                qubits=qubits,
+                start_time=sched_op.start_time,
+                duration=sched_op.duration,
             )
             
-            # Lookup fidelity from calibration if available
+            # Lookup fidelity from calibration or operation
             if calibration is not None:
                 if timing.is_single_qubit:
                     timing.fidelity = calibration.get_1q_fidelity(
@@ -274,7 +332,37 @@ def build_execution_plan_from_compiled(
                     timing.fidelity = calibration.get_2q_fidelity(
                         timing.qubits[0], timing.qubits[1], timing.gate_name
                     )
+            elif hasattr(op, 'base_fidelity'):
+                timing.fidelity = op.base_fidelity
+            
+            # Compute idle intervals for involved qubits
+            for qubit in qubits:
+                last_end = qubit_last_end.get(qubit, 0.0)
+                if sched_op.start_time > last_end:
+                    plan.idle_intervals.append(IdleInterval(
+                        qubit=qubit,
+                        start_time=last_end,
+                        end_time=sched_op.start_time,
+                        following_instruction=i,
+                    ))
+                qubit_last_end[qubit] = sched_op.end_time
             
             plan.operations.append(timing)
+        
+        plan.num_qubits = max(qubit_last_end.keys(), default=-1) + 1
+        
+        # Extract gate swap info from routed circuit metadata
+        if scheduled.routed_circuit is not None:
+            routed = scheduled.routed_circuit
+            swaps_by_idx = (routed.metadata or {}).get("gate_swaps_by_stim_idx", {})
+            for idx, swaps in swaps_by_idx.items():
+                for swap in swaps:
+                    plan.gate_swaps.append(GateSwapInfo(
+                        instruction_index=idx,
+                        qubits=getattr(swap, 'qubits', (0, 0)),
+                        num_swaps=getattr(swap, 'num_swaps', 1),
+                        swap_fidelity=getattr(swap, 'swap_fidelity', 0.998),
+                        transport_time=getattr(swap, 'transport_time', 0.0),
+                    ))
     
     return plan

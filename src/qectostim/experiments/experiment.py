@@ -293,11 +293,29 @@ class Experiment(ABC):
             elif "Failed to decompose errors" in err_str:
                 # Hypergraph code (e.g., color code) - use ignore_decomposition_failures
                 logger.debug("Hypergraph DEM detected, using ignore_decomposition_failures")
-                dem = circuit.detector_error_model(
-                    decompose_errors=True,
-                    ignore_decomposition_failures=True
-                )
                 is_hypergraph_dem = True
+                try:
+                    dem = circuit.detector_error_model(
+                        decompose_errors=True,
+                        ignore_decomposition_failures=True
+                    )
+                except ValueError:
+                    logger.debug("ignore_decomposition_failures also failed, using decompose_errors=False")
+                    dem = circuit.detector_error_model(decompose_errors=False)
+            elif "non-deterministic" in err_str:
+                # Circuit has non-deterministic detectors, typically from
+                # duplicate resets.  Cannot build a DEM from this circuit.
+                logger.warning(
+                    "Circuit has non-deterministic detectors; "
+                    "returning NaN error rate.  %s",
+                    err_str.split('\n')[0],
+                )
+                return {
+                    "shots": shots,
+                    "logical_errors": np.full(shots, np.nan),
+                    "logical_error_rate": float("nan"),
+                    "error": "non-deterministic detectors",
+                }
             else:
                 raise
         logger.debug("DEM: %d detectors, %d errors, %d observables", 
@@ -317,18 +335,21 @@ class Experiment(ABC):
         # cannot handle hyperedges and will crash.  Override to BP-OSD.
         effective_decoder_name = decoder_name
         _matching_decoders = {
-            None, "pymatching", "matching", "mwpm", "mwpm2",
+            "pymatching", "matching", "mwpm", "mwpm2",
             "fb", "fusion", "fusionblossom", "fusion-blossom",
             "uf", "unionfind", "union-find",
             "beliefmatching", "belief-matching", "belief",
         }
-        if is_hypergraph_dem and (effective_decoder_name or "").lower() in _matching_decoders:
+        _needs_override = effective_decoder_name is None or (
+            effective_decoder_name.lower() in _matching_decoders
+        )
+        if is_hypergraph_dem and _needs_override:
             logger.info(
-                "Hypergraph DEM detected — overriding decoder '%s' → 'bposd' "
+                "Hypergraph DEM detected — overriding decoder '%s' → 'tesseract' "
                 "(matching-based decoders cannot handle hyperedges)",
                 decoder_name,
             )
-            effective_decoder_name = "bposd"
+            effective_decoder_name = "tesseract"
         decoder = select_decoder(dem, preferred=effective_decoder_name, code=self.code)
         logger.debug("Decoder type: %s", type(decoder).__name__)
 

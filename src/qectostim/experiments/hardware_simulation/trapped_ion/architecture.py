@@ -29,6 +29,10 @@ from qectostim.experiments.hardware_simulation.core.architecture import (
     ZoneType,
     PhysicalConstraints,
 )
+from qectostim.experiments.hardware_simulation.core.components import (
+    PhysicalQubit,
+    QubitState,
+)
 from qectostim.experiments.hardware_simulation.core.gates import (
     NativeGateSet,
     GateSpec,
@@ -36,6 +40,10 @@ from qectostim.experiments.hardware_simulation.core.gates import (
 )
 from qectostim.experiments.hardware_simulation.trapped_ion.gates import (
     TRAPPED_ION_NATIVE_GATES,
+)
+from qectostim.experiments.hardware_simulation.trapped_ion.physics import (
+    ModeSnapshot,
+    ModeStructure,
 )
 
 
@@ -61,13 +69,16 @@ class QCCDOperationType(Enum):
 
 
 @dataclass
-class Ion:
+class Ion(PhysicalQubit):
     """Represents a single trapped ion in a QCCD system.
+    
+    Inherits from core.components.PhysicalQubit with trapped-ion specific
+    extensions for motional energy tracking and cooling ion support.
     
     Attributes
     ----------
     idx : int
-        Unique identifier for this ion.
+        Unique identifier for this ion (alias for index).
     position : Tuple[float, float]
         Current (x, y) position in the trap layout.
     label : str
@@ -76,12 +87,43 @@ class Ion:
         Whether this is a cooling ion (sympathetic cooling).
     motional_energy : float
         Current motional energy (heating accumulation).
+        This is the key trapped-ion specific extension.
+    parent : Optional["QCCDNode"]
+        The trap/node currently containing this ion.
+        Set automatically by QCCDNode.add_ion() / remove_ion().
     """
-    idx: int
-    position: Tuple[float, float] = (0.0, 0.0)
+    # Trapped-ion specific fields
     label: str = "Q"
     is_cooling: bool = False
     motional_energy: float = 0.0
+    parent: Optional["QCCDNode"] = None
+    
+    def __init__(
+        self,
+        idx: int,
+        position: Tuple[float, float] = (0.0, 0.0),
+        label: str = "Q",
+        is_cooling: bool = False,
+        motional_energy: float = 0.0,
+        parent: Optional["QCCDNode"] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ):
+        # Initialize parent PhysicalQubit
+        super().__init__(
+            id=f"{label}{idx}",
+            index=idx,
+            position=position,
+            metadata=metadata,
+        )
+        self.label = label
+        self.is_cooling = is_cooling
+        self.motional_energy = motional_energy
+        self.parent = parent
+    
+    @property
+    def idx(self) -> int:
+        """Alias for index (trapped-ion convention)."""
+        return self.index
     
     @property
     def display_label(self) -> str:
@@ -94,7 +136,97 @@ class Ion:
     def reset_motional_energy(self) -> None:
         """Reset motional energy (after cooling)."""
         self.motional_energy = 0.0
+    
+    def reset(self) -> None:
+        """Reset ion to initial state including motional energy."""
+        super().reset()
+        self.motional_energy = 0.0
 
+
+# =============================================================================
+# Ion Type Aliases and Factory Functions
+# =============================================================================
+
+# Type aliases for different ion roles
+QubitIon = Ion  # Standard qubit ion
+CoolingIon = Ion  # Sympathetic cooling ion (is_cooling=True)
+SpectatorIon = Ion  # Spectator ion (for state readout)
+
+
+def create_qubit_ion(
+    idx: int,
+    position: Tuple[float, float] = (0.0, 0.0),
+    label: str = "Q",
+) -> Ion:
+    """Create a qubit ion."""
+    return Ion(idx=idx, position=position, label=label, is_cooling=False)
+
+
+def create_cooling_ion(
+    idx: int,
+    position: Tuple[float, float] = (0.0, 0.0),
+    label: str = "C",
+) -> Ion:
+    """Create a cooling ion for sympathetic cooling."""
+    return Ion(idx=idx, position=position, label=label, is_cooling=True)
+
+
+# =============================================================================
+# Architecture Configuration Dataclasses
+# =============================================================================
+
+@dataclass
+class QCCDWISEConfig:
+    """Configuration for a WISE (Width-Independent Scalable Entanglement) architecture.
+    
+    WISE is an m×n grid of manipulation traps connected through junctions,
+    optimized for efficient routing via SAT-based solvers.
+    
+    Attributes
+    ----------
+    m : int
+        Number of rows.
+    n : int
+        Number of columns.
+    k : int
+        Maximum ions per trap.
+    """
+    m: int
+    n: int
+    k: int = 3
+    
+    @property
+    def num_traps(self) -> int:
+        """Total number of traps in the grid."""
+        return self.m * self.n
+    
+    @property
+    def num_junctions(self) -> int:
+        """Total number of junctions."""
+        return (self.m - 1) * self.n + self.m * (self.n - 1)
+
+
+@dataclass
+class LinearChainConfig:
+    """Configuration for a linear chain architecture.
+    
+    A simple architecture with a single trap holding all ions,
+    providing all-to-all connectivity within the chain.
+    
+    Attributes
+    ----------
+    num_ions : int
+        Total number of ions.
+    ion_spacing : float
+        Distance between adjacent ions (μm).
+    """
+    num_ions: int
+    ion_spacing: float = 5.0
+
+
+# =============================================================================
+# QCCD Network Nodes
+# =============================================================================
 
 @dataclass
 class QCCDNode:
@@ -141,15 +273,19 @@ class QCCDNode:
             self.ions.append(ion)
         else:
             self.ions.insert(position_idx, ion)
+        ion.parent = self
     
     def remove_ion(self, ion: Optional[Ion] = None) -> Ion:
         """Remove and return an ion from this node."""
         if self.is_empty:
             raise ValueError(f"Node {self.idx} has no ions")
         if ion is None:
-            return self.ions.pop(0)
-        self.ions.remove(ion)
-        return ion
+            removed = self.ions.pop(0)
+        else:
+            self.ions.remove(ion)
+            removed = ion
+        removed.parent = None
+        return removed
     
     @property
     def allowed_operations(self) -> List[QCCDOperationType]:
@@ -162,10 +298,68 @@ class ManipulationTrap(QCCDNode):
     """Trap zone for gate operations.
     
     Manipulation traps are where quantum gates (1Q and 2Q) are performed.
+    When ions are added or removed, the 3N normal-mode structure is
+    automatically recomputed (see :class:`ModeStructure` in physics.py).
+
+    Parameters
+    ----------
+    secular_frequencies : Tuple[float, float, float]
+        Secular trap frequencies (ω_z, ω_x, ω_y) in Hz.
+        Default (1 MHz, 5 MHz, 5 MHz).
     """
     is_horizontal: bool = True
     spacing: float = 1.0
     label: str = "MT"
+    secular_frequencies: Tuple[float, float, float] = (1.0e6, 5.0e6, 5.0e6)
+
+    def __post_init__(self):
+        self.mode_structure: Optional[ModeStructure] = None
+
+    # ------ Override add_ion / remove_ion to recompute modes ------
+
+    def add_ion(self, ion: Ion, position_idx: int = -1) -> None:
+        """Add an ion and recompute the 3N mode structure."""
+        if self.is_full:
+            raise ValueError(f"Node {self.idx} is at capacity {self.capacity}")
+        if position_idx < 0:
+            self.ions.append(ion)
+        else:
+            self.ions.insert(position_idx, ion)
+        ion.parent = self
+        self._recompute_modes()
+
+    def remove_ion(self, ion: Optional[Ion] = None) -> Ion:
+        """Remove an ion and recompute the 3N mode structure."""
+        if self.is_empty:
+            raise ValueError(f"Node {self.idx} has no ions")
+        if ion is None:
+            removed = self.ions.pop(0)
+        else:
+            self.ions.remove(ion)
+            removed = ion
+        removed.parent = None
+        self._recompute_modes()
+        return removed
+
+    def _recompute_modes(self) -> None:
+        """Recompute mode structure for the current ion crystal."""
+        n = len(self.ions)
+        if n == 0:
+            self.mode_structure = None
+            return
+        wz, wx, wy = self.secular_frequencies
+        self.mode_structure = ModeStructure.compute(
+            n, axial_freq=wz, radial_freqs=(wx, wy),
+        )
+
+    def cool_trap(self) -> None:
+        """Sympathetic recooling: reset all mode occupancies to zero.
+
+        Only performs cooling if a cooling ion is present in the trap.
+        """
+        has_cooling = any(getattr(ion, 'is_cooling', False) for ion in self.ions)
+        if has_cooling and self.mode_structure is not None:
+            self.mode_structure.cool_to_ground()
     
     @property
     def allowed_operations(self) -> List[QCCDOperationType]:
@@ -753,3 +947,569 @@ class LinearChainArchitecture(TrappedIonArchitecture):
         if self.can_interact(qubit1, qubit2):
             return 0
         return -1  # Invalid qubits
+
+
+# =============================================================================
+# WISE Architecture
+# =============================================================================
+
+class WISEArchitecture(QCCDArchitecture):
+    """WISE (Wired Ion Scalable Entanglement) grid architecture.
+
+    A 2-D grid of **m × n** ion traps (column-groups × rows), each
+    containing **k** ions.  Adjacent column-groups in the same row are
+    connected via junctions; junctions in adjacent rows are connected
+    vertically so that ions can be routed across the full grid.
+
+    Parameters
+    ----------
+    col_groups : int
+        Number of column groups (blocks), *m*.
+    rows : int
+        Number of rows, *n*.
+    ions_per_segment : int
+        Number of ions per trap segment, *k*.
+    trap_spacing : float
+        Physical spacing between traps (µm).
+    name : str, optional
+        Human-readable architecture name.
+    metadata : dict, optional
+        Arbitrary extra metadata.
+
+    Attributes
+    ----------
+    col_groups : int
+        Number of column groups (*m*).
+    rows : int
+        Number of rows (*n*).  Inherited from ``QCCDArchitecture``.
+    ions_per_segment : int
+        Ions per segment (*k*).
+    num_qubits : int
+        Total qubit count = *m × n × k*.
+    total_columns : int
+        Absolute grid width = *m × k*.
+    grid_shape : Tuple[int, int]
+        ``(n_rows, n_cols)`` = ``(rows, total_columns)`` — the shape
+        used by the SAT router.
+    k : int
+        Alias for ``ions_per_segment`` (trap capacity).
+    capacity : int
+        Alias for ``ions_per_segment`` (block capacity).
+    n_rows : int
+        Alias for ``rows``.
+    n_cols : int
+        Alias for ``total_columns``.
+    traps : Dict[Tuple[int, int], ManipulationTrap]
+        Traps keyed by ``(block, row)``.
+    junctions : Dict[Tuple[int, int], Junction]
+        Junctions keyed by ``(block, row)``.
+
+    Notes
+    -----
+    Ion indexing follows row-major order::
+
+        ion_idx = row * total_columns + block * k + slot
+
+    where ``slot ∈ [0, k)``.
+
+    The SAT-based router and compiler access the architecture through
+    ``grid_shape``, ``capacity``, ``n_rows``, ``n_cols``.  The
+    visualisation layer uses ``col_groups``, ``rows``,
+    ``ions_per_segment``, ``total_columns``.
+    """
+
+    def __init__(
+        self,
+        col_groups: int = 2,
+        rows: int = 2,
+        ions_per_segment: int = 2,
+        trap_spacing: float = 10.0,
+        name: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ):
+        # Store WISE-specific attributes *before* super().__init__
+        # because it calls _build_grid_topology() immediately.
+        self.col_groups = col_groups
+        self.ions_per_segment = ions_per_segment
+        self._traps: Dict[Tuple[int, int], ManipulationTrap] = {}
+        self._junctions: Dict[Tuple[int, int], Junction] = {}
+        self._ion_index: Dict[int, Ion] = {}
+
+        super().__init__(
+            rows=rows,
+            cols=col_groups,
+            ions_per_trap=ions_per_segment,
+            trap_spacing=trap_spacing,
+            name=name or f"WISE_{col_groups}x{rows}x{ions_per_segment}",
+            metadata=metadata,
+        )
+
+    # --------------------------------------------------------------------- #
+    #  Topology builder  (overrides QCCDArchitecture._build_grid_topology)   #
+    # --------------------------------------------------------------------- #
+
+    def _build_grid_topology(self) -> None:
+        """Build the WISE *m × n × k* grid topology.
+
+        Creates:
+
+        * **m × n** manipulation traps, each holding *k* ions.
+        * **(m − 1) × n** horizontal junctions connecting adjacent
+          column-groups within each row.
+        * Vertical crossings linking junctions of neighbouring rows
+          so that ions can be routed between rows.
+
+        Called automatically by ``QCCDArchitecture.__init__``.
+        """
+        self._qccd_graph = QCCDGraph()
+
+        # Defensive re-init (handles construction ordering)
+        self._traps = getattr(self, "_traps", {})
+        self._junctions = getattr(self, "_junctions", {})
+        self._ion_index = getattr(self, "_ion_index", {})
+        self._traps.clear()
+        self._junctions.clear()
+        self._ion_index.clear()
+
+        m = self.col_groups
+        n = self.rows
+        k = self.ions_per_segment
+        total_cols = m * k
+
+        # ---- 1. Create manipulation traps --------------------------------
+        for r in range(n):
+            for b in range(m):
+                ions: List[Ion] = []
+                for s in range(k):
+                    idx = r * total_cols + b * k + s
+                    ion = Ion(
+                        idx=idx,
+                        label="Q",
+                        position=(float(b * k + s), float(r)),
+                    )
+                    ions.append(ion)
+                    self._ion_index[idx] = ion
+
+                x = b * self.trap_spacing * 2
+                y = r * self.trap_spacing * 2
+
+                trap = self._qccd_graph.add_manipulation_trap(
+                    position=(x, y),
+                    ions=ions,
+                    capacity=k,
+                    is_horizontal=True,
+                )
+                self._traps[(b, r)] = trap
+
+        # ---- 2. Create horizontal junctions ------------------------------
+        for r in range(n):
+            for b in range(m - 1):
+                jx = (b * 2 + 1) * self.trap_spacing
+                jy = r * self.trap_spacing * 2
+                junction = self._qccd_graph.add_junction(position=(jx, jy))
+                self._junctions[(b, r)] = junction
+
+                # trap(b, r)  ↔  junction  ↔  trap(b+1, r)
+                self._qccd_graph.add_crossing(
+                    self._traps[(b, r)], junction
+                )
+                self._qccd_graph.add_crossing(
+                    junction, self._traps[(b + 1, r)]
+                )
+
+        # ---- 3. Vertical crossings between junctions --------------------
+        for r in range(n - 1):
+            for b in range(m - 1):
+                self._qccd_graph.add_crossing(
+                    self._junctions[(b, r)],
+                    self._junctions[(b, r + 1)],
+                )
+
+        # ---- 4. Finalise graph -------------------------------------------
+        self._qccd_graph.build_networkx_graph()
+        self._qccd_graph.compute_routing_table()
+
+    # --------------------------------------------------------------------- #
+    #  Properties                                                            #
+    # --------------------------------------------------------------------- #
+
+    @property
+    def k(self) -> int:
+        """Trap capacity (alias for ``ions_per_segment``)."""
+        return self.ions_per_segment
+
+    @property
+    def capacity(self) -> int:
+        """Block capacity (alias for ``ions_per_segment``)."""
+        return self.ions_per_segment
+
+    @property
+    def total_columns(self) -> int:
+        """Total grid columns = ``col_groups × ions_per_segment``."""
+        return self.col_groups * self.ions_per_segment
+
+    @property
+    def n_rows(self) -> int:
+        """Number of rows (alias for ``rows``)."""
+        return self.rows
+
+    @property
+    def n_cols(self) -> int:
+        """Number of grid columns (alias for ``total_columns``)."""
+        return self.total_columns
+
+    @property
+    def grid_shape(self) -> Tuple[int, int]:
+        """``(n_rows, n_cols)`` grid dimensions for the SAT router."""
+        return (self.rows, self.total_columns)
+
+    @property
+    def traps(self) -> Dict[Tuple[int, int], ManipulationTrap]:
+        """Trap dict keyed by ``(block, row)``."""
+        return self._traps
+
+    @property
+    def junctions(self) -> Dict[Tuple[int, int], Junction]:
+        """Junction dict keyed by ``(block, row)``."""
+        return self._junctions
+
+    # --------------------------------------------------------------------- #
+    #  Ion / trap lookup                                                     #
+    # --------------------------------------------------------------------- #
+
+    def get_ion(self, idx: int) -> Optional[Ion]:
+        """Look up an :class:`Ion` by its global index.
+
+        Parameters
+        ----------
+        idx : int
+            Ion index (0-based, row-major).
+
+        Returns
+        -------
+        Ion or None
+            The ``Ion`` object, or ``None`` if *idx* is out of range.
+        """
+        return self._ion_index.get(idx)
+
+    def get_trap_for_ion(self, idx: int) -> Optional[ManipulationTrap]:
+        """Return the trap containing the ion with the given index.
+
+        Parameters
+        ----------
+        idx : int
+            Ion index.
+
+        Returns
+        -------
+        ManipulationTrap or None
+        """
+        tc = self.total_columns
+        k_val = self.ions_per_segment
+        if tc == 0 or k_val == 0 or idx < 0 or idx >= self.num_qubits:
+            return None
+        row = idx // tc
+        block = (idx % tc) // k_val
+        return self._traps.get((block, row))
+
+    # --------------------------------------------------------------------- #
+    #  Overrides                                                             #
+    # --------------------------------------------------------------------- #
+
+    def __repr__(self) -> str:
+        return (
+            f"WISEArchitecture(col_groups={self.col_groups}, "
+            f"rows={self.rows}, ions_per_segment={self.ions_per_segment})"
+        )
+
+
+# =============================================================================
+# Augmented Grid Architecture
+# =============================================================================
+
+class AugmentedGridArchitecture(QCCDArchitecture):
+    """Augmented grid QCCD architecture.
+
+    A 2-D chequerboard layout of manipulation traps where **even** rows
+    use column positions ``(2c, 2r)`` and **odd** interleaved rows use
+    offset positions ``(2c+1, 2r+1)``.  Vertical neighbours in the
+    even-column grid are connected via junctions; horizontal edges link
+    the junctions to the diagonal interleaved traps.
+
+    This topology offers richer connectivity than a simple rectangular
+    grid while remaining physically implementable with T-junction
+    segments.
+
+    Parameters
+    ----------
+    rows : int
+        Number of main rows.
+    cols : int
+        Number of main columns.
+    ions_per_trap : int
+        Maximum ions per manipulation trap.
+    padding : int
+        Extra empty trap rows/cols around the populated core.
+    trap_spacing : float
+        Physical spacing multiplier.
+
+    Notes
+    -----
+    Ported from ``old/src/simulator/qccd_circuit.py``
+    → ``processCircuitAugmentedGrid()``.
+    """
+
+    def __init__(
+        self,
+        rows: int = 3,
+        cols: int = 5,
+        ions_per_trap: int = 3,
+        padding: int = 1,
+        trap_spacing: float = 10.0,
+        name: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ):
+        self.padding = padding
+        self._traps_dict: Dict[Tuple[int, int], ManipulationTrap] = {}
+        self._junctions_dict: Dict[Tuple[int, int], Junction] = {}
+
+        # QCCDArchitecture.__init__ calls _build_grid_topology()
+        super().__init__(
+            rows=rows,
+            cols=cols,
+            ions_per_trap=ions_per_trap,
+            trap_spacing=trap_spacing,
+            name=name or f"AugGrid_{rows}x{cols}",
+            metadata=metadata,
+        )
+
+    # --------------------------------------------------------------------- #
+
+    def _build_grid_topology(self) -> None:  # noqa: C901
+        """Build the augmented (chequerboard) grid topology.
+
+        Grid positions:
+        * Even rows, even cols: ``(2c, 2r)``       — main traps
+        * Interleaved:          ``(2c+1, 2r+1)``   — diagonal traps
+        * Junctions sit midway between vertical main-trap neighbours.
+        * Horizontal edges connect junctions to diagonal traps.
+        """
+        self._qccd_graph = QCCDGraph()
+        self._traps_dict = {}
+        self._junctions_dict = {}
+
+        rows = self.rows
+        cols = self.cols
+        k = self.ions_per_trap
+
+        ion_idx = 0
+
+        # ---- 1. Create main traps at (2c, 2r) ----------------------------
+        for r in range(rows):
+            for c in range(cols):
+                ions = [
+                    Ion(idx=ion_idx + i, label="Q", position=(float(2 * c), float(2 * r)))
+                    for i in range(k)
+                ]
+                ion_idx += k
+                pos = (2 * c * self.trap_spacing, 2 * r * self.trap_spacing)
+                trap = self._qccd_graph.add_manipulation_trap(
+                    position=pos,
+                    ions=ions,
+                    capacity=k,
+                    is_horizontal=(rows == 1),
+                )
+                self._traps_dict[(2 * c, 2 * r)] = trap
+
+            # ---- 1b. Interleaved diagonal traps at (2c+1, 2r+1) ----------
+            if r < rows - 1:
+                for c in range(cols - 1):
+                    ions = [
+                        Ion(idx=ion_idx + i, label="Q",
+                            position=(float(2 * c + 1), float(2 * r + 1)))
+                        for i in range(k)
+                    ]
+                    ion_idx += k
+                    pos = (
+                        (2 * c + 1) * self.trap_spacing,
+                        (2 * r + 1) * self.trap_spacing,
+                    )
+                    trap = self._qccd_graph.add_manipulation_trap(
+                        position=pos,
+                        ions=ions,
+                        capacity=k,
+                        is_horizontal=True,
+                    )
+                    self._traps_dict[(2 * c + 1, 2 * r + 1)] = trap
+
+        # ---- 2. Edges / junctions -----------------------------------------
+        if rows == 1:
+            # Simple linear chain of even traps
+            for (col, r), trap in self._traps_dict.items():
+                if (col + 2, r) in self._traps_dict:
+                    self._qccd_graph.add_crossing(trap, self._traps_dict[(col + 2, r)])
+        else:
+            # Vertical junctions between even-column traps
+            for (col, row), trap in list(self._traps_dict.items()):
+                if col % 2 == 0 and (col, row + 2) in self._traps_dict:
+                    mid_pos = (
+                        col * self.trap_spacing,
+                        (row + 1) * self.trap_spacing,
+                    )
+                    junction = self._qccd_graph.add_junction(position=mid_pos)
+                    self._junctions_dict[(col, row + 1)] = junction
+                    self._qccd_graph.add_crossing(trap, junction)
+                    self._qccd_graph.add_crossing(junction, self._traps_dict[(col, row + 2)])
+
+            # Horizontal edges: junction ↔ diagonal trap
+            for r in range(rows - 1):
+                for c in range(cols - 1):
+                    jkey = (2 * c, 2 * r + 1)
+                    tkey = (2 * c + 1, 2 * r + 1)
+                    if jkey in self._junctions_dict and tkey in self._traps_dict:
+                        self._qccd_graph.add_crossing(
+                            self._junctions_dict[jkey], self._traps_dict[tkey]
+                        )
+                    tkey2 = (2 * c + 1, 2 * r + 1)
+                    jkey2 = (2 * c + 2, 2 * r + 1)
+                    if tkey2 in self._traps_dict and jkey2 in self._junctions_dict:
+                        self._qccd_graph.add_crossing(
+                            self._traps_dict[tkey2], self._junctions_dict[jkey2]
+                        )
+
+        # ---- 3. Finalise ---------------------------------------------------
+        self._qccd_graph.build_networkx_graph()
+        self._qccd_graph.compute_routing_table()
+
+    # ---- Properties --------------------------------------------------------
+
+    @property
+    def traps_dict(self) -> Dict[Tuple[int, int], ManipulationTrap]:
+        return self._traps_dict
+
+    @property
+    def junctions_dict(self) -> Dict[Tuple[int, int], Junction]:
+        return self._junctions_dict
+
+    def __repr__(self) -> str:
+        return (
+            f"AugmentedGridArchitecture(rows={self.rows}, cols={self.cols}, "
+            f"ions_per_trap={self.ions_per_trap}, padding={self.padding})"
+        )
+
+
+# =============================================================================
+# Networked Grid Architecture
+# =============================================================================
+
+class NetworkedGridArchitecture(QCCDArchitecture):
+    """Networked (fully-connected) QCCD architecture.
+
+    A linear chain of manipulation traps, each connected through a
+    junction sub-chain.  All junction endpoints are cross-connected,
+    giving an all-to-all routing topology between traps.
+
+    Parameters
+    ----------
+    num_traps : int
+        Number of manipulation traps.
+    ions_per_trap : int
+        Maximum ions per trap.
+    trap_spacing : float
+        Physical spacing multiplier.
+
+    Notes
+    -----
+    Ported from ``old/src/simulator/qccd_circuit.py``
+    → ``processCircuitNetworkedGrid()``.
+    """
+
+    def __init__(
+        self,
+        num_traps: int = 5,
+        ions_per_trap: int = 3,
+        trap_spacing: float = 10.0,
+        name: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ):
+        self.num_traps = num_traps
+        self._traps_dict: Dict[int, ManipulationTrap] = {}
+        self._junctions_dict: Dict[Tuple[int, int], Junction] = {}
+
+        super().__init__(
+            rows=num_traps,
+            cols=1,
+            ions_per_trap=ions_per_trap,
+            trap_spacing=trap_spacing,
+            name=name or f"Networked_{num_traps}",
+            metadata=metadata,
+        )
+
+    # --------------------------------------------------------------------- #
+
+    def _build_grid_topology(self) -> None:
+        """Build a fully-connected networked topology.
+
+        Each trap has a junction chain of length 1 to its right.
+        All junction endpoints are cross-connected to every other
+        junction endpoint, giving all-to-all connectivity.
+        """
+        self._qccd_graph = QCCDGraph()
+        self._traps_dict = {}
+        self._junctions_dict = {}
+
+        k = self.ions_per_trap
+        n_traps = self.num_traps
+        switch_cost = 1  # junction-chain length per trap
+        ion_idx = 0
+
+        # ---- 1. Create traps ------------------------------------------------
+        for row in range(n_traps):
+            ions = [
+                Ion(idx=ion_idx + i, label="Q", position=(0.0, float(row)))
+                for i in range(k)
+            ]
+            ion_idx += k
+            pos = (0.0, row * self.trap_spacing)
+            trap = self._qccd_graph.add_manipulation_trap(
+                position=pos, ions=ions, capacity=k, is_horizontal=True,
+            )
+            self._traps_dict[row] = trap
+
+        # ---- 2. Create junction chain per trap ------------------------------
+        for row, trap in self._traps_dict.items():
+            for i in range(switch_cost):
+                jpos = ((i + 1) * self.trap_spacing, row * self.trap_spacing)
+                junction = self._qccd_graph.add_junction(position=jpos)
+                self._junctions_dict[(i + 1, row)] = junction
+                if i == 0:
+                    self._qccd_graph.add_crossing(trap, junction)
+                else:
+                    self._qccd_graph.add_crossing(
+                        self._junctions_dict[(i, row)], junction,
+                    )
+
+        # ---- 3. Cross-connect all junction endpoints (all-to-all) -----------
+        for row1 in range(n_traps):
+            j1 = self._junctions_dict[(switch_cost, row1)]
+            for row2 in range(n_traps):
+                if row1 == row2:
+                    continue
+                j2 = self._junctions_dict[(switch_cost, row2)]
+                self._qccd_graph.add_crossing(j1, j2)
+
+        # ---- 4. Finalise ----------------------------------------------------
+        self._qccd_graph.build_networkx_graph()
+        self._qccd_graph.compute_routing_table()
+
+    # ---- Properties ---------------------------------------------------------
+
+    @property
+    def traps(self) -> Dict[int, ManipulationTrap]:
+        return self._traps_dict
+
+    def __repr__(self) -> str:
+        return (
+            f"NetworkedGridArchitecture(num_traps={self.num_traps}, "
+            f"ions_per_trap={self.ions_per_trap})"
+        )

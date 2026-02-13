@@ -190,9 +190,9 @@ class HardwareSimulator(Experiment):
         # Apply hardware-specific noise
         circuit = self.apply_hardware_noise(circuit)
         
-        # Apply additional circuit noise (from parent class)
-        if self.noise_model is not None:
-            circuit = self.noise_model.apply(circuit)
+        # NOTE: noise_model is NOT applied here — the base Experiment class
+        # applies it in _run_correction_path() / _run_detection_path() after
+        # calling to_stim().  Applying it here would cause double application.
         
         return circuit
     
@@ -222,17 +222,29 @@ class HardwareSimulator(Experiment):
         # Run decoding through base class
         decode_result = self.run_decode(shots=num_shots, decoder_name=decoder_name)
         
+        # Normalise decoder return format
+        logical_error_rate = (
+            decode_result.get('logical_error_rate')
+            or decode_result.get('error_rate', 0.0)
+        )
+        shots = decode_result.get('shots', num_shots)
+        logical_errors = decode_result.get('logical_errors')
+        if logical_errors is not None:
+            num_errors = int(np.sum(logical_errors))
+        else:
+            num_errors = decode_result.get('num_errors', 0)
+        
         # Build result with hardware metrics
         return HardwareSimulationResult(
-            logical_error_rate=decode_result['logical_error_rate'],
-            num_shots=decode_result['shots'],
-            num_errors=int(np.sum(decode_result['logical_errors'])),
+            logical_error_rate=logical_error_rate,
+            num_shots=shots,
+            num_errors=num_errors,
             compilation_metrics=self._compiled.compute_metrics(),
             simulation_metrics={
                 "total_duration_us": self._compiled.total_duration,
                 "circuit_depth": self._compiled.depth,
             },
-            decoder_used=decoder_name or "auto",
+            decoder_used=decode_result.get('decoder', decoder_name) or "auto",
         )
     
     def get_compilation_metrics(self) -> Dict[str, Any]:

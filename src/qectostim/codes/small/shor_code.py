@@ -21,10 +21,10 @@ Stabilisers
 * **X-type** (2 generators, weight 6 each):
       X₀X₁X₂X₃X₄X₅, X₃X₄X₅X₆X₇X₈
 
-Logical operators (minimum weight)
------------------------------------
-    X̄ = X₀X₃X₆   (one qubit per row-block)
-    Z̄ = Z₀Z₁Z₂   (entire first block)
+Logical operators (minimum weight, CSS convention)
+---------------------------------------------------
+    X̄ = X₀X₁X₂   (entire first row-block — commutes with all Hz)
+    Z̄ = Z₀Z₃Z₆   (one qubit per row-block — commutes with all Hx)
 
 Code parameters
 ---------------
@@ -237,25 +237,33 @@ class ShorCode91(TopologicalCSSCode):
         chain_complex = CSSChainComplex3(boundary_2=boundary_2, boundary_1=boundary_1)
 
         # ═══════════════════════════════════════════════════════════════════
-        # SHOR CODE LOGICAL OPERATORS (Standard CSS Convention)
+        # SHOR CODE LOGICAL OPERATORS (CSS Convention)
         # ═══════════════════════════════════════════════════════════════════
-        # Using standard CSS convention where:
-        #   Logical X is X-type (X on qubits 0, 3, 6 - one per block)
-        #   Logical Z is Z-type (Z on qubits 0, 1, 2 - first block)
+        # CSS convention: Lx is X-type, Lz is Z-type.
+        #   Lx must commute with Hz (Z-type stabilizers)
+        #   Lz must commute with Hx (X-type stabilizers)
         #
-        # This matches the standard definition where Lz commutes with Hz
-        # and Lx commutes with Hx.
+        # For the Shor code:
+        #   Lx = X₀X₁X₂  (entire first row) — commutes with all Hz rows
+        #   Lz = Z₀Z₃Z₆  (one per row)      — commutes with all Hx rows
+        #
+        # NOTE: In the computational-basis picture, Lx = X₀X₁X₂ acts as
+        # the logical Z gate (distinguishes |0_L⟩ from |1_L⟩) and
+        # Lz = Z₀Z₃Z₆ acts as the logical X gate (flips |0_L⟩ ↔ |1_L⟩).
+        # This Pauli-type swap is a consequence of the Hadamard gates in
+        # the Shor encoding circuit.  The CSS convention (used here) labels
+        # by Pauli type, not computational-basis role.
         # ═══════════════════════════════════════════════════════════════════
         
-        # Logical X: X on one qubit per block (qubits 0, 3, 6)
+        # Logical X: X on first row-block (qubits 0, 1, 2)
         # Qubits: 0  1  2  3  4  5  6  7  8
-        #         X  I  I  X  I  I  X  I  I
-        logical_x = ["XIIXIIXII"]
+        #         X  X  X  I  I  I  I  I  I
+        logical_x = ["XXXIIIIII"]
         
-        # Logical Z: Z on first block (qubits 0, 1, 2)
+        # Logical Z: Z on one qubit per row-block (qubits 0, 3, 6)
         # Qubits: 0  1  2  3  4  5  6  7  8
-        #         Z  Z  Z  I  I  I  I  I  I
-        logical_z = ["ZZZIIIIII"]
+        #         Z  I  I  Z  I  I  Z  I  I
+        logical_z = ["ZIIZIIZII"]
 
         # 3x3 grid coordinates
         coords = {q: (float(q % 3), float(q // 3)) for q in range(9)}
@@ -282,26 +290,21 @@ class ShorCode91(TopologicalCSSCode):
         meta["x_stab_coords"] = x_stab_coords
         meta["z_stab_coords"] = z_stab_coords
         meta["data_qubits"] = list(range(9))
-        meta["x_logical_coords"] = [data_coords[i] for i in [0, 3, 6]]
-        meta["z_logical_coords"] = [data_coords[i] for i in [0, 1, 2]]
+        meta["x_logical_coords"] = [data_coords[i] for i in [0, 1, 2]]
+        meta["z_logical_coords"] = [data_coords[i] for i in [0, 3, 6]]
         
         # ═══════════════════════════════════════════════════════════════════
-        # LOGICAL OPERATOR PAULI TYPES (Standard CSS Convention)
+        # LOGICAL OPERATOR PAULI TYPES (CSS Convention)
         # ═══════════════════════════════════════════════════════════════════
-        # Using standard CSS convention:
-        #   Logical Z is Z-type (Z on qubits 0, 1, 2)
-        #   Logical X is X-type (X on qubits 0, 3, 6)
-        #
-        # This means:
-        # - To measure Lz, we need Z-basis measurements (M), standard path
-        # - Lz commutes with Hz (Z-type stabilizers)
-        # - Lx commutes with Hx (X-type stabilizers)
+        # CSS convention: Lz is Z-type, Lx is X-type.
+        #   Lz = Z₀Z₃Z₆  (commutes with Hx)
+        #   Lx = X₀X₁X₂  (commutes with Hz)
         # ═══════════════════════════════════════════════════════════════════
-        meta["lz_pauli_type"] = "Z"  # Lz is Z-type (standard)
-        meta["lz_support"] = [0, 1, 2]  # Z₀Z₁Z₂
+        meta["lz_pauli_type"] = "Z"  # Lz is Z-type
+        meta["lz_support"] = [0, 3, 6]  # Z₀Z₃Z₆
         
-        meta["lx_pauli_type"] = "X"  # Lx is X-type (standard)
-        meta["lx_support"] = [0, 3, 6]  # X₀X₃X₆
+        meta["lx_pauli_type"] = "X"  # Lx is X-type
+        meta["lx_support"] = [0, 1, 2]  # X₀X₁X₂
         
         # Measurement schedules
         meta["x_schedule"] = [(0.0, 0.5), (1.0, 0.5), (2.0, 0.5)]  # 3 qubits per X stab

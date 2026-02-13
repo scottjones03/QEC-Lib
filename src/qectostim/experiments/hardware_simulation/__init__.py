@@ -90,6 +90,7 @@ from qectostim.experiments.hardware_simulation.trapped_ion import (
     LinearChainCompiler,
     TrappedIonSimulator,
     TrappedIonNoiseModel,
+    TrappedIonExperiment,
 )
 
 # Superconducting platform
@@ -361,6 +362,7 @@ __all__ = [
     "LinearChainCompiler",
     "TrappedIonSimulator",
     "TrappedIonNoiseModel",
+    "TrappedIonExperiment",
     # Superconducting
     "SuperconductingArchitecture",
     "FixedCouplingArchitecture",

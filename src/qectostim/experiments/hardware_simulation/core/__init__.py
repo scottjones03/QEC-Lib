@@ -20,6 +20,7 @@ from qectostim.experiments.hardware_simulation.core.architecture import (
     ReconfigurableArchitecture,
     ConnectivityGraph,
     Zone,
+    MutableZone,
     ZoneType,
     PhysicalConstraints,
     TransportCost,
@@ -61,6 +62,8 @@ from qectostim.experiments.hardware_simulation.core.operations import (
     OperationBatch,
     BatchScheduler,
     GreedyBatchScheduler,
+    TypeOrderedBatchScheduler,
+    BarrierAwareScheduler,
     DependencyEdge,
     # Error model protocol
     TransportErrorModel,
@@ -74,11 +77,17 @@ from qectostim.experiments.hardware_simulation.core.compiler import (
     RoutingPass,
     SchedulingPass,
     Router,
+    SwapRouter,
+    TransportRouter,
     RoutingStrategy,
     RoutingResult,
     # Technology-agnostic cost model
     CostModel,
     UniformCostModel,
+    # Concrete defaults
+    PassthroughDecomposer,
+    IdentityMapper,
+    run_pipeline,
 )
 from qectostim.experiments.hardware_simulation.core.pipeline import (
     CompiledCircuit,
@@ -111,6 +120,11 @@ from qectostim.experiments.hardware_simulation.core.sat_interface import (
     Constraint,
     SATSolution,
     PlacementRequirement,
+    # Generic grid data structures
+    GridLayout,
+    SortingPass,
+    RoutingSchedule,
+    InteractionRequirement,
     # Abstract encoders
     SATEncoder,
     GridSATEncoder,
@@ -128,6 +142,7 @@ __all__ = [
     "ReconfigurableArchitecture",
     "ConnectivityGraph", 
     "Zone",
+    "MutableZone",
     "ZoneType",
     "PhysicalConstraints",
     "TransportCost",
@@ -166,6 +181,8 @@ __all__ = [
     "OperationBatch",
     "BatchScheduler",
     "GreedyBatchScheduler",
+    "TypeOrderedBatchScheduler",
+    "BarrierAwareScheduler",
     "DependencyEdge",
     # Operations - error models
     "TransportErrorModel",
@@ -178,11 +195,17 @@ __all__ = [
     "RoutingPass",
     "SchedulingPass",
     "Router",
+    "SwapRouter",
+    "TransportRouter",
     "RoutingStrategy",
     "RoutingResult",
     # Cost model
     "CostModel",
     "UniformCostModel",
+    # Concrete defaults
+    "PassthroughDecomposer",
+    "IdentityMapper",
+    "run_pipeline",
     # Pipeline
     "CompiledCircuit",
     "NativeCircuit",
@@ -213,6 +236,12 @@ __all__ = [
     "SATEncoder",
     "GridSATEncoder",
     "SATSolverProtocol",
+    # SAT interface - grid data structures
+    "GridLayout",
+    "SortingPass",
+    "RoutingSchedule",
+    "InteractionRequirement",
+    # SAT interface - utilities
     "manhattan_distance",
     "are_adjacent",
     "grid_neighbors",

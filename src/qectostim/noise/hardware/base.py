@@ -79,12 +79,20 @@ class NoiseChannel:
             NoiseChannelType.DEPOLARIZING_1Q: "DEPOLARIZE1",
             NoiseChannelType.DEPOLARIZING_2Q: "DEPOLARIZE2",
             NoiseChannelType.DEPHASING: "Z_ERROR",
+            NoiseChannelType.AMPLITUDE_DAMPING: "Z_ERROR",      # Best stim approximation of T1
             NoiseChannelType.BIT_FLIP: "X_ERROR",
             NoiseChannelType.PHASE_FLIP: "Z_ERROR",
             NoiseChannelType.MEASUREMENT: "X_ERROR",
+            NoiseChannelType.LEAKAGE: "DEPOLARIZE1",            # Approximate leakage as depolarizing
+            NoiseChannelType.CROSSTALK: "DEPOLARIZE2",           # Approximate crosstalk as 2Q depol
         }
         
-        stim_name = channel_map.get(self.channel_type, "DEPOLARIZE1")
+        stim_name = channel_map.get(self.channel_type)
+        if stim_name is None:
+            raise ValueError(
+                f"No stim instruction mapping for channel type {self.channel_type!r}. "
+                f"Supported types: {list(channel_map.keys())}"
+            )
         return f"{stim_name}({self.probability}) {qubit_str}"
     
     def to_stim(self) -> str:
@@ -334,35 +342,47 @@ class HardwareNoiseModel(NoiseModel):
             swaps = plan.get_swaps_for_instruction(instruction_index)
             for swap_info in swaps:
                 if swap_info.num_swaps > 0:
-                    error_prob = min(swap_info.error_probability * self.error_scaling, 0.5)
+                    error_prob = min(swap_info.error_probability / self.error_scaling, 0.5)
                     if error_prob > 0:
                         q1, q2 = swap_info.qubits
                         noisy.append_from_stim_program_text(
                             f"DEPOLARIZE2({error_prob}) {q1} {q2}"
                         )
             
-            # 3. Append the original instruction
-            noisy.append(inst)
+            # Determine if this is a measurement instruction
+            is_measurement = name in ("M", "MX", "MY", "MZ", "MR",
+                                       "MRX", "MRY", "MRZ")
             
-            # 4. Apply operation noise AFTER the gate
+            # 3. Get gate infidelity noise
+            gate_noise_text = []
             op_timing = plan.get_operation(instruction_index)
             if op_timing is not None and qubit_targets:
-                # Get gate infidelity noise
-                error_prob = (1.0 - op_timing.fidelity) * self.error_scaling
-                error_prob = min(error_prob, 0.5)  # Clamp to valid range
+                error_prob = (1.0 - op_timing.fidelity) / self.error_scaling
+                error_prob = min(error_prob, 0.5)
                 
                 if error_prob > 0:
-                    if len(qubit_targets) == 1:
-                        noisy.append_from_stim_program_text(
-                            f"DEPOLARIZE1({error_prob}) {qubit_targets[0]}"
-                        )
+                    if is_measurement:
+                        for q in qubit_targets:
+                            gate_noise_text.append(f"X_ERROR({error_prob}) {q}")
+                    elif len(qubit_targets) == 1:
+                        gate_noise_text.append(
+                            f"DEPOLARIZE1({error_prob}) {qubit_targets[0]}")
                     elif len(qubit_targets) >= 2:
-                        # Apply to pairs
                         for i in range(0, len(qubit_targets) - 1, 2):
                             q1, q2 = qubit_targets[i], qubit_targets[i + 1]
-                            noisy.append_from_stim_program_text(
-                                f"DEPOLARIZE2({error_prob}) {q1} {q2}"
-                            )
+                            gate_noise_text.append(
+                                f"DEPOLARIZE2({error_prob}) {q1} {q2}")
+            
+            if is_measurement:
+                # Noise BEFORE measurement (X_ERROR before M = meas error)
+                for txt in gate_noise_text:
+                    noisy.append_from_stim_program_text(txt)
+                noisy.append(inst)
+            else:
+                # Original instruction first, then noise AFTER
+                noisy.append(inst)
+                for txt in gate_noise_text:
+                    noisy.append_from_stim_program_text(txt)
             
             instruction_index += 1
         
@@ -438,7 +458,7 @@ class HardwareNoiseModel(NoiseModel):
         if gate_name in single_qubit_gates:
             for q in qubits:
                 fidelity = self.calibration.get_1q_fidelity(q, gate_name)
-                error_prob = (1.0 - fidelity) * self.error_scaling
+                error_prob = (1.0 - fidelity) / self.error_scaling
                 if error_prob > 0:
                     channels.append(NoiseChannel(
                         channel_type=NoiseChannelType.DEPOLARIZING_1Q,
@@ -451,7 +471,7 @@ class HardwareNoiseModel(NoiseModel):
                 if i + 1 < len(qubits):
                     q1, q2 = qubits[i], qubits[i + 1]
                     fidelity = self.calibration.get_2q_fidelity(q1, q2, gate_name)
-                    error_prob = (1.0 - fidelity) * self.error_scaling
+                    error_prob = (1.0 - fidelity) / self.error_scaling
                     if error_prob > 0:
                         channels.append(NoiseChannel(
                             channel_type=NoiseChannelType.DEPOLARIZING_2Q,
@@ -463,7 +483,7 @@ class HardwareNoiseModel(NoiseModel):
             for q in qubits:
                 p0_0, p1_1 = self.calibration.get_readout_fidelity(q)
                 # Symmetric readout error approximation
-                error_prob = ((1 - p0_0) + (1 - p1_1)) / 2 * self.error_scaling
+                error_prob = ((1 - p0_0) + (1 - p1_1)) / 2 / self.error_scaling
                 if error_prob > 0:
                     channels.append(NoiseChannel(
                         channel_type=NoiseChannelType.MEASUREMENT,

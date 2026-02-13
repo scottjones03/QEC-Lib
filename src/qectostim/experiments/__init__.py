@@ -143,6 +143,31 @@ except (ImportError, ModuleNotFoundError):
     ECConfig = None
     run_multilevel_experiment = None
 
+# Hardware simulation integration - expose key classes
+# for users who want hardware-aware compilation/simulation
+try:
+    from .hardware_simulation import (
+        # Experiment class for hardware simulation
+        HardwareSimulator,
+        # TrappedIonExperiment for TI-specific runs
+        TrappedIonExperiment,
+    )
+    # Import core abstractions for users who want to build
+    # custom hardware backends
+    from .hardware_simulation.core import (
+        HardwareArchitecture,
+        HardwareCompiler,
+        PhysicalOperation,
+        PhysicalQubit,
+    )
+except (ImportError, ModuleNotFoundError):
+    HardwareSimulator = None
+    TrappedIonExperiment = None
+    HardwareArchitecture = None
+    HardwareCompiler = None
+    PhysicalOperation = None
+    PhysicalQubit = None
+
 __all__ = [
     # Base
     "Experiment",
@@ -197,4 +222,11 @@ __all__ = [
     "XYZColorCodeStabilizerRoundBuilder",
     "StabilizerBasis",
     "get_logical_support",
+    # Hardware simulation
+    "HardwareSimulator",
+    "TrappedIonExperiment",
+    "HardwareArchitecture",
+    "HardwareCompiler",
+    "PhysicalOperation",
+    "PhysicalQubit",
 ]

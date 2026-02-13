@@ -35,20 +35,26 @@ Gates:
 from qectostim.experiments.hardware_simulation.trapped_ion.architecture import (
     TrappedIonArchitecture,
     QCCDArchitecture,
+    WISEArchitecture,
     LinearChainArchitecture,
+    AugmentedGridArchitecture,
+    NetworkedGridArchitecture,
 )
 from qectostim.experiments.hardware_simulation.trapped_ion.compiler import (
     TrappedIonCompiler,
     WISECompiler,
     QCCDCompiler,
     LinearChainCompiler,
+    AugmentedGridCompiler,
+    NetworkedGridCompiler,
     DecomposedGate,
 )
 from qectostim.experiments.hardware_simulation.trapped_ion.simulator import (
     TrappedIonSimulator,
 )
 from qectostim.experiments.hardware_simulation.trapped_ion.experiments import (
-    TrappedIonMemoryExperiment,
+    TrappedIonExperiment,
+    TrappedIonGadgetExperiment,
 )
 from qectostim.experiments.hardware_simulation.trapped_ion.noise import (
     TrappedIonNoiseModel,
@@ -63,14 +69,9 @@ from qectostim.experiments.hardware_simulation.trapped_ion.execution import (
 from qectostim.experiments.hardware_simulation.trapped_ion.gates import (
     TrappedIonGateSet,
 )
-from qectostim.experiments.hardware_simulation.trapped_ion.components import (
+from qectostim.experiments.hardware_simulation.trapped_ion.architecture import (
     # Operation types
-    QCCDOperation,
-    # Timing/heating constants
-    TrappedIonTimings,
-    HeatingRates,
-    DEFAULT_TIMINGS,
-    DEFAULT_HEATING_RATES,
+    QCCDOperationType as QCCDOperation,
     # Ion types
     Ion,
     QubitIon,
@@ -79,7 +80,6 @@ from qectostim.experiments.hardware_simulation.trapped_ion.components import (
     # Node types
     QCCDNode,
     Junction,
-    Trap,
     ManipulationTrap,
     StorageTrap,
     # Connection
@@ -90,9 +90,38 @@ from qectostim.experiments.hardware_simulation.trapped_ion.components import (
     # Factories
     create_qubit_ion,
     create_cooling_ion,
-    create_manipulation_trap,
-    create_storage_trap,
 )
+from qectostim.experiments.hardware_simulation.trapped_ion.physics import (
+    # Physical constants & species
+    PhysicalConstants,
+    CONSTANTS,
+    IonSpecies,
+    YB171,
+    BA137,
+    CA40,
+    TrapParameters,
+    DEFAULT_TRAP,
+    # Calibration
+    CalibrationConstants,
+    DEFAULT_CALIBRATION,
+    # Fidelity model
+    IonChainFidelityModel,
+    DEFAULT_FIDELITY_MODEL,
+    # Mode structure
+    ModeStructure,
+    ModeSnapshot,
+    # Legacy timing/heating constants (deprecated — use CalibrationConstants)
+    TrappedIonTimings,
+    HeatingRates,
+    DEFAULT_TIMINGS,
+    DEFAULT_HEATING_RATES,
+)
+
+# Backward compatibility aliases
+Trap = ManipulationTrap
+create_manipulation_trap = ManipulationTrap
+create_storage_trap = StorageTrap
+
 from qectostim.experiments.hardware_simulation.trapped_ion.operations import (
     # Base classes
     QCCDOperationBase,
@@ -128,6 +157,7 @@ from qectostim.experiments.hardware_simulation.trapped_ion.scheduling import (
     # Schedulers
     WISEBatchScheduler,
     WISECriticalPathScheduler,
+    BarrierAwareScheduler,
     # Scheduling functions
     schedule_operations_wise,
     schedule_operations_with_barriers,
@@ -162,22 +192,39 @@ from qectostim.experiments.hardware_simulation.trapped_ion.routing import (
     # Utilities
     compute_target_positions,
 )
+from qectostim.experiments.hardware_simulation.trapped_ion.clustering import (
+    regular_partition,
+    arrange_clusters,
+    hill_climb_on_arrange_clusters,
+    merge_clusters_to_limit,
+)
+from qectostim.experiments.hardware_simulation.trapped_ion.viz import (
+    display_architecture,
+    animate_transport,
+    visualize_reconfiguration,
+)
 
 __all__ = [
     # Architecture
     "TrappedIonArchitecture",
     "QCCDArchitecture",
+    "WISEArchitecture",
     "LinearChainArchitecture",
+    "AugmentedGridArchitecture",
+    "NetworkedGridArchitecture",
     # Compiler
     "TrappedIonCompiler",
     "WISECompiler",
     "QCCDCompiler",
     "LinearChainCompiler",
+    "AugmentedGridCompiler",
+    "NetworkedGridCompiler",
     "DecomposedGate",
     # Simulator
     "TrappedIonSimulator",
     # Experiments
-    "TrappedIonMemoryExperiment",
+    "TrappedIonExperiment",
+    "TrappedIonGadgetExperiment",
     # Noise
     "TrappedIonNoiseModel",
     "TrappedIonCalibration",
@@ -247,6 +294,7 @@ __all__ = [
     # Scheduling - Schedulers
     "WISEBatchScheduler",
     "WISECriticalPathScheduler",
+    "BarrierAwareScheduler",
     # Scheduling - Functions
     "schedule_operations_wise",
     "schedule_operations_with_barriers",
@@ -275,4 +323,13 @@ __all__ = [
     "RoutingSchedule",
     "GatePairRequirement",
     "compute_target_positions",
+    # Clustering
+    "regular_partition",
+    "arrange_clusters",
+    "hill_climb_on_arrange_clusters",
+    "merge_clusters_to_limit",
+    # Visualization
+    "display_architecture",
+    "animate_transport",
+    "visualize_reconfiguration",
 ]

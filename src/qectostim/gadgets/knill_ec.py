@@ -94,6 +94,7 @@ from qectostim.gadgets.base import (
     PhaseType,
     FrameUpdate,
     ObservableConfig,
+    ObservableTerm,
     PreparationConfig,
     BlockPreparationConfig,
     MeasurementConfig,
@@ -340,6 +341,14 @@ class KnillECGadget(Gadget):
             destroyed_blocks={"data_block", "bell_a"},
             pauli_frame_update=frame_update,
             measurement_count=total_meas,
+            extra={
+                # Per-block measurement offsets within this batch:
+                # MX(data) occupies indices [0, n), M(bell_a) occupies [n, 2n)
+                "destroyed_block_meas_offsets": {
+                    "data_block": 0,
+                    "bell_a": n,
+                },
+            },
         )
 
     # =========================================================================
@@ -419,18 +428,50 @@ class KnillECGadget(Gadget):
 
     def get_observable_config(self) -> ObservableConfig:
         """
-        Observable configuration via universal Heisenberg derivation.
+        Observable configuration for Knill EC with teleportation corrections.
 
-        Uses ``HeisenbergFrame.knill_ec()`` to automatically derive
-        the correct observable for any input state.
+        The Heisenberg tracking through the full protocol gives:
 
-        Knill EC output (auto-derived)::
+            Z_B^(final) = Z_A^(input) ⊗ Z_B^(input)
+            X_B^(final) = X_B^(input)
 
-            |0⟩: Z_L(bell_b)   (eigenstate determinism)
-            |+⟩: X_L(bell_b)   (trivially deterministic)
+        Neither is deterministic on its own (bell_a in |+⟩ → Z random,
+        bell_b in |0⟩ → X random).  Including mid-circuit measurements
+        as corrections:
+
+        For |0⟩::
+
+            MZ(bell_a) = Z_D^(input) ⊗ Z_A^(input)
+            Z_B^(final) ⊕ MZ(bell_a) = Z_D ⊗ Z_B  →  deterministic (+1)
+
+        For |+⟩::
+
+            MX(data) = X_D^(input) ⊗ X_A^(input) ⊗ X_B^(input)
+            X_B^(final) ⊕ MX(data) = X_D ⊗ X_A  →  deterministic (+1)
+
+        So the observable is a correlation between the surviving block's
+        final measurement and a destroyed block's mid-circuit measurement.
         """
-        frame = HeisenbergFrame.knill_ec()
-        return ObservableConfig.from_heisenberg(frame, self.input_state)
+        if self.input_state == "+":
+            # |+⟩: X_B ⊕ MX(data_block) = X_D ⊗ X_A → deterministic
+            return ObservableConfig(
+                output_blocks=["data_block", "bell_b"],
+                block_bases={"bell_b": "X", "data_block": "X"},
+                correlation_terms=[
+                    ObservableTerm(block="data_block", basis="X"),
+                    ObservableTerm(block="bell_b", basis="X"),
+                ],
+            )
+        else:
+            # |0⟩: Z_B ⊕ MZ(bell_a) = Z_D ⊗ Z_B → deterministic
+            return ObservableConfig(
+                output_blocks=["bell_a", "bell_b"],
+                block_bases={"bell_b": "Z", "bell_a": "Z"},
+                correlation_terms=[
+                    ObservableTerm(block="bell_a", basis="Z"),
+                    ObservableTerm(block="bell_b", basis="Z"),
+                ],
+            )
 
     def get_crossing_detector_config(self) -> Optional[CrossingDetectorConfig]:
         """
@@ -444,15 +485,27 @@ class KnillECGadget(Gadget):
 
     def get_boundary_detector_config(self) -> BoundaryDetectorConfig:
         """
-        Boundary detector config for surviving block (bell_b).
+        Boundary detector config for all three blocks.
 
-        Only bell_b survives; data_block and bell_a are destroyed.
+        Destroyed blocks need boundary detectors too, since their
+        destructive measurements are included in the observable formula.
+        Without boundary detectors on destroyed blocks, errors between
+        the last syndrome round and the destructive measurement produce
+        undetectable logical errors (circuit-level distance = 1).
+
+        After the Bell measurement CNOT(data → bell_a):
+        - MX(data_block): X stabilizers unchanged (CNOT control) → X boundary
+        - M(bell_a): Z stabilizers map to Z_data ⊗ Z_bell_a, still
+          deterministic since both blocks are in code space → Z boundary
+
+        For |0⟩ input: bell_b measured Z → Z boundary
+        For |+⟩ input: bell_b measured X → X boundary
         """
         basis = "X" if self.input_state == "+" else "Z"
         return BoundaryDetectorConfig(
             block_configs={
-                "data_block": {"X": False, "Z": False},  # Destroyed
-                "bell_a": {"X": False, "Z": False},       # Destroyed
+                "data_block": {"X": True, "Z": False},    # MX → X boundary
+                "bell_a": {"X": False, "Z": True},        # M(Z) → Z boundary
                 "bell_b": {
                     "X": basis == "X",
                     "Z": basis == "Z",
@@ -535,7 +588,7 @@ class KnillECGadget(Gadget):
 
         layout = GadgetLayout(target_dim=2)
 
-        margin = max(3.0, code.d * 1.5)
+        margin = max(3.0, (code.d or 3) * 1.5)
 
         # data_block at origin
         layout.add_block(

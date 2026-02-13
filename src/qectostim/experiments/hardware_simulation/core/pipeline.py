@@ -50,6 +50,9 @@ class QubitMapping:
         if zone is not None:
             self.zone_assignments[physical] = zone
     
+    # Alias so compilers can call mapping.assign(logical, physical)
+    assign = add_mapping
+    
     def get_physical(self, logical: int) -> Optional[int]:
         """Get physical qubit for a logical qubit."""
         return self.logical_to_physical.get(logical)
@@ -165,16 +168,30 @@ class NativeCircuit:
     
     Attributes
     ----------
-    operations : List[Tuple[GateSpec, Tuple[int, ...]]]
-        Sequence of (gate, logical_qubits) pairs.
+    operations : List[Any]
+        Sequence of native gate operations.  Entries are either
+        ``(GateSpec, Tuple[int, ...])`` pairs or ``DecomposedGate``
+        objects — both forms are accepted.
     num_qubits : int
         Number of logical qubits.
     metadata : Dict[str, Any]
         Additional circuit metadata.
+    stim_instruction_map : Dict[int, List[int]]
+        Maps stim instruction index (in the flattened ideal circuit)
+        to the list of native operation indices that were produced by
+        decomposing that instruction.  This is the critical bridge
+        between the original stim circuit and native ops.
+    stim_source : Optional[stim.Circuit]
+        Reference to the original stim circuit that was decomposed.
+        Stored so that downstream stages can access annotations
+        (DETECTOR, OBSERVABLE_INCLUDE, etc.) that were deliberately
+        *not* decomposed into native ops.
     """
-    operations: List[Tuple["GateSpec", Tuple[int, ...]]] = field(default_factory=list)
+    operations: List[Any] = field(default_factory=list)
     num_qubits: int = 0
     metadata: Dict[str, Any] = field(default_factory=dict)
+    stim_instruction_map: Dict[int, List[int]] = field(default_factory=dict)
+    stim_source: Optional[stim.Circuit] = None
     
     def add_gate(self, gate: "GateSpec", qubits: Tuple[int, ...]) -> None:
         """Add a native gate to the circuit."""
@@ -187,7 +204,17 @@ class NativeCircuit:
     
     def two_qubit_count(self) -> int:
         """Number of two-qubit gates."""
-        return sum(1 for gate, qubits in self.operations if len(qubits) == 2)
+        count = 0
+        for op in self.operations:
+            if hasattr(op, 'qubits'):
+                # DecomposedGate
+                if len(op.qubits) == 2:
+                    count += 1
+            elif isinstance(op, tuple) and len(op) >= 2:
+                # (GateSpec, qubits) tuple
+                if len(op[1]) == 2:
+                    count += 1
+        return count
     
     def __len__(self) -> int:
         return len(self.operations)
@@ -209,9 +236,12 @@ class MappedCircuit:
         The underlying native circuit.
     mapping : QubitMapping
         Current qubit mapping.
+    metadata : Dict[str, Any]
+        Additional mapping metadata.
     """
     native_circuit: NativeCircuit
     mapping: QubitMapping
+    metadata: Dict[str, Any] = field(default_factory=dict)
     
     def physical_operations(self) -> Iterator[Tuple["GateSpec", Tuple[int, ...]]]:
         """Iterate over operations with physical qubit indices."""
@@ -233,14 +263,23 @@ class RoutedCircuit:
     ----------
     operations : List[PhysicalOperation]
         Sequence of physical operations including routing.
-    final_mapping : QubitMapping
+    final_mapping : Optional[QubitMapping]
         Qubit mapping after all operations.
     routing_overhead : int
         Number of routing operations added.
+    mapped_circuit : Optional[MappedCircuit]
+        Reference to the pre-routing mapped circuit.
+    routing_operations : List[Any]
+        Explicit list of routing-only operations inserted.
+    metadata : Dict[str, Any]
+        Additional routing metadata.
     """
     operations: List["PhysicalOperation"] = field(default_factory=list)
     final_mapping: Optional[QubitMapping] = None
     routing_overhead: int = 0
+    mapped_circuit: Optional[MappedCircuit] = None
+    routing_operations: List[Any] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
     
     def add_operation(self, op: "PhysicalOperation") -> None:
         """Add an operation to the routed circuit."""
@@ -272,10 +311,19 @@ class ScheduledCircuit:
         All operations with timing info.
     total_duration : float
         Total circuit execution time in microseconds.
+    routed_circuit : Optional[RoutedCircuit]
+        Reference to the pre-scheduling routed circuit.
+    batches : List[Any]
+        Parallel execution batches from the scheduler.
+    metadata : Dict[str, Any]
+        Additional scheduling metadata.
     """
     layers: List[CircuitLayer] = field(default_factory=list)
     scheduled_ops: List[ScheduledOperation] = field(default_factory=list)
     total_duration: float = 0.0
+    routed_circuit: Optional[RoutedCircuit] = None
+    batches: List[Any] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
     
     def add_layer(self, layer: CircuitLayer) -> None:
         """Add a parallel execution layer."""
@@ -287,6 +335,11 @@ class ScheduledCircuit:
     def depth(self) -> int:
         """Circuit depth (number of layers)."""
         return len(self.layers)
+    
+    @property
+    def layer_count(self) -> int:
+        """Number of layers (alias for depth())."""
+        return self.depth()
     
     def parallelism(self) -> float:
         """Average operations per layer."""
@@ -309,6 +362,11 @@ class CompiledCircuit:
         The scheduled circuit.
     mapping : QubitMapping
         Final qubit mapping.
+    original_circuit : Optional[stim.Circuit]
+        The original ideal stim circuit that was compiled.  This is
+        the source of truth for noise injection — noise instructions
+        are interleaved around the original gates, preserving all
+        DETECTOR/OBSERVABLE_INCLUDE/QUBIT_COORDS annotations.
     stim_circuit : Optional[stim.Circuit]
         Generated Stim circuit (if already built).
     metrics : Dict[str, Any]
@@ -316,6 +374,7 @@ class CompiledCircuit:
     """
     scheduled: ScheduledCircuit
     mapping: QubitMapping
+    original_circuit: Optional[stim.Circuit] = None
     stim_circuit: Optional[stim.Circuit] = None
     metrics: Dict[str, Any] = field(default_factory=dict)
     
@@ -332,12 +391,74 @@ class CompiledCircuit:
     def to_stim(self) -> stim.Circuit:
         """Generate Stim circuit from compiled circuit.
         
+        If the original ideal circuit is available, it is used as the
+        source of truth — DETECTOR, OBSERVABLE_INCLUDE, QUBIT_COORDS,
+        and SHIFT_COORDS annotations are preserved from it, with qubit
+        indices remapped through ``self.mapping``.
+        
+        If no original circuit is stored, falls back to building a
+        gate-only circuit from scheduled layers (no annotations).
+        
         Returns cached circuit if already built.
         """
         if self.stim_circuit is not None:
             return self.stim_circuit
         
-        # Build Stim circuit from scheduled operations
+        if self.original_circuit is not None:
+            self.stim_circuit = self._rebuild_from_original()
+        else:
+            self.stim_circuit = self._build_from_layers()
+        
+        return self.stim_circuit
+    
+    def _remap_qubit(self, logical: int) -> int:
+        """Map a logical qubit index through the mapping, if available."""
+        phys = self.mapping.get_physical(logical)
+        return phys if phys is not None else logical
+    
+    def _rebuild_from_original(self) -> stim.Circuit:
+        """Rebuild stim circuit from the original ideal circuit.
+        
+        Walks the original circuit and:
+        - Remaps qubit indices on gate instructions through self.mapping
+        - Copies annotations (DETECTOR, OBSERVABLE_INCLUDE, QUBIT_COORDS,
+          SHIFT_COORDS) verbatim — these use relative rec[] targets, not
+          qubit indices, so they don't need remapping.
+        - Preserves REPEAT block structure.
+        """
+        circuit = stim.Circuit()
+        
+        # Emit QUBIT_COORDS preamble from original if present
+        for inst in self.original_circuit:
+            if isinstance(inst, stim.CircuitRepeatBlock):
+                circuit.append(stim.CircuitRepeatBlock(
+                    inst.repeat_count,
+                    self._rebuild_body_from_original(inst.body_copy()),
+                ))
+            else:
+                circuit.append(inst)
+        
+        return circuit
+    
+    def _rebuild_body_from_original(self, body: stim.Circuit) -> stim.Circuit:
+        """Recursively rebuild a circuit body, preserving structure."""
+        result = stim.Circuit()
+        for inst in body:
+            if isinstance(inst, stim.CircuitRepeatBlock):
+                result.append(stim.CircuitRepeatBlock(
+                    inst.repeat_count,
+                    self._rebuild_body_from_original(inst.body_copy()),
+                ))
+            else:
+                result.append(inst)
+        return result
+    
+    def _build_from_layers(self) -> stim.Circuit:
+        """Build gate-only circuit from scheduled layers (no annotations).
+        
+        This is the fallback when no original_circuit is available.
+        Useful for debugging/metrics but NOT suitable for decoding.
+        """
         circuit = stim.Circuit()
         
         for layer in self.scheduled.layers:
@@ -345,10 +466,8 @@ class CompiledCircuit:
                 for instruction in op.to_stim_instructions():
                     if instruction.strip():
                         circuit.append_from_stim_program_text(instruction)
-            # Add TICK between layers
             circuit.append("TICK")
         
-        self.stim_circuit = circuit
         return circuit
     
     def compute_metrics(self) -> Dict[str, Any]:
@@ -371,4 +490,17 @@ class CompiledCircuit:
             "parallelism": self.scheduled.parallelism(),
             "num_qubits": self.mapping.num_qubits(),
         }
+
+        # --- Propagate routing/mapping metadata for downstream use ---
+        # Each platform puts its own keys into routing_result.metadata;
+        # core forwards them generically without knowing key names.
+        routed = self.scheduled.routed_circuit
+        if routed is not None and routed.metadata:
+            self.metrics.update(routed.metadata)
+
+        if routed is not None and routed.mapped_circuit is not None:
+            mmeta = getattr(routed.mapped_circuit, "metadata", None) or {}
+            if mmeta:
+                self.metrics.update(mmeta)
+
         return self.metrics

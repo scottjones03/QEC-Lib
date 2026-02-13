@@ -29,12 +29,9 @@ class TestCoreImports:
             GateType,
             NativeGateSet,
             GateDecomposition,
-            TRAPPED_ION_NATIVE_GATES,
-            SUPERCONDUCTING_NATIVE_GATES,
-            NEUTRAL_ATOM_NATIVE_GATES,
         )
         assert GateSpec is not None
-        assert len(TRAPPED_ION_NATIVE_GATES) > 0
+        assert NativeGateSet is not None
     
     def test_components_imports(self):
         """Test components module imports."""

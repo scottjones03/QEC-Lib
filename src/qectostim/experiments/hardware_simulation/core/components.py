@@ -305,29 +305,3 @@ class QubitRegister:
         if qubit is None:
             raise KeyError(f"Qubit {key!r} not found")
         return qubit
-
-
-# Platform-specific component bases (to be extended)
-
-class TrappedIonComponent(HardwareComponent):
-    """Base class for trapped ion components.
-    
-    Extended by Ion, Trap, Junction, etc. in trapped_ion implementation.
-    """
-    pass
-
-
-class SuperconductingComponent(HardwareComponent):
-    """Base class for superconducting components.
-    
-    Extended by TransmonQubit, TunableCoupler, etc.
-    """
-    pass
-
-
-class NeutralAtomComponent(HardwareComponent):
-    """Base class for neutral atom components.
-    
-    Extended by Atom, TweezerSite, etc.
-    """
-    pass

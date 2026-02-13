@@ -187,7 +187,7 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         key = f'{basis}_schedule'
         return self._meta.get(key)
     
-    def reset_stabilizer_history(self, swap_xz: bool = False, skip_first_round: bool = False) -> None:
+    def reset_stabilizer_history(self, swap_xz: bool = False, skip_first_round: bool = False, clear_history: bool = False) -> None:
         """
         Reset the builder's internal stabilizer measurement history.
         
@@ -208,6 +208,9 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
             If True, skip emitting first-round detectors entirely. This is needed
             for teleportation where the block's stabilizers are entangled with
             Bell measurements and not independently deterministic.
+        clear_history : bool
+            If True, clear all measurement history (teleportation-style
+            transforms where the logical state is teleported).
             
         Note
         ----
@@ -383,15 +386,20 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         meas_start = self.ctx.measurement_index
         
         # Prepare the state using CSSStatePreparation
+        # skip_reset=True because emit_reset_all() has already been called
+        # by the experiment before emit_prepare_logical_state(); a duplicate
+        # reset would create non-deterministic detectors in Stim.
         if state in ("0", "1"):
             prep_result = css_prep.prepare_zero(
                 circuit, self.data_qubits, proj_ancilla,
-                num_rounds=1, emit_detectors=False
+                num_rounds=1, emit_detectors=False,
+                skip_reset=True,
             )
         else:  # "+" or "-"
             prep_result = css_prep.prepare_plus(
                 circuit, self.data_qubits, proj_ancilla,
-                num_rounds=1, emit_detectors=False
+                num_rounds=1, emit_detectors=False,
+                skip_reset=True,
             )
         
         # Map the local measurement indices from CSSStatePreparation to global DetectorContext indices
@@ -1120,7 +1128,7 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
                     if should_emit:
                         coord = self._get_stab_coord("x", s_idx)
                         self.ctx.emit_detector(circuit, [cur_meas], coord)
-                else:
+                elif not self._skip_first_round:
                     # Use transform-aware detector measurements
                     meas_indices = self.ctx.get_x_detector_measurements(
                         self.block_name, s_idx, cur_meas
@@ -1218,7 +1226,7 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
                     if should_emit:
                         coord = self._get_stab_coord("z", s_idx)
                         self.ctx.emit_detector(circuit, [cur_meas], coord)
-                else:
+                elif not self._skip_first_round:
                     # Use transform-aware detector measurements
                     meas_indices = self.ctx.get_z_detector_measurements(
                         self.block_name, s_idx, cur_meas

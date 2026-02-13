@@ -223,6 +223,39 @@ class HierarchicalConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder)
         
         # Round counter
         self._round_number = 0
+
+        # Skip-first-round flag: when True, suppress all anchor detectors
+        # in the next round after a reset_stabilizer_history call (e.g. after
+        # a transversal gate).  The flag auto-clears after the first inner
+        # round is emitted.
+        self._skip_first_round: bool = False
+        
+        # Gadget block index for unique detector coordinates in multi-block gadgets.
+        # Extract from block_name (e.g., "block_0" -> 0, "block_1" -> 1).
+        self._gadget_block_index = self._extract_gadget_block_index(block_name)
+    
+    def _extract_gadget_block_index(self, block_name: str) -> int:
+        """Extract numeric index from block name for unique detector coordinates."""
+        import re
+        match = re.search(r'_(\d+)$', block_name)
+        if match:
+            return int(match.group(1))
+        return 0  # Default for single-block or unrecognized patterns
+    
+    def _make_detector_coord(
+        self,
+        block_id: float,
+        stab_id: float,
+        time: float,
+        role: float,
+    ) -> Tuple[float, float, float, float, float]:
+        """Create detector coordinate tuple with gadget block index.
+        
+        All detectors in multi-block gadgets need a 5th coordinate to
+        distinguish detectors from different gadget blocks (e.g., control
+        vs target in a transversal CNOT).
+        """
+        return (block_id, stab_id, time, role, float(self._gadget_block_index))
     
     def _compute_qubit_allocation(self) -> None:
         """Compute qubit index ranges for all regions."""
@@ -397,7 +430,91 @@ class HierarchicalConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder)
     def total_qubits(self) -> int:
         """Total number of qubits used."""
         return self._total_qubits
-    
+
+    @property
+    def all_ancillas(self) -> List[int]:
+        """All ancilla qubit indices including outer ancilla blocks.
+
+        Returns inner X/Z ancillas for all data blocks **plus** all qubits
+        in the outer ancilla blocks (data + ancillas within each block).
+        This is needed for ancilla reset between gadget phases.
+        """
+        result = self.x_ancillas + self.z_ancillas
+        # Add all outer ancilla block qubits
+        result.extend(range(self._outer_anc_start, self._outer_anc_end))
+        return result
+
+    @property
+    def qubit_coords(self) -> Dict[int, Tuple[float, ...]]:
+        """Mapping of qubit index to coordinates.
+
+        Returns coordinates for data qubits derived from concatenated code
+        metadata.  Inner/outer ancilla qubits are given simple synthetic
+        coordinates so that crossing detector emission has fallback values.
+        """
+        coords: Dict[int, Tuple[float, ...]] = {}
+        data_coords = self._meta.get('data_coords', [])
+        for local_idx, coord in enumerate(data_coords):
+            if len(coord) >= 2 and local_idx < self.n_data:
+                global_idx = self._data_start + local_idx
+                coords[global_idx] = tuple(float(c) for c in coord)
+        return coords
+
+    def get_last_measurement_indices(self) -> Dict[str, list]:
+        """Return measurement indices from the last completed round.
+
+        Returns a dict with lowercase keys ``'x'`` and ``'z'`` matching
+        the format expected by :func:`emit_crossing_detectors` and
+        :class:`MemoryRoundEmitter`.  Also includes ``'round'`` for
+        compatibility with the CSS builder interface.
+
+        For the hierarchical builder this returns **all** stabilizer
+        measurements — inner AND outer — so that crossing detectors
+        cover the full stabilizer group of the concatenated code.
+
+        Inner entries are plain ``int`` (single ancilla measurement).
+        Outer entries are ``List[int]`` (logical parity decoded from
+        multiple qubit measurements on the inner logical support).
+        The crossing-detector emitter handles both formats: a plain
+        ``int`` becomes one ``target_rec`` while a ``List[int]``
+        becomes several (Stim XORs them).
+        """
+        from typing import Union
+        x_indices: List[Union[int, List[int]]] = []
+        z_indices: List[Union[int, List[int]]] = []
+
+        # Collect inner X measurements: iterate blocks × stabilizers
+        for block_id in range(self.n_out):
+            for s_idx in range(self.r_x_in):
+                meas_idx = self._last_inner_x_meas.get((block_id, s_idx))
+                if meas_idx is not None:
+                    x_indices.append(meas_idx)
+
+        # Collect inner Z measurements
+        for block_id in range(self.n_out):
+            for s_idx in range(self.r_z_in):
+                meas_idx = self._last_inner_z_meas.get((block_id, s_idx))
+                if meas_idx is not None:
+                    z_indices.append(meas_idx)
+
+        # Append outer X stabilizer measurements (List[int] each)
+        for stab_idx in range(self.r_x_out):
+            outer_meas = self._last_outer_x_meas.get(stab_idx)
+            if outer_meas is not None:
+                x_indices.append(list(outer_meas))
+
+        # Append outer Z stabilizer measurements (List[int] each)
+        for stab_idx in range(self.r_z_out):
+            outer_meas = self._last_outer_z_meas.get(stab_idx)
+            if outer_meas is not None:
+                z_indices.append(list(outer_meas))
+
+        return {
+            'x': x_indices,
+            'z': z_indices,
+            'round': self._round_number,
+        }
+
     # =========================================================================
     # Circuit Emission Methods
     # =========================================================================
@@ -489,7 +606,13 @@ class HierarchicalConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder)
                     for q in support:
                         circuit.append("Z", [self._data_start + q])
                     circuit.append("TICK")
-    
+        
+        # Advance time coordinate after initialization projection so that
+        # subsequent stabilizer round detectors have distinct time coordinates.
+        self.ctx.advance_time()
+        self._emit_shift_coords(circuit)
+        self._round_number += 1
+
     def _emit_inner_x_projection(
         self, 
         circuit: stim.Circuit, 
@@ -517,7 +640,7 @@ class HierarchicalConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder)
                 key = (block_id, s_idx)
                 
                 if emit_anchors:
-                    coord = (float(block_id), float(s_idx), float(self._round_number), float(DetectorRole.INNER_TEMPORAL.value))
+                    coord = self._make_detector_coord(float(block_id), float(s_idx), float(self._round_number), float(DetectorRole.INNER_TEMPORAL.value))
                     self.ctx.emit_detector(circuit, [meas_idx], coord)
                 
                 self._last_inner_x_meas[key] = meas_idx
@@ -551,7 +674,7 @@ class HierarchicalConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder)
                 key = (block_id, s_idx)
                 
                 if emit_anchors:
-                    coord = (float(block_id), float(s_idx), float(self._round_number), float(DetectorRole.INNER_TEMPORAL.value))
+                    coord = self._make_detector_coord(float(block_id), float(s_idx), float(self._round_number), float(DetectorRole.INNER_TEMPORAL.value))
                     self.ctx.emit_detector(circuit, [meas_idx], coord)
                 
                 self._last_inner_z_meas[key] = meas_idx
@@ -623,15 +746,23 @@ class HierarchicalConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder)
         stab_type: StabilizerBasis = StabilizerBasis.BOTH,
         emit_detectors: bool = True,
         emit_metachecks: bool = False,
+        emit_z_anchors: bool = False,
+        emit_x_anchors: bool = False,
+        explicit_anchor_mode: Optional[bool] = None,
+        first_basis: Optional[StabilizerBasis] = None,
     ) -> None:
         """
-        Emit one inner stabilizer measurement round (backward compatible).
-        
+        Emit one full stabilizer measurement round (inner + outer).
+
+        Accepts the same keyword arguments as :class:`CSSStabilizerRoundBuilder`
+        so that :class:`MemoryRoundEmitter` can call this through the unified
+        pipeline.  The ``emit_z_anchors``, ``emit_x_anchors``,
+        ``explicit_anchor_mode``, and ``first_basis`` parameters are accepted
+        for interface compatibility but are handled internally by the
+        hierarchical builder's own anchor logic.
+
         For d_inner=1 (default), this behaves as before: inner stabs + outer stabs.
         For d_inner>1, use emit_outer_round() which handles the nested structure.
-        
-        This method is kept for backward compatibility. New code should use
-        emit_outer_round() when d_inner > 1.
         """
         if self.d_inner == 1:
             # Legacy behavior: inner + outer in single round
@@ -649,16 +780,17 @@ class HierarchicalConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder)
             # Track outer round for crossing detector logic
             self._outer_round_number += 1
             
+            # Now that inner + outer are done, clear _skip_first_round
+            self._skip_first_round = False
+
             self.ctx.advance_time()
             self._emit_shift_coords(circuit)
             self._round_number += 1
         else:
-            # With d_inner > 1, just emit inner round and track position
-            self._emit_inner_round(circuit, stab_type, emit_detectors)
-            self._inner_round_in_block += 1
-            self.ctx.advance_time()
-            self._emit_shift_coords(circuit)
-            self._round_number += 1
+            # With d_inner > 1, emit a full outer round (d_inner inner rounds
+            # plus outer X/Z stabilizers) so that a single call to emit_round()
+            # from MemoryRoundEmitter produces one complete round.
+            self.emit_outer_round(circuit, stab_type, emit_detectors)
     
     def emit_outer_round(
         self,
@@ -716,6 +848,9 @@ class HierarchicalConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder)
         # Increment outer round counter
         self._outer_round_number += 1
         
+        # Now that all inner + outer rounds are done, clear _skip_first_round
+        self._skip_first_round = False
+
         # Reset inner round counter for next outer round
         self._inner_round_in_block = 0
     
@@ -736,10 +871,12 @@ class HierarchicalConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder)
         """
         self._emit_inner_round(circuit, stab_type, emit_detectors)
         self._inner_round_in_block += 1
+        # Inner-only rounds should also clear _skip_first_round
+        self._skip_first_round = False
         self.ctx.advance_time()
         self._emit_shift_coords(circuit)
         self._round_number += 1
-    
+
     def _emit_inner_round(
         self,
         circuit: stim.Circuit,
@@ -768,6 +905,12 @@ class HierarchicalConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder)
                 self._emit_inner_z_round(circuit, emit_detectors)
             if stab_type in (StabilizerBasis.X, StabilizerBasis.BOTH):
                 self._emit_inner_x_round(circuit, emit_detectors)
+
+        # NOTE: _skip_first_round is NOT cleared here.  It is cleared at the
+        # end of a *complete* stabiliser round (inner + outer) so that outer
+        # anchor detectors are also properly suppressed.  The clearing
+        # happens in emit_round / emit_outer_round after the outer rounds
+        # have been emitted.
     
     def _emit_inner_x_round(self, circuit: stim.Circuit, emit_detectors: bool) -> None:
         """Emit inner X-stabilizer measurements for all blocks."""
@@ -1082,8 +1225,12 @@ class HierarchicalConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder)
                 if self._outer_round_number == 0:
                     # First outer round: anchor detector for Z-basis memory
                     # |0_L⟩ data → outer Z-stab should be deterministic +1
-                    if self.measurement_basis == "Z":
-                        coord = (float(self.n_out + 10), float(stab_idx), float(self._round_number), float(DetectorRole.OUTER_TEMPORAL.value))
+                    # Skip when _skip_first_round is set (post-gadget: the
+                    # data qubits are no longer in a fresh eigenstate after a
+                    # transversal gate, so the 1-term anchor would be
+                    # non-deterministic).
+                    if self.measurement_basis == "Z" and not self._skip_first_round:
+                        coord = self._make_detector_coord(float(self.n_out + 10), float(stab_idx), float(self._round_number), float(DetectorRole.OUTER_TEMPORAL.value))
                         self.ctx.emit_detector(circuit, logical_meas, coord)
                     elif prev_meas is not None:
                         self._emit_outer_z_detector(circuit, logical_meas, prev_meas, stab_idx)
@@ -1145,7 +1292,7 @@ class HierarchicalConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder)
                     all_meas.append(data_x_meas)
             
             # Boundary detector: multi-term
-            coord = (float(self.n_out + 20 + anc_idx), float(s_idx), self.ctx.current_time, float(DetectorRole.OAB_BOUNDARY.value))
+            coord = self._make_detector_coord(float(self.n_out + 20 + anc_idx), float(s_idx), self.ctx.current_time, float(DetectorRole.OAB_BOUNDARY.value))
             self.ctx.emit_detector(circuit, all_meas, coord)
     
     def _emit_outer_anc_z_boundary_detectors(
@@ -1219,7 +1366,7 @@ class HierarchicalConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder)
                         all_meas.append(anc_z_prep)
             
             # Boundary detector: multi-term
-            coord = (float(self.n_out + 30 + anc_idx), float(s_idx), self.ctx.current_time, float(DetectorRole.OAB_BOUNDARY.value))
+            coord = self._make_detector_coord(float(self.n_out + 30 + anc_idx), float(s_idx), self.ctx.current_time, float(DetectorRole.OAB_BOUNDARY.value))
             self.ctx.emit_detector(circuit, all_meas, coord)
 
 
@@ -1254,10 +1401,10 @@ class HierarchicalConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder)
         circuit.append("TICK")
         
         # Measure Z-stabs FIRST (random, establishes frame - NO detector)
-        z_meas = self._emit_z_stabs_on_block(circuit, data, z_anc, emit_detectors=False)
+        z_meas = self._emit_z_stabs_on_block(circuit, data, z_anc, emit_detectors=False, anc_block_idx=anc_idx)
         
         # Measure X-stabs SECOND (deterministic +1 on |+⟩^⊗n - anchor detectors)
-        x_meas = self._emit_x_stabs_on_block(circuit, data, x_anc, emit_detectors=emit_inner_detectors)
+        x_meas = self._emit_x_stabs_on_block(circuit, data, x_anc, emit_detectors=emit_inner_detectors, anc_block_idx=anc_idx)
         
         # Store X-stab measurements for boundary detectors after destructive MX
         for s_idx, m_idx in enumerate(x_meas):
@@ -1299,10 +1446,10 @@ class HierarchicalConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder)
         circuit.append("TICK")
         
         # Measure X-stabs FIRST (random, establishes frame - NO detector)
-        x_meas = self._emit_x_stabs_on_block(circuit, data, x_anc, emit_detectors=False)
+        x_meas = self._emit_x_stabs_on_block(circuit, data, x_anc, emit_detectors=False, anc_block_idx=anc_idx)
         
         # Measure Z-stabs SECOND (deterministic +1 on |0⟩^⊗n - anchor detectors)
-        z_meas = self._emit_z_stabs_on_block(circuit, data, z_anc, emit_detectors=emit_inner_detectors)
+        z_meas = self._emit_z_stabs_on_block(circuit, data, z_anc, emit_detectors=emit_inner_detectors, anc_block_idx=anc_idx)
         
         # Store Z-stab measurements for boundary detectors after destructive MZ
         for s_idx, m_idx in enumerate(z_meas):
@@ -1321,12 +1468,19 @@ class HierarchicalConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder)
         data: List[int],
         x_anc: List[int],
         emit_detectors: bool,
+        anc_block_idx: Optional[int] = None,
     ) -> List[int]:
         """
         Emit X-stabilizer measurements on a logical block.
         
         Uses RX/MRX to avoid H gates.
         If emit_detectors=True, emits anchor detectors (for deterministic measurements).
+        
+        Parameters
+        ----------
+        anc_block_idx : int, optional
+            Index of the ancilla block when called for outer ancilla preparation.
+            Used to create unique coordinates for different ancilla blocks.
         """
         if self._hx_in is None or self.r_x_in == 0:
             return []
@@ -1363,7 +1517,9 @@ class HierarchicalConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder)
             for s_idx in range(self.r_x_in):
                 meas_idx = meas_start + s_idx
                 # Coordinate: use ancilla block index + stabilizer index
-                coord = (float(self.n_out + 1), float(s_idx), float(self._round_number), float(DetectorRole.OAB_BOUNDARY.value))
+                # For outer ancilla blocks, use n_out + 1 + anc_block_idx to differentiate
+                anc_offset = 0 if anc_block_idx is None else anc_block_idx
+                coord = self._make_detector_coord(float(self.n_out + 1 + anc_offset), float(s_idx), float(self._round_number), float(DetectorRole.OAB_BOUNDARY.value))
                 self.ctx.emit_detector(circuit, [meas_idx], coord)
         
         return list(range(meas_start, meas_start + self.r_x_in))
@@ -1374,11 +1530,18 @@ class HierarchicalConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder)
         data: List[int],
         z_anc: List[int],
         emit_detectors: bool,
+        anc_block_idx: Optional[int] = None,
     ) -> List[int]:
         """
         Emit Z-stabilizer measurements on a logical block.
         
         If emit_detectors=True, emits anchor detectors (for deterministic measurements).
+        
+        Parameters
+        ----------
+        anc_block_idx : int, optional
+            Index of the ancilla block when called for outer ancilla preparation.
+            Used to create unique coordinates for different ancilla blocks.
         """
         if self._hz_in is None or self.r_z_in == 0:
             return []
@@ -1409,10 +1572,14 @@ class HierarchicalConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder)
         
         # Emit anchor detectors if requested (for deterministic |0⟩^⊗n state)
         if emit_detectors:
+            # Offset Z stabilizer indices by r_x_in to avoid coord collision with X stabilizers
+            z_offset = self.r_x_in
             for s_idx in range(self.r_z_in):
                 meas_idx = meas_start + s_idx
                 # Coordinate: use ancilla block index + stabilizer index
-                coord = (float(self.n_out + 2), float(s_idx), float(self._round_number), float(DetectorRole.OAB_BOUNDARY.value))
+                # For outer ancilla blocks, use n_out + 1 + anc_block_idx to differentiate
+                anc_offset = 0 if anc_block_idx is None else anc_block_idx
+                coord = self._make_detector_coord(float(self.n_out + 1 + anc_offset), float(s_idx + z_offset), float(self._round_number), float(DetectorRole.OAB_BOUNDARY.value))
                 self.ctx.emit_detector(circuit, [meas_idx], coord)
         
         return list(range(meas_start, meas_start + self.r_z_in))
@@ -1506,11 +1673,12 @@ class HierarchicalConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder)
         """
         R_T = float(DetectorRole.INNER_TEMPORAL.value)
         R_C = float(DetectorRole.INNER_CROSSING.value)
-        coord = (float(block_id), float(local_idx), self.ctx.current_time, R_T)
+        coord = self._make_detector_coord(float(block_id), float(local_idx), self.ctx.current_time, R_T)
         
         if prev_meas is None:
             # First round: only emit anchor if X-basis memory (|+⟩ prep)
-            if self.measurement_basis == "X":
+            # BUT suppress if _skip_first_round (post-gadget: not a fresh eigenstate)
+            if self.measurement_basis == "X" and not self._skip_first_round:
                 self.ctx.emit_detector(circuit, [cur_meas], coord)
             # For Z-basis: no anchor (X-stab is random on |0⟩)
         else:
@@ -1535,7 +1703,7 @@ class HierarchicalConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder)
                                 all_meas.append(anc_x_prep)
                         
                         # Use distinct coord for crossing detector
-                        cross_coord = (float(block_id), float(local_idx + 1000), self.ctx.current_time, R_C)
+                        cross_coord = self._make_detector_coord(float(block_id), float(local_idx + 1000), self.ctx.current_time, R_C)
                         self.ctx.emit_detector(circuit, all_meas, cross_coord)
                     elif self._outer_round_number == 0 and prev_meas is not None:
                         # First outer round, first inner round: simple temporal from init projection.
@@ -1555,7 +1723,7 @@ class HierarchicalConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder)
                             anc_x_prep = self._outer_z_anc_x_prep.get((j, local_idx))
                             if anc_x_prep is not None:
                                 all_meas.append(anc_x_prep)
-                        cross_coord = (float(block_id), float(local_idx + 1000), self.ctx.current_time, R_C)
+                        cross_coord = self._make_detector_coord(float(block_id), float(local_idx + 1000), self.ctx.current_time, R_C)
                         self.ctx.emit_detector(circuit, all_meas, cross_coord)
     
     def _emit_inner_z_detector(
@@ -1587,11 +1755,14 @@ class HierarchicalConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder)
         """
         R_T = float(DetectorRole.INNER_TEMPORAL.value)
         R_C = float(DetectorRole.INNER_CROSSING.value)
-        coord = (float(block_id), float(local_idx), self.ctx.current_time, R_T)
+        # Offset Z stabilizer indices by r_x_in to avoid coord collision with X stabilizers
+        z_offset = self.r_x_in
+        coord = self._make_detector_coord(float(block_id), float(local_idx + z_offset), self.ctx.current_time, R_T)
         
         if prev_meas is None:
             # First round: only emit anchor if Z-basis memory (|0⟩ prep)
-            if self.measurement_basis == "Z":
+            # BUT suppress if _skip_first_round (post-gadget: not a fresh eigenstate)
+            if self.measurement_basis == "Z" and not self._skip_first_round:
                 self.ctx.emit_detector(circuit, [cur_meas], coord)
             # For X-basis: no anchor (Z-stab is random on |+⟩)
         else:
@@ -1614,8 +1785,8 @@ class HierarchicalConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder)
                             if anc_z_prep is not None:
                                 all_meas.append(anc_z_prep)
                         
-                        # Use distinct coord for crossing detector
-                        cross_coord = (float(block_id), float(local_idx + 1000), self.ctx.current_time, R_C)
+                        # Use distinct coord for crossing detector (offset by z_offset + 1000)
+                        cross_coord = self._make_detector_coord(float(block_id), float(local_idx + z_offset + 1000), self.ctx.current_time, R_C)
                         self.ctx.emit_detector(circuit, all_meas, cross_coord)
                     elif self._outer_round_number == 0 and prev_meas is not None:
                         # First outer round, first inner round: simple temporal from init projection.
@@ -1635,7 +1806,7 @@ class HierarchicalConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder)
                             anc_z_prep = self._outer_x_anc_z_prep.get((j, local_idx))
                             if anc_z_prep is not None:
                                 all_meas.append(anc_z_prep)
-                        cross_coord = (float(block_id), float(local_idx + 1000), self.ctx.current_time, R_C)
+                        cross_coord = self._make_detector_coord(float(block_id), float(local_idx + z_offset + 1000), self.ctx.current_time, R_C)
                         self.ctx.emit_detector(circuit, all_meas, cross_coord)
     
     def _emit_outer_x_detector(
@@ -1653,11 +1824,12 @@ class HierarchicalConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder)
         """
         R_O = float(DetectorRole.OUTER_TEMPORAL.value)
         # Use n_out as block coord to distinguish from inner blocks
-        coord = (float(self.n_out), float(local_idx), self.ctx.current_time, R_O)
+        coord = self._make_detector_coord(float(self.n_out), float(local_idx), self.ctx.current_time, R_O)
         
         if prev_meas is None:
             # First round (anchor): only emit if X-basis memory
-            if self.measurement_basis == "X":
+            # Suppress if _skip_first_round (post-gadget)
+            if self.measurement_basis == "X" and not self._skip_first_round:
                 # Anchor detector: syndrome should be 0 for |+⟩_L state
                 self.ctx.emit_detector(circuit, cur_meas, coord)
         else:
@@ -1680,11 +1852,14 @@ class HierarchicalConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder)
         For temporal detectors, we XOR current syndrome with previous syndrome.
         """
         R_O = float(DetectorRole.OUTER_TEMPORAL.value)
-        coord = (float(self.n_out), float(local_idx), self.ctx.current_time, R_O)
+        # Offset Z stabilizer indices by r_x_out to avoid coord collision with X stabilizers
+        z_offset = self.r_x_out
+        coord = self._make_detector_coord(float(self.n_out), float(local_idx + z_offset), self.ctx.current_time, R_O)
         
         if prev_meas is None:
             # First round (anchor): only emit if Z-basis memory
-            if self.measurement_basis == "Z":
+            # Suppress if _skip_first_round (post-gadget)
+            if self.measurement_basis == "Z" and not self._skip_first_round:
                 # Anchor detector: syndrome should be 0 for |0⟩_L state
                 self.ctx.emit_detector(circuit, cur_meas, coord)
         else:
@@ -1694,7 +1869,7 @@ class HierarchicalConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder)
     
     def _emit_shift_coords(self, circuit: stim.Circuit) -> None:
         """Emit SHIFT_COORDS to advance time coordinate."""
-        circuit.append("SHIFT_COORDS", [], [0.0, 0.0, 1.0, 0.0])
+        circuit.append("SHIFT_COORDS", [], [0.0, 0.0, 1.0, 0.0, 0.0])
     
     # =========================================================================
     # Final Measurement
@@ -1706,6 +1881,8 @@ class HierarchicalConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder)
         basis: str = "Z",
         logical_idx: int = 0,
         emit_inner_observables: bool = False,
+        skip_observable: bool = False,
+        defer_boundary_detectors: bool = False,
     ) -> List[int]:
         """
         Emit final data qubit measurements with proper boundary detectors.
@@ -1735,6 +1912,16 @@ class HierarchicalConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder)
             at indices 1..n_out.  Observable ``1+b`` tracks the inner
             logical of block *b*, enabling hierarchical decoding with
             per-block sub-DEMs that each have their own observable.
+        skip_observable : bool
+            If True, skip registering this block's measurements for the
+            logical observable (used when ObservableConfig says this block
+            should not contribute to the observable).
+        defer_boundary_detectors : bool
+            If True, do not emit boundary detectors now. Instead, save the
+            data_meas mapping and call ``emit_deferred_boundary_detectors()``
+            later after all blocks have finished their final measurements.
+            This is required for multi-block gadgets where lookbacks must be
+            computed after ALL blocks have measured.
             
         Returns
         -------
@@ -1764,20 +1951,28 @@ class HierarchicalConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder)
         # Build data measurement lookup for space-like detectors
         data_meas = {q: meas_start + i for i, q in enumerate(range(n))}
         
-        # Emit space-like (boundary) detectors
-        if not self._block_contiguous:
+        # Emit space-like (boundary) detectors or defer for later
+        if defer_boundary_detectors:
+            # Save state for deferred emission after all blocks measured
+            self._deferred_boundary_basis = basis
+            self._deferred_boundary_data_meas = data_meas
+            self._deferred_boundary_meas_start = meas_start
+        elif not self._block_contiguous:
             self._emit_all_space_like_detectors(circuit, basis, data_meas, meas_start)
         
         # Compute logical observable
-        effective_basis = self.ctx.get_transformed_basis(logical_idx, basis)
-        logical_support = get_logical_support(self.code, effective_basis, logical_idx)
-        
-        if logical_support:
-            logical_meas = [meas_start + q for q in logical_support if q < n]
+        if not skip_observable:
+            effective_basis = self.ctx.get_transformed_basis(logical_idx, basis)
+            logical_support = get_logical_support(self.code, effective_basis, logical_idx)
+            
+            if logical_support:
+                logical_meas = [meas_start + q for q in logical_support if q < n]
+            else:
+                logical_meas = [meas_start]
+            
+            self.ctx.add_observable_measurement(logical_idx, logical_meas)
         else:
-            logical_meas = [meas_start]
-        
-        self.ctx.add_observable_measurement(logical_idx, logical_meas)
+            logical_meas = []
         
         # ---- per-block inner logical observables ----
         if emit_inner_observables:
@@ -1794,6 +1989,35 @@ class HierarchicalConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder)
                 self.ctx.add_observable_measurement(1 + b, block_meas)
         
         return logical_meas
+    
+    def emit_deferred_boundary_detectors(self, circuit: stim.Circuit) -> None:
+        """
+        Emit boundary detectors that were deferred during emit_final_measurement.
+        
+        This must be called AFTER all blocks have completed their final
+        measurements so that the lookbacks are computed relative to the
+        correct total measurement count.
+        
+        Parameters
+        ----------
+        circuit : stim.Circuit
+            Target circuit.
+        """
+        if not hasattr(self, '_deferred_boundary_basis'):
+            return  # Nothing deferred
+        
+        if not self._block_contiguous:
+            self._emit_all_space_like_detectors(
+                circuit,
+                self._deferred_boundary_basis,
+                self._deferred_boundary_data_meas,
+                self._deferred_boundary_meas_start,
+            )
+        
+        # Clear deferred state
+        del self._deferred_boundary_basis
+        del self._deferred_boundary_data_meas
+        del self._deferred_boundary_meas_start
     
     def _emit_all_space_like_detectors(
         self,
@@ -1830,9 +2054,14 @@ class HierarchicalConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder)
         (anchor at round 0, then ``d_outer − 1`` temporal comparisons).
         """
         basis = basis.upper()
+        
+        # Use gadget block index for unique coords in multi-block gadgets
+        gadget_idx = self._gadget_block_index
 
         if basis == "Z":
             # Inner Z boundary detectors on each data block
+            # Offset Z stabilizer indices by r_x_in to avoid coord collision with X stabilizers
+            z_offset = self.r_x_in
             for block_id in range(self.n_out):
                 for s_idx in range(self.r_z_in):
                     # Last inner Z measurement (from trailing rounds or pre-outer)
@@ -1856,7 +2085,8 @@ class HierarchicalConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder)
                     # Simple 2-term boundary: last_inner_Z ⊕ final_parity
                     all_meas = [pre_meas] + final_parity_meas
 
-                    coord = (float(block_id), float(s_idx + 2000), self.ctx.current_time, float(DetectorRole.INNER_BOUNDARY.value))
+                    # Coord includes gadget_idx to differentiate blocks in multi-block gadgets
+                    coord = (float(block_id), float(s_idx + z_offset + 2000), self.ctx.current_time, float(DetectorRole.INNER_BOUNDARY.value), float(gadget_idx))
                     self.ctx.emit_detector(circuit, all_meas, coord)
         else:
             # Inner X boundary detectors on each data block
@@ -1883,7 +2113,8 @@ class HierarchicalConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder)
                     # Simple 2-term boundary: last_inner_X ⊕ final_parity
                     all_meas = [pre_meas] + final_parity_meas
 
-                    coord = (float(block_id), float(s_idx + 2000), self.ctx.current_time, float(DetectorRole.INNER_BOUNDARY.value))
+                    # Coord includes gadget_idx to differentiate blocks in multi-block gadgets
+                    coord = (float(block_id), float(s_idx + 2000), self.ctx.current_time, float(DetectorRole.INNER_BOUNDARY.value), float(gadget_idx))
                     self.ctx.emit_detector(circuit, all_meas, coord)
         
         # Outer space-like (boundary) detectors
@@ -1923,7 +2154,7 @@ class HierarchicalConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder)
                             boundary_meas.append(data_meas[global_q])
 
                 if boundary_meas:
-                    coord = (float(self.n_out), float(stab_idx), self.ctx.current_time, float(DetectorRole.OUTER_TEMPORAL.value))
+                    coord = self._make_detector_coord(float(self.n_out), float(stab_idx), self.ctx.current_time, float(DetectorRole.OUTER_TEMPORAL.value))
                     self.ctx.emit_detector(circuit, boundary_meas, coord)
         else:
             # X-basis: outer X boundary detectors
@@ -1946,7 +2177,7 @@ class HierarchicalConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder)
                             boundary_meas.append(data_meas[global_q])
 
                 if boundary_meas:
-                    coord = (float(self.n_out), float(stab_idx), self.ctx.current_time, float(DetectorRole.OUTER_TEMPORAL.value))
+                    coord = self._make_detector_coord(float(self.n_out), float(stab_idx), self.ctx.current_time, float(DetectorRole.OUTER_TEMPORAL.value))
                     self.ctx.emit_detector(circuit, boundary_meas, coord)
     
     def emit_deferred_detectors(
@@ -1983,7 +2214,9 @@ class HierarchicalConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder)
             # Z stabilizer detectors for this block
             for local_idx in range(self.r_z_in):
                 meas_list = self._deferred_inner_z[block_id][local_idx]
-                coord_base = (float(block_id), float(local_idx))
+                # Offset Z stabilizer indices by r_x_in to avoid coord collision with X stabilizers
+                z_offset = self.r_x_in
+                coord_base = (float(block_id), float(local_idx + z_offset))
                 
                 for i, (r, cur_meas) in enumerate(meas_list):
                     coord = coord_base + (float(r),)
@@ -2053,7 +2286,9 @@ class HierarchicalConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder)
                     recs.append(meas_list[-1][1])
                 
                 if recs:
-                    coord = (float(block_id), float(local_idx), float(n_rounds), float(DetectorRole.INNER_BOUNDARY.value))
+                    # Offset Z stabilizer indices by r_x_in to avoid coord collision with X stabilizers
+                    z_offset = self.r_x_in
+                    coord = (float(block_id), float(local_idx + z_offset), float(n_rounds), float(DetectorRole.INNER_BOUNDARY.value))
                     self.ctx.emit_detector(circuit, recs, coord)
         else:
             for local_idx in range(self.r_x_in):
@@ -2077,15 +2312,79 @@ class HierarchicalConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder)
         self,
         swap_xz: bool = False,
         skip_first_round: bool = False,
+        clear_history: bool = False,
     ) -> None:
-        """Reset stabilizer measurement history."""
+        """Reset stabilizer measurement history after a transversal gate.
+
+        Parameters
+        ----------
+        swap_xz : bool
+            If True, swap the effective measurement basis (needed after
+            Hadamard where X↔Z).
+        skip_first_round : bool
+            If True, suppress ALL anchor detectors in the next emitted
+            round.  After a transversal gate the data qubits are no longer
+            in a fresh eigenstate, so first-round anchor detectors would
+            be non-deterministic.  The flag auto-clears after the first
+            inner round so that subsequent rounds emit normal temporal
+            detectors.
+        clear_history : bool
+            If True, clear all measurement history (teleportation-style
+            transforms where the logical state is teleported).
+        """
         self._last_inner_x_meas.clear()
         self._last_inner_z_meas.clear()
         self._last_outer_x_meas.clear()
         self._last_outer_z_meas.clear()
         
+        # Reset round counters so post-gadget rounds start fresh
+        self._outer_round_number = 0
+        self._inner_round_in_block = 0
+        self._round_number = 0
+        
+        # Clear pre-outer measurement tracking (used for crossing detectors)
+        self._pre_outer_inner_x_meas.clear()
+        self._pre_outer_inner_z_meas.clear()
+        
+        # Clear outer ancilla prep measurements
+        self._outer_x_anc_z_prep.clear()
+        self._outer_z_anc_x_prep.clear()
+        
+        # Clear destructive measurement storage
+        self._outer_x_anc_destruct_x.clear()
+        self._outer_z_anc_destruct_z.clear()
+        
+        # Clear ancilla inner measurements from prep
+        self._last_anc_inner_x_meas_prep.clear()
+        self._last_anc_inner_z_meas_prep.clear()
+        
+        # Reset deferred detectors
+        self._deferred_inner_x = [
+            [[] for _ in range(self.r_x_in)] for _ in range(self.n_out)
+        ]
+        self._deferred_inner_z = [
+            [[] for _ in range(self.r_z_in)] for _ in range(self.n_out)
+        ]
+        self._deferred_outer_x = [
+            [] for _ in range(self.r_x_out)
+        ]
+        self._deferred_outer_z = [
+            [] for _ in range(self.r_z_out)
+        ]
+        
         if swap_xz:
             self.measurement_basis = "X" if self.measurement_basis == "Z" else "Z"
+
+        self._skip_first_round = skip_first_round
+        
+        # NOTE: We respect the caller's skip_first_round even when
+        # clear_history=True.  Teleportation gadgets set skip_first_round=False
+        # because the surviving block IS in the code space after teleportation
+        # (all stabilizer eigenvalues are +1), making first-round anchors
+        # deterministic and critical for α scaling.  Surgery-CNOT sets
+        # skip_first_round=True because bridge-induced dressing makes
+        # inner eigenvalues non-deterministic.  The flat CSS builder also
+        # respects skip_first_round without override.
     
     def get_data_meas_mapping(self, meas_start: int) -> Dict[int, int]:
         """Get mapping from data qubit index to measurement index."""

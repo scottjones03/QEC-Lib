@@ -816,6 +816,7 @@ class FlatConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         self,
         swap_xz: bool = False,
         skip_first_round: bool = False,
+        clear_history: bool = False,
     ) -> None:
         """Reset stabilizer measurement history."""
         self._last_inner_x_meas.clear()

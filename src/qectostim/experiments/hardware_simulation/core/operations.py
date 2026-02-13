@@ -8,6 +8,7 @@ carries timing and fidelity information for noise modeling.
 """
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -30,6 +31,9 @@ if TYPE_CHECKING:
     from qectostim.experiments.hardware_simulation.core.components import PhysicalQubit
 
 
+_logger = logging.getLogger(__name__)
+
+
 class OperationType(Enum):
     """Categories of physical operations."""
     GATE_1Q = auto()        # Single-qubit gate
@@ -41,7 +45,7 @@ class OperationType(Enum):
     TRANSPORT = auto()      # Qubit movement (mobile architectures)
     REARRANGEMENT = auto()  # Parallel position changes (neutral atom)
     IDLE = auto()           # Waiting/decoherence
-    RECOOL = auto()         # Re-cooling (trapped ions)
+    RECOVERY = auto()       # Platform-specific state recovery (cooling, T1 reset, etc.)
     LOSS = auto()           # Particle loss event (neutral atom, ion loss)
     BARRIER = auto()        # Synchronization barrier
 
@@ -203,9 +207,7 @@ class GateOperation(PhysicalOperation):
         metadata: Optional[Dict[str, Any]] = None,
     ):
         # Determine operation type from gate
-        from qectostim.experiments.hardware_simulation.core.gates import GateSpec
-        
-        num_qubits = gate.num_qubits if isinstance(gate, GateSpec) else gate.spec.num_qubits
+        num_qubits = gate.num_qubits
         if num_qubits == 1:
             op_type = OperationType.GATE_1Q
         elif num_qubits == 2:
@@ -256,7 +258,7 @@ class GateOperation(PhysicalOperation):
 
 
 class TransportOperation(PhysicalOperation):
-    """Qubit transport operation (for mobile architectures).
+    """Qubit transport operation (for mobile/reconfigurable architectures).
     
     Models physical movement of qubits between zones.
     
@@ -270,8 +272,9 @@ class TransportOperation(PhysicalOperation):
         Destination zone ID.
     path : List[str]
         Sequence of zone IDs traversed.
-    heating_rate : float
-        Motional heating rate (quanta/s) during transport.
+    error_rate : float
+        Generic error rate per microsecond of transport.
+        Platforms override fidelity() for physics-specific models.
     """
     
     def __init__(
@@ -281,33 +284,31 @@ class TransportOperation(PhysicalOperation):
         target_zone: str,
         duration: float = 10.0,
         path: Optional[List[str]] = None,
-        heating_rate: float = 0.0,
+        error_rate: float = 0.0,
         metadata: Optional[Dict[str, Any]] = None,
     ):
         super().__init__(OperationType.TRANSPORT, (qubit,), duration, metadata)
         self.source_zone = source_zone
         self.target_zone = target_zone
         self.path = path or [source_zone, target_zone]
-        self.heating_rate = heating_rate
+        self.error_rate = error_rate
     
     def fidelity(self, **context) -> float:
-        """Calculate transport fidelity based on heating."""
-        # Simple heating model: fidelity decreases with duration and heating rate
-        # F = exp(-heating_rate * duration / 1e6)  # duration in μs, rate in quanta/s
-        if self.heating_rate <= 0:
+        """Base fidelity: generic error_rate * duration model.
+        
+        Platforms override for physics-specific models (e.g. heating-based
+        dephasing for trapped ions, T1 decay for superconducting, etc.).
+        """
+        if self.error_rate <= 0:
             return 1.0
-        heating_quanta = self.heating_rate * self.duration / 1e6
-        # Each quantum of heating causes some dephasing
-        dephasing_per_quantum = 0.01  # Configurable
-        return max(0.0, 1.0 - heating_quanta * dephasing_per_quantum)
+        return max(0.0, 1.0 - self.error_rate * self.duration)
     
     def error_channel(self) -> str:
         """Transport primarily causes dephasing."""
         return "Z_ERROR"
     
     def to_stim_instructions(self) -> List[str]:
-        """Transport doesn't directly map to Stim gates."""
-        # Transport is modeled as noise only
+        """Transport is modeled as noise only."""
         instructions = []
         error_prob = 1.0 - self.fidelity()
         if error_prob > 0:
@@ -1084,6 +1085,7 @@ class GreedyBatchScheduler(BatchScheduler):
             
             # Create batch with non-conflicting operations
             batch = OperationBatch()
+            just_scheduled = []
             
             for idx in ready:
                 if len(batch) >= max_parallel:
@@ -1091,13 +1093,13 @@ class GreedyBatchScheduler(BatchScheduler):
                 if batch.can_add(operations[idx]):
                     batch.add_operation(operations[idx])
                     scheduled[idx] = True
+                    just_scheduled.append(idx)
             
-            # Update dependencies for next round
-            for idx in range(n):
-                if scheduled[idx]:
-                    for edge in dependencies:
-                        if edge.source == idx:
-                            dep_count[edge.target] -= 1
+            # Update dependencies only for ops scheduled THIS round
+            for idx in just_scheduled:
+                for edge in dependencies:
+                    if edge.source == idx:
+                        dep_count[edge.target] -= 1
             
             if batch.operations:
                 batches.append(batch)
@@ -1105,10 +1107,306 @@ class GreedyBatchScheduler(BatchScheduler):
         return batches
 
 
-# NOTE: WISEBatchScheduler has been moved to trapped_ion/scheduling.py
-# as it is specific to WISE trapped ion architectures.
-# Import from there if needed:
-#   from qectostim.experiments.hardware_simulation.trapped_ion.scheduling import WISEBatchScheduler
+class BarrierAwareScheduler(BatchScheduler):
+    """Scheduler that respects synchronization barriers.
+
+    Splits operations into segments at barrier boundaries, then
+    schedules each segment independently using a delegate scheduler.
+    This ensures that the parallelized schedule never reorders
+    operations across barriers, preserving circuit semantics.
+
+    Parameters
+    ----------
+    delegate : Optional[BatchScheduler]
+        Inner scheduler used within each barrier segment.
+        Defaults to :class:`GreedyBatchScheduler`.
+    name : str
+        Scheduler identifier.
+
+    Example
+    -------
+    >>> scheduler = BarrierAwareScheduler()
+    >>> batches = scheduler.schedule(operations, constraints={"barriers": [5, 12, 20]})
+    """
+
+    def __init__(
+        self,
+        delegate: Optional[BatchScheduler] = None,
+        name: str = "barrier_aware_scheduler",
+    ) -> None:
+        super().__init__(name)
+        self.delegate = delegate or GreedyBatchScheduler()
+
+    def build_dependency_dag(
+        self,
+        operations: List[PhysicalOperation],
+    ) -> List[DependencyEdge]:
+        """Delegate DAG building to the inner scheduler."""
+        return self.delegate.build_dependency_dag(operations)
+
+    def schedule(
+        self,
+        operations: List[PhysicalOperation],
+        constraints: Optional[Dict[str, Any]] = None,
+    ) -> List[OperationBatch]:
+        """Schedule with explicit barrier positions.
+
+        Barrier positions are passed via ``constraints["barriers"]`` as
+        a list of operation indices.  Operations are split at those
+        indices, each segment is scheduled independently, and a barrier
+        flag separates the segments in the output.
+
+        Parameters
+        ----------
+        operations : List[PhysicalOperation]
+            Operations to schedule.
+        constraints : Optional[Dict]
+            Must contain ``"barriers"`` key with a list of int indices.
+
+        Returns
+        -------
+        List[OperationBatch]
+            Ordered batches, with barrier flags between segments.
+        """
+        if not operations:
+            return []
+
+        constraints = constraints or {}
+        barrier_positions = sorted(set(constraints.get("barriers", [])))
+
+        if not barrier_positions:
+            return self.delegate.schedule(operations, constraints)
+
+        # Split into segments
+        segments: List[List[PhysicalOperation]] = []
+        prev = 0
+        for bp in barrier_positions:
+            if bp > prev:
+                segments.append(operations[prev:bp])
+            prev = bp
+        if prev < len(operations):
+            segments.append(operations[prev:])
+
+        # Schedule each segment independently
+        all_batches: List[OperationBatch] = []
+        for i, segment in enumerate(segments):
+            if not segment:
+                continue
+            seg_batches = self.delegate.schedule(segment, constraints)
+            if i > 0 and seg_batches:
+                seg_batches[0] = OperationBatch(
+                    operations=seg_batches[0].operations,
+                    batch_type=seg_batches[0].batch_type,
+                    barrier_before=True,
+                    barrier_after=seg_batches[0].barrier_after,
+                )
+            all_batches.extend(seg_batches)
+
+        return all_batches
+
+
+class TypeOrderedBatchScheduler(BatchScheduler):
+    """Scheduler that groups operations by type with configurable ordering.
+    
+    This is a technology-agnostic scheduler that groups operations by their
+    type (gate, transport, measurement, etc.) and executes groups in a
+    specified order with barriers between them.
+    
+    The type ordering is fully configurable, making this scheduler suitable
+    for any platform that benefits from type-based batching:
+    - QCCD trapped ions: transport → gates → measurement
+    - Neutral atoms: rearrangement → gates → measurement
+    - Superconducting: gates by locality for crosstalk
+    
+    Within each type group, operations on the same qubit are serialized
+    while non-conflicting operations run in parallel.
+    
+    Parameters
+    ----------
+    name : str
+        Scheduler identifier.
+    type_order : Optional[List[OperationType]]
+        Ordered list of operation types. Operations are scheduled in this
+        order with barriers between type groups. Types not in the list
+        are scheduled last.
+        
+    Example
+    -------
+    >>> # Trapped ion ordering
+    >>> ion_order = [OperationType.TRANSPORT, OperationType.GATE_2Q, 
+    ...              OperationType.GATE_1Q, OperationType.MEASUREMENT]
+    >>> scheduler = TypeOrderedBatchScheduler(type_order=ion_order)
+    >>> batches = scheduler.schedule(operations)
+    """
+    
+    # Default type ordering (generic, suitable for most platforms)
+    DEFAULT_TYPE_ORDER = [
+        OperationType.TRANSPORT,
+        OperationType.REARRANGEMENT,
+        OperationType.GATE_2Q,
+        OperationType.GATE_MULTI,
+        OperationType.GATE_1Q,
+        OperationType.MEASUREMENT,
+        OperationType.RESET,
+        OperationType.RECOVERY,
+    ]
+    
+    def __init__(
+        self,
+        name: str = "type_ordered_scheduler",
+        type_order: Optional[List[OperationType]] = None,
+    ) -> None:
+        """Initialize the type-ordered batch scheduler.
+        
+        Parameters
+        ----------
+        name : str
+            Scheduler name for identification.
+        type_order : Optional[List[OperationType]]
+            Custom order of operation types. Uses DEFAULT_TYPE_ORDER if None.
+        """
+        super().__init__(name)
+        self.type_order = type_order or self.DEFAULT_TYPE_ORDER
+    
+    def build_dependency_dag(
+        self,
+        operations: List[PhysicalOperation],
+    ) -> List[DependencyEdge]:
+        """Build DAG with type-based grouping.
+        
+        Only intra-group qubit conflicts create dependencies since
+        type groups are separated by barriers.
+        """
+        edges = []
+        
+        # Group operations by type
+        type_groups: Dict[OperationType, List[int]] = {}
+        for i, op in enumerate(operations):
+            if op.operation_type not in type_groups:
+                type_groups[op.operation_type] = []
+            type_groups[op.operation_type].append(i)
+        
+        # Add dependencies within each type group (same-qubit conflicts)
+        for op_type, indices in type_groups.items():
+            for i, idx_i in enumerate(indices):
+                qubits_i = set(operations[idx_i].qubits)
+                for idx_j in indices[i + 1:]:
+                    qubits_j = set(operations[idx_j].qubits)
+                    if qubits_i.intersection(qubits_j):
+                        edges.append(DependencyEdge(idx_i, idx_j, "qubit"))
+        
+        return edges
+    
+    def schedule(
+        self,
+        operations: List[PhysicalOperation],
+        constraints: Optional[Dict[str, Any]] = None,
+    ) -> List[OperationBatch]:
+        """Schedule with type-based batching and global barriers.
+        
+        Parameters
+        ----------
+        operations : List[PhysicalOperation]
+            Operations to schedule.
+        constraints : Optional[Dict]
+            Scheduling constraints:
+            - max_parallel: Maximum ops per batch
+            - type_order: Override the instance's type order
+            
+        Returns
+        -------
+        List[OperationBatch]
+            Ordered batches with barriers between type groups.
+        """
+        if not operations:
+            return []
+        
+        constraints = constraints or {}
+        type_order = constraints.get("type_order", self.type_order)
+        
+        # Group operations by type
+        type_groups: Dict[OperationType, List[PhysicalOperation]] = {}
+        other_ops: List[PhysicalOperation] = []
+        
+        for op in operations:
+            if op.operation_type in type_order:
+                if op.operation_type not in type_groups:
+                    type_groups[op.operation_type] = []
+                type_groups[op.operation_type].append(op)
+            else:
+                other_ops.append(op)
+        
+        batches = []
+        
+        # Create batches in type order with barriers
+        for op_type in type_order:
+            if op_type in type_groups:
+                ops_of_type = type_groups[op_type]
+                
+                # Split based on qubit conflicts
+                sub_batches = self._split_conflicting_ops(
+                    ops_of_type,
+                    constraints.get("max_parallel", float("inf")),
+                )
+                
+                for i, sub_ops in enumerate(sub_batches):
+                    batch = OperationBatch(
+                        operations=sub_ops,
+                        batch_type=op_type.name.lower(),
+                        barrier_before=(i == 0),  # First sub-batch gets barrier
+                        barrier_after=(i == len(sub_batches) - 1),
+                    )
+                    batches.append(batch)
+        
+        # Add other operations at the end
+        if other_ops:
+            batch = OperationBatch(
+                operations=other_ops,
+                batch_type="other",
+                barrier_before=True,
+            )
+            batches.append(batch)
+        
+        return batches
+    
+    def _split_conflicting_ops(
+        self,
+        operations: List[PhysicalOperation],
+        max_parallel: float,
+    ) -> List[List[PhysicalOperation]]:
+        """Split operations with qubit conflicts into separate batches.
+        
+        Operations that share qubits cannot run in parallel.
+        """
+        if not operations:
+            return []
+        
+        batches: List[List[PhysicalOperation]] = []
+        remaining = list(operations)
+        
+        while remaining:
+            current_batch: List[PhysicalOperation] = []
+            used_qubits: Set[int] = set()
+            still_remaining = []
+            
+            for op in remaining:
+                op_qubits = set(op.qubits)
+                if (not op_qubits.intersection(used_qubits) and
+                        len(current_batch) < max_parallel):
+                    current_batch.append(op)
+                    used_qubits.update(op_qubits)
+                else:
+                    still_remaining.append(op)
+            
+            if current_batch:
+                batches.append(current_batch)
+            remaining = still_remaining
+        
+        return batches
+
+
+# WISEBatchScheduler is in trapped_ion/scheduling.py as it uses WISE-specific
+# type ordering. It inherits from TypeOrderedBatchScheduler.
 
 
 # Import numpy for idle fidelity calculations

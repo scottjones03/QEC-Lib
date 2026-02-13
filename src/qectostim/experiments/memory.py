@@ -484,7 +484,7 @@ class ColorCodeMemoryExperiment(CSSMemoryExperiment):
         builder = ColorCodeStabilizerRoundBuilder(
             self.code, ctx,
             block_name="main",
-            measurement_basis=basis
+            measurement_basis=basis,
         )
         
         c = stim.Circuit()

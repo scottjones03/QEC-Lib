@@ -16,6 +16,7 @@ Ported and refactored from qccd_parallelisation.py.
 
 from __future__ import annotations
 
+import logging
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from typing import (
@@ -35,6 +36,8 @@ import numpy as np
 
 from qectostim.experiments.hardware_simulation.core.operations import (
     BatchScheduler,
+    TypeOrderedBatchScheduler,
+    BarrierAwareScheduler as _CoreBarrierAwareScheduler,
     DependencyEdge,
     OperationBatch,
     OperationType,
@@ -42,8 +45,11 @@ from qectostim.experiments.hardware_simulation.core.operations import (
 )
 
 if TYPE_CHECKING:
-    from .components import Ion, QCCDComponent
+    from .architecture import Ion, QCCDNode as QCCDComponent
     from .operations import QCCDOperationBase
+
+
+_logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -87,26 +93,33 @@ def calculate_dephasing_fidelity(time_us: float) -> float:
 # WISE Batch Scheduler
 # =============================================================================
 
-class WISEBatchScheduler(BatchScheduler):
+# WISE-specific type ordering for trapped ion QCCD
+WISE_TYPE_ORDER = [
+    OperationType.TRANSPORT,
+    OperationType.GATE_2Q,
+    OperationType.GATE_1Q,
+    OperationType.MEASUREMENT,
+    OperationType.RESET,
+    OperationType.RECOVERY,
+]
+
+
+class WISEBatchScheduler(TypeOrderedBatchScheduler):
     """Scheduler for WISE-style trapped ion architectures.
     
-    Groups operations by type with global barriers between groups:
-    1. All H-pass transports (horizontal ion movements)
+    Extends TypeOrderedBatchScheduler with WISE-specific type ordering:
+    1. All transports (horizontal/vertical ion movements)
     2. Barrier
-    3. All V-pass transports (vertical ion movements)
-    4. Barrier
-    5. All two-qubit gates
-    6. All single-qubit gates
-    7. Measurements
+    3. All two-qubit gates
+    4. All single-qubit gates
+    5. Measurements
     
     This matches the WISE SAT-based reconfiguration model where
     all ions move in coordinated phases to avoid collisions and
     minimize total reconfiguration time.
     
-    The scheduler enforces that:
-    - All operations of one type complete before the next type starts
-    - Within a type, operations on the same qubit/ion are serialized
-    - Critical path analysis prioritizes high-fanout operations
+    Inherits from core.operations.TypeOrderedBatchScheduler to reuse
+    the generic type-ordered scheduling logic.
     
     Example
     -------
@@ -130,168 +143,12 @@ class WISEBatchScheduler(BatchScheduler):
         use_critical_path : bool
             If True, prioritize operations on the critical path.
         """
-        super().__init__(name)
+        super().__init__(name=name, type_order=WISE_TYPE_ORDER)
         self.use_critical_path = use_critical_path
     
-    def build_dependency_dag(
-        self,
-        operations: List[PhysicalOperation],
-    ) -> List[DependencyEdge]:
-        """Build DAG with type-based grouping.
-        
-        For WISE scheduling, we group by operation type, so only
-        intra-group qubit conflicts create dependencies.
-        
-        Parameters
-        ----------
-        operations : List[PhysicalOperation]
-            Operations to schedule.
-            
-        Returns
-        -------
-        List[DependencyEdge]
-            Dependency edges between operations.
-        """
-        edges = []
-        n = len(operations)
-        
-        # Group operations by type
-        type_groups: Dict[OperationType, List[int]] = {}
-        for i, op in enumerate(operations):
-            if op.operation_type not in type_groups:
-                type_groups[op.operation_type] = []
-            type_groups[op.operation_type].append(i)
-        
-        # Add dependencies within each type group (same-qubit conflicts)
-        for op_type, indices in type_groups.items():
-            for i, idx_i in enumerate(indices):
-                qubits_i = set(operations[idx_i].qubits)
-                for idx_j in indices[i + 1:]:
-                    qubits_j = set(operations[idx_j].qubits)
-                    if qubits_i.intersection(qubits_j):
-                        edges.append(DependencyEdge(idx_i, idx_j, "qubit"))
-        
-        return edges
-    
-    def schedule(
-        self,
-        operations: List[PhysicalOperation],
-        constraints: Optional[Dict[str, Any]] = None,
-    ) -> List[OperationBatch]:
-        """Schedule with type-based batching and global barriers.
-        
-        Parameters
-        ----------
-        operations : List[PhysicalOperation]
-            Operations to schedule.
-        constraints : Optional[Dict]
-            Scheduling constraints:
-            - max_parallel: Maximum ops per batch
-            - type_order: Custom order of operation types
-            
-        Returns
-        -------
-        List[OperationBatch]
-            Ordered batches with barriers.
-        """
-        if not operations:
-            return []
-        
-        constraints = constraints or {}
-        
-        # Default type ordering for WISE
-        default_type_order = [
-            OperationType.TRANSPORT,
-            OperationType.GATE_2Q,
-            OperationType.GATE_1Q,
-            OperationType.MEASUREMENT,
-            OperationType.RESET,
-            OperationType.RECOOL,
-        ]
-        type_order = constraints.get("type_order", default_type_order)
-        
-        # Group operations by type
-        type_groups: Dict[OperationType, List[PhysicalOperation]] = {}
-        other_ops: List[PhysicalOperation] = []
-        
-        for op in operations:
-            if op.operation_type in type_order:
-                if op.operation_type not in type_groups:
-                    type_groups[op.operation_type] = []
-                type_groups[op.operation_type].append(op)
-            else:
-                other_ops.append(op)
-        
-        batches = []
-        
-        # Create batches in type order with barriers
-        for op_type in type_order:
-            if op_type in type_groups:
-                ops_of_type = type_groups[op_type]
-                
-                # For large batches, may need to split based on qubit conflicts
-                sub_batches = self._split_conflicting_ops(
-                    ops_of_type,
-                    constraints.get("max_parallel", float("inf")),
-                )
-                
-                for i, sub_ops in enumerate(sub_batches):
-                    batch = OperationBatch(
-                        operations=sub_ops,
-                        batch_type=op_type.name.lower(),
-                        barrier_before=(i == 0),  # Only first sub-batch gets barrier
-                        barrier_after=(i == len(sub_batches) - 1),
-                    )
-                    batches.append(batch)
-        
-        # Add other operations
-        if other_ops:
-            batch = OperationBatch(
-                operations=other_ops,
-                batch_type="other",
-                barrier_before=True,
-            )
-            batches.append(batch)
-        
-        return batches
-    
-    def _split_conflicting_ops(
-        self,
-        operations: List[PhysicalOperation],
-        max_parallel: float,
-    ) -> List[List[PhysicalOperation]]:
-        """Split operations with qubit conflicts into separate batches.
-        
-        Operations that share qubits cannot run in parallel and must
-        be placed in separate batches.
-        """
-        if not operations:
-            return []
-        
-        batches: List[List[PhysicalOperation]] = []
-        remaining = list(operations)
-        
-        while remaining:
-            current_batch: List[PhysicalOperation] = []
-            used_qubits: Set[int] = set()
-            
-            still_remaining = []
-            for op in remaining:
-                op_qubits = set(op.qubits)
-                
-                # Check if we can add this op
-                if (len(current_batch) < max_parallel and 
-                    not op_qubits.intersection(used_qubits)):
-                    current_batch.append(op)
-                    used_qubits.update(op_qubits)
-                else:
-                    still_remaining.append(op)
-            
-            if current_batch:
-                batches.append(current_batch)
-            remaining = still_remaining
-        
-        return batches
+    # build_dependency_dag is inherited from TypeOrderedBatchScheduler
+    # schedule is inherited from TypeOrderedBatchScheduler
+    # _split_conflicting_ops is inherited from TypeOrderedBatchScheduler
 
 
 # =============================================================================
@@ -730,8 +587,8 @@ def calculate_dephasing_from_idling(
         For each ion, list of (operation, dephasing_fidelity) pairs
         where the operation ends an idle interval.
     """
-    from .components import Ion
-    from .operations import QuantumOperationBase
+    from .architecture import Ion
+    from .operations import QubitOperation as QuantumOperationBase
     
     # Get the schedule
     schedule = schedule_operations_wise(operations, is_wise_arch=is_wise_arch)
@@ -816,6 +673,28 @@ def calculate_dephasing_from_idling(
 
 
 # =============================================================================
+# Barrier-Aware Scheduler
+# =============================================================================
+
+class BarrierAwareScheduler(_CoreBarrierAwareScheduler):
+    """WISE-aware barrier scheduler.
+
+    Thin subclass of :class:`core.operations.BarrierAwareScheduler`
+    that defaults the inner delegate to :class:`WISEBatchScheduler`.
+    """
+
+    def __init__(
+        self,
+        delegate: Optional[BatchScheduler] = None,
+        name: str = "barrier_aware_scheduler",
+    ) -> None:
+        super().__init__(
+            delegate=delegate or WISEBatchScheduler(),
+            name=name,
+        )
+
+
+# =============================================================================
 # Exports
 # =============================================================================
 
@@ -823,6 +702,7 @@ __all__ = [
     # Schedulers
     "WISEBatchScheduler",
     "WISECriticalPathScheduler",
+    "BarrierAwareScheduler",
     # Scheduling functions
     "schedule_operations_wise",
     "schedule_operations_with_barriers",

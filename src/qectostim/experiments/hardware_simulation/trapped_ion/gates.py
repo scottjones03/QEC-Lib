@@ -19,6 +19,9 @@ from qectostim.experiments.hardware_simulation.core.gates import (
     ParameterizedGate,
     STANDARD_GATES,
 )
+from qectostim.experiments.hardware_simulation.trapped_ion.physics import (
+    DEFAULT_CALIBRATION as _CAL,
+)
 
 
 # =============================================================================
@@ -36,8 +39,8 @@ MS_GATE = GateSpec(
     metadata={
         "platform": "trapped_ion",
         "description": "Mølmer-Sørensen entangling gate",
-        "typical_duration_us": 40.0,
-        "typical_fidelity": 0.995,
+        "typical_duration_us": _CAL.ms_gate_time * 1e6,
+        "typical_fidelity": _CAL.gate_fidelities().get("MS", 0.995),
     },
 )
 
@@ -66,7 +69,7 @@ GLOBAL_ROTATION = GateSpec(
     metadata={
         "platform": "trapped_ion",
         "description": "Global rotation - acts on all ions simultaneously",
-        "typical_duration_us": 5.0,
+        "typical_duration_us": _CAL.single_qubit_gate_time * 1e6,
     },
 )
 
@@ -81,8 +84,8 @@ SINGLE_ION_ROTATION = GateSpec(
     metadata={
         "platform": "trapped_ion",
         "description": "Single-ion rotation with addressed beam",
-        "typical_duration_us": 5.0,
-        "typical_fidelity": 0.9997,
+        "typical_duration_us": _CAL.single_qubit_gate_time * 1e6,
+        "typical_fidelity": _CAL.gate_fidelities().get("RX", 0.9997),
     },
 )
 
@@ -132,8 +135,8 @@ ION_MEASUREMENT = GateSpec(
     metadata={
         "platform": "trapped_ion",
         "description": "Fluorescence measurement",
-        "typical_duration_us": 400.0,
-        "typical_fidelity": 0.999,
+        "typical_duration_us": _CAL.measurement_time * 1e6,
+        "typical_fidelity": 1.0 - _CAL.measurement_infidelity,
     },
 )
 
@@ -200,52 +203,186 @@ class TrappedIonGateSet(NativeGateSet):
 
 class TrappedIonGateDecomposer(GateDecomposer):
     """Decomposes gates to trapped ion native operations.
-    
+
     Standard decompositions:
-    - CNOT → MS + single-qubit rotations
-    - H → RY(π/2) + RZ(π)
-    - CZ → H + CNOT + H
-    
-    NOT IMPLEMENTED: This is a stub for the decomposition logic.
+    - CNOT → MS(π/4) + single-qubit rotations  (2-qubit cost = 1 MS)
+    - CZ   → H(target) + CNOT + H(target)      (2-qubit cost = 1 MS)
+    - H    → RY(π/2) · RZ(π)                   (virtual Z is free)
+    - SWAP → 3× CNOT  → 3 MS gates
+
+    Reference: arXiv:2004.04706, Fig. 5; PRA 99, 022330.
     """
-    
+
     def __init__(self):
         super().__init__(TrappedIonGateSet())
-    
+        # Build a decomposition lookup table
+        self._table = self._build_decomposition_table()
+
+    # -----------------------------------------------------------------
+    # Internal: pre-built table of (gate_name → factory)
+    # -----------------------------------------------------------------
+    def _build_decomposition_table(self):
+        """Return { gate_name: callable(qubits) -> GateDecomposition }."""
+        import math
+        pi = math.pi
+
+        table = {}
+
+        # --- H → RY(π/2) · RZ(π) --------------------------------
+        def _decompose_h(qubits):
+            q = qubits[0]
+            ry = Y_ROTATION.with_parameters(theta=pi / 2)
+            rz = Z_ROTATION.with_parameters(theta=pi)
+            return GateDecomposition(
+                original=STANDARD_GATES["H"],
+                sequence=[(ry, (q,)), (rz, (q,))],
+                cost=_CAL.single_qubit_gate_time * 1e6,  # single-qubit gate (RZ is virtual)
+            )
+        table["H"] = _decompose_h
+
+        # --- CNOT → (I⊗RY(-π/2)) · MS(π/4) · (RX(-π/2)⊗RX(-π/2)) · MS(π/4) · (I⊗RY(π/2))
+        #     Simplified: 2 MS + 3 single-qubit rotations
+        #     Using the compact form: RY(-π/2)_t · MS · RX(-π/2)_c · RX(-π/2)_t · RY(π/2)_t
+        def _decompose_cnot(qubits):
+            c, t = qubits
+            ms = MS_GATE.with_parameters(theta=pi / 4, phi=0.0)
+            ry_pos = Y_ROTATION.with_parameters(theta=pi / 2)
+            ry_neg = Y_ROTATION.with_parameters(theta=-pi / 2)
+            rx_neg = X_ROTATION.with_parameters(theta=-pi / 2)
+            return GateDecomposition(
+                original=STANDARD_GATES.get("CNOT", STANDARD_GATES.get("CX")),
+                sequence=[
+                    (ry_neg, (t,)),
+                    (ms, (c, t)),
+                    (rx_neg, (c,)),
+                    (rx_neg, (t,)),
+                    (ry_pos, (t,)),
+                ],
+                cost=_CAL.ms_gate_time * 1e6 + 3 * _CAL.single_qubit_gate_time * 1e6,  # 1 MS + 3 rotations
+            )
+        table["CNOT"] = _decompose_cnot
+        table["CX"] = _decompose_cnot
+
+        # --- CZ → H_t · CNOT · H_t ---------------------------------
+        def _decompose_cz(qubits):
+            c, t = qubits
+            # Inline H as RY(π/2)·RZ(π)
+            ry_h = Y_ROTATION.with_parameters(theta=pi / 2)
+            rz_h = Z_ROTATION.with_parameters(theta=pi)
+            # CNOT decomposition pieces
+            ms = MS_GATE.with_parameters(theta=pi / 4, phi=0.0)
+            ry_pos = Y_ROTATION.with_parameters(theta=pi / 2)
+            ry_neg = Y_ROTATION.with_parameters(theta=-pi / 2)
+            rx_neg = X_ROTATION.with_parameters(theta=-pi / 2)
+            return GateDecomposition(
+                original=STANDARD_GATES["CZ"],
+                sequence=[
+                    # H on target
+                    (ry_h, (t,)), (rz_h, (t,)),
+                    # CNOT
+                    (ry_neg, (t,)),
+                    (ms, (c, t)),
+                    (rx_neg, (c,)),
+                    (rx_neg, (t,)),
+                    (ry_pos, (t,)),
+                    # H on target
+                    (ry_h, (t,)), (rz_h, (t,)),
+                ],
+                cost=_CAL.ms_gate_time * 1e6 + 7 * _CAL.single_qubit_gate_time * 1e6,  # 1 MS + 7 rotations
+            )
+        table["CZ"] = _decompose_cz
+
+        # --- SWAP → 3× CNOT → 3 MS gates ----------------------------
+        def _decompose_swap(qubits):
+            c, t = qubits
+            cnot_ct = _decompose_cnot((c, t))
+            cnot_tc = _decompose_cnot((t, c))
+            seq = cnot_ct.sequence + cnot_tc.sequence + cnot_ct.sequence
+            return GateDecomposition(
+                original=STANDARD_GATES["SWAP"],
+                sequence=seq,
+                cost=cnot_ct.cost * 3,
+            )
+        table["SWAP"] = _decompose_swap
+
+        # --- S → RZ(π/2) -------------------------------------------
+        def _decompose_s(qubits):
+            q = qubits[0]
+            rz = Z_ROTATION.with_parameters(theta=pi / 2)
+            return GateDecomposition(
+                original=STANDARD_GATES["S"],
+                sequence=[(rz, (q,))],
+                cost=0.0,  # virtual Z
+            )
+        table["S"] = _decompose_s
+
+        # --- S_DAG → RZ(-π/2) --------------------------------------
+        def _decompose_s_dag(qubits):
+            q = qubits[0]
+            rz = Z_ROTATION.with_parameters(theta=-pi / 2)
+            return GateDecomposition(
+                original=STANDARD_GATES["S_DAG"],
+                sequence=[(rz, (q,))],
+                cost=0.0,
+            )
+        table["S_DAG"] = _decompose_s_dag
+
+        # --- T → RZ(π/4) -------------------------------------------
+        def _decompose_t(qubits):
+            q = qubits[0]
+            rz = Z_ROTATION.with_parameters(theta=pi / 4)
+            return GateDecomposition(
+                original=STANDARD_GATES["T"],
+                sequence=[(rz, (q,))],
+                cost=0.0,
+            )
+        table["T"] = _decompose_t
+
+        # --- T_DAG → RZ(-π/4) --------------------------------------
+        def _decompose_t_dag(qubits):
+            q = qubits[0]
+            rz = Z_ROTATION.with_parameters(theta=-pi / 4)
+            return GateDecomposition(
+                original=STANDARD_GATES["T_DAG"],
+                sequence=[(rz, (q,))],
+                cost=0.0,
+            )
+        table["T_DAG"] = _decompose_t_dag
+
+        return table
+
+    # -----------------------------------------------------------------
+    # Public API
+    # -----------------------------------------------------------------
     def decompose(
         self,
         gate: GateSpec | ParameterizedGate,
         qubits: Tuple[int, ...],
     ) -> GateDecomposition:
-        """Decompose a gate into MS + rotations.
-        
-        NOT IMPLEMENTED.
-        """
+        """Decompose a gate into MS + rotations."""
         name = gate.name if isinstance(gate, GateSpec) else gate.spec.name
-        
+
         if self.is_native(gate):
-            # Already native
             return GateDecomposition(
                 original=gate if isinstance(gate, GateSpec) else gate.spec,
                 sequence=[(gate, qubits)],
                 cost=0.0,
             )
-        
-        # Decomposition logic to be implemented
+
+        factory = self._table.get(name)
+        if factory is not None:
+            return factory(qubits)
+
         raise NotImplementedError(
             f"TrappedIonGateDecomposer: decomposition for {name!r} not yet implemented."
         )
-    
+
     def decompose_cnot(self, control: int, target: int) -> GateDecomposition:
         """Decompose CNOT to MS + rotations.
-        
-        CNOT = (I ⊗ RY(-π/2)) · MS(π/4) · (RX(π/2) ⊗ RX(π/2)) · MS(π/4) · (I ⊗ RY(π/2))
-        
-        NOT IMPLEMENTED.
+
+        CNOT = (I ⊗ RY(-π/2)) · MS(π/4) · (RX(-π/2) ⊗ RX(-π/2)) · (I ⊗ RY(π/2))
         """
-        raise NotImplementedError(
-            "TrappedIonGateDecomposer.decompose_cnot() not yet implemented."
-        )
+        return self.decompose(STANDARD_GATES.get("CNOT", STANDARD_GATES.get("CX")), (control, target))
 
 
 # =============================================================================
@@ -271,10 +408,10 @@ class TrappedIonGateTiming:
     reset_time : float
         Qubit reset duration in seconds.
     """
-    ms_gate_time: float = 40e-6  # 40 μs
-    single_qubit_time: float = 5e-6  # 5 μs
-    measurement_time: float = 400e-6  # 400 μs
-    reset_time: float = 50e-6  # 50 μs
+    ms_gate_time: float = _CAL.ms_gate_time        # 40 μs
+    single_qubit_time: float = _CAL.single_qubit_gate_time  # 5 μs
+    measurement_time: float = _CAL.measurement_time  # 400 μs
+    reset_time: float = _CAL.reset_time              # 50 μs
     
     # AM gate scaling (from paper)
     am1_base: float = 100e-6  # μs per ion distance - 22

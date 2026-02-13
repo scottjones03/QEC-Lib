@@ -17,6 +17,7 @@ Usage:
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import (
     Dict,
@@ -27,7 +28,6 @@ from typing import (
     TYPE_CHECKING,
 )
 
-import numpy as np
 import stim
 
 from qectostim.experiments.hardware_simulation.core.execution import (
@@ -35,6 +35,12 @@ from qectostim.experiments.hardware_simulation.core.execution import (
     OperationTiming,
     GateSwapInfo,
     IdleInterval,
+)
+
+from qectostim.experiments.hardware_simulation.trapped_ion.physics import (
+    IonChainFidelityModel,
+    DEFAULT_FIDELITY_MODEL as _FIDELITY,
+    DEFAULT_CALIBRATION as _CALIBRATION,
 )
 
 if TYPE_CHECKING:
@@ -52,36 +58,14 @@ if TYPE_CHECKING:
     from qectostim.noise.hardware.base import CalibrationData
 
 
-# Default gate times for trapped ions (microseconds)
-DEFAULT_GATE_TIMES = {
-    "MS": 100.0,      # Mølmer-Sørensen gate
-    "RX": 10.0,       # X rotation
-    "RY": 10.0,       # Y rotation  
-    "RZ": 0.1,        # Z rotation (virtual, nearly instant)
-    "H": 10.0,        # Hadamard (decomposed)
-    "CNOT": 250.0,    # CNOT (2 MS + rotations)
-    "CX": 250.0,      # Same as CNOT
-    "CZ": 270.0,      # CZ (CNOT + H gates)
-    "M": 200.0,       # Measurement
-    "R": 50.0,        # Reset
-    "MR": 250.0,      # Measure + reset
-    "SWAP": 750.0,    # SWAP (3 CNOTs)
-}
+# Gate times derived from CalibrationConstants (physics.py).
+# Values are in **microseconds**.
+DEFAULT_GATE_TIMES: Dict[str, float] = _CALIBRATION.gate_times_us()
 
-# Default fidelities
-DEFAULT_FIDELITIES = {
-    "MS": 0.995,
-    "RX": 0.9999,
-    "RY": 0.9999,
-    "RZ": 0.99999,
-    "H": 0.9998,
-    "CNOT": 0.99,
-    "CX": 0.99,
-    "CZ": 0.985,
-    "M": 0.995,
-    "R": 0.999,
-    "SWAP": 0.97,
-}
+# Gate fidelities derived from CalibrationConstants for a default chain of 2.
+DEFAULT_FIDELITIES: Dict[str, float] = _CALIBRATION.gate_fidelities(chain_length=2)
+
+_logger = logging.getLogger(__name__)
 
 
 class TrappedIonExecutionPlanner:
@@ -203,24 +187,61 @@ class TrappedIonExecutionPlanner:
         qubits: Tuple[int, ...],
         compiled: "CompiledCircuit",
     ) -> OperationTiming:
-        """Extract timing from CompiledCircuit's scheduled operations."""
+        """Extract timing from CompiledCircuit's scheduled operations.
+
+        Uses the stim_instruction_map (when available) to determine how
+        many native ops each stim instruction decomposes into, which
+        scales the idle-dephasing duration in the noise model.
+
+        Timing (start_time, duration) is estimated sequentially from
+        the scheduled_ops list, using the instruction_index to look up
+        the corresponding scheduled operation.
+
+        Fidelity is computed using the physics formula with the n̄
+        value at the time the gate executes (per-batch snapshot).
+        The motional_quanta and chain_length are stored on the
+        returned OperationTiming so the noise model can recompute
+        fidelity dynamically if needed.
+        """
         scheduled = compiled.scheduled
-        
-        # Try to find matching scheduled operation
-        # Note: The scheduled circuit may have different indexing due to decomposition
-        # For now, estimate timing based on layer structure
+        duration = self.gate_times.get(
+            gate_name, _CALIBRATION.single_qubit_gate_time * 1e6
+        )
+
+        # Get per-gate n̄ and mode snapshot from per-batch snapshot
+        chain_length, motional_quanta, batch_index, mode_snapshot = (
+            self._extract_chain_and_heating(qubits, compiled)
+        )
+        fidelity = self._get_fidelity(
+            gate_name, qubits,
+            chain_length=chain_length,
+            motional_quanta=motional_quanta,
+        )
+
+        # --- Determine num_native_ops from stim_instruction_map ----------
+        num_native_ops = 1
+        native_circuit = None
+        if hasattr(compiled, 'scheduled') and compiled.scheduled.routed_circuit is not None:
+            routed = compiled.scheduled.routed_circuit
+            if hasattr(routed, 'mapped_circuit') and routed.mapped_circuit is not None:
+                native_circuit = routed.mapped_circuit.native_circuit
+
+        if (native_circuit is not None
+                and hasattr(native_circuit, 'stim_instruction_map')
+                and native_circuit.stim_instruction_map):
+            sim = native_circuit.stim_instruction_map
+            gate_keys = sorted(sim.keys())
+            if instruction_index < len(gate_keys):
+                native_idxs = sim[gate_keys[instruction_index]]
+                num_native_ops = max(1, len(native_idxs))
+
+        # --- Timing from scheduled_ops ----------------------------------
         start_time = 0.0
-        duration = self.gate_times.get(gate_name, 10.0)
-        
-        # If we have scheduled ops, use their timing
         if scheduled.scheduled_ops and instruction_index < len(scheduled.scheduled_ops):
             sched_op = scheduled.scheduled_ops[instruction_index]
             start_time = sched_op.start_time
             duration = sched_op.duration
-        
-        # Get fidelity from calibration or defaults
-        fidelity = self._get_fidelity(gate_name, qubits)
-        
+
         return OperationTiming(
             instruction_index=instruction_index,
             gate_name=gate_name,
@@ -228,7 +249,123 @@ class TrappedIonExecutionPlanner:
             start_time=start_time,
             duration=duration,
             fidelity=fidelity,
+            batch_index=batch_index,
+            num_native_ops=num_native_ops,
+            platform_context={
+                "chain_length": chain_length,
+                "motional_quanta": motional_quanta,
+                "mode_snapshot": mode_snapshot,
+            },
         )
+    
+    def _extract_chain_and_heating(
+        self,
+        qubits: Tuple[int, ...],
+        compiled: "CompiledCircuit",
+    ) -> Tuple[Optional[int], float, Optional[int], Optional[Any]]:
+        """Extract chain_length, motional_quanta, and mode snapshot.
+
+        Returns the n̄ at the time the gate executes, NOT the
+        end-of-circuit accumulated total.
+
+        Strategy:
+        1. Look up which batch this gate pair belongs to using
+           ``gate_batch_map``.
+        2. Retrieve the per-batch n̄ snapshot from
+           ``motional_quanta_per_batch[batch_index]``.
+        3. Compute trap-level motional quanta as
+           ``per_ion_nbar * chain_length`` (matching old code's
+           ``trap.motionalMode = sum(ion.motionalMode for ion)``).
+        4. If ``mode_snapshots_per_batch`` is available, retrieve the
+           ModeSnapshot for this gate's qubits — this carries the full
+           3N normal-mode frequencies, eigenvectors, and per-mode
+           occupancies that the collaborator's noise model will consume.
+
+        If per-batch snapshots are not available (e.g. no routing was
+        performed), falls back to the end-of-circuit values.
+
+        Returns ``(chain_length, motional_quanta, batch_index, mode_snapshot)``.
+        """
+        chain_length: Optional[int] = None
+        motional_quanta: float = 0.0
+        batch_index: Optional[int] = None
+        mode_snapshot: Optional[Any] = None
+
+        comp_meta = compiled.metrics or {}
+
+        # --- Chain length ---
+        if "chain_lengths" in comp_meta:
+            cl_map = comp_meta["chain_lengths"]
+            for q in qubits:
+                if q in cl_map:
+                    chain_length = cl_map[q]
+                    break
+        if chain_length is None and "default_chain_length" in comp_meta:
+            chain_length = comp_meta["default_chain_length"]
+
+        n_ions = chain_length if chain_length and chain_length >= 1 else 1
+
+        # --- Per-batch n̄ (preferred: exact system state at gate time) ---
+        per_batch = comp_meta.get("motional_quanta_per_batch")
+        batch_map = comp_meta.get("gate_batch_map")
+
+        if per_batch and batch_map is not None:
+            # Find the batch index for this gate pair
+            pair = (qubits[0], qubits[1]) if len(qubits) >= 2 else None
+            if pair and pair in batch_map:
+                batch_index = batch_map[pair]
+            elif pair and (pair[1], pair[0]) in batch_map:
+                batch_index = batch_map[(pair[1], pair[0])]
+
+            if batch_index is not None and batch_index < len(per_batch):
+                snapshot = per_batch[batch_index]
+                # Per-ion n̄ for one of the involved qubits
+                per_ion = 0.0
+                for q in qubits:
+                    if q in snapshot:
+                        per_ion = snapshot[q]
+                        break
+                else:
+                    if snapshot:
+                        per_ion = sum(snapshot.values()) / len(snapshot)
+                # Trap-level = per_ion × chain_length
+                motional_quanta = per_ion * n_ions
+
+                # --- Mode snapshot (3N normal-mode state) ---
+                # The routing pass captured a snapshot of each trap's
+                # full vibrational state (mode frequencies, eigenvectors,
+                # per-mode occupancies) AFTER transport heating but
+                # BEFORE this gate executes.  We look up the snapshot
+                # for the specific qubit involved in this gate.
+                #
+                # This is the key data the collaborator's noise model
+                # needs: it tells them "these are the 3N mode frequencies
+                # and occupancies right before your gate runs" — enabling
+                # mode-resolved, potentially correlated error computation.
+                mode_per_batch = comp_meta.get("mode_snapshots_per_batch")
+                if mode_per_batch and batch_index < len(mode_per_batch):
+                    mode_batch = mode_per_batch[batch_index]
+                    for q in qubits:
+                        if q in mode_batch:
+                            mode_snapshot = mode_batch[q]
+                            break
+
+                return chain_length, motional_quanta, batch_index, mode_snapshot
+
+        # --- Fallback: end-of-circuit n̄ (when no per-batch data) ---
+        if "motional_quanta" in comp_meta:
+            mq_map = comp_meta["motional_quanta"]
+            per_ion = 0.0
+            for q in qubits:
+                if q in mq_map:
+                    per_ion = mq_map[q]
+                    break
+            else:
+                if mq_map:
+                    per_ion = sum(mq_map.values()) / len(mq_map)
+            motional_quanta = per_ion * n_ions
+
+        return chain_length, motional_quanta, batch_index, mode_snapshot
     
     def _estimate_timing(
         self,
@@ -237,8 +374,10 @@ class TrappedIonExecutionPlanner:
         qubits: Tuple[int, ...],
         current_time: float,
     ) -> OperationTiming:
-        """Estimate timing when no compilation info available."""
-        duration = self.gate_times.get(gate_name, 10.0)
+        duration = self.gate_times.get(
+            gate_name, _CALIBRATION.single_qubit_gate_time * 1e6
+        )
+        # When estimating, we don't know chain_length, fall back to defaults
         fidelity = self._get_fidelity(gate_name, qubits)
         
         return OperationTiming(
@@ -254,16 +393,37 @@ class TrappedIonExecutionPlanner:
         self,
         gate_name: str,
         qubits: Tuple[int, ...],
+        chain_length: Optional[int] = None,
+        motional_quanta: float = 0.0,
     ) -> float:
-        """Get gate fidelity from calibration or defaults."""
+        """Get gate fidelity from calibration or defaults.
+
+        Delegates to :class:`IonChainFidelityModel` in physics.py
+        when ``chain_length`` is known.  Otherwise falls back to
+        fixed lookup tables.
+        """
+        # Try physics formula
+        if chain_length is not None and chain_length >= 1:
+            TWO_QUBIT_GATES = {
+                "MS", "CX", "CZ", "CNOT", "SWAP", "ISWAP",
+                "XCX", "XCZ", "YCX", "ZCX", "ZCZ",
+            }
+            is_2q = gate_name in TWO_QUBIT_GATES
+            return _FIDELITY.gate_fidelity(
+                chain_length, motional_quanta, is_two_qubit=is_2q,
+            )
+
+        # Fixed calibration lookup
         if self.calibration is not None:
             if len(qubits) == 1:
                 return self.calibration.get_1q_fidelity(qubits[0], gate_name)
             elif len(qubits) == 2:
                 return self.calibration.get_2q_fidelity(qubits[0], qubits[1], gate_name)
-        
+
         # Fall back to defaults
-        return self._default_fidelities.get(gate_name, 0.999)
+        return self._default_fidelities.get(
+            gate_name, 1.0 - _CALIBRATION.measurement_infidelity
+        )
     
     def _get_swap_info(
         self,
@@ -274,21 +434,105 @@ class TrappedIonExecutionPlanner:
         """Extract gate swap info from compilation.
         
         For QCCD architectures, two-qubit gates may require ion transport.
-        This extracts that information from the routed circuit.
+        This extracts that information from the routed circuit metadata,
+        the compiled metrics dict, or the routed_circuit's routing_operations.
+        
+        Gate swap fidelity is computed as MS_fidelity^3 to match the old
+        code's GateSwap.calculateFidelity() which uses 3 MS gates per swap.
         """
-        # Check if routing info is available in metadata
+        pair = (qubits[0], qubits[1]) if len(qubits) >= 2 else qubits
+
+        # Get chain length and motional quanta for fidelity calculation
+        chain_length, motional_quanta, _batch_idx, mode_snapshot = self._extract_chain_and_heating(qubits, compiled)
+        
+        # Compute MS gate fidelity using physics formula
+        ms_fidelity = self._get_fidelity(
+            "MS", qubits, chain_length, motional_quanta
+        )
+        
+        # GateSwap = 3 MS gates (old code: GateSwap.calculateFidelity = product of 3)
+        swap_fidelity = ms_fidelity ** 3
+
+        # 1. Check compiled.metrics["routing_swaps"]
         if compiled.metrics and "routing_swaps" in compiled.metrics:
             routing_swaps = compiled.metrics["routing_swaps"]
             if instruction_index in routing_swaps:
                 swap_data = routing_swaps[instruction_index]
                 return GateSwapInfo(
                     instruction_index=instruction_index,
-                    qubits=(qubits[0], qubits[1]) if len(qubits) >= 2 else qubits,
+                    qubits=pair,
                     num_swaps=swap_data.get("num_swaps", 0),
-                    swap_fidelity=swap_data.get("fidelity", 0.998),
+                    swap_fidelity=swap_fidelity,
                     transport_time=swap_data.get("time", 0.0),
+                    metadata={
+                        "ms_fidelity": ms_fidelity,
+                        "chain_length": chain_length,
+                        "motional_quanta": motional_quanta,
+                    },
+                    platform_context={
+                        "chain_length": chain_length,
+                        "motional_quanta": motional_quanta,
+                        "mode_snapshot": mode_snapshot,
+                    },
                 )
-        
+
+        # 2. Check routed_circuit.metadata["gate_swaps_by_stim_idx"]
+        routed = (
+            compiled.scheduled.routed_circuit
+            if compiled.scheduled and compiled.scheduled.routed_circuit
+            else None
+        )
+        if routed is not None and routed.metadata:
+            swaps_by_idx = routed.metadata.get("gate_swaps_by_stim_idx", {})
+            if instruction_index in swaps_by_idx:
+                swap_list = swaps_by_idx[instruction_index]
+                total_swaps = sum(
+                    getattr(s, 'num_swaps', 1) for s in swap_list
+                )
+                return GateSwapInfo(
+                    instruction_index=instruction_index,
+                    qubits=pair,
+                    num_swaps=total_swaps,
+                    swap_fidelity=swap_fidelity,
+                    transport_time=0.0,
+                    metadata={
+                        "ms_fidelity": ms_fidelity,
+                        "chain_length": chain_length,
+                        "motional_quanta": motional_quanta,
+                    },
+                    platform_context={
+                        "chain_length": chain_length,
+                        "motional_quanta": motional_quanta,
+                        "mode_snapshot": mode_snapshot,
+                    },
+                )
+
+        # 3. Count routing_operations that touch these qubits
+        if routed is not None and routed.routing_operations:
+            n_swaps = 0
+            for rop in routed.routing_operations:
+                rop_qubits = getattr(rop, 'qubits', ())
+                if set(rop_qubits) & set(pair):
+                    n_swaps += 1
+            if n_swaps > 0:
+                return GateSwapInfo(
+                    instruction_index=instruction_index,
+                    qubits=pair,
+                    num_swaps=n_swaps,
+                    swap_fidelity=swap_fidelity,
+                    transport_time=0.0,
+                    metadata={
+                        "ms_fidelity": ms_fidelity,
+                        "chain_length": chain_length,
+                        "motional_quanta": motional_quanta,
+                    },
+                    platform_context={
+                        "chain_length": chain_length,
+                        "motional_quanta": motional_quanta,
+                        "mode_snapshot": mode_snapshot,
+                    },
+                )
+
         # No routing info available
         return None
 

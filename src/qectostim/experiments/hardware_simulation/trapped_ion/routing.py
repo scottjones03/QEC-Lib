@@ -49,6 +49,30 @@ from typing import (
 
 import numpy as np
 
+# Soft import of tqdm for progress bars (falls back to no-op)
+try:
+    from tqdm.auto import tqdm as _tqdm
+except ImportError:
+    # Provide a no-op fallback when tqdm is not installed
+    class _tqdm:  # type: ignore[no-redef]
+        """Minimal no-op tqdm stand-in."""
+        def __init__(self, iterable=None, *a, **kw):
+            self._it = iterable
+        def __iter__(self):
+            return iter(self._it) if self._it is not None else iter([])
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            pass
+        def update(self, n=1):
+            pass
+        def set_postfix_str(self, s, refresh=True):
+            pass
+        def set_description(self, desc, refresh=True):
+            pass
+        def close(self):
+            pass
+
 from qectostim.experiments.hardware_simulation.core.compiler import (
     Router,
     RoutingResult,
@@ -84,6 +108,44 @@ wise_logger = logging.getLogger(WISE_LOGGER_NAME)
 if not wise_logger.handlers:
     wise_logger.addHandler(logging.NullHandler())
 wise_logger.propagate = False
+
+
+# =============================================================================
+# Reconfiguration heating constants
+# =============================================================================
+
+# Import canonical transport constants from the transport module.
+# These are derived from individual transport operation physics and kept
+# in sync via the transport module's computed aggregates.
+from qectostim.experiments.hardware_simulation.trapped_ion.transport import (
+    ROW_SWAP_HEATING as _RSH,
+    COL_SWAP_HEATING as _CSH,
+    ROW_SWAP_TIME_S as _RST,
+    COL_SWAP_TIME_S as _CST,
+    Split as _Split,
+    JunctionCrossing as _JC,
+    Move as _Move,
+)
+
+# Motional quanta deposited per ion per swap.
+ROW_SWAP_HEATING: float = _RSH   # ≈ 9.734e-4 quanta per ion per row swap
+COL_SWAP_HEATING: float = _CSH   # ≈ 9.005e-4 quanta per ion per column swap
+ROW_SWAP_TIME_US: float = _RST * 1e6   # μs
+COL_SWAP_TIME_US: float = _CST * 1e6   # μs
+
+# Per-pass reconfiguration timing (old code's _runOddEvenReconfig model).
+# In the old code, one parallel H-pass takes one ``row_swap_time`` and one
+# parallel V-pass takes one ``col_swap_time``, regardless of how many
+# individual swaps occur in that pass (they execute in parallel).
+# The initial split overhead is added once per reconfiguration step.
+INITIAL_SPLIT_TIME_US: float = _Split.SPLITTING_TIME * 1e6  # 80 µs
+H_PASS_TIME_US: float = ROW_SWAP_TIME_US  # 212 µs per H-pass
+# Old code V-pass formula:
+#   col_swap_time = 2*JC + (4*JC + Move)*2
+# This models the full junction-crossing sequence for a vertical swap pass.
+V_PASS_TIME_US: float = (
+    2.0 * _JC.CROSSING_TIME + (4.0 * _JC.CROSSING_TIME + _Move.MOVING_TIME) * 2
+) * 1e6  # 510 µs per V-pass
 
 
 # =============================================================================
@@ -140,18 +202,49 @@ class WISERoutingConfig(SATRoutingConfig):
         Weight for row boundary avoidance soft constraints.
     boundary_soft_weight_col : int
         Weight for column boundary avoidance soft constraints.
+    subgridsize : Tuple[int, int, int]
+        Patch decomposition dimensions (cols, rows, increment).
+        Old code default: (6, 4, 1).
+    base_pmax_in : Optional[int]
+        Base pass-bound for SAT solver. If None, derived from
+        number of rounds.
+    lookahead_rounds : int
+        Number of future gate batches to aggregate when routing.
+        The solver considers current batch + lookahead_rounds
+        batches simultaneously, then chains layouts forward.
+    max_cycles : int
+        Maximum tiling cycles for patch routing before giving up.
     """
     # WISE-specific parameters (base params inherited from SATRoutingConfig)
     patch_enabled: bool = False
     patch_height: int = 4
     patch_width: int = 4
-    bt_soft_weight: int = 0
+    bt_soft_weight: int = 5
     boundary_soft_weight_row: int = 0
     boundary_soft_weight_col: int = 0
+    subgridsize: Tuple[int, int, int] = (6, 4, 1)
+    base_pmax_in: Optional[int] = None
+    lookahead_rounds: int = 2
+    max_cycles: int = 10
+    boundary_capacity_factor: float = 1.0
+    # --- fields ported from old best_effort_compilation_WISE ---
+    barrier_threshold: float = float('inf')
+    go_back_threshold: float = 0.0
     
     @classmethod
     def from_env(cls) -> "WISERoutingConfig":
         """Create config from environment variables."""
+        # Parse subgridsize from env (format: "cols,rows,inc" e.g. "6,4,1")
+        subgridsize_str = os.environ.get("WISE_SUBGRIDSIZE", "6,4,1")
+        try:
+            parts = [int(x.strip()) for x in subgridsize_str.split(",")]
+            subgridsize = (parts[0], parts[1], parts[2]) if len(parts) >= 3 else (6, 4, 1)
+        except (ValueError, IndexError):
+            subgridsize = (6, 4, 1)
+        
+        base_pmax_str = os.environ.get("WISE_BASE_PMAX", "")
+        base_pmax_in = int(base_pmax_str) if base_pmax_str.isdigit() else None
+        
         return cls(
             timeout_seconds=float(os.environ.get("WISE_SAT_TIMEOUT", "60")),
             max_passes=int(os.environ.get("WISE_MAX_PASSES", "10")),
@@ -164,6 +257,10 @@ class WISERoutingConfig(SATRoutingConfig):
             bt_soft_weight=int(os.environ.get("WISE_BT_SOFT_WEIGHT", "0")),
             boundary_soft_weight_row=int(os.environ.get("WISE_BOUNDARY_WEIGHT_ROW", "0")),
             boundary_soft_weight_col=int(os.environ.get("WISE_BOUNDARY_WEIGHT_COL", "0")),
+            subgridsize=subgridsize,
+            base_pmax_in=base_pmax_in,
+            lookahead_rounds=int(os.environ.get("WISE_LOOKAHEAD", "2")),
+            max_cycles=int(os.environ.get("WISE_MAX_CYCLES", "10")),
         )
 
 
@@ -220,6 +317,14 @@ class WISESATContext:
     block_widths: List[int]
     num_blocks: int
     debug_diag: bool = False
+    # Grid origin for patch-based routing (row_offset, col_offset)
+    grid_origin: Tuple[int, int] = (0, 0)
+    # Cross-boundary directional preferences per round
+    cross_boundary_prefs: Optional[List[Dict[int, Set[str]]]] = None
+    # Boundary adjacency flags
+    boundary_adjacent: Optional[Dict[str, bool]] = None
+    # Whether the first round starts from an arbitrary layout
+    ignore_initial_reconfig: bool = False
 
 
 class WISESATEncoder(GridSATEncoder):
@@ -287,7 +392,9 @@ class WISESATEncoder(GridSATEncoder):
             )
         
         self.config = config or WISERoutingConfig()
-        self.use_maxsat = use_maxsat or self.config.use_maxsat
+        # Respect the explicit use_maxsat arg: only fall back to config
+        # when the caller did NOT pass use_maxsat=True explicitly.
+        self.use_maxsat = use_maxsat  # honour the caller's explicit choice
         
         # pysat structures
         self.vpool: IDPool = IDPool()
@@ -370,7 +477,12 @@ class WISESATEncoder(GridSATEncoder):
     # Initialization
     # -------------------------------------------------------------------------
     
-    def initialize(self, context: WISESATContext, pass_bound: int) -> None:
+    def initialize(
+        self,
+        context: WISESATContext,
+        pass_bound: int,
+        sum_bound_B: Optional[int] = None,
+    ) -> None:
         """Initialize the encoder with routing context.
         
         Parameters
@@ -379,14 +491,30 @@ class WISESATEncoder(GridSATEncoder):
             Context containing layout and requirement info.
         pass_bound : int
             Maximum number of passes per round.
+        sum_bound_B : Optional[int]
+            If set, constrain the total number of *active* passes
+            across all optimized rounds to at most this value.
+            Mirrors the old code's Σ_r P_r bound.
         """
         self.context = context
         self.rows = context.n_rows
         self.cols = context.n_cols
         self._items = list(context.ions)
+        self._sum_bound_B = sum_bound_B
         
-        # Set pass bounds (uniform for now, can be customized later)
-        self._pass_bounds = [pass_bound] * context.num_rounds
+        # Determine which rounds get extra passes (ignore_initial_reconfig)
+        n, m = context.n_rows, context.n_cols
+        R = context.num_rounds
+        optimize_round_start = (
+            1 if (context.ignore_initial_reconfig and R > 0) else 0
+        )
+        self._optimize_round_start = optimize_round_start
+        
+        # Variable P_bounds: early rounds get extra passes for full sort
+        self._pass_bounds = (
+            [pass_bound + n + m] * optimize_round_start
+            + [pass_bound] * (R - optimize_round_start)
+        )
     
     # -------------------------------------------------------------------------
     # GridSATEncoder Interface Implementation
@@ -788,6 +916,88 @@ class WISESATEncoder(GridSATEncoder):
                     we2 = self.var_block_end(r, i2, b)
                     self._add_hard([-we1, we2], f"PAIR_REQ:r{r}")
                     self._add_hard([-we2, we1], f"PAIR_REQ:r{r}")
+
+    def add_displacement_soft_constraints(self) -> None:
+        """Add soft clauses penalising large ion displacement.
+
+        For each round *r* and each ion, a soft clause encourages the
+        ion to stay in the same row (weighted by
+        ``config.boundary_soft_weight_row``) and the same column block
+        (weighted by ``config.boundary_soft_weight_col``) it occupied at
+        the start of the round.  This drives the MaxSAT solver to
+        minimise total ion movement, which reduces transport heating.
+
+        These clauses are only added when ``use_maxsat`` is True and the
+        corresponding weight is > 0.
+        """
+        if self.context is None or not self.use_maxsat:
+            return
+
+        ctx = self.context
+        R = ctx.num_rounds
+        n, m = ctx.n_rows, ctx.n_cols
+
+        w_row = self.config.boundary_soft_weight_row
+        w_col = self.config.boundary_soft_weight_col
+
+        if w_row <= 0 and w_col <= 0:
+            return
+
+        for r in range(R):
+            P_final = self._pass_bounds[r]
+            P_start = 0  # beginning of round
+
+            for ion in ctx.ions:
+                # --- row displacement penalty ---
+                if w_row > 0:
+                    for d in range(n):
+                        # row_end(r, ion, d) at start_pass → row_end(r, ion, d) at final_pass
+                        # Encourage: if ion was in row d at start, it stays in row d
+                        re_start = self.var_row_end(r, ion, d) if P_start == 0 else None
+                        re_end = self.var_row_end(r, ion, d)
+
+                        # Simpler approach: penalise being in a different
+                        # row at the end than we'd like.  Use the initial
+                        # layout to determine the "home" row.
+                        init_layout = ctx.initial_layout
+                        home_row = None
+                        for dr in range(n):
+                            for dc in range(m):
+                                if init_layout[dr][dc] == ion:
+                                    home_row = dr
+                                    break
+                            if home_row is not None:
+                                break
+                        if home_row is not None:
+                            # Encourage ion to be in home_row at round end
+                            self._add_soft(
+                                [self.var_row_end(r, ion, home_row)],
+                                weight=w_row,
+                            )
+
+                # --- column displacement penalty ---
+                if w_col > 0:
+                    init_layout = ctx.initial_layout
+                    home_block = None
+                    for dr in range(n):
+                        for dc in range(m):
+                            if init_layout[dr][dc] == ion:
+                                # Block = dc // block_width
+                                if ctx.block_widths:
+                                    cumw = 0
+                                    for bidx, bw in enumerate(ctx.block_widths):
+                                        cumw += bw
+                                        if dc < cumw:
+                                            home_block = bidx
+                                            break
+                                break
+                        if home_block is not None:
+                            break
+                    if home_block is not None:
+                        self._add_soft(
+                            [self.var_block_end(r, ion, home_block)],
+                            weight=w_col,
+                        )
     
     def add_row_block_linkage_constraints(self) -> None:
         """Add constraints linking row_end/block_end variables to positions.
@@ -852,6 +1062,247 @@ class WISESATEncoder(GridSATEncoder):
         # multi-round requirements
         pass
     
+    def add_pass_usage_constraints(self) -> None:
+        """Add pass-usage (u-variable) constraints and global Σ_r P_r bound.
+
+        For every (r, p) define a Boolean ``u[r,p]`` that is true iff
+        any comparator (horizontal or vertical) is active in that pass.
+        Then, if ``_sum_bound_B`` is set, add an at-most cardinality
+        constraint on the total number of active passes.
+
+        This is the port of the old code's u-variable + SUM_BOUND logic.
+        """
+        if self.context is None:
+            return
+
+        ctx = self.context
+        R = ctx.num_rounds
+        n, m = ctx.n_rows, ctx.n_cols
+        optimize_round_start = getattr(self, '_optimize_round_start', 0)
+
+        for r in range(R):
+            P_bound = self._pass_bounds[r]
+            for p in range(P_bound):
+                u_rp = self.var_u(r, p)
+
+                comp_lits: List[int] = []
+                for krow in range(n):
+                    for jcol in range(m - 1):
+                        comp_lits.append(self.var_s_h(r, p, krow, jcol))
+                for krow in range(n - 1):
+                    for jcol in range(m):
+                        comp_lits.append(self.var_s_v(r, p, krow, jcol))
+
+                if not comp_lits:
+                    self._add_hard([-u_rp], "UTIL_U")
+                    continue
+
+                # u ↔ OR(comp_lits)
+                self._add_hard([-u_rp] + comp_lits, "UTIL_U")
+                for s_lit in comp_lits:
+                    self._add_hard([-s_lit, u_rp], "UTIL_U")
+
+        # Global Σ_r P_r ≤ sum_bound_B cardinality constraint
+        sum_bound = getattr(self, '_sum_bound_B', None)
+        if sum_bound is not None and optimize_round_start < R:
+            sum_u_lits: List[int] = []
+            for r in range(optimize_round_start, R):
+                for p in range(self._pass_bounds[r]):
+                    sum_u_lits.append(self.var_u(r, p))
+
+            total_slots = len(sum_u_lits)
+            bound = min(sum_bound, total_slots)
+            if bound < total_slots:
+                card_enc = CardEnc.atmost(
+                    lits=sum_u_lits,
+                    bound=bound,
+                    encoding=EncType.totalizer,
+                    vpool=self.vpool,
+                )
+                for clause in card_enc.clauses:
+                    self._add_hard(clause, "SUM_BOUND")
+
+    def add_cross_boundary_constraints(self) -> None:
+        """Add cross-boundary hard and soft constraints.
+
+        Ports the old code's ``CROSS_BOUNDARY`` hard clauses and
+        boundary-preference soft clauses.  For each ion with
+        cross-boundary directional preferences, the ion is forced
+        into the band of cells nearest the target boundary.
+        """
+        if self.context is None:
+            return
+
+        ctx = self.context
+        R = ctx.num_rounds
+        n, m = ctx.n_rows, ctx.n_cols
+        prefs_list = ctx.cross_boundary_prefs
+        boundary_adj = ctx.boundary_adjacent
+
+        if not prefs_list or not boundary_adj:
+            return
+        if not any(boundary_adj.values()):
+            return
+
+        half_h = max(1, n // 2)
+        half_w = max(1, m // 2)
+
+        def _band_cells(directions: Set[str]) -> List[Tuple[int, int]]:
+            row_min, row_max = 0, n - 1
+            col_min, col_max = 0, m - 1
+            if "top" in directions:
+                row_max = min(row_max, half_h - 1)
+            if "bottom" in directions:
+                row_min = max(row_min, n - half_h)
+            if "left" in directions:
+                col_max = min(col_max, half_w - 1)
+            if "right" in directions:
+                col_min = max(col_min, m - half_w)
+            if row_min > row_max or col_min > col_max:
+                return []
+            return [
+                (rr, cc)
+                for rr in range(row_min, row_max + 1)
+                for cc in range(col_min, col_max + 1)
+            ]
+
+        # ---- capacity-factor limiting (matches old code) ----
+        # Only the first ``dir_capacity`` ions per direction per round
+        # get the hard CROSS_BOUNDARY clause.  The old code searched
+        # over boundary_capacity_factor ∈ [0..1] in parallel; here we
+        # use the single value from the config.
+        factor = max(0.0, min(1.0, self.config.boundary_capacity_factor))
+        dir_capacity: Dict[str, int] = {}
+        if boundary_adj.get("top", False):
+            dir_capacity["top"] = int(round(half_h * m * factor))
+        if boundary_adj.get("bottom", False):
+            dir_capacity["bottom"] = int(round(half_h * m * factor))
+        if boundary_adj.get("left", False):
+            dir_capacity["left"] = int(round(half_w * n * factor))
+        if boundary_adj.get("right", False):
+            dir_capacity["right"] = int(round(half_w * n * factor))
+
+        # Collect ions per (round, direction) and sort for determinism.
+        ions_per_round_dir: Dict[Tuple[int, str], List[int]] = defaultdict(list)
+        for r in range(R):
+            prefs_r = prefs_list[r] if r < len(prefs_list) else {}
+            for ion, dirs in prefs_r.items():
+                if ion not in ctx.ions:
+                    continue
+                for direction in dirs:
+                    if direction in dir_capacity:
+                        ions_per_round_dir[(r, direction)].append(ion)
+        for key in ions_per_round_dir:
+            ions_per_round_dir[key].sort()
+
+        # Determine which directions each ion is *enforced* for.
+        enforced_dirs_per_ion: Dict[Tuple[int, int], Set[str]] = defaultdict(set)
+        for (r, direction), ion_list in ions_per_round_dir.items():
+            cap = dir_capacity.get(direction, 0)
+            if cap <= 0:
+                continue
+            for ion in ion_list[:cap]:
+                enforced_dirs_per_ion[(r, ion)].add(direction)
+
+        for r in range(R):
+            prefs_r = prefs_list[r] if r < len(prefs_list) else {}
+            if not prefs_r:
+                continue
+            P_final = self._pass_bounds[r]
+            for ion in prefs_r.keys():
+                if ion not in ctx.ions:
+                    continue
+                enforced_dirs = enforced_dirs_per_ion.get((r, ion))
+                if not enforced_dirs:
+                    continue
+                cells = _band_cells(enforced_dirs)
+                if not cells:
+                    # Fallback: union of individual direction bands
+                    union: Set[Tuple[int, int]] = set()
+                    for d in enforced_dirs:
+                        union.update(_band_cells({d}))
+                    cells = list(union)
+                if not cells:
+                    continue
+                clause = [
+                    self.var_a(r, P_final, d, c, ion)
+                    for (d, c) in cells
+                ]
+                self._add_hard(clause, "CROSS_BOUNDARY")
+
+        # Soft clauses: encourage inner-pair ions *away* from boundaries,
+        # and cross-pair ions *toward* their target boundary.
+        if self.use_maxsat:
+            w_row = self.config.boundary_soft_weight_row
+            w_col = self.config.boundary_soft_weight_col
+            if w_row <= 0 and w_col <= 0:
+                return
+
+            P_arr = ctx.gate_pairs
+            BT = ctx.target_positions
+            for r in range(R):
+                inner_ions: Set[int] = set()
+                for (i1, i2) in P_arr[r]:
+                    inner_ions.add(i1)
+                    inner_ions.add(i2)
+                inner_ions.update(BT[r].keys())
+
+                prefs_r = prefs_list[r] if r < len(prefs_list) else {}
+                P_final = self._pass_bounds[r]
+
+                for ion in ctx.ions:
+                    # Cross-boundary ions: encourage toward boundary
+                    dirs = prefs_r.get(ion)
+                    if dirs:
+                        for direction in dirs:
+                            if direction in ("left", "right") and w_col > 0:
+                                if not boundary_adj.get(direction, False):
+                                    continue
+                                target_col = 0 if direction == "left" else m - 1
+                                lits = [
+                                    self.var_a(r, P_final, d, target_col, ion)
+                                    for d in range(n)
+                                ]
+                                if lits:
+                                    self._add_soft(lits, weight=w_col)
+                            if direction in ("top", "bottom") and w_row > 0:
+                                if not boundary_adj.get(direction, False):
+                                    continue
+                                target_row = 0 if direction == "top" else n - 1
+                                lits = [
+                                    self.var_a(r, P_final, target_row, jcol, ion)
+                                    for jcol in range(m)
+                                ]
+                                if lits:
+                                    self._add_soft(lits, weight=w_row)
+
+                    # Inner-pair ions: discourage boundary positions
+                    if ion in inner_ions:
+                        if boundary_adj.get("left", False) and w_col > 0:
+                            for d in range(n):
+                                self._add_soft(
+                                    [-self.var_a(r, P_final, d, 0, ion)],
+                                    weight=w_col,
+                                )
+                        if boundary_adj.get("right", False) and w_col > 0:
+                            for d in range(n):
+                                self._add_soft(
+                                    [-self.var_a(r, P_final, d, m - 1, ion)],
+                                    weight=w_col,
+                                )
+                        if boundary_adj.get("top", False) and w_row > 0:
+                            for jcol in range(m):
+                                self._add_soft(
+                                    [-self.var_a(r, P_final, 0, jcol, ion)],
+                                    weight=w_row,
+                                )
+                        if boundary_adj.get("bottom", False) and w_row > 0:
+                            for jcol in range(m):
+                                self._add_soft(
+                                    [-self.var_a(r, P_final, n - 1, jcol, ion)],
+                                    weight=w_row,
+                                )
+
     def add_all_constraints(
         self,
         skip_cardinality: bool = False,
@@ -876,7 +1327,13 @@ class WISESATEncoder(GridSATEncoder):
         self.add_phase_constraints("mono", 0)  # Phase monotonicity
         self.add_swap_constraints()  # Includes copy constraints
         self.add_row_block_linkage_constraints()
-        self.add_target_position_constraints()
+        # NOTE: add_target_position_constraints() is NOT called here.
+        # BT constraints are added explicitly in Phase 2 (MaxSAT) as
+        # soft constraints — adding them as hard in Phase 1 (pure SAT)
+        # can make the problem UNSAT or inflate D*.
+        self.add_pass_usage_constraints()  # u-variables + sum_bound_B
+        self.add_cross_boundary_constraints()  # cross-boundary hard + soft
+        self.add_displacement_soft_constraints()
         
         if not skip_pairs:
             self.add_gate_pair_constraints()
@@ -914,7 +1371,7 @@ class WISESATEncoder(GridSATEncoder):
         timeout: Optional[float] = None,
         assumptions: Optional[List[int]] = None,
     ) -> SATSolution:
-        """Solve using plain SAT (Minisat22)."""
+        """Solve using plain SAT (Minisat22) with timeout enforcement."""
         t0 = time.time()
         
         if timeout is not None and timeout <= 0:
@@ -924,17 +1381,43 @@ class WISESATEncoder(GridSATEncoder):
             )
         
         try:
-            with Minisat22(bootstrap_with=self.formula.clauses) as solver:
+            # WCNF has .hard, CNF has .clauses
+            if hasattr(self.formula, 'clauses'):
+                clauses = self.formula.clauses
+            elif hasattr(self.formula, 'hard'):
+                clauses = self.formula.hard
+            else:
+                clauses = []
+            with Minisat22(bootstrap_with=clauses, use_timer=True) as solver:
+                # Enforce timeout via conflict budget.  Empirically
+                # ~50 000 conflicts ≈ 1 s on modern hardware for
+                # formulas of the size we generate.  Scale linearly.
+                eff_timeout = timeout if timeout is not None else 60.0
+                conflict_budget = max(5000, int(50_000 * eff_timeout))
+                solver.conf_budget(conflict_budget)
+
                 if assumptions:
-                    sat_ok = solver.solve(assumptions=assumptions)
+                    sat_ok = solver.solve_limited(assumptions=assumptions)
                 else:
-                    sat_ok = solver.solve()
+                    sat_ok = solver.solve_limited()
+
+                # solve_limited returns True/False/None (None = interrupted)
+                if sat_ok is None:
+                    # Budget exhausted → treat as timeout
+                    return SATSolution(
+                        satisfiable=False,
+                        solve_time=time.time() - t0,
+                        statistics={"status": "timeout",
+                                    "conflict_budget": conflict_budget},
+                    )
                 
                 model = solver.get_model() if sat_ok else None
                 
                 t1 = time.time()
                 
                 if sat_ok and model:
+                    # Cache the model so Phase 3 decode can use it directly
+                    self._last_model = model
                     item_positions = self._extract_positions(model)
                     return SATSolution(
                         satisfiable=True,
@@ -961,7 +1444,7 @@ class WISESATEncoder(GridSATEncoder):
             )
     
     def _solve_maxsat(self, timeout: Optional[float] = None) -> SATSolution:
-        """Solve using MaxSAT (RC2)."""
+        """Solve using MaxSAT (RC2) with timeout enforcement."""
         try:
             from pysat.examples.rc2 import RC2
         except ImportError:
@@ -969,33 +1452,69 @@ class WISESATEncoder(GridSATEncoder):
             return self._solve_sat(timeout)
         
         t0 = time.time()
+        eff_timeout = timeout if timeout is not None else 60.0
         
         try:
-            with RC2(self.formula) as rc2:
-                model = rc2.compute()
-                cost = rc2.cost if hasattr(rc2, 'cost') else 0
+            # Run RC2 in a thread with a timeout, since RC2.compute()
+            # has no built-in timeout mechanism.
+            import threading
+            result_holder: List[Any] = [None]  # [model]
+            cost_holder: List[Any] = [0]
+            exc_holder: List[Optional[Exception]] = [None]
+
+            def _rc2_worker():
+                try:
+                    with RC2(self.formula) as rc2:
+                        model = rc2.compute()
+                        result_holder[0] = list(model) if model else None
+                        cost_holder[0] = rc2.cost if hasattr(rc2, 'cost') else 0
+                except Exception as e:
+                    exc_holder[0] = e
+
+            worker = threading.Thread(target=_rc2_worker, daemon=True)
+            worker.start()
+            worker.join(timeout=eff_timeout)
+
+            if worker.is_alive():
+                # Timeout — thread is still running; we cannot kill it
+                # but we return immediately with a timeout result.
+                wise_logger.warning(
+                    "MaxSAT RC2 timed out after %.1f s", eff_timeout
+                )
+                return SATSolution(
+                    satisfiable=False,
+                    solve_time=time.time() - t0,
+                    statistics={"status": "timeout"},
+                )
+
+            if exc_holder[0] is not None:
+                raise exc_holder[0]
+
+            model = result_holder[0]
+            cost = cost_holder[0]
+            t1 = time.time()
                 
-                t1 = time.time()
-                
-                if model:
-                    item_positions = self._extract_positions(model)
-                    return SATSolution(
-                        satisfiable=True,
-                        item_positions=item_positions,
-                        cost=float(cost),
-                        solve_time=t1 - t0,
-                        statistics={
-                            "status": "ok",
-                            "model_size": len(model),
-                            "maxsat_cost": cost,
-                        },
-                    )
-                else:
-                    return SATSolution(
-                        satisfiable=False,
-                        solve_time=t1 - t0,
-                        statistics={"status": "unsat"},
-                    )
+            if model:
+                # Cache the model so Phase 3 decode can use it directly
+                self._last_model = model
+                item_positions = self._extract_positions(model)
+                return SATSolution(
+                    satisfiable=True,
+                    item_positions=item_positions,
+                    cost=float(cost),
+                    solve_time=t1 - t0,
+                    statistics={
+                        "status": "ok",
+                        "model_size": len(model),
+                        "maxsat_cost": cost,
+                    },
+                )
+            else:
+                return SATSolution(
+                    satisfiable=False,
+                    solve_time=t1 - t0,
+                    statistics={"status": "unsat"},
+                )
         
         except Exception as e:
             return SATSolution(
@@ -1397,17 +1916,27 @@ class WiseSatRouter(Router):
         gate_pairs: List[Tuple[int, int]],
         current_mapping: QubitMapping,
         architecture: "HardwareArchitecture",
+        lookahead_pairs: Optional[List[List[Tuple[int, int]]]] = None,
+        bt_positions: Optional[List[Dict[int, Tuple[int, int]]]] = None,
     ) -> RoutingResult:
         """Route a batch of two-qubit gates using SAT optimization.
         
         Parameters
         ----------
         gate_pairs : List[Tuple[int, int]]
-            Pairs of logical qubits needing interaction.
+            Pairs of logical qubits needing interaction (current batch).
         current_mapping : QubitMapping
             Current qubit positions.
         architecture : HardwareArchitecture
             Target WISE grid architecture.
+        lookahead_pairs : Optional[List[List[Tuple[int, int]]]]
+            Additional future batches to consider when optimizing.
+            The solver will find a layout that is good for all batches,
+            but only the routing for ``gate_pairs`` is applied.
+        bt_positions : Optional[List[Dict[int, Tuple[int, int]]]]
+            Boundary target (BT) positions from a previous multi-round
+            solve.  Each list entry pins ions to their planned positions
+            for that round, reducing the SAT search space.
             
         Returns
         -------
@@ -1429,6 +1958,19 @@ class WiseSatRouter(Router):
                 )
             physical_pairs.append((p1, p2))
         
+        # Build full gate pair list for multi-round SAT solving
+        all_round_pairs: List[List[Tuple[int, int]]] = [physical_pairs]
+        if lookahead_pairs:
+            for batch in lookahead_pairs:
+                round_physical = []
+                for q1, q2 in batch:
+                    p1 = current_mapping.get_physical(q1)
+                    p2 = current_mapping.get_physical(q2)
+                    if p1 is not None and p2 is not None:
+                        round_physical.append((p1, p2))
+                if round_physical:
+                    all_round_pairs.append(round_physical)
+        
         # Get grid dimensions from architecture
         n_rows, n_cols = self._get_grid_dimensions(architecture)
         capacity = self._get_capacity(architecture)
@@ -1444,7 +1986,7 @@ class WiseSatRouter(Router):
                 physical_pairs, initial_layout, n_rows, n_cols, capacity
             )
         
-        # Use SAT solver
+        # Use SAT solver with multi-round pairs if lookahead active
         try:
             schedule = self._solve_sat(
                 initial_layout,
@@ -1452,6 +1994,8 @@ class WiseSatRouter(Router):
                 n_rows,
                 n_cols,
                 capacity,
+                all_round_pairs=all_round_pairs if len(all_round_pairs) > 1 else None,
+                bt_positions=bt_positions,
             )
             
             if schedule is None:
@@ -1460,21 +2004,102 @@ class WiseSatRouter(Router):
                     metrics={"error": "SAT solver found no solution"},
                 )
             
-            # Convert schedule to operations
-            operations = self._schedule_to_operations(schedule)
+            # ----------------------------------------------------------
+            # Only use ROUND-0 operations for execution.  The schedule
+            # may contain multiple rounds (when lookahead > 0), but the
+            # old code only applies the current round's reconfiguration.
+            # Future round layouts are extracted as BTs for subsequent
+            # iterations.
+            # ----------------------------------------------------------
+            round0_passes = (
+                schedule.passes_per_round[0]
+                if schedule.passes_per_round
+                else []
+            )
+            round0_ops: List[Dict[str, Any]] = []
+            for p_idx, p_info in enumerate(round0_passes):
+                if p_info.phase == "H":
+                    # Split H-swaps by column parity (port of old
+                    # code's _infer_pass_parity for H-phase).
+                    even_h = [(r, c) for r, c in p_info.h_swaps if c % 2 == 0]
+                    odd_h  = [(r, c) for r, c in p_info.h_swaps if c % 2 == 1]
+                    for parity_group in (even_h, odd_h):
+                        if not parity_group:
+                            continue
+                        for r, c in parity_group:
+                            round0_ops.append(
+                                {"type": "H_SWAP", "row": r, "col": c}
+                            )
+                        round0_ops.append({"type": "PASS_BOUNDARY"})
+                else:
+                    # Split V-swaps by row parity (port of old
+                    # code's _infer_pass_parity for V-phase).
+                    even_v = [(r, c) for r, c in p_info.v_swaps if r % 2 == 0]
+                    odd_v  = [(r, c) for r, c in p_info.v_swaps if r % 2 == 1]
+                    for parity_group in (even_v, odd_v):
+                        if not parity_group:
+                            continue
+                        for r, c in parity_group:
+                            round0_ops.append(
+                                {"type": "V_SWAP", "row": r, "col": c}
+                            )
+                        round0_ops.append({"type": "PASS_BOUNDARY"})
+            # Strip trailing boundary
+            if round0_ops and round0_ops[-1].get("type") == "PASS_BOUNDARY":
+                round0_ops.pop()            
+            # Update mapping from round-0 layout only
+            round0_layout = (
+                schedule.layouts[0]
+                if schedule.layouts
+                else initial_layout
+            )
+            final_mapping = self._layout_to_mapping(
+                round0_layout, current_mapping
+            )
             
-            # Update mapping
-            final_layout = schedule.layouts[-1] if schedule.layouts else initial_layout
-            final_mapping = self._layout_to_mapping(final_layout, current_mapping)
-            
+            # Count H vs V swaps from round 0 only
+            h_swap_count = sum(
+                len(p.h_swaps) for p in round0_passes if p.phase == "H"
+            )
+            v_swap_count = sum(
+                len(p.v_swaps) for p in round0_passes if p.phase == "V"
+            )
+            h_pass_count = sum(
+                1 for p in round0_passes
+                if p.phase == "H" and p.has_swaps
+            )
+            v_pass_count = sum(
+                1 for p in round0_passes
+                if p.phase == "V" and p.has_swaps
+            )
+
+            # Extract future-round layouts as BTs for the next
+            # iteration.  layout[r] = ion positions after round r's
+            # swaps.  For the next call (batch_idx+1), round 0 = the
+            # current round 1, so BTs shift by one.
+            future_bt_positions: List[Dict[int, Tuple[int, int]]] = []
+            for future_idx in range(1, len(schedule.layouts)):
+                layout = schedule.layouts[future_idx]
+                future_bt_positions.append(
+                    dict(layout.ion_positions)
+                )
+
             return RoutingResult(
                 success=True,
-                operations=operations,
-                cost=float(schedule.total_swaps),
+                operations=round0_ops,
+                cost=float(h_swap_count + v_swap_count),
                 final_mapping=final_mapping,
                 metrics={
-                    "total_passes": schedule.total_passes,
-                    "total_swaps": schedule.total_swaps,
+                    "total_passes": len(round0_passes),
+                    "total_swaps": h_swap_count + v_swap_count,
+                    "h_swaps": h_swap_count,
+                    "v_swaps": v_swap_count,
+                    "h_passes": h_pass_count,
+                    "v_passes": v_pass_count,
+                    "num_rounds_decoded": len(
+                        schedule.passes_per_round
+                    ),
+                    "_future_bt_positions": future_bt_positions,
                 },
             )
             
@@ -1514,32 +2139,60 @@ class WiseSatRouter(Router):
         n_rows: int,
         n_cols: int,
     ) -> GridLayout:
-        """Build GridLayout from QubitMapping."""
+        """Build GridLayout from QubitMapping.
+
+        Placement sources (tried in order):
+        1. ``mapping.zone_assignments`` — zone IDs of the form
+           ``"trap_{row}_{col}"`` are parsed to place each physical
+           qubit on the grid.
+        2. **Positional fallback** — when zone_assignments are empty
+           (or unparseable) we derive ``(row, col)`` from the physical
+           qubit index: ``row = phys // n_cols, col = phys % n_cols``.
+           This matches the convention used by
+           ``WISECompiler.map_qubits()`` and guarantees a valid,
+           fully-populated grid for the SAT solver.
+
+        Remaining cells (if any) are filled with unique indices so that
+        every grid slot contains a distinct ion identifier, which is
+        required by the permutation constraints in the SAT encoder.
+        """
         grid = np.zeros((n_rows, n_cols), dtype=int)
-        
-        # Place mapped qubits
+        placed: set = set()
+
+        # --- Strategy 1: zone_assignments ---------------------------------
         for logical, physical in mapping.logical_to_physical.items():
             zone = mapping.zone_assignments.get(physical)
             if zone:
-                # Parse zone to get row, col
-                # Assuming zone format like "trap_r_c" or similar
                 try:
                     parts = zone.split("_")
                     row, col = int(parts[-2]), int(parts[-1])
-                    if 0 <= row < n_rows and 0 <= col < n_cols:
+                    if 0 <= row < n_rows and 0 <= col < n_cols and (row, col) not in placed:
                         grid[row, col] = physical
+                        placed.add((row, col))
                 except (ValueError, IndexError):
                     pass
-        
-        # Fill remaining cells with unique indices
-        used = set(grid.flatten())
-        next_idx = max(used) + 1 if used else 0
+
+        # --- Strategy 2: positional fallback for any unplaced qubits ------
+        if len(placed) < len(mapping.logical_to_physical):
+            for logical, physical in mapping.logical_to_physical.items():
+                row = physical // n_cols if n_cols > 0 else 0
+                col = physical % n_cols if n_cols > 0 else physical
+                if 0 <= row < n_rows and 0 <= col < n_cols and (row, col) not in placed:
+                    grid[row, col] = physical
+                    placed.add((row, col))
+
+        # --- Fill remaining cells with unique indices ---------------------
+        used_ids = set(grid.flatten()) - {0}
+        # Also include 0 if it was legitimately placed
+        if (0, 0) in placed or 0 in mapping.logical_to_physical.values():
+            used_ids.add(0)
+        next_idx = (max(used_ids) + 1) if used_ids else 0
         for r in range(n_rows):
             for c in range(n_cols):
-                if grid[r, c] == 0 and 0 not in mapping.logical_to_physical.values():
+                if (r, c) not in placed:
                     grid[r, c] = next_idx
                     next_idx += 1
-        
+
         return GridLayout(grid=grid)
     
     def _layout_to_mapping(
@@ -1565,24 +2218,28 @@ class WiseSatRouter(Router):
         n_rows: int,
         n_cols: int,
         capacity: int,
+        all_round_pairs: Optional[List[List[Tuple[int, int]]]] = None,
+        bt_positions: Optional[List[Dict[int, Tuple[int, int]]]] = None,
     ) -> Optional[RoutingSchedule]:
         """Solve routing using SAT/MaxSAT with WISESATEncoder.
-        
-        This creates a SAT encoding of the routing problem and solves it
-        to find an optimal (or near-optimal) ion permutation schedule.
         
         Parameters
         ----------
         initial_layout : GridLayout
             Starting ion arrangement.
         pairs : List[Tuple[int, int]]
-            Ion pairs that need to be adjacent.
+            Ion pairs that need to be adjacent (primary batch).
         n_rows : int
             Grid rows.
         n_cols : int
             Grid columns.
         capacity : int
             Gating block width.
+        all_round_pairs : Optional[List[List[Tuple[int, int]]]]
+            Multi-round gate pairs for lookahead optimization.
+        bt_positions : Optional[List[Dict[int, Tuple[int, int]]]]
+            Boundary target positions from a previous solve.
+            Each entry maps ion_idx -> (row, col) target for that round.
             
         Returns
         -------
@@ -1595,89 +2252,278 @@ class WiseSatRouter(Router):
         
         try:
             # Build context
-            ions = list(range(n_rows * n_cols))
+            # Use actual ion indices from the grid, NOT range(n*m).
+            # In patch routing, a sub-grid can contain non-contiguous
+            # global ion indices (e.g. [0,1,4,5]) and the old code
+            # derives ions_all from A_in.flatten().
+            ions = sorted(set(int(x) for x in initial_layout.grid.flatten()))
             
-            # Compute gating blocks
+            # Compute gating blocks, aligned to the global grid when
+            # this is a sub-patch (set by _route_patch via
+            # _current_grid_origin).
+            _origin = getattr(self, '_current_grid_origin', (0, 0))
+            col_offset = _origin[1] if _origin else 0
             block_cells, block_fully_inside, block_widths = self._compute_blocks(
-                n_rows, n_cols, capacity
+                n_rows, n_cols, capacity, col_offset=col_offset
             )
             num_blocks = len(block_cells)
             
-            # Create context (single round for now)
+            # Build encoding context.
+            #
+            # KEY INSIGHT: When BTs (boundary targets) from a previous
+            # multi-round solve are available, we switch to SINGLE-ROUND
+            # encoding.  BTs already capture where ions should end up
+            # (from the previous window's future-round solutions), so
+            # multi-round SAT is redundant and only inflates D* — making
+            # more passes necessary.  Single-round + BT soft constraints
+            # in Phase 2 achieves the same layout quality with minimal D*.
+            #
+            # Multi-round encoding is only used when NO BTs are available
+            # (first window), to generate initial BTs for subsequent
+            # windows.  This matches the old code's pattern where
+            # ionRoutingWISEArch uses BTs from previous _patch_and_route
+            # calls to guide single-round solves.
+            #
+            # NOTE: all_round_pairs already includes the current batch
+            # (physical_pairs) as its first element, so we use it
+            # directly — do NOT prepend ``pairs`` again.
+            _have_bt = bt_positions and any(bt for bt in bt_positions if bt)
+            if _have_bt:
+                # BTs available → single-round (BTs guide Phase 2)
+                num_rounds = 1
+                gate_pairs_list = [pairs]
+            elif all_round_pairs:
+                # No BTs, lookahead available → multi-round for BT generation
+                num_rounds = len(all_round_pairs)
+                gate_pairs_list = list(all_round_pairs)
+            else:
+                num_rounds = 1
+                gate_pairs_list = [pairs]
+            
+            # Create context (multi-round for lookahead)
+            # Pick up cross-boundary prefs if set by the patch router.
+            _cb_prefs = getattr(self, '_patch_cross_boundary_prefs', None)
+            _b_adj = getattr(self, '_patch_boundary_adjacent', None)
+
+            # Populate target_positions from BTs (boundary targets).
+            # When a previous multi-round solve provided future-round
+            # target layouts, using them as BTs pins ions to their
+            # planned positions, dramatically reducing the SAT search
+            # space and improving solution quality — matching the old
+            # code's BT mechanism in ionRoutingWISEArch.
+            if bt_positions:
+                target_positions: List[Dict[int, Tuple[int, int]]] = []
+                for r in range(num_rounds):
+                    if r < len(bt_positions) and bt_positions[r]:
+                        target_positions.append(dict(bt_positions[r]))
+                    else:
+                        target_positions.append({})
+            else:
+                target_positions = [{} for _ in range(num_rounds)]
+
             context = WISESATContext(
                 initial_layout=initial_layout.grid,
-                target_positions=[{}],  # No fixed targets for this mode
-                gate_pairs=[pairs],
-                full_gate_pairs=[pairs],
+                target_positions=target_positions,
+                gate_pairs=gate_pairs_list,
+                full_gate_pairs=gate_pairs_list,
                 ions=ions,
                 n_rows=n_rows,
                 n_cols=n_cols,
-                num_rounds=1,
+                num_rounds=num_rounds,
                 block_cells=block_cells,
                 block_fully_inside=block_fully_inside,
                 block_widths=block_widths,
                 num_blocks=num_blocks,
+                grid_origin=_origin,
+                cross_boundary_prefs=_cb_prefs,
+                boundary_adjacent=_b_adj,
                 debug_diag=self.config.debug_mode,
             )
             
-            # Create encoder
-            encoder = WISESATEncoder(
-                rows=n_rows,
-                cols=n_cols,
-                config=self.config,
-                use_maxsat=self.config.use_maxsat,
-            )
+            # ---------------------------------------------------------------
+            # Phase 1: D-minimization — binary search for minimum pass bound
+            # ---------------------------------------------------------------
+            # The old code searches for the smallest pass bound (displacement
+            # proxy) at which the SAT problem is satisfiable.  This
+            # minimises ion displacement and therefore transport heating.
+            #
+            # Binary search: try pass_bound in [1, max_passes].
+            # Lower pass bounds → fewer swap passes → less displacement.
+            max_p = self.config.max_passes
+            if self.config.base_pmax_in is not None:
+                max_p = self.config.base_pmax_in
             
-            # Initialize and add constraints
-            pass_bound = self.config.max_passes
-            encoder.initialize(context, pass_bound)
-            encoder.add_all_constraints()
+            best_model = None
+            best_pass_bound = max_p
+            best_encoder = None
             
-            # Solve
-            solution = encoder.solve(timeout=self.config.timeout_seconds)
+            lo, hi = 1, max_p
+            # Wall-clock limit for the entire binary search (Phase 1).
+            # Each iteration gets config.timeout_seconds; total budget
+            # is 3× that to allow for ~log2(max_p) iterations.
+            _phase1_deadline = time.time() + self.config.timeout_seconds * 3
+            while lo <= hi:
+                if time.time() > _phase1_deadline:
+                    wise_logger.info(
+                        "Phase 1 wall-clock deadline reached after binary "
+                        "search narrowed to [%d, %d]", lo, hi,
+                    )
+                    break
+                mid = (lo + hi) // 2
+
+                # Inner binary search over sum_bound_B (total active
+                # passes across all optimised rounds).  This mirrors
+                # the old code's Σ_r P_r minimisation.
+                optimize_start = (
+                    1 if context.ignore_initial_reconfig else 0
+                )
+                rounds_under_sum = max(
+                    1, num_rounds - optimize_start
+                )
+                sb_lo, sb_hi = 1, rounds_under_sum * mid
+                inner_best_enc = None
+                inner_best_sb = sb_hi
+
+                while sb_lo <= sb_hi:
+                    if time.time() > _phase1_deadline:
+                        break
+                    sb_mid = (sb_lo + sb_hi) // 2
+                    enc = WISESATEncoder(
+                        rows=n_rows,
+                        cols=n_cols,
+                        config=self.config,
+                        use_maxsat=False,  # Phase 1 uses pure SAT
+                    )
+                    enc.initialize(context, mid, sum_bound_B=sb_mid)
+                    enc.add_all_constraints()
+
+                    sol = enc.solve(
+                        timeout=self.config.timeout_seconds
+                    )
+                    if sol.satisfiable:
+                        inner_best_enc = enc
+                        inner_best_sb = sb_mid
+                        sb_hi = sb_mid - 1
+                    else:
+                        sb_lo = sb_mid + 1
+
+                if inner_best_enc is not None:
+                    # Feasible — try smaller pass bound
+                    best_pass_bound = mid
+                    best_encoder = inner_best_enc
+                    hi = mid - 1
+                    wise_logger.debug(
+                        "D-minimization: pass_bound=%d SAT "
+                        "(best sum_bound=%d)", mid, inner_best_sb,
+                    )
+                else:
+                    # Infeasible even at max sum — need more passes
+                    lo = mid + 1
+                    wise_logger.debug(
+                        "D-minimization: pass_bound=%d UNSAT", mid
+                    )
             
-            if not solution.satisfiable:
+            if best_encoder is None:
                 wise_logger.info(
-                    "SAT solver returned UNSAT (status: %s)",
-                    solution.statistics.get("status", "unknown")
+                    "SAT UNSAT at all pass bounds up to %d", max_p
                 )
                 return None
             
-            # Get model and decode schedule
-            # We need to re-solve to get the model for decoding
-            # (The SATSolution currently only stores positions)
-            if hasattr(encoder, 'formula') and encoder.formula:
-                with Minisat22(bootstrap_with=encoder.formula.clauses) as solver:
-                    if solver.solve():
-                        model = solver.get_model()
-                        schedule_data = encoder.decode_schedule(model)
-                        
-                        # Convert to RoutingSchedule
-                        all_passes: List[RoutingPass] = []
-                        for round_passes in schedule_data:
-                            for pass_info in round_passes:
-                                rp = RoutingPass(
-                                    phase=pass_info["phase"],
-                                    h_swaps=pass_info.get("h_swaps", []),
-                                    v_swaps=pass_info.get("v_swaps", []),
-                                )
-                                if rp.has_swaps:
-                                    all_passes.append(rp)
-                        
-                        # Compute final layout by applying swaps
-                        final_layout = initial_layout.copy()
-                        for rp in all_passes:
-                            if rp.phase == "H":
-                                for r, c in rp.h_swaps:
-                                    final_layout.swap_horizontal(r, c)
-                            else:
-                                for r, c in rp.v_swaps:
-                                    final_layout.swap_vertical(r, c)
-                        
-                        return RoutingSchedule(
-                            passes_per_round=[all_passes],
-                            layouts=[final_layout],
+            # ---------------------------------------------------------------
+            # Phase 2: MaxSAT boundary optimisation (if configured)
+            # ---------------------------------------------------------------
+            # With the minimum pass bound D* found, re-encode with MaxSAT
+            # soft clauses that penalise ions landing on patch boundaries.
+            # This reduces cross-boundary routing overhead in later rounds.
+            use_maxsat = (
+                self.config.use_maxsat
+                and (self.config.boundary_soft_weight_row > 0
+                     or self.config.boundary_soft_weight_col > 0)
+            )
+            
+            if use_maxsat:
+                wise_logger.debug(
+                    "Phase 2: MaxSAT with D*=%d, boundary weights "
+                    "row=%d col=%d",
+                    best_pass_bound,
+                    self.config.boundary_soft_weight_row,
+                    self.config.boundary_soft_weight_col,
+                )
+                maxsat_enc = WISESATEncoder(
+                    rows=n_rows,
+                    cols=n_cols,
+                    config=self.config,
+                    use_maxsat=True,
+                )
+                maxsat_enc.initialize(context, best_pass_bound)
+                maxsat_enc.add_all_constraints()
+                # Add BT soft constraints when target positions exist.
+                # These guide the MaxSAT solver toward planned layouts
+                # from the previous window without inflating D*.
+                if any(bt for bt in context.target_positions if bt):
+                    maxsat_enc.add_target_position_constraints(use_soft=True)
+                
+                maxsat_sol = maxsat_enc.solve(
+                    timeout=self.config.timeout_seconds
+                )
+                if maxsat_sol.satisfiable:
+                    best_encoder = maxsat_enc
+                    wise_logger.debug(
+                        "MaxSAT improved: cost=%.1f", maxsat_sol.cost
+                    )
+                else:
+                    wise_logger.debug(
+                        "MaxSAT failed, using plain SAT solution"
+                    )
+            
+            # ---------------------------------------------------------------
+            # Phase 3: Decode solution into RoutingSchedule
+            # ---------------------------------------------------------------
+            # Use the model cached by solve() — avoids re-solving and
+            # handles both CNF and WCNF formulas correctly.
+            model = getattr(best_encoder, '_last_model', None)
+            if model is not None:
+                schedule_data = best_encoder.decode_schedule(model)
+                
+                # -----------------------------------------------------------
+                # Decode ALL rounds from the multi-round SAT solution.
+                # When lookahead is active, schedule_data contains passes
+                # for ALL rounds [0..R-1].  By decoding every round we
+                # allow the routing loop to advance batch_idx by the
+                # full window size, so one SAT solve covers multiple
+                # batches — matching the old code's behaviour where the
+                # tiling_steps list carried per-round reconfigurations.
+                # -----------------------------------------------------------
+                all_rounds_passes: List[List[RoutingPass]] = []
+                all_layouts: List[GridLayout] = []
+                current_layout = initial_layout.copy()
+
+                for round_idx in range(len(schedule_data)):
+                    round_passes: List[RoutingPass] = []
+                    for pass_info in schedule_data[round_idx]:
+                        rp = RoutingPass(
+                            phase=pass_info["phase"],
+                            h_swaps=pass_info.get("h_swaps", []),
+                            v_swaps=pass_info.get("v_swaps", []),
                         )
+                        if rp.has_swaps:
+                            round_passes.append(rp)
+                    all_rounds_passes.append(round_passes)
+
+                    # Apply this round's swaps to track layout evolution
+                    for rp in round_passes:
+                        if rp.phase == "H":
+                            for r, c in rp.h_swaps:
+                                current_layout.swap_horizontal(r, c)
+                        else:
+                            for r, c in rp.v_swaps:
+                                current_layout.swap_vertical(r, c)
+                    all_layouts.append(current_layout.copy())
+
+                return RoutingSchedule(
+                    passes_per_round=all_rounds_passes,
+                    layouts=all_layouts,
+                )
             
             wise_logger.warning("SAT solution found but could not decode schedule")
             return None
@@ -1694,33 +2540,68 @@ class WiseSatRouter(Router):
         n_rows: int,
         n_cols: int,
         capacity: int,
+        col_offset: int = 0,
     ) -> Tuple[List[List[Tuple[int, int]]], List[bool], List[int]]:
         """Compute gating block information.
-        
+
+        Blocks are aligned to the *global* gating grid.  When this
+        sub-grid starts at ``col_offset`` (its first local column maps
+        to global column ``col_offset``), the block boundaries are
+        computed in global space and then mapped back to local
+        coordinates.  This matches the old code's ``first_block_idx /
+        last_block_idx`` logic.
+
+        Parameters
+        ----------
+        n_rows : int
+            Rows in the (sub-)grid.
+        n_cols : int
+            Columns in the (sub-)grid.
+        capacity : int
+            Block width (= ions_per_segment *k*).
+        col_offset : int
+            Global column index of this sub-grid's first column.
+
         Returns
         -------
         block_cells : List[List[Tuple[int, int]]]
-            Cells in each block.
+            Cells in each block (local coordinates).
         block_fully_inside : List[bool]
-            Whether each block is fully inside grid.
+            Whether each block is fully inside the grid.
         block_widths : List[int]
             Width of each block.
         """
+        if capacity <= 0 or n_cols <= 0:
+            return [], [], []
+
         block_cells: List[List[Tuple[int, int]]] = []
         block_fully_inside: List[bool] = []
         block_widths: List[int] = []
-        
-        for c in range(0, n_cols, capacity):
-            cells = []
-            width = min(capacity, n_cols - c)
+
+        global_patch_start = col_offset
+        global_patch_end = col_offset + n_cols
+        first_block_idx = col_offset // capacity
+        last_block_idx = (col_offset + n_cols - 1) // capacity
+
+        for b_global in range(first_block_idx, last_block_idx + 1):
+            global_start = b_global * capacity
+            global_end = (b_global + 1) * capacity
+            local_start = max(0, global_start - col_offset)
+            local_end = min(n_cols, global_end - col_offset)
+            width = max(0, local_end - local_start)
+
+            cells: List[Tuple[int, int]] = []
             for r in range(n_rows):
-                for dc in range(width):
-                    cells.append((r, c + dc))
-            
+                for j_local in range(local_start, local_end):
+                    cells.append((r, j_local))
+
             block_cells.append(cells)
-            block_fully_inside.append(width == capacity)
             block_widths.append(width)
-        
+            block_fully_inside.append(
+                (global_start >= global_patch_start)
+                and (global_end <= global_patch_end)
+            )
+
         return block_cells, block_fully_inside, block_widths
     
     def _route_heuristic(
@@ -1881,28 +2762,53 @@ class WiseSatRouter(Router):
     ) -> List["QCCDOperationBase"]:
         """Convert RoutingSchedule to QCCD operations.
         
-        TODO: Create actual Split/Merge/Move operations.
-        For now, returns swap coordinates as placeholder.
+        Emits ``PASS_BOUNDARY`` sentinels between each parallel pass
+        so downstream consumers (animation, execution planner) can
+        group swaps atomically — all swaps within a single pass
+        execute in parallel and must be applied simultaneously.
         """
         operations = []
         
         for round_passes in schedule.passes_per_round:
             for pass_info in round_passes:
                 if pass_info.phase == "H":
-                    for r, c in pass_info.h_swaps:
-                        # Placeholder: record swap info
-                        operations.append({
-                            "type": "H_SWAP",
-                            "row": r,
-                            "col": c,
-                        })
+                    # Split by column parity (matching old code's
+                    # _infer_pass_parity for H-phase).
+                    even_h = [(r, c) for r, c in pass_info.h_swaps
+                              if c % 2 == 0]
+                    odd_h  = [(r, c) for r, c in pass_info.h_swaps
+                              if c % 2 == 1]
+                    for parity_group in (even_h, odd_h):
+                        if not parity_group:
+                            continue
+                        for r, c in parity_group:
+                            operations.append({
+                                "type": "H_SWAP",
+                                "row": r,
+                                "col": c,
+                            })
+                        operations.append({"type": "PASS_BOUNDARY"})
                 else:
-                    for r, c in pass_info.v_swaps:
-                        operations.append({
-                            "type": "V_SWAP",
-                            "row": r,
-                            "col": c,
-                        })
+                    # Split by row parity (matching old code's
+                    # _infer_pass_parity for V-phase).
+                    even_v = [(r, c) for r, c in pass_info.v_swaps
+                              if r % 2 == 0]
+                    odd_v  = [(r, c) for r, c in pass_info.v_swaps
+                              if r % 2 == 1]
+                    for parity_group in (even_v, odd_v):
+                        if not parity_group:
+                            continue
+                        for r, c in parity_group:
+                            operations.append({
+                                "type": "V_SWAP",
+                                "row": r,
+                                "col": c,
+                            })
+                        operations.append({"type": "PASS_BOUNDARY"})
+
+        # Remove trailing boundary (not needed)
+        if operations and operations[-1].get("type") == "PASS_BOUNDARY":
+            operations.pop()
         
         return operations
 
@@ -1958,8 +2864,18 @@ class WisePatchRouter(WiseSatRouter):
         gate_pairs: List[Tuple[int, int]],
         current_mapping: QubitMapping,
         architecture: "HardwareArchitecture",
+        lookahead_pairs: Optional[List[List[Tuple[int, int]]]] = None,
+        bt_positions: Optional[List[Dict[int, Tuple[int, int]]]] = None,
     ) -> RoutingResult:
-        """Route using patch decomposition.
+        """Route using patch decomposition with cycling.
+        
+        Implements a cycling algorithm similar to the old code's
+        ``_patch_and_route()``:
+        
+        1. Partition grid into patches using ``subgridsize``
+        2. Use checkerboard tiling to avoid patch conflicts
+        3. Cycle through tilings until all pairs resolved or
+           progress stalls (matching old code's stall detection)
         
         Parameters
         ----------
@@ -1969,6 +2885,10 @@ class WisePatchRouter(WiseSatRouter):
             Current qubit positions.
         architecture : HardwareArchitecture
             Target architecture with grid dimensions.
+        lookahead_pairs : Optional[List[List[Tuple[int, int]]]]
+            Additional future batches for lookahead optimization.
+        bt_positions : Optional[List[Dict[int, Tuple[int, int]]]]
+            Boundary target positions from a previous solve.
             
         Returns
         -------
@@ -1979,98 +2899,477 @@ class WisePatchRouter(WiseSatRouter):
             return RoutingResult(success=True, operations=[], cost=0.0)
         
         n_rows, n_cols = self._get_grid_dimensions(architecture)
-        patch_h = self.config.patch_height if self.config else 4
-        patch_w = self.config.patch_width if self.config else 4
+        capacity = self._get_capacity(architecture)
+        
+        # Use subgridsize from config if available
+        if self.config and self.config.subgridsize:
+            patch_w, patch_h, patch_inc = self.config.subgridsize
+        else:
+            patch_h = self.config.patch_height if self.config else 4
+            patch_w = self.config.patch_width if self.config else 4
+            patch_inc = 1
+        
+        # Use max_cycles from config
+        max_cycles = self.config.max_cycles if self.config else 10
+        
+        # --- k-alignment (Fix R) ---
+        # Patch width must be k-compatible so block boundaries align
+        # with the global gating grid.  Port of old code logic.
+        if patch_w < capacity and (capacity % patch_w != 0):
+            patch_w += int(capacity % patch_w)
+        elif patch_w > capacity and (patch_w % capacity != 0):
+            patch_w = (patch_w // capacity) * capacity
+        patch_w = min(patch_w, n_cols)
+        patch_h = min(patch_h, n_rows)
         
         # Check if patch routing is beneficial
         if n_rows <= patch_h and n_cols <= patch_w:
             # Grid is small enough for direct solving
-            return super().route_batch(gate_pairs, current_mapping, architecture)
+            return super().route_batch(gate_pairs, current_mapping, architecture, lookahead_pairs, bt_positions=bt_positions)
         
         wise_logger.info(
-            f"Patch routing: {n_rows}x{n_cols} grid with {len(gate_pairs)} pairs"
+            f"Patch routing: {n_rows}x{n_cols} grid with {len(gate_pairs)} pairs, "
+            f"patch_size={patch_h}x{patch_w}, max_cycles={max_cycles}"
         )
         
         # Build initial layout from mapping
         initial_layout = self._build_initial_layout(current_mapping, n_rows, n_cols)
         
-        # Generate patches with overlap
-        patches = self._generate_overlapping_patches(
-            n_rows, n_cols, patch_h, patch_w, self.overlap
-        )
-        wise_logger.debug(f"Generated {len(patches)} patches")
+        # Track remaining pairs to solve
+        remaining_pairs = set(gate_pairs)
+        solved_pairs: Set[Tuple[int, int]] = set()
         
-        # Assign pairs to patches
-        pair_assignments = self._assign_pairs_to_patches(
-            gate_pairs, initial_layout, patches
-        )
+        # Flatten lookahead pairs for cross-boundary context.
+        # These future pairs are NOT routed in this call, but they
+        # influence cross-boundary preferences so the solver places
+        # ions in positions that are good for future batches.
+        #
+        # IMPORTANT: Only use the FIRST lookahead batch (1 round ahead).
+        # Including all lookahead batches is too aggressive — it
+        # amortizes multiple rounds' work into a single solve, producing
+        # unrealistically low exec_time.  Limiting to 1 batch matches
+        # the old code's approach where multi-round SAT optimises for
+        # current + next round only.
+        lookahead_flat: List[Tuple[int, int]] = []
+        if lookahead_pairs and len(lookahead_pairs) > 0:
+            lookahead_flat = list(lookahead_pairs[0])
         
-        # Route using checkerboard pattern
+        # Route using cycling pattern (matching old _patch_and_route)
         all_operations: List[Any] = []
         total_cost = 0.0
+        total_h_passes = 0
+        total_v_passes = 0
         layout = initial_layout.copy()
         
-        for iteration in range(self.max_iterations):
-            # Phase 1: "White" patches (even row + even col)
-            white_patches = [
-                (idx, p) for idx, p in enumerate(patches)
-                if (p[0] // patch_h + p[1] // patch_w) % 2 == 0
-            ]
+        cycle_idx = 0
+        no_progress_cycles = 0
+        _patch_pbar = _tqdm(
+            total=max_cycles,
+            desc="Patch routing",
+            unit="cycle",
+            leave=False,
+        )
+        
+        while remaining_pairs and cycle_idx < max_cycles:
+            cycle_start_remaining = len(remaining_pairs)
+            _patch_pbar.set_postfix_str(
+                f"remaining={len(remaining_pairs)}/{len(gate_pairs)}, "
+                f"solved={len(solved_pairs)}"
+            )
             
-            for patch_idx, patch in white_patches:
-                patch_pairs = pair_assignments.get(patch_idx, [])
-                if not patch_pairs:
-                    continue
+            # Generate tilings (base, vertical offset, horizontal offset)
+            tilings = self._generate_tilings(
+                patch_h, patch_w, n_rows, n_cols, capacity,
+            )
+            
+            wise_logger.debug(
+                f"Cycle {cycle_idx + 1}: {len(remaining_pairs)} pairs remaining, "
+                f"{len(tilings)} tilings, patch={patch_h}x{patch_w}"
+            )
+            
+            for tiling_idx, (off_r, off_c) in enumerate(tilings):
+                if not remaining_pairs:
+                    break
                 
-                result = self._route_patch(
-                    patch, patch_pairs, layout, architecture
+                # Generate NON-overlapping patches (Fix U) — matching old
+                # _generate_patch_regions which tiles without overlap.
+                offset_patches = self._generate_non_overlapping_patches(
+                    n_rows, n_cols, patch_h, patch_w,
+                    offset_r=off_r, offset_c=off_c,
                 )
-                if result.success:
-                    all_operations.extend(result.operations)
-                    total_cost += result.cost
-                    # Update layout with patch result
-                    self._apply_patch_result(layout, result, patch)
-            
-            # Phase 2: "Black" patches (odd row + odd col)
-            black_patches = [
-                (idx, p) for idx, p in enumerate(patches)
-                if (p[0] // patch_h + p[1] // patch_w) % 2 == 1
-            ]
-            
-            for patch_idx, patch in black_patches:
-                patch_pairs = pair_assignments.get(patch_idx, [])
-                if not patch_pairs:
-                    continue
                 
-                result = self._route_patch(
-                    patch, patch_pairs, layout, architecture
+                # Assign remaining pairs to patches (both-in-patch only)
+                pair_assignments = self._assign_pairs_to_patches(
+                    list(remaining_pairs), layout, offset_patches
                 )
-                if result.success:
-                    all_operations.extend(result.operations)
-                    total_cost += result.cost
-                    self._apply_patch_result(layout, result, patch)
+                
+                # Compute the set of unassigned pairs for cross-boundary
+                # preference computation.
+                assigned_pairs_set: Set[Tuple[int, int]] = set()
+                for pairs_list in pair_assignments.values():
+                    assigned_pairs_set.update(pairs_list)
+                unassigned_pairs = list(remaining_pairs - assigned_pairs_set)
+                
+                # Route all patches (non-overlapping, so no conflict).
+                for patch_idx, patch in enumerate(offset_patches):
+                    patch_pairs = pair_assignments.get(patch_idx, [])
+                    if not patch_pairs:
+                        continue
+                    
+                    # Build remaining pairs for this patch = unassigned +
+                    # pairs assigned to OTHER patches + lookahead pairs.
+                    # Including lookahead_flat gives the sub-solver
+                    # cross-boundary awareness of future-batch pairs so
+                    # it positions ions favourably for upcoming rounds.
+                    other_assigned = [
+                        p for pidx, plist in pair_assignments.items()
+                        if pidx != patch_idx for p in plist
+                    ]
+                    remaining_for_patch = (
+                        unassigned_pairs + other_assigned + lookahead_flat
+                    )
+                    
+                    result = self._route_patch(
+                        patch, patch_pairs, layout, architecture,
+                        remaining_pairs=remaining_for_patch,
+                        bt_positions=bt_positions,
+                        lookahead_pairs=lookahead_pairs,
+                    )
+                    if result.success:
+                        all_operations.extend(result.operations)
+                        total_cost += result.cost
+                        self._apply_patch_result(layout, result, patch)
+                        # Accumulate per-pass counts from sub-patch
+                        if result.metrics:
+                            total_h_passes += result.metrics.get("h_passes", 0)
+                            total_v_passes += result.metrics.get("v_passes", 0)
+                        
+                        # Mark pairs as solved
+                        for pair in patch_pairs:
+                            if self._is_pair_satisfied(pair, layout, capacity):
+                                remaining_pairs.discard(pair)
+                                solved_pairs.add(pair)
             
-            # Check if all pairs are now satisfied
-            if self._check_all_pairs_satisfied(gate_pairs, layout):
-                wise_logger.info(
-                    f"Patch routing converged in {iteration + 1} iterations"
+            # Check progress for stall detection
+            cycle_end_remaining = len(remaining_pairs)
+            if cycle_end_remaining >= cycle_start_remaining:
+                no_progress_cycles += 1
+                wise_logger.debug(
+                    f"Cycle {cycle_idx + 1}: no progress, "
+                    f"stall count={no_progress_cycles}"
                 )
-                break
+                fully_global = (patch_h >= n_rows) and (patch_w >= n_cols)
+                if no_progress_cycles >= 2 or fully_global:
+                    wise_logger.warning(
+                        f"Patch routing stalled after {cycle_idx + 1} cycles "
+                        f"with {cycle_end_remaining} pairs remaining"
+                    )
+                    break
+            else:
+                no_progress_cycles = 0
+            
+            cycle_idx += 1
+            _patch_pbar.update(1)
+            
+            # --- Patch size growth (Fix T) ---
+            # After each cycle, expand patch dimensions so that
+            # cross-boundary pairs can fit in a single patch.
+            patch_w += max(patch_inc, min(patch_w, capacity))
+            patch_h += patch_inc
+            # Re-apply k-alignment after growth
+            if patch_w < capacity and (capacity % patch_w != 0):
+                patch_w += int(capacity % patch_w)
+            elif patch_w > capacity and (patch_w % capacity != 0):
+                patch_w = (patch_w // capacity) * capacity
+            patch_w = min(patch_w, n_cols)
+            patch_h = min(patch_h, n_rows)
+        
+        _patch_pbar.close()
+
+        # --- Fallback: direct SAT solve for remaining pairs (Fix U2) ---
+        # When the patch loop stalls at full-grid size with unsolved
+        # pairs, try a single direct SAT solve using the current
+        # (post-patch) layout.  This recovers from scenarios where
+        # intermediate cycles scrambled the layout and the stall
+        # detector gave up prematurely.
+        if remaining_pairs:
+            wise_logger.info(
+                f"Patch routing completed {cycle_idx} cycles, "
+                f"{len(remaining_pairs)}/{len(gate_pairs)} pairs unsolved — "
+                f"attempting direct SAT fallback"
+            )
+            # Convert current layout to a mapping for direct SAT
+            fallback_mapping = self._layout_to_mapping(layout, current_mapping)
+            try:
+                fallback_result = WiseSatRouter.route_batch(
+                    self,
+                    list(remaining_pairs),
+                    fallback_mapping,
+                    architecture,
+                    lookahead_pairs=lookahead_pairs,
+                )
+                if fallback_result.success and fallback_result.operations:
+                    all_operations.extend(fallback_result.operations)
+                    total_cost += fallback_result.cost
+                    if fallback_result.metrics:
+                        total_h_passes += fallback_result.metrics.get("h_passes", 0)
+                        total_v_passes += fallback_result.metrics.get("v_passes", 0)
+                    # Update layout from fallback result
+                    if fallback_result.final_mapping:
+                        layout = self._build_initial_layout(
+                            fallback_result.final_mapping, n_rows, n_cols
+                        )
+                    # Mark all remaining pairs as solved
+                    solved_pairs.update(remaining_pairs)
+                    remaining_pairs.clear()
+                    wise_logger.info("Direct SAT fallback solved all remaining pairs")
+                elif fallback_result.success:
+                    # Success with no ops (pairs already satisfied)
+                    solved_pairs.update(remaining_pairs)
+                    remaining_pairs.clear()
+                    wise_logger.info("Direct SAT fallback: pairs already satisfied")
+                else:
+                    wise_logger.warning(
+                        f"Direct SAT fallback failed for "
+                        f"{len(remaining_pairs)} remaining pairs"
+                    )
+            except Exception as exc:
+                wise_logger.warning(f"Direct SAT fallback error: {exc}")
+        else:
+            wise_logger.info(
+                f"Patch routing converged in {cycle_idx} cycles"
+            )
         
         # Build final mapping
         final_mapping = self._layout_to_mapping(layout, current_mapping)
         
+        # --- Generate BTs for the next round ---
+        # When lookahead is active, downstream WISERoutingPass populates
+        # _bt_cache from _future_bt_positions.  If the BT bootstrap
+        # probe succeeded, propagate those BTs (they come from a
+        # multi-round full-grid solve and contain actual future-round
+        # layouts).  Otherwise, use the final layout as a fallback BT
+        # (weaker signal, but non-empty so subsequent batches use
+        # single-round SAT with soft BT constraints).
+        future_bt_positions: List[Dict[int, Tuple[int, int]]] = []
+        if bt_positions and any(bt for bt in bt_positions if bt):
+            # Propagate BTs from bootstrap probe (shift by 1 round)
+            future_bt_positions = list(bt_positions)
+        elif lookahead_pairs:
+            # Fallback: use final layout as BT target
+            future_bt_positions.append(dict(layout.ion_positions))
+        
         return RoutingResult(
-            success=True,
+            success=len(remaining_pairs) == 0,
             operations=all_operations,
             cost=total_cost,
             final_mapping=final_mapping,
             metrics={
-                "num_patches": len(patches),
+                "num_cycles": cycle_idx,
+                "pairs_solved": len(solved_pairs),
+                "pairs_remaining": len(remaining_pairs),
                 "total_operations": len(all_operations),
-                "iterations": iteration + 1,
+                "h_passes": total_h_passes,
+                "v_passes": total_v_passes,
+                "_future_bt_positions": future_bt_positions,
             },
         )
+    
+    def _generate_tilings(
+        self,
+        patch_h: int,
+        patch_w: int,
+        n_rows: int,
+        n_cols: int,
+        capacity: int = 2,
+    ) -> List[Tuple[int, int]]:
+        """Generate tiling offsets for checkerboard routing.
+        
+        Returns list of (row_offset, col_offset) tuples representing
+        different tiling phases. Matches old code's tiling strategy:
+        - (0, 0): Base tiling
+        - (half_h, 0): Vertical offset
+        - (0, half_w): Horizontal offset (if k-compatible)
+        
+        Parameters
+        ----------
+        capacity : int
+            Block width (*k*) for k-compatibility checking.
+        
+        Returns
+        -------
+        List[Tuple[int, int]]
+            List of tiling offsets.
+        """
+        tilings: List[Tuple[int, int]] = [(0, 0)]
+        
+        # Vertical offset (half patch height)
+        half_h = patch_h // 2
+        if half_h > 0 and half_h < n_rows:
+            tilings.append((half_h, 0))
+        
+        # Horizontal offset (half patch width) if even AND k-compatible
+        # (Fix S: port old code's _k_compatible check).
+        if patch_w % 2 == 0:
+            half_w = patch_w // 2
+            if (
+                half_w > 0
+                and half_w < n_cols
+                and self._k_compatible(half_w, capacity)
+            ):
+                tilings.append((0, half_w))
+        
+        return tilings
+    
+    @staticmethod
+    def _k_compatible(width: int, k: int) -> bool:
+        """Check if a width is k-compatible for WISE block alignment.
+        
+        Ported from old code's _k_compatible helper.
+        """
+        if width <= 0 or width == 1:
+            return False
+        if width == k:
+            return True
+        if width > k:
+            return (width % k) == 0
+        # width < k
+        return (k % width) == 0
+    
+    def _generate_non_overlapping_patches(
+        self,
+        n_rows: int,
+        n_cols: int,
+        patch_h: int,
+        patch_w: int,
+        offset_r: int = 0,
+        offset_c: int = 0,
+    ) -> List[Tuple[int, int, int, int]]:
+        """Generate non-overlapping patch regions (matching old code).
+        
+        Tiles the grid starting at ``(offset_r, offset_c)`` with patches
+        of size ``patch_h × patch_w``, clipped to grid bounds.
+        
+        Parameters
+        ----------
+        n_rows, n_cols : int
+            Grid dimensions.
+        patch_h, patch_w : int
+            Patch dimensions.
+        offset_r, offset_c : int
+            Starting offset for the tiling.
+        
+        Returns
+        -------
+        List[Tuple[int, int, int, int]]
+            ``(r0, c0, r1, c1)`` bounding boxes.
+        """
+        if patch_h <= 0 or patch_w <= 0:
+            return [(0, 0, n_rows, n_cols)]
+
+        regions: List[Tuple[int, int, int, int]] = []
+        start_row = min(max(offset_r, 0), n_rows - 1) if n_rows > 0 else 0
+        start_col = min(max(offset_c, 0), n_cols - 1) if n_cols > 0 else 0
+
+        row = start_row
+        while row < n_rows:
+            row_end = min(row + patch_h, n_rows)
+            col = start_col
+            while col < n_cols:
+                col_end = min(col + patch_w, n_cols)
+                regions.append((row, col, row_end, col_end))
+                col += patch_w
+            row += patch_h
+
+        return regions
+    
+    @staticmethod
+    def _compute_patch_gating_capacity(
+        n: int,
+        m: int,
+        col_offset: int,
+        capacity: int,
+    ) -> int:
+        """Compute the max number of disjoint gating zones in a patch.
+        
+        Ported from old code's ``_compute_patch_gating_capacity``.
+        
+        Parameters
+        ----------
+        n : int
+            Patch height (rows).
+        m : int
+            Patch width (columns, local).
+        col_offset : int
+            Global column of patch's first column.
+        capacity : int
+            Global block width.
+        
+        Returns
+        -------
+        int
+            Number of gating zones available.
+        """
+        if capacity <= 0 or m <= 0 or n <= 0:
+            return 0
+        first_block_idx = col_offset // capacity
+        last_block_idx = (col_offset + m - 1) // capacity
+        num_blocks = last_block_idx - first_block_idx + 1
+        total_per_row = 0
+        for b_local in range(num_blocks):
+            b_global = first_block_idx + b_local
+            global_start = b_global * capacity
+            global_end = (b_global + 1) * capacity
+            local_start = max(0, global_start - col_offset)
+            local_end = min(m, global_end - col_offset)
+            width = max(0, local_end - local_start)
+            total_per_row += (width // 2)
+        return n * total_per_row
+    
+    def _is_pair_satisfied(
+        self,
+        pair: Tuple[int, int],
+        layout: GridLayout,
+        capacity: int = 2,
+    ) -> bool:
+        """Check if a gate pair is satisfied (both in same gating block).
+        
+        The SAT encoder's gate-pair constraint requires both ions to be
+        in the **same row** and **same gating block** (a contiguous
+        group of *capacity* columns).  This must match: the old
+        ``col_diff == 1`` check was correct only for k=2 where a block
+        has exactly 2 columns; for k≥4 the block is wider and the pair
+        is satisfied as long as both ions share the same block.
+        
+        Parameters
+        ----------
+        pair : Tuple[int, int]
+            Ion pair to check.
+        layout : GridLayout
+            Current layout.
+        capacity : int
+            Gating block width (ions_per_segment *k*).
+            
+        Returns
+        -------
+        bool
+            True if both ions are in the same row and same gating block.
+        """
+        ion_a, ion_b = pair
+        pos_a = layout.get_position(ion_a)
+        pos_b = layout.get_position(ion_b)
+        
+        if pos_a is None or pos_b is None:
+            return False
+        
+        # Must be in same row
+        if pos_a[0] != pos_b[0]:
+            return False
+        
+        # Must be in same gating block (k-aligned)
+        block_a = pos_a[1] // capacity
+        block_b = pos_b[1] // capacity
+        return block_a == block_b
     
     def _generate_overlapping_patches(
         self,
@@ -2079,8 +3378,21 @@ class WisePatchRouter(WiseSatRouter):
         patch_h: int,
         patch_w: int,
         overlap: int,
+        offset_r: int = 0,
+        offset_c: int = 0,
     ) -> List[Tuple[int, int, int, int]]:
         """Generate patches with overlap for boundary handling.
+        
+        Parameters
+        ----------
+        n_rows, n_cols : int
+            Grid dimensions.
+        patch_h, patch_w : int
+            Patch dimensions.
+        overlap : int
+            Overlap between adjacent patches.
+        offset_r, offset_c : int
+            Tiling offset (for checkerboard cycling).
         
         Returns
         -------
@@ -2088,13 +3400,14 @@ class WisePatchRouter(WiseSatRouter):
             List of (r0, c0, r1, c1) patch boundaries.
         """
         patches = []
-        stride_h = patch_h - overlap
-        stride_w = patch_w - overlap
+        stride_h = max(patch_h - overlap, 1)
+        stride_w = max(patch_w - overlap, 1)
         
-        r0 = 0
+        # Start at offset, wrapping around
+        r0 = offset_r
         while r0 < n_rows:
             r1 = min(r0 + patch_h, n_rows)
-            c0 = 0
+            c0 = offset_c
             while c0 < n_cols:
                 c1 = min(c0 + patch_w, n_cols)
                 patches.append((r0, c0, r1, c1))
@@ -2104,6 +3417,17 @@ class WisePatchRouter(WiseSatRouter):
             r0 += stride_h
             if r0 >= n_rows and r1 < n_rows:
                 r0 = n_rows - patch_h
+        
+        # Also add patches starting from 0 to cover offset gap
+        if offset_r > 0:
+            for c0 in range(0, n_cols, stride_w):
+                c1 = min(c0 + patch_w, n_cols)
+                patches.append((0, c0, min(offset_r + patch_h, n_rows), c1))
+        
+        if offset_c > 0:
+            for r0 in range(0, n_rows, stride_h):
+                r1 = min(r0 + patch_h, n_rows)
+                patches.append((r0, 0, r1, min(offset_c + patch_w, n_cols)))
         
         return patches
     
@@ -2147,12 +3471,11 @@ class WisePatchRouter(WiseSatRouter):
             
             if best_patch_idx is not None:
                 assignments[best_patch_idx].append(pair)
-            else:
-                # Pair spans multiple patches - assign to first containing either
-                for idx, (r0, c0, r1, c1) in enumerate(patches):
-                    if (r0 <= pos_a[0] < r1 and c0 <= pos_a[1] < c1):
-                        assignments[idx].append(pair)
-                        break
+            # Pairs spanning multiple patches are left unassigned —
+            # they will be retried in a later tiling cycle with a
+            # different offset or larger patch size (matching old code's
+            # _split_pairs_for_patch which only assigns when BOTH ions
+            # are in the patch).
         
         return assignments
     
@@ -2162,52 +3485,187 @@ class WisePatchRouter(WiseSatRouter):
         pairs: List[Tuple[int, int]],
         layout: GridLayout,
         architecture: "HardwareArchitecture",
+        remaining_pairs: Optional[List[Tuple[int, int]]] = None,
+        bt_positions: Optional[List[Dict[int, Tuple[int, int]]]] = None,
+        lookahead_pairs: Optional[List[List[Tuple[int, int]]]] = None,
     ) -> RoutingResult:
-        """Route within a single patch using base SAT router."""
+        """Route within a single patch using base SAT router.
+
+        Parameters
+        ----------
+        patch : Tuple[int, int, int, int]
+            ``(r0, c0, r1, c1)`` bounding box of the patch.
+        pairs : List[Tuple[int, int]]
+            Ion pairs assigned to this patch (both ions inside).
+        layout : GridLayout
+            Current global layout.
+        architecture : HardwareArchitecture
+            Full grid architecture (for capacity info).
+        remaining_pairs : Optional[List[Tuple[int, int]]]
+            All pairs NOT assigned to this patch.  Used to compute
+            cross-boundary preferences so the solver nudges ions
+            toward boundaries where their cross-patch partners live.
+        bt_positions : Optional[List[Dict[int, Tuple[int, int]]]]
+            Boundary target positions (filtered to this patch).
+        lookahead_pairs : Optional[List[List[Tuple[int, int]]]]
+            Future batches' gate pairs.  Pairs where both ions are in
+            this patch are passed to the sub-solver for multi-round
+            optimisation so the resulting layout is future-aware.
+        """
         r0, c0, r1, c1 = patch
         patch_h = r1 - r0
         patch_w = c1 - c0
-        
+        n_rows_global = layout.n_rows
+        n_cols_global = layout.n_cols
+
         # Extract sub-layout
         sub_grid = layout.grid[r0:r1, c0:c1].copy()
         sub_layout = GridLayout(grid=sub_grid)
-        
-        # Translate pairs to local indices
+
+        # Translate pairs to local indices (only pairs with BOTH ions inside)
         local_pairs = []
         for ion_a, ion_b in pairs:
             pos_a = layout.get_position(ion_a)
             pos_b = layout.get_position(ion_b)
             if pos_a is None or pos_b is None:
                 continue
-            # Map global position to local
             if (r0 <= pos_a[0] < r1 and c0 <= pos_a[1] < c1 and
                 r0 <= pos_b[0] < r1 and c0 <= pos_b[1] < c1):
                 local_pairs.append((ion_a, ion_b))
-        
+
         if not local_pairs:
             return RoutingResult(success=True, operations=[], cost=0.0)
-        
+
+        # --- Compute boundary_adjacent (N3 fix) ---
+        boundary_adjacent = {
+            "top": r0 > 0,
+            "bottom": r1 < n_rows_global,
+            "left": c0 > 0,
+            "right": c1 < n_cols_global,
+        }
+
+        # --- Compute cross-boundary prefs (N2 fix) ---
+        # For each ion inside this patch that has a partner OUTSIDE,
+        # record which boundary direction(s) the outside partner is in.
+        cross_boundary_prefs: List[Dict[int, Set[str]]] = [{}]
+        if remaining_pairs:
+            pref_round: Dict[int, Set[str]] = {}
+            for ion_a, ion_b in remaining_pairs:
+                pos_a = layout.get_position(ion_a)
+                pos_b = layout.get_position(ion_b)
+                if pos_a is None or pos_b is None:
+                    continue
+                in_a = (r0 <= pos_a[0] < r1 and c0 <= pos_a[1] < c1)
+                in_b = (r0 <= pos_b[0] < r1 and c0 <= pos_b[1] < c1)
+                if in_a == in_b:
+                    continue
+                inside_ion = ion_a if in_a else ion_b
+                outside_pos = pos_b if in_a else pos_a
+                dirs: Set[str] = set()
+                rr_o, cc_o = outside_pos
+                if rr_o < r0:
+                    dirs.add("top")
+                if rr_o >= r1:
+                    dirs.add("bottom")
+                if cc_o < c0:
+                    dirs.add("left")
+                if cc_o >= c1:
+                    dirs.add("right")
+                if dirs:
+                    pref_round.setdefault(inside_ion, set()).update(dirs)
+            if pref_round:
+                cross_boundary_prefs = [pref_round]
+
+        has_boundary_prefs = bool(
+            cross_boundary_prefs
+            and any(pr for pr in cross_boundary_prefs)
+        )
+
+        # --- Gating capacity check (port from old code) ---
+        capacity = getattr(architecture, 'capacity', 2)
+        max_gating_zones = self._compute_patch_gating_capacity(
+            patch_h, patch_w, c0, capacity,
+        )
+        if max_gating_zones > 0 and len(local_pairs) > max_gating_zones:
+            # Spill excess pairs — they'll be retried next cycle.
+            local_pairs = local_pairs[:max_gating_zones]
+
+        if not local_pairs and not has_boundary_prefs:
+            return RoutingResult(success=True, operations=[], cost=0.0)
+
         # Create mock architecture for sub-grid
         class SubArchitecture:
-            def __init__(self, rows, cols, capacity):
+            def __init__(self, rows, cols, cap):
                 self.n_rows = rows
                 self.n_cols = cols
                 self.num_qubits = rows * cols
-                self.capacity = capacity
+                self.capacity = cap
                 self.grid_shape = (rows, cols)
-        
-        sub_arch = SubArchitecture(
-            patch_h, patch_w,
-            getattr(architecture, 'capacity', 2)
-        )
-        
+
+        sub_arch = SubArchitecture(patch_h, patch_w, capacity)
+
         # Build sub-mapping
         sub_mapping = QubitMapping()
         for ion_idx, (row, col) in sub_layout.ion_positions.items():
             sub_mapping.add_mapping(ion_idx, ion_idx, f"trap_{row}_{col}")
-        
-        # Route using base SAT solver
-        result = super().route_batch(local_pairs, sub_mapping, sub_arch)
+
+        # Route using base SAT solver.
+        # Propagate patch origin so _compute_blocks aligns to global grid.
+        self._current_grid_origin = (r0, c0)
+        # Pass cross-boundary context for this patch.
+        self._patch_cross_boundary_prefs = cross_boundary_prefs
+        self._patch_boundary_adjacent = boundary_adjacent
+        # Zero boundary soft weights for patch routing (AA fix) —
+        # the old code explicitly passes wB_col=0, wB_row=0.
+        saved_w_row = self.config.boundary_soft_weight_row
+        saved_w_col = self.config.boundary_soft_weight_col
+        self.config.boundary_soft_weight_row = 0
+        self.config.boundary_soft_weight_col = 0
+
+        # --- Filter BTs to this patch ---
+        # NOTE: We intentionally do NOT pass global BTs to the patch
+        # sub-solver. Global BTs (from WISERoutingPass._bt_cache) are
+        # designed for full-grid routing. When filtered to a small patch,
+        # most entries are lost and the few survivors make _solve_sat
+        # switch to single-round mode, which SUPPRESSES multi-round
+        # lookahead encoding. The old code always routes all rounds'
+        # pairs per patch (multi-round) regardless of BT state.
+        # By omitting BTs here, we ensure the patch solver uses
+        # multi-round SAT when lookahead_pairs are available.
+
+        # --- Filter lookahead_pairs to this patch (both ions inside) ---
+        # This gives the sub-solver multi-round context so it produces
+        # a layout that is future-aware, matching the old code's
+        # approach where all rounds' pairs are passed to the solver.
+        local_lookahead: Optional[List[List[Tuple[int, int]]]] = None
+        if lookahead_pairs:
+            filtered: List[List[Tuple[int, int]]] = []
+            for batch in lookahead_pairs:
+                local_batch: List[Tuple[int, int]] = []
+                for ion_a, ion_b in batch:
+                    pos_a = layout.get_position(ion_a)
+                    pos_b = layout.get_position(ion_b)
+                    if pos_a is None or pos_b is None:
+                        continue
+                    if (r0 <= pos_a[0] < r1 and c0 <= pos_a[1] < c1 and
+                            r0 <= pos_b[0] < r1 and c0 <= pos_b[1] < c1):
+                        local_batch.append((ion_a, ion_b))
+                if local_batch:
+                    filtered.append(local_batch)
+            if filtered:
+                local_lookahead = filtered
+
+        try:
+            result = super().route_batch(
+                local_pairs, sub_mapping, sub_arch,
+                lookahead_pairs=local_lookahead,
+            )
+        finally:
+            self._current_grid_origin = (0, 0)
+            self._patch_cross_boundary_prefs = None
+            self._patch_boundary_adjacent = None
+            self.config.boundary_soft_weight_row = saved_w_row
+            self.config.boundary_soft_weight_col = saved_w_col
         
         # Translate operations back to global coordinates
         if result.success and result.operations:
@@ -2333,6 +3791,8 @@ class WISERoutingPass:
         self,
         config: Optional[WISERoutingConfig] = None,
         use_patch_routing: bool = False,
+        architecture: Optional["HardwareArchitecture"] = None,
+        lookahead: int = 0,
     ):
         """Initialize the routing pass.
         
@@ -2342,9 +3802,19 @@ class WISERoutingPass:
             Configuration for the SAT solver.
         use_patch_routing : bool
             If True, use patch-based routing for large grids.
+        architecture : Optional[HardwareArchitecture]
+            Default architecture to use if not passed to route().
+        lookahead : int
+            Number of future gate batches to include in each routing
+            window.  When > 0 the router solves for the current batch
+            plus the next ``lookahead`` batches simultaneously, then
+            chains the output layout to the next window.  This mirrors
+            the old code's multi-round optimisation.
         """
         self.config = config or WISERoutingConfig()
         self.use_patch_routing = use_patch_routing or self.config.patch_enabled
+        self.architecture = architecture
+        self.lookahead = lookahead
         
         # Create the appropriate router
         if self.use_patch_routing:
@@ -2355,7 +3825,7 @@ class WISERoutingPass:
     def route(
         self,
         mapped_circuit: "MappedCircuit",
-        architecture: "HardwareArchitecture",
+        architecture: Optional["HardwareArchitecture"] = None,
     ) -> "RoutedCircuit":
         """Route a mapped circuit.
         
@@ -2363,8 +3833,9 @@ class WISERoutingPass:
         ----------
         mapped_circuit : MappedCircuit
             Circuit with logical-to-physical mapping.
-        architecture : HardwareArchitecture
-            Target WISE grid architecture.
+        architecture : Optional[HardwareArchitecture]
+            Target WISE grid architecture.  Falls back to the
+            architecture passed at construction time.
             
         Returns
         -------
@@ -2376,6 +3847,13 @@ class WISERoutingPass:
             RoutedCircuit,
         )
         
+        architecture = architecture or self.architecture
+        if architecture is None:
+            raise ValueError(
+                "WISERoutingPass.route() requires an architecture. "
+                "Pass it to __init__ or route()."
+            )
+        
         # Extract gate pairs from circuit
         gate_batches = self._extract_gate_batches(mapped_circuit)
         
@@ -2385,55 +3863,336 @@ class WISERoutingPass:
                 operations=[],
                 final_mapping=mapped_circuit.mapping.copy(),
                 routing_overhead=0,
+                mapped_circuit=mapped_circuit,
             )
         
         # Route each batch and collect operations
         all_operations: List[Any] = []
         current_mapping = mapped_circuit.mapping.copy()
         total_routing_ops = 0
+        total_reconfig_time = 0.0
+
+        # --- Motional quanta accumulator ---
+        # Tracks per-ion heating from reconfiguration swaps.
+        # We take a SNAPSHOT after each batch so downstream code can
+        # look up the n̄ state *at the time* each gate executes.
+
+        motional_quanta: Dict[int, float] = {}
+        for q in range(architecture.num_qubits):
+            motional_quanta[q] = 0.0
+
+        # Per-batch snapshots: motional_quanta_per_batch[b] is the
+        # state of motional_quanta AFTER batch b's routing swaps
+        # but BEFORE batch b's gates execute.  This is the n̄ that
+        # each gate in batch b should use for its fidelity formula.
+        motional_quanta_per_batch: List[Dict[int, float]] = []
+
+        # --- Mode snapshot accumulator (3N normal-mode tracking) ---
+        # Parallel to the scalar motional_quanta, this tracks the full
+        # normal-mode structure (frequencies, eigenvectors, per-mode
+        # occupancies) for each qubit's trap context.  The collaborator's
+        # noise model will consume these to compute mode-resolved gate
+        # infidelities using Lamb-Dicke parameters.
+        #
+        # Each entry maps qubit_idx → ModeSnapshot (the state of the
+        # trap that qubit resides in at snapshot time).  We import
+        # ModeSnapshot lazily to avoid circular imports.
+        from qectostim.experiments.hardware_simulation.trapped_ion.physics import (
+            ModeSnapshot,
+        )
+        mode_snapshots_per_batch: List[Dict[int, Any]] = []
+
+        # Maps (q1, q2) gate pairs to the batch index they belong to,
+        # so the execution planner can look up which batch snapshot
+        # applies to each gate instruction.
+        gate_batch_map: Dict[Tuple[int, int], int] = {}
+
+        # Determine effective lookahead from config or __init__ param
+        lookahead = self.lookahead
+        if lookahead == 0 and self.config and self.config.lookahead_rounds > 0:
+            lookahead = self.config.lookahead_rounds
+
+        # BT (boundary target) cache: carries forward future-round
+        # target layouts from one SAT solve to constrain the next.
+        # Matches old code's BTs mechanism in ionRoutingWISEArch.
+        _bt_cache: List[Dict[int, Tuple[int, int]]] = []
         
-        for batch_idx, gate_pairs in enumerate(gate_batches):
-            wise_logger.debug(f"Routing batch {batch_idx} with {len(gate_pairs)} pairs")
+        # Wall-clock deadline: abort routing if total time exceeds limit.
+        # Uses timeout_seconds * num_batches with a generous floor of 120 s.
+        _per_batch_timeout = (
+            self.config.timeout_seconds if self.config else 60.0
+        )
+        _wall_limit = max(
+            120.0,
+            _per_batch_timeout * len(gate_batches) * 2,
+        )
+        _wall_start = time.monotonic()
+        
+        batch_idx = 0
+        _pbar = _tqdm(
+            total=len(gate_batches),
+            desc="WISE routing",
+            unit="batch",
+            leave=True,
+        )
+        while batch_idx < len(gate_batches):
+            # Check wall-clock deadline
+            if time.monotonic() - _wall_start > _wall_limit:
+                wise_logger.error(
+                    "WISE routing wall-clock timeout (%.0f s) after %d/%d batches",
+                    _wall_limit, batch_idx, len(gate_batches),
+                )
+                break
             
-            # Route this batch
+            _pbar.set_postfix_str(
+                f"pairs={len(gate_batches[batch_idx])}, "
+                f"ops={total_routing_ops}"
+            )
+            # ---------------------------------------------------------------
+            # Lookahead aggregation: combine current batch + lookahead batches
+            # ---------------------------------------------------------------
+            # When lookahead > 0, solve for multiple batches simultaneously.
+            # This matches old code's ionRoutingWISEArch() which passes
+            # P_arr (a list of per-round gate pairs) to the solver.
+            window_end = min(batch_idx + 1 + lookahead, len(gate_batches))
+            aggregated_pairs: List[List[Tuple[int, int]]] = []
+            for i in range(batch_idx, window_end):
+                aggregated_pairs.append(gate_batches[i])
+            
+            # Flatten for single-round routing, or pass as multi-round
+            # For now, flatten — multi-round SAT encoding is in WiseSatRouter
+            gate_pairs = gate_batches[batch_idx]
+            all_window_pairs = [p for batch in aggregated_pairs for p in batch]
+            
+            wise_logger.debug(
+                f"Routing batch {batch_idx} with {len(gate_pairs)} pairs "
+                f"(lookahead window: {len(aggregated_pairs)} batches, "
+                f"{len(all_window_pairs)} total pairs)"
+            )
+            
+            # Route using aggregated window context
+            # The router can use all_window_pairs for global optimization
+            # but we only apply swaps needed for gate_pairs
+            lookahead_batch_pairs = aggregated_pairs[1:] if len(aggregated_pairs) > 1 else None
             result = self.router.route_batch(
                 gate_pairs,
                 current_mapping,
                 architecture,
+                lookahead_pairs=lookahead_batch_pairs,
+                bt_positions=_bt_cache if _bt_cache else None,
             )
             
             if not result.success:
                 wise_logger.warning(
                     f"Routing failed for batch {batch_idx}: {result.metrics}"
                 )
-                # Use heuristic fallback or raise error
+                # Skip this batch and advance — retrying the same batch
+                # infinitely was a bug (continue without incrementing).
+                batch_idx += 1
+                _pbar.update(1)
                 continue
             
+            # Accumulate reconfiguration heating from routing swaps.
+            # Count actual H vs V swaps from the operations returned by
+            # the SAT router — each op dict has type="H_SWAP" or "V_SWAP".
+            if result.operations:
+                row_swaps = sum(
+                    1 for op in result.operations
+                    if isinstance(op, dict) and op.get("type") == "H_SWAP"
+                )
+                col_swaps = sum(
+                    1 for op in result.operations
+                    if isinstance(op, dict) and op.get("type") == "V_SWAP"
+                )
+            else:
+                total_swaps = result.metrics.get("total_swaps", 0) if result.metrics else 0
+                row_swaps = total_swaps // 2
+                col_swaps = total_swaps - row_swaps
+
+            if row_swaps + col_swaps > 0:
+                heating_per_ion = (
+                    row_swaps * ROW_SWAP_HEATING + col_swaps * COL_SWAP_HEATING
+                )
+
+                # Per-pass reconfiguration time (matching old code's
+                # _runOddEvenReconfig model): one parallel H-pass adds
+                # one H_PASS_TIME, one V-pass adds one V_PASS_TIME,
+                # plus initial split overhead.  Pass counts come from
+                # the SAT schedule when available; fall back to the
+                # coarser (row_swaps > 0) heuristic otherwise.
+                h_passes = (result.metrics or {}).get("h_passes", None)
+                v_passes = (result.metrics or {}).get("v_passes", None)
+                if h_passes is None or v_passes is None:
+                    # Fallback: at least 1 pass per phase that has swaps
+                    h_passes = 1 if row_swaps > 0 else 0
+                    v_passes = 1 if col_swaps > 0 else 0
+                reconfig_time = (
+                    INITIAL_SPLIT_TIME_US
+                    + h_passes * H_PASS_TIME_US
+                    + v_passes * V_PASS_TIME_US
+                )
+                total_reconfig_time += reconfig_time
+
+                # Distribute heating to ALL ions (every ion in the trap
+                # is affected by the crystal reconfiguration, matching
+                # the old code's per-trap motionalMode accumulation).
+                for ion_idx in motional_quanta:
+                    motional_quanta[ion_idx] += heating_per_ion
+
+            # ------ Snapshot n̄ AFTER routing swaps, BEFORE gates ------
+            # This captures the system state at the time gates execute.
+            motional_quanta_per_batch.append(dict(motional_quanta))
+
+            # ------ Mode snapshot: capture 3N normal-mode state ------
+            #
+            # Snapshot the full vibrational state of every trap AFTER
+            # transport/routing swaps but BEFORE gates execute.
+            # Delegates to collect_mode_snapshots() in physics.py.
+            from qectostim.experiments.hardware_simulation.trapped_ion.physics import (
+                collect_mode_snapshots as _collect_snaps,
+            )
+            batch_mode_snapshot = _collect_snaps(architecture, motional_quanta)
+            mode_snapshots_per_batch.append(batch_mode_snapshot)
+
             # Add routing operations
             if result.operations:
+                # Separate this batch's transports from the previous
+                # batch's gate ops with a PASS_BOUNDARY sentinel so
+                # the animation groups each parallel-swap set atomically.
+                if all_operations:
+                    from qectostim.experiments.hardware_simulation.core.operations import (
+                        TransportOperation as _TO,
+                    )
+                    all_operations.append(_TO(
+                        qubit=-1,
+                        source_zone="__PASS_BOUNDARY__",
+                        target_zone="__PASS_BOUNDARY__",
+                        duration=0.0,
+                    ))
                 all_operations.extend(
-                    self._convert_to_physical_ops(result.operations, architecture)
+                    self._convert_to_physical_ops(
+                        result.operations, architecture, current_mapping
+                    )
                 )
                 total_routing_ops += len(result.operations)
             
-            # Add the original gates (now that qubits are in position)
-            for logical_q1, logical_q2 in gate_pairs:
-                # Get the gate from the mapped circuit
-                # For now, create placeholder gate operations
-                all_operations.append({
-                    "type": "GATE",
-                    "qubits": (logical_q1, logical_q2),
-                    "batch": batch_idx,
-                })
-            
-            # Update mapping for next batch
+            # ---------------------------------------------------------------
+            # Extract BTs (boundary targets) from multi-round solution.
+            # Future-round layouts inform the NEXT iteration's SAT solve,
+            # reducing the search space and improving solution quality.
+            # This matches the old code's BT mechanism where future-round
+            # target positions are pinned via hard/soft SAT constraints.
+            # ---------------------------------------------------------------
+            _future_bts = (result.metrics or {}).get(
+                "_future_bt_positions", []
+            )
+            if _future_bts:
+                _bt_cache = _future_bts
+            else:
+                _bt_cache = []
+
+            # Update mapping for next batch (round-0 layout only)
+            # IMPORTANT: this MUST happen BEFORE the co-location check
+            # so that we verify positions from the POST-routing layout.
             if result.final_mapping:
                 current_mapping = result.final_mapping
+
+            # ------ Emit gates for co-located pairs (post-routing) ------
+            # Uses the UPDATED mapping (after routing) so positions
+            # reflect the actual post-routing layout.
+            # Gate qubits are emitted as PHYSICAL IDs so the animation
+            # (which keys positions by physical ID) renders beams on
+            # the correct ions.
+            from qectostim.experiments.hardware_simulation.core.operations import (
+                GateOperation,
+            )
+            from qectostim.experiments.hardware_simulation.core.gates import (
+                GateSpec,
+                GateType,
+            )
+            ms_spec = GateSpec(
+                name="MS",
+                gate_type=GateType.TWO_QUBIT,
+                num_qubits=2,
+                is_native=True,
+            )
+
+            _post_map = current_mapping   # now reflects post-routing
+            _n_k = getattr(architecture, "ions_per_segment", 1)
+            _n_m = getattr(architecture, "col_groups", 1)
+            _n_tc = _n_m * _n_k
+            _post_pos: Dict[int, Tuple[int, int]] = {}
+            for _lq, _pq in _post_map.logical_to_physical.items():
+                _zn = _post_map.zone_assignments.get(_pq)
+                if _zn:
+                    try:
+                        _pts = _zn.split("_")
+                        _pr, _pc = int(_pts[-2]), int(_pts[-1])
+                        _post_pos[_pq] = (_pr, _pc)
+                    except (ValueError, IndexError):
+                        pass
+                if _pq not in _post_pos:
+                    _post_pos[_pq] = (_pq // _n_tc if _n_tc else 0,
+                                      _pq % _n_tc if _n_tc else _pq)
+
+            for logical_q1, logical_q2 in gate_pairs:
+                p1 = _post_map.get_physical(logical_q1)
+                p2 = _post_map.get_physical(logical_q2)
+                pos1 = _post_pos.get(p1) if p1 is not None else None
+                pos2 = _post_pos.get(p2) if p2 is not None else None
+                if pos1 is not None and pos2 is not None:
+                    same_row = (pos1[0] == pos2[0])
+                    # Both ions must be in the same gating block:
+                    # block = col // k.  Within a block cols are adjacent.
+                    same_block = (pos1[1] // _n_k == pos2[1] // _n_k)
+                    if not (same_row and same_block):
+                        wise_logger.debug(
+                            "Gate pair (%d,%d) NOT co-located after "
+                            "routing: pos=(%s,%s) — skipping gate",
+                            logical_q1, logical_q2, pos1, pos2,
+                        )
+                        continue
+
+                # Emit with PHYSICAL qubit IDs so the animation can
+                # look up the correct (x,y) positions.
+                gate_op = GateOperation(
+                    gate=ms_spec,
+                    qubits=(p1, p2),
+                    duration=100.0,
+                    base_fidelity=0.99,
+                    metadata={
+                        "batch": batch_idx,
+                        "logical_qubits": (logical_q1, logical_q2),
+                    },
+                )
+                all_operations.append(gate_op)
+
+                gate_batch_map[(logical_q1, logical_q2)] = batch_idx
+            
+            # Advance to next batch (one round per iteration,
+            # matching old code's idx += 1 with BT carry-forward)
+            batch_idx += 1
+            _pbar.update(1)
         
+        _pbar.close()
+
+        # Build metadata with heating and reconfiguration info
+        routing_metadata: Dict[str, Any] = {
+            "motional_quanta": motional_quanta,
+            "motional_quanta_per_batch": motional_quanta_per_batch,
+            "mode_snapshots_per_batch": mode_snapshots_per_batch,
+            "gate_batch_map": gate_batch_map,
+            "num_batches": len(gate_batches),
+            "reconfiguration_time_us": total_reconfig_time,
+            "total_routing_swaps": total_routing_ops,
+        }
+
         return RoutedCircuit(
             operations=all_operations,
             final_mapping=current_mapping,
             routing_overhead=total_routing_ops,
+            mapped_circuit=mapped_circuit,
+            metadata=routing_metadata,
         )
     
     def _extract_gate_batches(
@@ -2449,7 +4208,8 @@ class WISERoutingPass:
         current_batch: List[Tuple[int, int]] = []
         used_qubits: Set[int] = set()
         
-        for gate, logical_qubits in mapped_circuit.native_circuit:
+        for dg in mapped_circuit.native_circuit.operations:
+            logical_qubits = dg.qubits
             if len(logical_qubits) != 2:
                 continue
             
@@ -2477,22 +4237,178 @@ class WISERoutingPass:
         self,
         routing_ops: List[Any],
         architecture: "HardwareArchitecture",
+        mapping: Optional["QubitMapping"] = None,
     ) -> List[Any]:
         """Convert routing schedule operations to physical operations.
-        
-        TODO: Generate actual Split/Merge/Move operations.
-        For now, returns the dict-based operations.
+
+        The SAT solver produces dicts ``{"type": "H_SWAP"/"V_SWAP",
+        "row": r, "col": c}`` where *col* is an absolute ion-column
+        index (0 … total_columns-1).  An H_SWAP swaps the ion at
+        (row, col) with the ion at (row, col+1).  A V_SWAP swaps
+        (row, col) with (row+1, col).
+
+        We emit **two** TransportOperations per swap (one for each
+        ion), with ``source_zone`` / ``target_zone`` set to
+        ``"trap_<row>_<col>"`` so downstream animation can locate them
+        on the WISE grid.
+
+        Parameters
+        ----------
+        mapping : QubitMapping, optional
+            The current qubit-to-zone mapping *before* this batch's
+            swaps.  Used to reconstruct the real grid permutation so
+            that emitted qubit IDs are correct.  When ``None`` the
+            grid defaults to the identity permutation (correct only
+            for batch 0).
         """
-        physical_ops = []
-        
+        from qectostim.experiments.hardware_simulation.core.operations import (
+            TransportOperation,
+        )
+
+        # Resolve grid dimensions from architecture
+        _rows = getattr(architecture, "rows", 1)
+        _k = getattr(architecture, "ions_per_segment", 1)
+        _m = getattr(architecture, "col_groups", 1)
+        _total_cols = _m * _k
+
+        # --- Permutation-aware grid ---
+        # Reconstruct which ion sits at each (row, col) from the
+        # current QubitMapping's zone_assignments.  This mirrors the
+        # logic in ``_build_initial_layout``.
+        _grid = np.arange(_rows * _total_cols, dtype=int).reshape(
+            _rows, _total_cols
+        )
+        if mapping is not None:
+            placed: set = set()
+            _n_cols = _total_cols
+            # Strategy 1: parse zone_assignments "trap_<row>_<col>"
+            for _log, _phys in mapping.logical_to_physical.items():
+                zone = mapping.zone_assignments.get(_phys)
+                if zone:
+                    try:
+                        parts = zone.split("_")
+                        zr, zc = int(parts[-2]), int(parts[-1])
+                        if 0 <= zr < _rows and 0 <= zc < _n_cols:
+                            _grid[zr, zc] = _phys
+                            placed.add((zr, zc))
+                    except (ValueError, IndexError):
+                        pass
+            # Strategy 2: positional fallback for unplaced qubits
+            if len(placed) < len(mapping.logical_to_physical):
+                for _log, _phys in mapping.logical_to_physical.items():
+                    pr = _phys // _n_cols if _n_cols > 0 else 0
+                    pc = _phys % _n_cols if _n_cols > 0 else _phys
+                    if (0 <= pr < _rows and 0 <= pc < _n_cols
+                            and (pr, pc) not in placed):
+                        _grid[pr, pc] = _phys
+                        placed.add((pr, pc))
+            # Fill remaining cells with unique indices
+            used_ids = set(_grid.flatten())
+            next_idx = int(max(used_ids) + 1) if used_ids else 0
+            for _fr in range(_rows):
+                for _fc in range(_n_cols):
+                    if (_fr, _fc) not in placed:
+                        _grid[_fr, _fc] = next_idx
+                        next_idx += 1
+
+        physical_ops: List[Any] = []
+
         for op in routing_ops:
             if isinstance(op, dict):
-                # Already in dict format from WiseSatRouter
-                physical_ops.append(op)
+                op_type = op.get("type", "")
+
+                # Pass-boundary sentinel — emit a marker so the
+                # animation can group parallel swaps atomically.
+                if op_type == "PASS_BOUNDARY":
+                    physical_ops.append(TransportOperation(
+                        qubit=-1,
+                        source_zone="__PASS_BOUNDARY__",
+                        target_zone="__PASS_BOUNDARY__",
+                        duration=0.0,
+                    ))
+                    continue
+
+                if op_type in ("H_SWAP", "V_SWAP", "transport", "swap", "ROUTING"):
+                    r = op.get("row", 0)
+                    c = op.get("col", 0)
+
+                    # If the dict carries explicit source/target keys
+                    # (legacy format) bypass the grid-based logic.
+                    _has_legacy_keys = "source" in op or "target" in op
+
+                    if op_type == "H_SWAP" and not _has_legacy_keys:
+                        # Horizontal swap: ion at (r, c) ↔ (r, c+1)
+                        c2 = c + 1
+                        if c2 >= _grid.shape[1]:
+                            wise_logger.debug(
+                                f"H_SWAP col {c2} out of grid; skipping")
+                            continue
+                        q_a = int(_grid[r, c])
+                        q_b = int(_grid[r, c2])
+                        src_a = f"trap_{r}_{c}"
+                        tgt_a = f"trap_{r}_{c2}"
+                        src_b = f"trap_{r}_{c2}"
+                        tgt_b = f"trap_{r}_{c}"
+                        # Advance permutation state
+                        _grid[r, c], _grid[r, c2] = _grid[r, c2], _grid[r, c]
+                    elif op_type == "V_SWAP" and not _has_legacy_keys:
+                        # Vertical swap: ion at (r, c) ↔ (r+1, c)
+                        r2 = r + 1
+                        if r2 >= _grid.shape[0]:
+                            wise_logger.debug(
+                                f"V_SWAP row {r2} out of grid; skipping")
+                            continue
+                        q_a = int(_grid[r, c])
+                        q_b = int(_grid[r2, c])
+                        src_a = f"trap_{r}_{c}"
+                        tgt_a = f"trap_{r2}_{c}"
+                        src_b = f"trap_{r2}_{c}"
+                        tgt_b = f"trap_{r}_{c}"
+                        # Advance permutation state
+                        _grid[r, c], _grid[r2, c] = _grid[r2, c], _grid[r, c]
+                    else:
+                        # Legacy / generic routing dict — use source/target
+                        # keys if present, otherwise fall back to row/col.
+                        qubits = op.get("qubits", ())
+                        qubit = qubits[0] if qubits else int(_grid[r, c])
+                        src_zone = op.get("source", f"trap_{r}_{c}")
+                        tgt_zone = op.get("target", f"trap_{r}_{c}")
+                        physical_ops.append(TransportOperation(
+                            qubit=qubit,
+                            source_zone=str(src_zone),
+                            target_zone=str(tgt_zone),
+                            duration=op.get("distance", 1.0) * 10.0,
+                        ))
+                        continue
+
+                    # Emit two transports for the swap pair.
+                    # Attach swap metadata so the visualization can
+                    # determine junction waypoints accurately.
+                    _swap_meta = {
+                        "swap_type": op_type,
+                        "swap_row": r,
+                        "swap_col": c,
+                    }
+                    physical_ops.append(TransportOperation(
+                        qubit=q_a,
+                        source_zone=src_a,
+                        target_zone=tgt_a,
+                        duration=10.0,
+                        metadata=_swap_meta,
+                    ))
+                    physical_ops.append(TransportOperation(
+                        qubit=q_b,
+                        source_zone=src_b,
+                        target_zone=tgt_b,
+                        duration=10.0,
+                        metadata=_swap_meta,
+                    ))
+                else:
+                    wise_logger.debug(f"Skipping unknown routing op dict: {op}")
             else:
-                # Handle other operation types
-                physical_ops.append({"type": "ROUTING", "data": op})
-        
+                # Non-dict (e.g., already a PhysicalOperation)
+                physical_ops.append(op)
+
         return physical_ops
 
 

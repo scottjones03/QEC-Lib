@@ -21,10 +21,13 @@ By centralizing this logic, we enable:
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 
 import stim
+
+logger = logging.getLogger(__name__)
 
 from qectostim.experiments.detector_tracking import compute_detector_coords
 
@@ -71,6 +74,16 @@ class DetectorEmissionContext:
     post_gadget_meas: Dict[str, Dict[str, List[int]]] = field(default_factory=dict)
     destroyed_blocks: Set[str] = field(default_factory=set)
     total_measurements: int = 0
+    destroyed_block_bases: Dict[str, str] = field(default_factory=dict)
+    """Measurement basis used to destroy each block (e.g. {"data_block": "X"}).
+    
+    When a block is destroyed by a destructive measurement (MX or MZ),
+    crossing detector formulas that reference the destroyed block in
+    "post" timing with the *opposite* basis are non-deterministic because
+    the backward Pauli propagation anti-commutes with the destruction
+    measurement.  E.g. a post-Z term on a block destroyed by MX is
+    non-deterministic (Z anti-commutes with MX).
+    """
 
 
 class CrossingDetectorEmitter:
@@ -157,6 +170,33 @@ class CrossingDetectorEmitter:
         if not formula.terms:
             return 0
         
+        # ── Skip formulas with post terms on destroyed blocks ──
+        # When a block is destroyed mid-circuit (e.g. MX on data_block in
+        # teleportation Phase 3), a crossing formula referencing the
+        # destroyed block in "post" timing is only safe when the term's
+        # stabilizer basis COMMUTES with the destruction measurement.
+        #
+        # Example: data_block destroyed by MX.
+        #   - post_X(data): backward propagation anti-commutes with MX
+        #     reset → non-deterministic.  SKIP.
+        #   - post_Z(data): backward propagation commutes with MX
+        #     → Z stabilizers are still well-defined.  KEEP.
+        #
+        # If destroyed_block_bases is not populated, fall back to the
+        # conservative blanket-skip for safety.
+        for term in formula.terms:
+            if term.timing == "post" and term.block in self.ctx.destroyed_blocks:
+                dest_basis = self.ctx.destroyed_block_bases.get(term.block)
+                if dest_basis is None:
+                    # No destruction basis info → conservative skip
+                    return 0
+                # Skip only when the term's basis matches (anti-commutes
+                # with) the destruction basis:
+                #   MX destroys X eigenstates → post_X is non-det
+                #   MZ destroys Z eigenstates → post_Z is non-det
+                if term.stabilizer_type.upper() == dest_basis.upper():
+                    return 0
+        
         # Get first term to determine stabilizer count
         first_term = formula.terms[0]
         first_block = first_term.block
@@ -167,25 +207,63 @@ class CrossingDetectorEmitter:
         if builder is None:
             return 0
         
-        if first_basis == 'X':
-            num_stab = len(builder.x_ancillas)
+        # Derive num_stab from measurement lists rather than builder
+        # ancilla counts.  For hierarchical codes, x_ancillas/z_ancillas
+        # only report inner ancillas, but the measurement lists include
+        # both inner AND outer stabilizers.
+        first_phase = first_term.timing  # 'pre' or 'post'
+        if first_phase == 'pre':
+            meas_dict = self.ctx.pre_gadget_meas.get(first_block, {})
         else:
-            num_stab = len(builder.z_ancillas)
+            meas_dict = self.ctx.post_gadget_meas.get(first_block, {})
+        meas_list = meas_dict.get(first_basis.lower(), [])
+        
+        if meas_list:
+            num_stab = len(meas_list)
+        else:
+            # Fallback to builder ancilla count (flat codes)
+            if first_basis == 'X':
+                num_stab = len(builder.x_ancillas)
+            else:
+                num_stab = len(builder.z_ancillas)
         
         # Use explicit stabilizer count if provided
         if formula.num_stabilizers is not None:
             num_stab = min(num_stab, formula.num_stabilizers)
         
         emitted = 0
+        skipped_nondet = 0
         
         # Emit detector for each stabilizer
         for stab_idx in range(num_stab):
             targets = self._build_detector_targets(formula.terms, stab_idx)
             
             if targets:
+                # Validate with has_flow before emitting.
+                # Correct crossing detector formulas should ALWAYS pass
+                # this check.  If any are skipped, it indicates a bug in
+                # the formula, the measurement capture, or the circuit.
+                num_meas = circuit.num_measurements
+                meas_indices = [num_meas + t.value for t in targets]
+                flow = stim.Flow(
+                    input=stim.PauliString(0),
+                    output=stim.PauliString(0),
+                    measurements=meas_indices,
+                )
+                if not circuit.has_flow(flow, unsigned=True):
+                    skipped_nondet += 1
+                    continue
                 coords = self._get_detector_coords(builder, first_basis, stab_idx)
                 circuit.append("DETECTOR", targets, coords)
                 emitted += 1
+        
+        if skipped_nondet > 0:
+            logger.warning(
+                "Crossing formula %s: skipped %d/%d non-deterministic "
+                "detectors (has_flow=False). This likely indicates a bug in "
+                "measurement capture or formula construction.",
+                formula.name, skipped_nondet, skipped_nondet + emitted,
+            )
         
         return emitted
     
@@ -197,6 +275,19 @@ class CrossingDetectorEmitter:
         """
         Build detector targets for a single stabilizer.
         
+        Each measurement entry can be either:
+        - ``int``: a single measurement index (inner stabilizer)
+        - ``List[int]``: multiple measurement indices whose XOR
+          gives the logical parity (outer stabilizer from a
+          hierarchical concatenated code)
+
+        A crossing detector is only valid when EVERY term in the formula
+        contributes at least one measurement target.  If any term produces
+        zero targets (e.g. a block that had no pre-gadget measurements),
+        the formula degenerates into a partial anchor detector that may be
+        non-deterministic (the measured stabilizer eigenvalue depends on
+        random Pauli-frame corrections from teleportation).
+
         Parameters
         ----------
         terms : List[CrossingDetectorTerm]
@@ -207,7 +298,8 @@ class CrossingDetectorEmitter:
         Returns
         -------
         List[stim.GateTarget]
-            Targets for the DETECTOR instruction.
+            Targets for the DETECTOR instruction.  Empty if any term
+            contributes zero targets (incomplete crossing formula).
         """
         targets = []
         
@@ -224,11 +316,33 @@ class CrossingDetectorEmitter:
             
             meas_list = meas_dict.get(basis, [])
             
+            term_targets_added = 0
             if stab_idx < len(meas_list):
-                abs_idx = meas_list[stab_idx]
-                if abs_idx is not None:
-                    lookback = abs_idx - self.ctx.total_measurements
+                entry = meas_list[stab_idx]
+                # DEBUG: Log first few entries to verify compensation
+                if stab_idx < 2 and logger.isEnabledFor(10):  # DEBUG level
+                    logger.debug(
+                        "  term %s_%s(%s)[%d] = %r (type=%s)",
+                        phase, basis, block, stab_idx,
+                        entry, type(entry).__name__,
+                    )
+                if isinstance(entry, list):
+                    # Outer stabilizer or compensated inner: multiple measurements
+                    for abs_idx in entry:
+                        if abs_idx is not None:
+                            lookback = abs_idx - self.ctx.total_measurements
+                            targets.append(stim.target_rec(lookback))
+                            term_targets_added += 1
+                elif entry is not None:
+                    # Inner stabilizer: single measurement
+                    lookback = entry - self.ctx.total_measurements
                     targets.append(stim.target_rec(lookback))
+                    term_targets_added += 1
+            
+            if term_targets_added == 0:
+                # This term contributed nothing — crossing formula is
+                # incomplete.  Return empty to suppress the detector.
+                return []
         
         return targets
     
@@ -269,6 +383,8 @@ class CrossingDetectorEmitter:
                 coords = list(builder.qubit_coords[qubit_idx])
                 coords.append(float(builder._round_number))
                 return coords
+        # else: stab_idx is beyond inner ancillas (outer stabilizer in
+        # hierarchical codes) — fall through to canonical coordinate.
         
         # Fallback to canonical coordinate computation
         coords = compute_detector_coords(
@@ -365,12 +481,95 @@ class BoundaryDetectorEmitter:
         return total_emitted
 
 
+def _compensate_hierarchical_meas(
+    builder: "BaseStabilizerRoundBuilder",
+    raw_meas: Dict[str, list],
+) -> Dict[str, list]:
+    """Add outer-ancilla compensation to inner measurements.
+
+    For hierarchical concatenated builders, inner stabilizer measurements
+    pick up sensitivity from outer CX operations.  This function wraps
+    each raw inner ``int`` entry with the corresponding outer-ancilla
+    preparation measurements so that crossing detectors (which XOR pre
+    and post targets) see matching sensitivity on both sides.
+
+    The logic mirrors
+    ``FaultTolerantGadgetExperiment._compensate_hierarchical_pre_meas``
+    but is accessible from the detector-emission layer without circular
+    imports.
+
+    Parameters
+    ----------
+    builder
+        Builder that may carry hierarchical outer-ancilla prep data.
+    raw_meas
+        Output of ``builder.get_last_measurement_indices()``.
+
+    Returns
+    -------
+    Dict[str, list]
+        Compensated copy — inner ``int`` entries become ``[int, comp…]``
+        when outer-ancilla compensation is needed; outer ``List[int]``
+        entries are left untouched.
+    """
+    if not hasattr(builder, '_outer_z_anc_x_prep'):
+        return raw_meas
+
+    n_out = builder.n_out
+    r_x_in = builder.r_x_in
+    r_z_in = builder.r_z_in
+
+    result = {}
+    for k, v in raw_meas.items():
+        if isinstance(v, list):
+            result[k] = list(v)
+        else:
+            result[k] = v
+
+    # Inner X: compensate with outer Z ancilla X-prep
+    n_inner_x = n_out * r_x_in
+    x_list = result.get('x', [])
+    for idx in range(min(n_inner_x, len(x_list))):
+        entry = x_list[idx]
+        if entry is None or isinstance(entry, list):
+            continue
+        block_id = idx // r_x_in
+        local_idx = idx % r_x_in
+        comp: list = []
+        for j in builder._outer_z_stabs_for_block(block_id):
+            c = builder._outer_z_anc_x_prep.get((j, local_idx))
+            if c is not None:
+                comp.append(c)
+        if comp:
+            x_list[idx] = [entry] + comp
+
+    # Inner Z: compensate with outer X ancilla Z-prep
+    n_inner_z = n_out * r_z_in
+    z_list = result.get('z', [])
+    for idx in range(min(n_inner_z, len(z_list))):
+        entry = z_list[idx]
+        if entry is None or isinstance(entry, list):
+            continue
+        block_id = idx // r_z_in
+        local_idx = idx % r_z_in
+        comp = []
+        for j in builder._outer_x_stabs_for_block(block_id):
+            c = builder._outer_x_anc_z_prep.get((j, local_idx))
+            if c is not None:
+                comp.append(c)
+        if comp:
+            z_list[idx] = [entry] + comp
+
+    return result
+
+
 def emit_crossing_detectors(
     circuit: stim.Circuit,
     builders: List["BaseStabilizerRoundBuilder"],
     pre_gadget_meas: Dict[str, Dict[str, List[int]]],
     crossing_config: "CrossingDetectorConfig",
     destroyed_blocks: Set[str],
+    destroyed_block_bases: Optional[Dict[str, str]] = None,
 ) -> int:
     """
     Convenience function to emit crossing detectors.
@@ -387,6 +586,11 @@ def emit_crossing_detectors(
         Crossing detector configuration.
     destroyed_blocks : Set[str]
         Blocks destroyed during the gadget.
+    destroyed_block_bases : Optional[Dict[str, str]]
+        Measurement basis used to destroy each block.  Maps block_name
+        to "X" or "Z".  When provided, crossing formulas with "post"
+        terms whose basis anti-commutes with the destruction basis are
+        skipped (they would be non-deterministic).
         
     Returns
     -------
@@ -396,11 +600,17 @@ def emit_crossing_detectors(
     # Build block lookup
     block_builders = {b.block_name: b for b in builders}
     
-    # Get post-gadget measurements
+    # Get post-gadget measurements.
+    # Include ALL builders — even destroyed blocks.  Their builders
+    # still hold valid stabiliser measurement history from the last
+    # inter-phase round (gadget Phase 3 etc. use raw circuit emission,
+    # not the builder, so builder tracking is unaffected).  Crossing
+    # formulas that reference a destroyed block in "post" timing need
+    # these measurements.
     post_gadget_meas = {}
     for builder in builders:
-        if builder.block_name not in destroyed_blocks:
-            post_gadget_meas[builder.block_name] = builder.get_last_measurement_indices()
+        raw_meas = builder.get_last_measurement_indices()
+        post_gadget_meas[builder.block_name] = raw_meas
     
     # Create context
     ctx = DetectorEmissionContext(
@@ -409,6 +619,7 @@ def emit_crossing_detectors(
         post_gadget_meas=post_gadget_meas,
         destroyed_blocks=destroyed_blocks,
         total_measurements=circuit.num_measurements,
+        destroyed_block_bases=destroyed_block_bases or {},
     )
     
     # Emit
@@ -646,6 +857,7 @@ def emit_scheduled_rounds(
     destroyed_blocks: Optional[Set[str]] = None,
     all_builders: Optional[List["BaseStabilizerRoundBuilder"]] = None,
     per_block_stab_type: Optional[Dict[str, "StabilizerBasis"]] = None,
+    destroyed_block_bases: Optional[Dict[str, str]] = None,
 ) -> None:
     """
     Convenience function to emit multiple scheduled rounds with optional crossing detectors.
@@ -693,9 +905,16 @@ def emit_scheduled_rounds(
             block_sched = schedules[builder.block_name]
             round_info[builder.block_name] = block_sched.round_schedules[round_idx]
         
-        # On the first post-gate round, suppress auto-detectors for crossing
+        # On the first post-gate round, suppress auto-detectors for crossing.
+        # For hierarchical (concatenated) builders, skip crossing detectors
+        # entirely — their native temporal detector emission correctly handles
+        # inner and outer stabiliser comparisons through the gadget boundary.
+        # Explicit crossing formulas fail has_flow for inner stabilisers
+        # because concatenated stabiliser structure changes across the gate.
+        is_hierarchical = hasattr(builders[0], '_outer_z_anc_x_prep')
         emit_crossing = (round_idx == 0 and crossing_config is not None
-                         and pre_gadget_meas is not None)
+                         and pre_gadget_meas is not None
+                         and not is_hierarchical)
         emit_auto_detectors = not emit_crossing
         
         emitter.emit_round(
@@ -715,4 +934,5 @@ def emit_scheduled_rounds(
                 pre_gadget_meas,
                 crossing_config,
                 destroyed_blocks or set(),
+                destroyed_block_bases=destroyed_block_bases,
             )

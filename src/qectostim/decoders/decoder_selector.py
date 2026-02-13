@@ -164,6 +164,11 @@ def select_decoder(
     if name in {"chromobius", "chromo"}:
         return ChromobiusDecoder(dem)
 
+    # ConcatMLE decoder (near-optimal reference for concatenated codes)
+    if name in {"concat_mle", "concatmle", "concat-mle"}:
+        from qectostim.decoders.concat_mle_decoder import ConcatMLEDecoder
+        return ConcatMLEDecoder(dem)
+
     # Hierarchical decoder (for concatenated codes only)
     if name in {"hierarchical", "hier", "concatenated-hierarchical"}:
         if not isinstance(code, ConcatenatedCode):

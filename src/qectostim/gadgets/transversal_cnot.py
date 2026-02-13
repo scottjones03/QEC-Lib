@@ -518,8 +518,8 @@ class TransversalCNOTGadget(Gadget):
             offset=(0.0, 0.0),
         )
         
-        # Margin based on code distance (d is on the Code ABC)
-        margin = max(3.0, ctrl_code.d * 1.5)
+        # Margin based on code distance (d may be None for concatenated codes)
+        margin = max(3.0, (ctrl_code.d or 3) * 1.5)
         
         # Target block offset
         layout.add_block(

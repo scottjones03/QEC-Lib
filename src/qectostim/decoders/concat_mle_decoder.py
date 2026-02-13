@@ -236,10 +236,10 @@ class _TesseractBackend:
         dets = np.asarray(dets, dtype=np.uint8)
         if dets.ndim == 1:
             dets = dets.reshape(1, -1)
-        out = np.zeros((dets.shape[0], self.num_observables), dtype=np.uint8)
-        for i in range(dets.shape[0]):
-            out[i] = self.decode(dets[i])
-        return out
+        # Use native batch decoding for speed
+        dets_bool = dets.astype(bool)
+        corr = self._decoder.decode_batch(dets_bool)
+        return np.asarray(corr, dtype=np.uint8)
 
 
 # ──────────────────────────────────────────────────────────────────────

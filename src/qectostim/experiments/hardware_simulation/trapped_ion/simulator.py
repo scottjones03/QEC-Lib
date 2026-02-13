@@ -7,6 +7,8 @@ Integrates with TrappedIonExecutionPlanner for timing-aware noise.
 """
 from __future__ import annotations
 
+import logging
+
 from typing import (
     Dict,
     List,
@@ -32,6 +34,9 @@ if TYPE_CHECKING:
         TrappedIonNoiseModel,
     )
     from qectostim.experiments.hardware_simulation.core.execution import ExecutionPlan
+
+
+_logger = logging.getLogger(__name__)
 
 
 class TrappedIonSimulator(HardwareSimulator):
