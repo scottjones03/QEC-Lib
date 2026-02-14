@@ -531,11 +531,22 @@ class HierarchicalConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder)
         # Inner ancilla coordinates could be derived from inner code's stab coords
         # For now, we skip detailed ancilla coordinates
     
-    def emit_reset_all(self, circuit: stim.Circuit) -> None:
-        """Reset all data, inner ancilla, and outer ancilla qubits."""
-        all_qubits = list(range(self._data_start, self._outer_anc_end))
-        if all_qubits:
-            circuit.append("R", all_qubits)
+    def emit_reset_all(self, circuit: stim.Circuit, *, skip_data: bool = False) -> None:
+        """Reset all data, inner ancilla, and outer ancilla qubits.
+
+        Parameters
+        ----------
+        skip_data : bool
+            If True, skip resetting data qubits (caller will use RX).
+        """
+        if skip_data:
+            anc_qubits = list(range(self._inner_anc_start, self._outer_anc_end))
+            if anc_qubits:
+                circuit.append("R", anc_qubits)
+        else:
+            all_qubits = list(range(self._data_start, self._outer_anc_end))
+            if all_qubits:
+                circuit.append("R", all_qubits)
     
     def emit_prepare_logical_state(
         self,

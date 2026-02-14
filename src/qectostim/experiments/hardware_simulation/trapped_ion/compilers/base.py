@@ -9,7 +9,6 @@ Provides:
 Architecture hierarchy:
 - TrappedIonCompiler (ABC): Technology-specific base (MS gates, ion physics)
   - WISECompiler: WISE grid architecture with SAT-based routing
-  - LinearChainCompiler: Single linear chain, all-to-all connectivity
   - QCCDCompiler: General QCCD with split/merge/shuttle routing
 """
 from __future__ import annotations
@@ -170,10 +169,15 @@ class TrappedIonCompiler(HardwareCompiler):
         ]
     
     def _decompose_h(self, qubit: int) -> List[DecomposedGate]:
-        """Decompose Hadamard to rotations. H = Ry(pi/2) . Rz(pi)"""
+        """Decompose Hadamard to rotations.
+
+        Uses H = Ry(π/2) · Rx(π/2) from p.80 of the Figgatt thesis
+        (https://iontrap.umd.edu/wp-content/uploads/2013/10/FiggattThesis.pdf).
+        This matches the old pipeline's ``_parseCircuitString`` decomposition.
+        """
         return [
             DecomposedGate("RY", (qubit,), {"angle": PI_2}),
-            DecomposedGate("RZ", (qubit,), {"angle": PI}),
+            DecomposedGate("RX", (qubit,), {"angle": PI_2}),
         ]
     
     def _decompose_s(self, qubit: int) -> List[DecomposedGate]:
@@ -270,40 +274,94 @@ class TrappedIonCompiler(HardwareCompiler):
                     result.extend(self._decompose_swap(q0, q1))
                 elif gate_name == "ISWAP":
                     result.extend(self._decompose_iswap(q0, q1))
-        # Single-qubit gates
+        # Single-qubit gates — stim may target multiple qubits in one
+        # instruction (e.g. ``H 2 12``), so loop over all targets.
         elif gate_name == "H":
-            result = self._decompose_h(qubits[0])
+            result = []
+            for q in qubits:
+                result.extend(self._decompose_h(q))
         elif gate_name == "X":
-            result = self._decompose_x(qubits[0])
+            result = []
+            for q in qubits:
+                result.extend(self._decompose_x(q))
         elif gate_name == "Y":
-            result = self._decompose_y(qubits[0])
+            result = []
+            for q in qubits:
+                result.extend(self._decompose_y(q))
         elif gate_name == "Z":
-            result = self._decompose_z(qubits[0])
+            result = []
+            for q in qubits:
+                result.extend(self._decompose_z(q))
         elif gate_name == "S":
-            result = self._decompose_s(qubits[0])
+            result = []
+            for q in qubits:
+                result.extend(self._decompose_s(q))
         elif gate_name == "S_DAG":
-            result = self._decompose_s_dag(qubits[0])
+            result = []
+            for q in qubits:
+                result.extend(self._decompose_s_dag(q))
         elif gate_name == "T":
-            result = self._decompose_t(qubits[0])
+            result = []
+            for q in qubits:
+                result.extend(self._decompose_t(q))
         elif gate_name == "T_DAG":
-            result = self._decompose_t_dag(qubits[0])
+            result = []
+            for q in qubits:
+                result.extend(self._decompose_t_dag(q))
         elif gate_name == "SQRT_X":
-            result = [DecomposedGate("RX", (qubits[0],), {"angle": PI_2})]
+            result = [DecomposedGate("RX", (q,), {"angle": PI_2}) for q in qubits]
         elif gate_name == "SQRT_X_DAG":
-            result = [DecomposedGate("RX", (qubits[0],), {"angle": -PI_2})]
+            result = [DecomposedGate("RX", (q,), {"angle": -PI_2}) for q in qubits]
         elif gate_name == "SQRT_Y":
-            result = [DecomposedGate("RY", (qubits[0],), {"angle": PI_2})]
+            result = [DecomposedGate("RY", (q,), {"angle": PI_2}) for q in qubits]
         elif gate_name == "SQRT_Y_DAG":
-            result = [DecomposedGate("RY", (qubits[0],), {"angle": -PI_2})]
+            result = [DecomposedGate("RY", (q,), {"angle": -PI_2}) for q in qubits]
         # Identity / reset / measure
         elif gate_name == "I":
             result = []
-        elif gate_name in ("R",):
-            # Split multi-qubit reset into per-qubit ops
-            result = [DecomposedGate(gate_name, (q,), {}) for q in qubits]
-        elif gate_name in ("RX", "RY", "RZ"):
-            result = [DecomposedGate(gate_name, qubits, {})]
-        elif gate_name in ("M", "MX", "MY", "MZ", "MR"):
+        elif gate_name in ("R", "RZ"):
+            # Stim R / RZ = reset in Z basis (prepare |0⟩)
+            result = [DecomposedGate("R", (q,), {}) for q in qubits]
+        elif gate_name == "RX":
+            # Stim RX = reset in X basis (prepare |+⟩)
+            # Decompose: R (reset |0⟩) then H (|0⟩→|+⟩)
+            result = []
+            for q in qubits:
+                result.append(DecomposedGate("R", (q,), {}))
+                result.extend(self._decompose_h(q))
+        elif gate_name == "RY":
+            # Stim RY = reset in Y basis (prepare |+i⟩)
+            # Decompose: R (reset |0⟩) then S then H
+            result = []
+            for q in qubits:
+                result.append(DecomposedGate("R", (q,), {}))
+                result.extend(self._decompose_s(q))
+                result.extend(self._decompose_h(q))
+        elif gate_name == "MR":
+            # MR = measure + reset in Z basis; split into all M's then all R's
+            # to match old pipeline (stim .decomposed() splits MR → M + R)
+            result = []
+            for q in qubits:
+                result.append(DecomposedGate("M", (q,), {}))
+            for q in qubits:
+                result.append(DecomposedGate("R", (q,), {}))
+        elif gate_name == "MRX":
+            # Stim MRX = measure in X basis then reset in X basis
+            # Decompose: MX (native X-measurement) then R then H (reset to |+⟩)
+            result = []
+            for q in qubits:
+                result.append(DecomposedGate("MX", (q,), {}))
+                result.append(DecomposedGate("R", (q,), {}))
+                result.extend(self._decompose_h(q))
+        elif gate_name == "MRY":
+            # Stim MRY = measure in Y basis then reset in Y basis
+            result = []
+            for q in qubits:
+                result.append(DecomposedGate("MY", (q,), {}))
+                result.append(DecomposedGate("R", (q,), {}))
+                result.extend(self._decompose_s(q))
+                result.extend(self._decompose_h(q))
+        elif gate_name in ("M", "MX", "MY", "MZ"):
             # Split multi-qubit measurement into per-qubit ops
             result = [DecomposedGate(gate_name, (q,), {}) for q in qubits]
         else:

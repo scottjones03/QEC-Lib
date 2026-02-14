@@ -167,28 +167,6 @@ class TransversalCNOTGadget(Gadget):
         """No blocks are destroyed."""
         return []
     
-    def get_x_stabilizer_mode(self) -> str:
-        """
-        Return the gate type to use for X stabilizer measurement.
-        
-        For |+⟩ state preparation, CZ-based X-stabilizer measurement gives
-        non-deterministic results because the H-CZ-H circuit doesn't properly
-        measure X-parity on product |+⟩ states.
-        
-        Using CX (CNOT ancilla→data) with H-CX-H correctly measures X-parity:
-        - The ancilla measures the XOR of X eigenvalues of data qubits
-        - For |+⟩^⊗n, all X eigenvalues are +1, so measurement is deterministic 0
-        
-        Returns
-        -------
-        str
-            "cx" if any block uses |+⟩ preparation, "cz" otherwise.
-        """
-        # Use CX mode if either block is prepared in |+⟩
-        if self.control_state == "+" or self.target_state == "+":
-            return "cx"
-        return "cz"
-    
     def emit_next_phase(
         self,
         circuit: stim.Circuit,

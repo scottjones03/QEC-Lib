@@ -225,9 +225,20 @@ class FaultTolerantGadgetExperiment(Experiment):
         self._ctx: Optional[DetectorContext] = None
         self._builders: List[BaseStabilizerRoundBuilder] = []
         self._qubit_allocation: Optional[Dict[str, Any]] = None
+        self._qec_metadata: Optional[Any] = None
         self._prep_config: Optional[PreparationConfig] = None  # Set in to_stim()
         self._use_rx_prep: bool = True  # Use RX instead of H for |+⟩ prep
     
+    @property
+    def qec_metadata(self) -> Optional[Any]:
+        """Rich QEC metadata for the hardware compiler.
+
+        Available after ``to_stim()`` has been called.  Returns a
+        :class:`QECMetadata` instance populated from the builders,
+        allocation, and gadget.
+        """
+        return self._qec_metadata
+
     def _validate_codes(self, codes: List[Code]) -> None:
         """
         Validate that codes are compatible with FT gadget experiments.
@@ -510,26 +521,14 @@ class FaultTolerantGadgetExperiment(Experiment):
         - CSSCode with hx/hz: CSSStabilizerRoundBuilder
         - StabilizerCode with stabilizer_matrix: GeneralStabilizerRoundBuilder
         
-        X Stabilizer Mode
-        -----------------
-        The gadget determines which gate to use for X stabilizer measurement
-        via get_x_stabilizer_mode(). This is CRITICAL for teleportation gadgets:
-        
-        - Most gadgets use "cz" (H-CZ-H circuit) which is symmetric and efficient
-        - Teleportation gadgets MUST use "cx" (H-CX-H circuit) to match ground truth
-        
-        The difference is in backward Pauli propagation through the syndrome circuit:
-        - CZ: X_syndrome → X_syndrome ⊗ Z_data (couples to data Z, breaks determinism)
-        - CX: X_syndrome → X_syndrome (stays local, preserves determinism)
+        X stabiliser measurement now always uses CX-based extraction
+        (RX/CX/MRX), so there is no per-gadget mode selection.
         """
         # For hierarchical concatenated codes, use dedicated builder creation
         if self._is_hierarchical:
             return self._create_hierarchical_builders(alloc, ctx)
 
         builders = []
-        
-        # Get X stabilizer mode from gadget (critical for teleportation)
-        x_stabilizer_mode = self.gadget.get_x_stabilizer_mode()
         
         for block_name, block_info in alloc.items():
             if block_name == "total":
@@ -567,7 +566,6 @@ class FaultTolerantGadgetExperiment(Experiment):
                     data_offset=data_start,
                     ancilla_offset=x_anc_start,
                     measurement_basis=block_meas_basis,
-                    x_stabilizer_mode=x_stabilizer_mode,
                     coord_offset=block_coord_offset,
                 )
             elif code.is_stabilizer:
@@ -589,7 +587,6 @@ class FaultTolerantGadgetExperiment(Experiment):
                     data_offset=data_start,
                     ancilla_offset=x_anc_start,
                     measurement_basis=block_meas_basis,
-                    x_stabilizer_mode=x_stabilizer_mode,
                     coord_offset=block_coord_offset,
                 )
             
@@ -1579,6 +1576,20 @@ class FaultTolerantGadgetExperiment(Experiment):
         # We need builders to know which data qubits belong to which block
         builders = self._create_builders(alloc, ctx, unified_alloc)
         self._builders = builders
+
+        # Build rich QEC metadata from builders + allocation + gadget
+        try:
+            from qectostim.experiments.hardware_simulation.core.pipeline import QECMetadata
+            self._qec_metadata = QECMetadata.from_gadget_experiment(
+                codes=self.codes,
+                builders=builders,
+                allocation=unified_alloc,
+                gadget=self.gadget,
+                rounds_before=self.num_rounds_before,
+                rounds_after=self.num_rounds_after,
+            )
+        except Exception:
+            self._qec_metadata = None
 
         # Hierarchical builders emit their own qubit coords
         if self._is_hierarchical:

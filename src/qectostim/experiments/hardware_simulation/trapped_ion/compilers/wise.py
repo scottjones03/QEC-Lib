@@ -7,12 +7,18 @@ by default, or greedy junction-based routing when configured.
 """
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import math
+import multiprocessing as mp
+import os
+import time
+from concurrent.futures import ProcessPoolExecutor
 from typing import (
     Dict,
     List,
     Optional,
+    Sequence,
     Tuple,
     Any,
     TYPE_CHECKING,
@@ -79,8 +85,12 @@ class WISECompiler(TrappedIonCompiler):
         old ``ionRouting()``) instead of the SAT solver.  This is
         faster and more faithful to the old pipeline.
     partition_strategy : str
-        Qubit-to-grid mapping strategy.  ``"gate_affinity"`` (default)
-        clusters qubits by 2Q interaction frequency.
+        Qubit-to-grid mapping strategy.  ``"classic"`` (default)
+        calls the exact old-pipeline ``regularPartition`` +
+        ``hillClimbOnArrangeClusters`` functions for bit-exact
+        parity with the legacy code.
+        ``"gate_affinity"`` clusters qubits by 2Q interaction
+        frequency.
         ``"spatial"`` replicates the old pipeline's
         ``regularPartition`` + ``arrangeClusters`` using qubit
         coordinates from the Stim circuit and Hungarian assignment.
@@ -93,7 +103,7 @@ class WISECompiler(TrappedIonCompiler):
         use_global_rotations: bool = True,
         routing_config: Optional["WISERoutingConfig"] = None,
         use_junction_routing: bool = False,
-        partition_strategy: str = "gate_affinity",
+        partition_strategy: str = "classic",
     ):
         super().__init__(architecture, optimization_level, use_global_rotations)
         self.routing_config = routing_config
@@ -105,7 +115,7 @@ class WISECompiler(TrappedIonCompiler):
         """Set up WISE compilation passes."""
         pass
     
-    def decompose_to_native(self, circuit) -> NativeCircuit:
+    def decompose_to_native(self, circuit, qec_metadata=None) -> NativeCircuit:
         """Decompose circuit to native MS + rotation gates.
         
         Builds a stim_instruction_map that maps each stim instruction
@@ -113,6 +123,15 @@ class WISECompiler(TrappedIonCompiler):
         produced.  Annotations (TICK, DETECTOR, etc.) are skipped
         during decomposition but preserved in the original circuit
         via stim_source.
+
+        Parameters
+        ----------
+        circuit : stim.Circuit
+            The Stim circuit to decompose.
+        qec_metadata : Optional[QECMetadata]
+            Rich QEC metadata to propagate to the NativeCircuit.
+            When provided, downstream pipeline stages (map_qubits,
+            route) can access stabilizer structure and code geometry.
         """
         native_ops = []
         stim_instruction_map: Dict[int, List[int]] = {}
@@ -149,6 +168,7 @@ class WISECompiler(TrappedIonCompiler):
             metadata={"source": "stim", "compiler": "WISECompiler"},
             stim_instruction_map=stim_instruction_map,
             stim_source=circuit,
+            qec_metadata=qec_metadata,
         )
     
     def map_qubits(self, circuit: NativeCircuit) -> MappedCircuit:
@@ -156,20 +176,212 @@ class WISECompiler(TrappedIonCompiler):
 
         Dispatch based on ``partition_strategy``:
 
-        * ``"gate_affinity"`` (default): clusters qubits by 2Q
-          interaction frequency — fast, good for SAT routing.
-        * ``"spatial"``: replicates the old pipeline's
-          ``regularPartition`` + ``arrangeClusters`` using qubit
-          coordinates from the Stim circuit and the Hungarian
-          algorithm for optimal cluster-to-trap assignment.
+        * ``"classic"`` (default): calls the **exact** old-pipeline
+          functions ``regularPartition`` + ``hillClimbOnArrangeClusters``
+          with Ion objects created from ``QUBIT_COORDS``.  Produces
+          identical qubit-to-trap assignments as the legacy code.
+        * ``"gate_affinity"``: clusters qubits by 2Q interaction
+          frequency — fast, good for SAT routing.
+        * ``"spatial"``: re-implementation of the old pipeline's
+          ``regularPartition`` using qubit coordinates and Hungarian
+          assignment (not bit-exact with old code).
+        * ``"stabilizer"``: uses QEC stabilizer structure for
+          co-location of stabilizer groups.
 
         The ``default_chain_length`` is set to the architecture's trap
         capacity *k* so that downstream fidelity calculations use the
         correct chain length (including spectator ions).
         """
+        if self.partition_strategy == "classic":
+            return self._map_qubits_classic(circuit)
         if self.partition_strategy == "spatial":
             return self._map_qubits_spatial(circuit)
-        return self._map_qubits_gate_affinity(circuit)
+        if self.partition_strategy == "stabilizer":
+            return self._map_qubits_stabilizer(circuit)
+        if self.partition_strategy == "gate_affinity":
+            return self._map_qubits_gate_affinity(circuit)
+
+        # Auto-promote to stabilizer-aware placement when QECMetadata
+        # with stabilizer structure is available and the user hasn't
+        # explicitly chosen a different strategy.
+        meta = getattr(circuit, "qec_metadata", None)
+        if meta is not None and getattr(meta, "stabilizers", None):
+            _logger.debug("map_qubits: auto-promoting to stabilizer strategy "
+                          "(qec_metadata with stabilizer info detected)")
+            return self._map_qubits_stabilizer(circuit)
+
+        # Default: classic (matches old pipeline)
+        return self._map_qubits_classic(circuit)
+
+    # ------------------------------------------------------------------ #
+    #  Classic mapping — exact port of old processCircuitWiseArch logic   #
+    # ------------------------------------------------------------------ #
+
+    def _map_qubits_classic(self, circuit: NativeCircuit) -> MappedCircuit:
+        """Map using the **exact** old-pipeline algorithm.
+
+        1. Create temporary ``Ion`` objects with positions taken from
+           the Stim circuit's ``QUBIT_COORDS`` (same as old
+           ``_parseCircuitString``).
+        2. Separate measurement vs data ions using coordinate parity
+           (even x → measurement, odd x → data), matching the old
+           pipeline's heuristic.
+        3. Call ``regularPartition(measurementIons, dataIons, k,
+           isWISEArch=True, maxClusters=m*n)``.
+        4. Call ``hillClimbOnArrangeClusters(clusters, allGridPos)``
+           to assign clusters to grid positions.
+        5. Build the ``QubitMapping`` by placing each ion into the
+           grid slot determined by its cluster's grid assignment.
+        """
+        from qectostim.experiments.hardware_simulation.trapped_ion.architecture import (
+            WISEArchitecture, Ion,
+        )
+        from qectostim.experiments.hardware_simulation.trapped_ion.routing.qccd_qubits_to_ions import (
+            regularPartition, hillClimbOnArrangeClusters,
+        )
+
+        arch = self.architecture
+        if not isinstance(arch, WISEArchitecture):
+            # Fallback for non-WISE architectures
+            return self._map_qubits_gate_affinity(circuit)
+
+        num_qubits = circuit.num_qubits
+        k = arch.k                        # ions per trap (capacity)
+        m = arch.col_groups               # column groups
+        n = arch.rows                     # rows
+        n_cols = arch.total_columns       # m * k
+        chain_length = k
+
+        # --- 1. Extract QUBIT_COORDS from stim source ---
+        # Only qubits that have QUBIT_COORDS participate in the
+        # mapping (same as old _parseCircuitString — qubits without
+        # coords are not ions and don't appear in instructions).
+        qubit_coords: Dict[int, Tuple[float, float]] = {}
+        stim_src = getattr(circuit, 'stim_source', None)
+        if stim_src is not None:
+            for instr in stim_src.flattened():
+                if instr.name == "QUBIT_COORDS":
+                    args = instr.gate_args_copy()
+                    targets = instr.targets_copy()
+                    if len(args) >= 2 and targets:
+                        for t in targets:
+                            qubit_coords[t.value] = (args[0], args[1])
+
+        # If no QUBIT_COORDS, fall back to sequential for all qubits
+        if not qubit_coords:
+            for q in range(num_qubits):
+                qubit_coords[q] = (float(q), 0.0)
+
+        # --- 2. Create Ion objects and separate meas / data ---
+        #   Old pipeline: (coords[0] % 2) == 0  →  measurement ion
+        #                  else                  →  data ion
+        measurement_ions: List[Ion] = []
+        data_ions: List[Ion] = []
+        idx_to_ion: Dict[int, Ion] = {}
+
+        for q_idx in sorted(qubit_coords.keys()):
+            cx, cy = qubit_coords[q_idx]
+            ion = Ion(idx=q_idx, position=(cx, cy), label="Q")
+            idx_to_ion[q_idx] = ion
+            if int(cx) % 2 == 0:
+                measurement_ions.append(ion)
+            else:
+                data_ions.append(ion)
+
+        # --- 3. regularPartition ---
+        clusters = regularPartition(
+            measurement_ions, data_ions, k,
+            isWISEArch=True,
+            maxClusters=m * n,
+        )
+
+        # --- 4. hillClimbOnArrangeClusters ---
+        allGridPos: List[Tuple[int, int]] = []
+        for r in range(n):
+            for c in range(m):
+                allGridPos.append((c, r))
+
+        gridPositions = hillClimbOnArrangeClusters(
+            clusters, allGridPos=allGridPos,
+        )
+        # gridPositions[i] = (col, row) for cluster i
+
+        # --- 5. Build qubit → grid-position mapping ---
+        # Old pipeline logic:
+        #   trap_for_grid[(2*col, row)] = clusters[trapIdx]
+        #   ions in that trap get positions row * n_cols + trap_col_offset + slot
+        mapping = QubitMapping()
+        qubit_assignment: Dict[int, int] = {}
+
+        for trap_idx, (col, row) in enumerate(gridPositions):
+            if trap_idx >= len(clusters):
+                continue
+            cluster_ions = clusters[trap_idx][0]
+            for slot, ion in enumerate(cluster_ions):
+                # Grid position: row-major with k columns per block
+                grid_pos = row * n_cols + col * k + slot
+                qubit_assignment[ion.idx] = grid_pos
+
+        # Assign mapped qubits (those with QUBIT_COORDS)
+        used_positions: set = set()
+        for logical_q in sorted(qubit_assignment.keys()):
+            physical_q = qubit_assignment[logical_q]
+            row = physical_q // n_cols if n_cols > 0 else 0
+            col = physical_q % n_cols if n_cols > 0 else physical_q
+            zone_id = f"trap_{row}_{col}"
+            mapping.assign(logical_q, physical_q, zone_id)
+            used_positions.add(physical_q)
+
+        # Assign unmapped logical qubits (those without QUBIT_COORDS)
+        # to remaining free grid positions — they act as spectators.
+        total_grid_slots = n * n_cols
+        free_positions = sorted(
+            pos for pos in range(total_grid_slots)
+            if pos not in used_positions
+        )
+        free_idx = 0
+        for logical_q in range(num_qubits):
+            if logical_q not in qubit_assignment:
+                if free_idx < len(free_positions):
+                    physical_q = free_positions[free_idx]
+                    free_idx += 1
+                else:
+                    # Beyond grid capacity — assign an out-of-grid index
+                    physical_q = total_grid_slots + logical_q
+                row = physical_q // n_cols if n_cols > 0 else 0
+                col = physical_q % n_cols if n_cols > 0 else physical_q
+                zone_id = f"trap_{row}_{col}"
+                mapping.assign(logical_q, physical_q, zone_id)
+                used_positions.add(physical_q)
+
+        # --- Spectator filling ---
+        # Fill any remaining empty grid slots with virtual spectators
+        next_spectator_idx = max(
+            max(used_positions) + 1 if used_positions else num_qubits,
+            num_qubits,
+        )
+        spectator_indices: List[int] = []
+        for pos in range(total_grid_slots):
+            if pos not in used_positions:
+                row = pos // n_cols if n_cols > 0 else 0
+                col = pos % n_cols if n_cols > 0 else pos
+                zone_id = f"trap_{row}_{col}"
+                mapping.assign(next_spectator_idx, pos, zone_id)
+                spectator_indices.append(next_spectator_idx)
+                next_spectator_idx += 1
+
+        metadata: Dict[str, Any] = {"mapping_strategy": "classic"}
+        metadata["default_chain_length"] = chain_length
+        if spectator_indices:
+            metadata["spectator_indices"] = spectator_indices
+            metadata["num_spectators"] = len(spectator_indices)
+            metadata["total_ions"] = num_qubits + len(spectator_indices)
+
+        return MappedCircuit(
+            native_circuit=circuit,
+            mapping=mapping,
+            metadata=metadata,
+        )
 
     def _map_qubits_gate_affinity(self, circuit: NativeCircuit) -> MappedCircuit:
         """Map using gate-affinity clustering (default strategy)."""
@@ -327,7 +539,123 @@ class WISECompiler(TrappedIonCompiler):
             mapping=mapping,
             metadata=metadata,
         )
-    
+
+    def _map_qubits_stabilizer(self, circuit: NativeCircuit) -> MappedCircuit:
+        """Map using QEC stabilizer structure — keeps stabilizer
+        groups co-located in the same trap block.
+
+        Falls back to gate_affinity when ``qec_metadata`` is absent.
+        """
+        from qectostim.experiments.hardware_simulation.trapped_ion.architecture import (
+            WISEArchitecture,
+        )
+
+        meta = getattr(circuit, "qec_metadata", None)
+        if meta is None:
+            _logger.debug("_map_qubits_stabilizer: no qec_metadata, "
+                          "falling back to gate_affinity")
+            return self._map_qubits_gate_affinity(circuit)
+
+        num_qubits = circuit.num_qubits
+        mapping = QubitMapping()
+
+        chain_length: Optional[int] = None
+        n_rows = n_cols = 1
+        k = 2
+        if isinstance(self.architecture, WISEArchitecture):
+            chain_length = self.architecture.k
+            k = self.architecture.k
+            n_rows, n_cols = self.architecture.grid_shape
+
+        num_blocks_per_row = max(1, n_cols // k)
+        block_occupancy: Dict[Tuple[int, int], List[int]] = {}
+        for r in range(n_rows):
+            for b in range(num_blocks_per_row):
+                block_occupancy[(r, b)] = []
+
+        qubit_assignment: Dict[int, int] = {}
+
+        def _try_assign(qubit: int, row: int, blk: int) -> bool:
+            if qubit in qubit_assignment:
+                return False
+            block = block_occupancy.get((row, blk))
+            if block is None or len(block) >= k:
+                return False
+            col = blk * k + len(block)
+            if col >= n_cols:
+                return False
+            pos = row * n_cols + col
+            qubit_assignment[qubit] = pos
+            block.append(qubit)
+            return True
+
+        # Place each stabilizer's support set into the same block
+        for stab_info in meta.stabilizers:
+            # Flatten supports (List[List[int]]) and combine with ancillas
+            flat_supports: set = set()
+            for supp in stab_info.supports:
+                flat_supports.update(supp)
+            all_qubits = sorted(flat_supports | set(stab_info.ancillas))
+            # Try to fit the whole group into one block
+            placed = False
+            for r in range(n_rows):
+                for b in range(num_blocks_per_row):
+                    occ = block_occupancy.get((r, b), [])
+                    # Only count qubits not already assigned
+                    new_qubits = [q for q in all_qubits if q not in qubit_assignment]
+                    if len(occ) + len(new_qubits) <= k:
+                        for q in new_qubits:
+                            _try_assign(q, r, b)
+                        placed = True
+                        break
+                if placed:
+                    break
+
+        # Fill remaining qubits
+        for q in range(num_qubits):
+            if q not in qubit_assignment:
+                for r in range(n_rows):
+                    for b in range(num_blocks_per_row):
+                        if _try_assign(q, r, b):
+                            break
+                    if q in qubit_assignment:
+                        break
+                if q not in qubit_assignment:
+                    total_slots = n_rows * n_cols
+                    for pos in range(total_slots):
+                        if pos not in qubit_assignment.values():
+                            qubit_assignment[q] = pos
+                            break
+
+        for logical_q in range(num_qubits):
+            physical_q = qubit_assignment.get(logical_q, logical_q)
+            row = physical_q // n_cols if n_cols > 0 else 0
+            col = physical_q % n_cols if n_cols > 0 else physical_q
+            zone_id = f"trap_{row}_{col}"
+            mapping.assign(logical_q, physical_q, zone_id)
+
+        # Spectator filling
+        total_grid_slots = n_rows * n_cols
+        used_positions = set(mapping.logical_to_physical.values())
+        next_spec = max(used_positions) + 1 if used_positions else num_qubits
+        spectator_indices: List[int] = []
+        for pos in range(total_grid_slots):
+            if pos not in used_positions:
+                row = pos // n_cols if n_cols > 0 else 0
+                col = pos % n_cols if n_cols > 0 else pos
+                mapping.assign(next_spec, pos, f"trap_{row}_{col}")
+                spectator_indices.append(next_spec)
+                next_spec += 1
+
+        md: Dict[str, Any] = {"mapping_strategy": "stabilizer_wise"}
+        if chain_length is not None:
+            md["default_chain_length"] = chain_length
+        if spectator_indices:
+            md["spectator_indices"] = spectator_indices
+            md["num_spectators"] = len(spectator_indices)
+            md["total_ions"] = num_qubits + len(spectator_indices)
+        return MappedCircuit(native_circuit=circuit, mapping=mapping, metadata=md)
+
     def route(self, circuit: MappedCircuit) -> RoutedCircuit:
         """Route ions through the WISE grid.
 
@@ -348,58 +676,338 @@ class WISECompiler(TrappedIonCompiler):
         return self._route_sat(circuit)
 
     def _route_sat(self, circuit: MappedCircuit) -> RoutedCircuit:
-        """SAT-based WISE routing (original path)."""
+        """SAT-based WISE routing — calls ionRoutingWISEArch directly."""
         from qectostim.experiments.hardware_simulation.trapped_ion.routing import (
-            WISERoutingPass,
-            WISERoutingConfig,
+            ionRoutingWISEArch,
+            old_ops_to_transport_list,
         )
-        
-        config = self.routing_config or WISERoutingConfig()
-        routing_pass = WISERoutingPass(
-            architecture=self.architecture,
-            config=config,
+        from qectostim.experiments.hardware_simulation.trapped_ion.architecture import (
+            WISEArchitecture,
         )
-        
-        routed = routing_pass.route(circuit, self.architecture)
+        from qectostim.experiments.hardware_simulation.trapped_ion.operations import (
+            MSGate,
+            SingleQubitGate,
+            Measurement as IonMeasurement,
+            QubitReset as IonQubitReset,
+        )
 
-        # The routing pass produces transport + 2Q (MS) gate ops.
-        # It may also emit partial 1Q ops via _one_qubit_ops_per_batch,
-        # but those are incomplete (missing measurements/resets and
-        # emitted as GateOperation instead of proper types).
-        # Strip any 1Q GateOperations that the routing pass emitted,
-        # then use _interleave_non_2q_ops to insert ALL non-2Q ops at
-        # their correct positions.
-        filtered_ops = [
-            op for op in routed.operations
-            if not (
-                isinstance(op, GateOperation)
-                and op.operation_type == OperationType.GATE_1Q
+        arch = self.architecture
+        if not isinstance(arch, WISEArchitecture):
+            raise TypeError(
+                "_route_sat requires a WISEArchitecture, "
+                f"got {type(arch).__name__}"
             )
-        ]
-        routed.operations = self._interleave_non_2q_ops(filtered_ops, circuit)
 
-        return routed
+        # Build the FULL list of qubit operations the router expects.
+        # The router's section 4b consumes 1Q ops between MS rounds,
+        # and only ops that appear in the input make it into allOps.
+        # Without 1Q/M/R the scheduler sees only ReconfigurationPlanners
+        # and MS gates, producing an unrealistically low total_duration.
+        qi = arch.qubit_ions
+        l2p = circuit.mapping.logical_to_physical
+        old_operations: List = []
+        ms_gates: List[MSGate] = []          # track MS subset for toMoveOps
+        for dg in circuit.native_circuit.operations:
+            nq = len(dg.qubits)
+            if nq == 2:
+                q1, q2 = dg.qubits
+                p1 = l2p.get(q1, q1)
+                p2 = l2p.get(q2, q2)
+                if 0 <= p1 < len(qi) and 0 <= p2 < len(qi):
+                    gate = MSGate.qubitOperation(qi[p1], qi[p2])
+                    old_operations.append(gate)
+                    ms_gates.append(gate)
+            elif nq == 1:
+                q = dg.qubits[0]
+                p = l2p.get(q, q)
+                if 0 <= p < len(qi):
+                    ion = qi[p]
+                    if dg.name in ("RX", "RY"):
+                        old_operations.append(
+                            SingleQubitGate(ion, gate_type=dg.name)
+                        )
+                    elif dg.name == "M":
+                        old_operations.append(IonMeasurement(ion))
+                    elif dg.name == "R":
+                        old_operations.append(IonQubitReset(ion))
+                    else:
+                        old_operations.append(
+                            SingleQubitGate(ion, gate_type=dg.name)
+                        )
+
+        # --- Build toMoveOps from stim circuit CX layers ---
+        # The old pipeline's circuitString() grouped CNOT gates by
+        # TICK-separated layers in the stim circuit.  Each parallel
+        # CX instruction becomes one round of MS gates in toMoveOps.
+        # Without toMoveOps the greedy grouper produces incorrect
+        # parallelism — the router needs the exact per-round grouping.
+        _stim_toMoveOps: Optional[List[List[MSGate]]] = None
+        stim_src = getattr(circuit.native_circuit, 'stim_source', None)
+        if stim_src is not None:
+            _stim_toMoveOps = []
+            _current_round: List[MSGate] = []
+            _ms_gate_idx = 0  # index into ms_gates (NOT old_operations)
+            for instr in stim_src.flattened():
+                if instr.name == "TICK":
+                    if _current_round:
+                        _stim_toMoveOps.append(_current_round)
+                        _current_round = []
+                elif instr.name == "CX":
+                    targets = instr.targets_copy()
+                    # Each CX pair is (control, target) → one MS gate
+                    for i in range(0, len(targets), 2):
+                        if _ms_gate_idx < len(ms_gates):
+                            _current_round.append(ms_gates[_ms_gate_idx])
+                            _ms_gate_idx += 1
+            if _current_round:
+                _stim_toMoveOps.append(_current_round)
+            # Sanity: if we consumed all MS gates, use this as toMoveOps
+            if _ms_gate_idx == len(ms_gates) and _stim_toMoveOps:
+                _logger.debug(
+                    "_route_sat: built toMoveOps with %d rounds from "
+                    "stim CX layers (%d MS gates total)",
+                    len(_stim_toMoveOps), _ms_gate_idx,
+                )
+            else:
+                _logger.warning(
+                    "_route_sat: stim CX layer extraction mismatch: "
+                    "consumed %d / %d MS gates — falling back to None",
+                    _ms_gate_idx, len(ms_gates),
+                )
+                _stim_toMoveOps = None
+
+        # --- QECMetadata-driven hints ---
+        toMoveOps = None
+        round_repetition_hint = None
+        meta = getattr(circuit.native_circuit, "qec_metadata", None)
+        if meta is not None:
+            # Build toMoveOps from cnot_schedule
+            if meta.cnot_schedule:
+                _template = self._build_toMoveOps(
+                    meta.cnot_schedule,
+                    qi,
+                    circuit.mapping.logical_to_physical,
+                )
+                # The template is one stabilizer round's worth of CNOT
+                # layers.  Replicate it meta.rounds times so it covers
+                # the full circuit (matching the _stim_toMoveOps length).
+                _n_repeats = max(1, getattr(meta, 'rounds', 1))
+                toMoveOps = _template * _n_repeats
+                _logger.debug(
+                    "_route_sat: built toMoveOps with %d rounds "
+                    "(%d template × %d repeats) from cnot_schedule",
+                    len(toMoveOps), len(_template), _n_repeats,
+                )
+            # Build round_repetition_hint from phases
+            if meta.phases:
+                round_repetition_hint = self._build_round_repetition_hint(
+                    meta.phases,
+                )
+                _logger.debug(
+                    "_route_sat: built round_repetition_hint with %d phases",
+                    len(meta.phases),
+                )
+
+        # Fallback: when no QECMetadata is available, use the stim
+        # CX-layer structure extracted above.
+        if toMoveOps is None and _stim_toMoveOps:
+            toMoveOps = _stim_toMoveOps
+
+        # Call the WISE SAT router directly with the architecture
+        rc = self.routing_config
+        subgridsize = getattr(rc, 'subgridsize', (6, 4, 1)) if rc else (6, 4, 1)
+        lookahead = getattr(rc, 'lookahead', 2) if rc else 2
+
+        # --- Auto-progress bar when running interactively ----
+        progress_cb = getattr(rc, 'progress_callback', None) if rc else None
+        _auto_close = None
+        if progress_cb is None:
+            try:
+                # Auto-detect notebook / interactive environment
+                get_ipython  # type: ignore[name-defined]
+                from qectostim.experiments.hardware_simulation.trapped_ion.routing.config import (
+                    make_tqdm_progress_callback,
+                )
+                progress_cb, _auto_close = make_tqdm_progress_callback("SAT Routing")
+            except NameError:
+                pass  # not in IPython — no auto-progress
+
+        all_ops, barriers, reconfig_time = ionRoutingWISEArch(
+            arch,
+            old_operations,
+            lookahead=lookahead,
+            subgridsize=subgridsize,
+            toMoveOps=toMoveOps,
+            round_repetition_hint=round_repetition_hint,
+            progress_callback=progress_cb,
+        )
+
+        # Clean up auto-created progress bar
+        if _auto_close is not None:
+            _auto_close()
+
+        # Convert old ops to transport list for new pipeline
+        ops_list, barrier_list, metadata = old_ops_to_transport_list(
+            all_ops, barriers,
+        )
+
+        routing_metadata = {
+            "routing_strategy": "wise_sat",
+            "barriers": barrier_list,
+            "reconfig_time": reconfig_time,
+            "num_old_ops": len(ops_list),
+            "old_operations": ops_list,
+            "old_barriers": barrier_list,
+        }
+
+        return RoutedCircuit(
+            operations=[],  # Gate ops (old ops stored in routing_operations)
+            final_mapping=circuit.mapping.copy(),
+            routing_overhead=len(ops_list),
+            mapped_circuit=circuit,
+            routing_operations=ops_list,  # Old ops available via interleaved_operations()
+            metadata=routing_metadata,
+        )
+
+    @staticmethod
+    def _build_toMoveOps(
+        cnot_schedule: Dict[str, List[List[Tuple[int, int]]]],
+        qubit_ions: Sequence[int],
+        logical_to_physical: Dict[int, int],
+    ) -> List[List["MSGate"]]:
+        """Convert a CNOT schedule dict into ``toMoveOps`` for the SAT
+        router.
+
+        Each inner list is one parallel round of MS gates.
+        """
+        from qectostim.experiments.hardware_simulation.trapped_ion.operations import (
+            MSGate,
+        )
+
+        rounds: List[List[MSGate]] = []
+        for stab_type in ("x", "z"):
+            layers = cnot_schedule.get(stab_type)
+            if layers is None:
+                continue
+            for layer in layers:
+                ms_round: List[MSGate] = []
+                for ctrl, tgt in layer:
+                    p1 = logical_to_physical.get(ctrl, ctrl)
+                    p2 = logical_to_physical.get(tgt, tgt)
+                    if 0 <= p1 < len(qubit_ions) and 0 <= p2 < len(qubit_ions):
+                        ms_round.append(
+                            MSGate.qubitOperation(qubit_ions[p1], qubit_ions[p2])
+                        )
+                if ms_round:
+                    rounds.append(ms_round)
+        return rounds
+
+    @staticmethod
+    def _classify_ops_by_block(
+        operations: Sequence["MSGate"],
+        blocks: Sequence["BlockInfo"],
+        qubit_ions: Sequence[int],
+        physical_to_logical: Dict[int, int],
+    ) -> Dict[str, List["MSGate"]]:
+        """Classify MS gates by QEC block name.
+
+        Returns a dict ``{block_name: [MSGate, ...]}`` for each
+        block that contains at least one gate.
+        """
+        # Build a map: logical_qubit -> block_name
+        qubit_block: Dict[int, str] = {}
+        for blk in blocks:
+            for q in blk.data_qubits:
+                qubit_block[q] = blk.block_name
+            for q in blk.x_ancilla_qubits:
+                qubit_block[q] = blk.block_name
+            for q in blk.z_ancilla_qubits:
+                qubit_block[q] = blk.block_name
+
+        # Reverse ion -> logical
+        ion_to_logical: Dict[int, int] = {}
+        for phys, logical in physical_to_logical.items():
+            if 0 <= phys < len(qubit_ions):
+                ion_to_logical[qubit_ions[phys]] = logical
+
+        result: Dict[str, List] = {}
+        for gate in operations:
+            ions = gate.ions if hasattr(gate, "ions") else []
+            block_name = "unknown"
+            for ion in ions:
+                lq = ion_to_logical.get(ion)
+                if lq is not None and lq in qubit_block:
+                    block_name = qubit_block[lq]
+                    break
+            result.setdefault(block_name, []).append(gate)
+        return result
+
+    @staticmethod
+    def _build_round_repetition_hint(
+        phases: Optional[Sequence["PhaseInfo"]],
+    ) -> Optional[Dict[str, Any]]:
+        """Build a ``round_repetition_hint`` dict from phase info.
+
+        The hint tells the router which phases repeat and which phase
+        transitions force a cache-key recheck.
+
+        Returns ``None`` when phase info is unavailable.
+        """
+        if phases is None or len(phases) == 0:
+            return None
+        hint_phases: List[Dict[str, Any]] = []
+        force_recheck: List[int] = []
+        ion_return: bool = False
+        # Accumulate MS round count to translate phase boundaries
+        # into the MS-round index space the router uses.
+        _ms_round_cursor: int = 0
+        for i, ph in enumerate(phases):
+            # Count how many CNOT layers (MS rounds) this phase
+            # contributes.  Each round_signature tuple element is one
+            # parallel CNOT layer.
+            _sig_layers = len(ph.round_signature) if ph.round_signature else 0
+            _phase_ms_rounds = _sig_layers * max(1, ph.num_rounds) if _sig_layers else 0
+            entry: Dict[str, Any] = {
+                "phase_type": ph.phase_type,
+                "num_rounds": ph.num_rounds,
+                "is_repeated": ph.is_repeated,
+            }
+            if ph.identical_to_phase is not None:
+                pass  # Cross-phase cache sharing: same pattern as earlier phase
+            else:
+                # Boundary between distinct phases -> force cache recheck
+                # at the MS round index where this phase starts.
+                if i > 0 and _ms_round_cursor > 0:
+                    force_recheck.append(_ms_round_cursor)
+            hint_phases.append(entry)
+            if ph.is_repeated:
+                ion_return = True
+            _ms_round_cursor += _phase_ms_rounds
+        return {
+            "phases": hint_phases,
+            "force_recheck_at": force_recheck,
+            "ion_return": ion_return,
+        }
 
     def _route_junction(self, circuit: MappedCircuit) -> RoutedCircuit:
-        """Greedy junction-based routing (old ``ionRouting()`` port).
+        """Greedy junction-based routing — calls ionRouting() directly.
 
-        Uses the WISE physical topology graph (traps + junctions +
-        crossings) built by ``WISEArchitecture._build_wise_topology()``.
-
-        Steps:
-        1. Extract 2Q gate requests with ancilla/data ion references.
-        2. Call ``route_ions_junction()`` which greedily executes
-           co-located gates, then routes remaining ions through
-           shortest paths.
-        3. Convert transport ops to physical operations.
-        4. Attach 1Q / measurement ops as well.
+        Uses the ionRouting() function which greedily executes
+        co-located gates, then routes remaining ions through
+        shortest paths via the architecture graph.
         """
         from qectostim.experiments.hardware_simulation.trapped_ion.architecture import (
             WISEArchitecture,
         )
-        from qectostim.experiments.hardware_simulation.trapped_ion.routing.greedy import (
-            route_ions_junction,
-            GateRequest,
+        from qectostim.experiments.hardware_simulation.trapped_ion.operations import (
+            MSGate,
+            SingleQubitGate,
+            Measurement as IonMeasurement,
+            QubitReset as IonQubitReset,
+        )
+        from qectostim.experiments.hardware_simulation.trapped_ion.routing import (
+            ionRouting,
+            old_ops_to_transport_list,
         )
 
         arch = self.architecture
@@ -409,159 +1017,141 @@ class WISECompiler(TrappedIonCompiler):
                 f"got {type(arch).__name__}"
             )
 
-        graph = arch.qccd_graph
-
-        # --- Build GateRequest objects from the native circuit ---
-        gate_requests: List[GateRequest] = []
-        gate_id = 0
+        # Pass ALL ops so the junction router sees 1Q gates,
+        # measurements, and resets — they appear in allOps and the
+        # scheduler computes the correct total_duration.
+        qi = arch.qubit_ions
+        l2p = circuit.mapping.logical_to_physical
+        old_operations = []
         for dg in circuit.native_circuit.operations:
-            if len(dg.qubits) != 2:
-                continue
-            q1, q2 = dg.qubits
-            # Map logical → physical positions
-            p1 = circuit.mapping.logical_to_physical.get(q1, q1)
-            p2 = circuit.mapping.logical_to_physical.get(q2, q2)
+            nq = len(dg.qubits)
+            if nq == 2:
+                q1, q2 = dg.qubits
+                p1 = l2p.get(q1, q1)
+                p2 = l2p.get(q2, q2)
+                if 0 <= p1 < len(qi) and 0 <= p2 < len(qi):
+                    gate = MSGate.qubitOperation(qi[p1], qi[p2])
+                    old_operations.append(gate)
+            elif nq == 1:
+                q = dg.qubits[0]
+                p = l2p.get(q, q)
+                if 0 <= p < len(qi):
+                    ion = qi[p]
+                    if dg.name in ("RX", "RY"):
+                        old_operations.append(
+                            SingleQubitGate(ion, gate_type=dg.name)
+                        )
+                    elif dg.name == "M":
+                        old_operations.append(IonMeasurement(ion))
+                    elif dg.name == "R":
+                        old_operations.append(IonQubitReset(ion))
+                    else:
+                        old_operations.append(
+                            SingleQubitGate(ion, gate_type=dg.name)
+                        )
 
-            ion1 = arch.get_ion(p1)
-            ion2 = arch.get_ion(p2)
-            if ion1 is None or ion2 is None:
-                gate_id += 1
-                continue
-
-            # In the old code, ancilla = measurement ion, data = data ion.
-            # Convention: sort by label; the one labelled 'D' is data.
-            # For now, use ion with the smaller index as "ancilla" (the
-            # one that moves) — this matches the old sorting heuristic.
-            ancilla, data = (ion1, ion2) if ion1.idx <= ion2.idx else (ion2, ion1)
-            gate_requests.append(GateRequest(
-                ancilla_ion=ancilla,
-                data_ion=data,
-                priority=gate_id,
-                gate_id=gate_id,
-            ))
-            gate_id += 1
-
-        if not gate_requests:
-            return RoutedCircuit(
-                operations=[],
-                final_mapping=circuit.mapping.copy(),
-                routing_overhead=0,
-                mapped_circuit=circuit,
-            )
-
-        # --- Run junction routing ---
-        result = route_ions_junction(
-            graph=graph,
-            gate_requests=gate_requests,
-            trap_capacity=arch.k,
+        # Call the greedy junction router directly with the architecture
+        all_ops, barriers = ionRouting(
+            arch,
+            old_operations,
+            trapCapacity=arch.k,
         )
 
-        # --- Convert to physical operations ---
-        # First build transport + MS gate ops only (no 1Q/meas/reset).
-        # Then use _interleave_non_2q_ops to insert pre/post rotations,
-        # measurements, and resets at their correct native-circuit
-        # positions — matching the old code's drain-loop pattern.
-        routed_ops: List = []
-
-        # Transport ops — extract source/target from concrete op type
-        from qectostim.experiments.hardware_simulation.trapped_ion.transport import (
-            Split, Merge, Move, JunctionCrossing, CrystalRotation,
+        # Convert old ops to transport list for new pipeline
+        ops_list, barrier_list, metadata = old_ops_to_transport_list(
+            all_ops, barriers,
         )
-        for top in result.transport_ops:
-            # Determine source_zone and target_zone from the concrete type
-            if isinstance(top, Split):
-                src_z, tgt_z = str(top.trap_idx), str(top.crossing_idx)
-            elif isinstance(top, Merge):
-                src_z, tgt_z = str(top.crossing_idx), str(top.trap_idx)
-            elif isinstance(top, Move):
-                src_z, tgt_z = str(top.crossing_idx), str(top.crossing_idx)
-            elif isinstance(top, JunctionCrossing):
-                src_z, tgt_z = str(top.crossing_idx), str(top.junction_idx)
-            elif isinstance(top, CrystalRotation):
-                src_z = tgt_z = str(top.trap_idx)
-            else:
-                src_z = tgt_z = "?"
-            routed_ops.append(TransportOperation(
-                qubit=getattr(top, 'ion_idx', -1),
-                source_zone=src_z,
-                target_zone=tgt_z,
-                duration=top.time_s * 1e6,  # seconds → μs
-            ))
-
-        # Gate ops (in execution order) — only MS gates, no rotations
-        ms_spec = GateSpec(
-            name="MS", gate_type=GateType.TWO_QUBIT,
-            num_qubits=2, is_native=True,
-        )
-        for gid in result.gate_execution_order:
-            req = gate_requests[gid]
-            gate_op = GateOperation(
-                gate=ms_spec,
-                qubits=(req.ancilla_ion.idx, req.data_ion.idx),
-                duration=_CAL.ms_gate_time * 1e6,
-                base_fidelity=_CAL.gate_fidelities().get("MS", 0.99),
-                metadata={"routing": "junction"},
-            )
-            routed_ops.append(gate_op)
-
-        # Interleave 1Q gates, measurements, and resets at correct
-        # positions relative to the MS gates.
-        all_operations = self._interleave_non_2q_ops(routed_ops, circuit)
 
         routing_metadata = {
             "routing_strategy": "junction",
-            "barriers": result.barriers,
-            "total_transport_time_s": result.total_time_s,
-            "total_transport_heating": result.total_heating,
-            "num_transport_ops": len(result.transport_ops),
-            "num_barriers": len(result.barriers),
+            "barriers": barrier_list,
+            "num_old_ops": len(ops_list),
+            "old_operations": ops_list,
+            "old_barriers": barrier_list,
         }
 
         return RoutedCircuit(
-            operations=all_operations,
+            operations=[],  # Gate ops (old ops stored in routing_operations)
             final_mapping=circuit.mapping.copy(),
-            routing_overhead=len(result.transport_ops),
+            routing_overhead=len(ops_list),
             mapped_circuit=circuit,
+            routing_operations=ops_list,  # Old ops available via interleaved_operations()
             metadata=routing_metadata,
         )
     
     def schedule(self, circuit: RoutedCircuit) -> ScheduledCircuit:
-        """Schedule operations with WISE-specific parallelization."""
-        from qectostim.experiments.hardware_simulation.trapped_ion.scheduling import (
-            WISEBatchScheduler,
-            BarrierAwareScheduler,
+        """Schedule operations with WISE-specific parallelization.
+
+        Uses the original paralleliseOperationsWithBarriers / paralleliseOperations
+        from the old pipeline via the routing adapter.
+        """
+        from qectostim.experiments.hardware_simulation.trapped_ion.routing import (
+            paralleliseOperationsWithBarriers,
+            paralleliseOperations,
         )
 
-        # Use barrier-aware scheduling when barriers are present
-        # (e.g. from junction routing or stim TICK instructions).
-        barriers = (circuit.metadata or {}).get("barriers", [])
-        if barriers:
-            scheduler = BarrierAwareScheduler()
-            batches = scheduler.schedule(
-                circuit.operations,
-                constraints={"barriers": barriers},
-            )
-            sched_name = "BarrierAwareScheduler"
+        def _old_schedule_to_time_map(schedule):
+            """Convert old paralleliseOperations output to time → list-of-ops."""
+            result = {}
+            for t, par_op in schedule.items():
+                ops = getattr(par_op, "operations", [par_op])
+                result[t] = list(ops)
+            return result
+
+        metadata = circuit.metadata or {}
+        old_ops = metadata.get("old_operations", [])
+        barriers = metadata.get("old_barriers", metadata.get("barriers", []))
+
+        if old_ops:
+            # Use old scheduling on old operation objects
+            if barriers:
+                schedule = paralleliseOperationsWithBarriers(
+                    old_ops, list(barriers),
+                )
+            else:
+                schedule = paralleliseOperations(
+                    old_ops,
+                )
+            time_map = _old_schedule_to_time_map(schedule)
+            sched_name = "old_paralleliseOperations"
         else:
-            scheduler = WISEBatchScheduler()
-            batches = scheduler.schedule(circuit.operations)
-            sched_name = "WISEBatchScheduler"
+            # Fallback: empty schedule (no old ops available)
+            time_map = {}
+            sched_name = "empty"
 
-        scheduled_ops, layers, total_dur = self._batches_to_scheduled(batches)
-
-        # Compute per-qubit idle dephasing from scheduled timeline
-        dephasing_info = self._compute_dephasing(scheduled_ops, total_dur)
+        # Build scheduled operations from the time_map
+        # Each entry: time → list of old operation objects
+        scheduled_ops = []
+        layers = []
+        total_dur = 0.0
+        for t in sorted(time_map.keys()):
+            ops_at_t = time_map[t]
+            layer_ops = []
+            for op in ops_at_t:
+                op_time = getattr(op, "operationTime", lambda: 0.0)()
+                sched_op = ScheduledOperation(
+                    operation=op,
+                    start_time=t,
+                    end_time=t + op_time,
+                )
+                scheduled_ops.append(sched_op)
+                layer_ops.append(sched_op)
+                end_t = t + op_time
+                if end_t > total_dur:
+                    total_dur = end_t
+            if layer_ops:
+                layers.append(layer_ops)
 
         return ScheduledCircuit(
             layers=layers,
             scheduled_ops=scheduled_ops,
             routed_circuit=circuit,
-            batches=batches,
+            batches={},
             total_duration=total_dur,
             metadata={
                 "scheduler": sched_name,
                 "num_barriers": len(barriers),
-                "dephasing": dephasing_info,
+                "time_map": time_map,
             },
         )
 
@@ -1256,3 +1846,597 @@ class WISECompiler(TrappedIonCompiler):
             "avg_dephasing_fidelity": avg_fidelity,
             "total_idle_us": total_idle_us,
         }
+
+    # -----------------------------------------------------------------
+    # Logging configuration
+    # -----------------------------------------------------------------
+
+    @staticmethod
+    def configure_logging(
+        log_dir: str = "logs",
+        log_prefix: str = "wise",
+    ) -> None:
+        """Set up file-based logging for the WISE route + SAT loggers.
+
+        Creates ``<log_dir>/<prefix>_route.log`` and
+        ``<log_dir>/<prefix>_sat.log`` with timestamped, per-PID
+        formatting.  Idempotent — duplicate handlers are not added.
+
+        Parameters
+        ----------
+        log_dir : str
+            Directory for log files (created if absent).
+        log_prefix : str
+            Filename prefix (e.g. ``"wise_d3_k2"``).
+        """
+        os.makedirs(log_dir, exist_ok=True)
+        fmt = logging.Formatter(
+            "%(asctime)s [%(levelname)s] [pid=%(process)d] %(message)s"
+        )
+
+        for suffix, logger_name in [
+            ("route", "wise.qccd.route"),
+            ("sat", "wise.qccd.sat"),
+        ]:
+            logger = logging.getLogger(logger_name)
+            logger.setLevel(logging.INFO)
+
+            path = os.path.abspath(
+                os.path.join(log_dir, f"{log_prefix}_{suffix}.log")
+            )
+            already = any(
+                isinstance(h, logging.FileHandler)
+                and getattr(h, "baseFilename", None) == path
+                for h in logger.handlers
+            )
+            if not already:
+                fh = logging.FileHandler(path)
+                fh.setFormatter(fmt)
+                logger.addHandler(fh)
+
+    # -----------------------------------------------------------------
+    # Hardware resource estimation (electrode / DAC counts)
+    # -----------------------------------------------------------------
+
+    # Electrode constants — from TABLE III, PRA 99, 022330
+    NDE_LZ: int = 10   # DC electrodes per linear zone
+    NDE_JZ: int = 20   # DC electrodes per junction zone
+    NSE_Z: int = 10    # shim electrodes per zone
+
+    @staticmethod
+    def estimate_resources(
+        num_ions: int,
+        trap_capacity: int,
+    ) -> Dict[str, int]:
+        """Estimate DAC and electrode counts for a WISE grid.
+
+        Parameters
+        ----------
+        num_ions : int
+            Total ion slots across the grid (= m × n × k).
+        trap_capacity : int
+            Ions per trap segment (*k*).
+
+        Returns
+        -------
+        dict
+            ``{"electrodes": int, "dacs": int, "Njz": int, "Nlz": int}``
+        """
+        Njz = int(np.ceil(num_ions / trap_capacity))
+        Nlz = num_ions - Njz
+
+        Nde = WISECompiler.NDE_LZ * Nlz + WISECompiler.NDE_JZ * Njz
+        Nse = WISECompiler.NSE_Z * (Njz + Nlz)
+
+        electrodes = int(Nde + Nse)
+        dacs = int(min(100, Nde) + np.ceil(Nse / 100))
+
+        return {
+            "electrodes": electrodes,
+            "dacs": dacs,
+            "Njz": Njz,
+            "Nlz": Nlz,
+        }
+
+    # -----------------------------------------------------------------
+    # Parallel config search  (ported from best_effort_compilation.py)
+    # -----------------------------------------------------------------
+
+    @staticmethod
+    def search_configs(
+        configs: List[Tuple[int, int, int, int]],
+        *,
+        d: int,
+        m_traps: int,
+        n_traps: int,
+        trap_capacity: int = 2,
+        barrier_threshold: float = np.inf,
+        go_back_threshold: float = 0.0,
+        base_pmax_in: Optional[int] = None,
+        time_budget_s: Optional[float] = None,
+        sat_workers_per_config: int = 4,
+        max_total_workers: Optional[int] = None,
+        verbose: bool = False,
+        leaderboard_top_k: int = 5,
+        gate_improvements: Sequence[float] = (1.0,),
+        num_shots: int = 100_000,
+    ) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Search over routing configs in parallel, returning the best.
+
+        Each config is a ``(lookahead, subgrid_width, subgrid_height,
+        subgrid_increment)`` tuple.  For every config, the full WISE
+        compilation pipeline is run in a worker process.
+
+        Parameters
+        ----------
+        configs : list of (int, int, int, int)
+            Routing parameter tuples to explore.
+        d : int
+            Surface-code distance.
+        m_traps, n_traps : int
+            Grid dimensions (columns, rows) of the WISE architecture.
+        trap_capacity : int
+            Ions per trap segment (*k*).
+        barrier_threshold : float
+            Disable barriers when ``trap_capacity > barrier_threshold``.
+        go_back_threshold : float
+            Routing go-back threshold.
+        base_pmax_in : int or None
+            Override for SAT ``pmax``.
+        time_budget_s : float or None
+            Global wall-clock time budget (seconds).
+        sat_workers_per_config : int
+            ``WISE_SAT_WORKERS`` env var set per worker.
+        max_total_workers : int or None
+            Process pool size (defaults to CPU count / sat_workers).
+        verbose : bool
+            Print live leaderboard.
+        leaderboard_top_k : int
+            How many top configs to display.
+        gate_improvements : sequence of float
+            Scaling factors for gate-error sweeps.
+        num_shots : int
+            Simulation shots per config.
+
+        Returns
+        -------
+        (best_result, all_results) : (dict or None, list of dict)
+        """
+        if not configs:
+            return None, []
+
+        total_cpus = mp.cpu_count() or 1
+        if max_total_workers is None:
+            if sat_workers_per_config and sat_workers_per_config > 0:
+                max_total_workers = max(1, total_cpus // sat_workers_per_config)
+            else:
+                max_total_workers = total_cpus
+        max_total_workers = max(1, min(max_total_workers, len(configs)))
+
+        start = time.time()
+        all_results: List[Dict[str, Any]] = []
+        best_result: Optional[Dict[str, Any]] = None
+
+        def _is_better(a: Dict, b: Optional[Dict]) -> bool:
+            if b is None:
+                return True
+            ea, eb = a["exec_time"], b["exec_time"]
+            if np.isnan(ea):
+                return False
+            if np.isnan(eb):
+                return True
+            if ea < eb:
+                return True
+            if ea > eb:
+                return False
+            return a["comp_time"] < b["comp_time"]
+
+        def _print_leaderboard() -> None:
+            if not verbose or not all_results:
+                return
+            valid = [r for r in all_results if not np.isnan(r["exec_time"])]
+            if not valid:
+                return
+            valid.sort(key=lambda r: (r["exec_time"], r["comp_time"]))
+            top = valid[: max(1, leaderboard_top_k)]
+            print("[WISE-SEARCH] Current top configs (by exec_time):")
+            for r in top:
+                print(
+                    f"  la={r['lookahead']}, w={r['subgrid_width']}, "
+                    f"h={r['subgrid_height']}, inc={r['subgrid_increment']}: "
+                    f"exec={r['exec_time']:.3f}, comp={r['comp_time']:.1f}s"
+                )
+            print(flush=True)
+
+        extra_kw: Dict[str, Any] = dict(
+            d=d,
+            m_traps=m_traps,
+            n_traps=n_traps,
+            trap_capacity=trap_capacity,
+            barrier_threshold=barrier_threshold,
+            go_back_threshold=go_back_threshold,
+            base_pmax_in=base_pmax_in,
+            sat_workers_per_config=sat_workers_per_config,
+            time_budget_s=time_budget_s,
+            num_shots=num_shots,
+            gate_improvements=list(gate_improvements),
+        )
+
+        ctx = mp.get_context("spawn")
+        executor = ProcessPoolExecutor(
+            max_workers=max_total_workers, mp_context=ctx,
+        )
+        future_to_cfg: Dict[concurrent.futures.Future, Tuple] = {}
+
+        try:
+            for cfg in configs:
+                fut = executor.submit(
+                    _run_single_config_entry,
+                    lookahead=cfg[0],
+                    subgrid_width=cfg[1],
+                    subgrid_height=cfg[2],
+                    subgrid_increment=cfg[3],
+                    **extra_kw,
+                )
+                future_to_cfg[fut] = cfg
+
+            pending = set(future_to_cfg.keys())
+
+            while pending:
+                if time_budget_s is not None and (time.time() - start) >= time_budget_s:
+                    if verbose:
+                        print(
+                            "[WISE-SEARCH] Global time budget reached; "
+                            "stopping collection.",
+                            flush=True,
+                        )
+                    break
+
+                done, pending = concurrent.futures.wait(
+                    pending, timeout=1.0,
+                    return_when=concurrent.futures.FIRST_COMPLETED,
+                )
+                if not done:
+                    continue
+
+                for fut in done:
+                    cfg = future_to_cfg[fut]
+                    try:
+                        res = fut.result()
+                    except Exception as e:
+                        if verbose:
+                            print(
+                                f"[WISE-SEARCH] crashed for cfg={cfg}: {e}",
+                                flush=True,
+                            )
+                        res = _make_nan_result(
+                            cfg, d, m_traps, n_traps, trap_capacity,
+                            gate_improvements, error=repr(e),
+                        )
+
+                    all_results.append(res)
+                    if _is_better(res, best_result):
+                        best_result = res
+                        if verbose:
+                            print("[WISE-SEARCH] New best.", flush=True)
+                            _print_leaderboard()
+
+        except KeyboardInterrupt:
+            if verbose:
+                print("[WISE-SEARCH] KeyboardInterrupt; cancelling.", flush=True)
+        finally:
+            for f in future_to_cfg:
+                if not f.done():
+                    f.cancel()
+            try:
+                executor.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
+
+            # Aggressive worker teardown
+            try:
+                procs = getattr(executor, "_processes", None)
+                if procs:
+                    for pid, proc in list(procs.items()):
+                        if proc.is_alive():
+                            if verbose:
+                                print(
+                                    f"[WISE-SEARCH] Terminating worker PID {pid}",
+                                    flush=True,
+                                )
+                            try:
+                                proc.terminate()
+                            except Exception:
+                                pass
+                    for _, proc in list(procs.items()):
+                        if proc.is_alive():
+                            try:
+                                proc.join(timeout=1.0)
+                            except Exception:
+                                pass
+                    for pid, proc in list(procs.items()):
+                        if proc.is_alive():
+                            if verbose:
+                                print(
+                                    f"[WISE-SEARCH] Killing worker PID {pid}",
+                                    flush=True,
+                                )
+                            try:
+                                proc.kill()
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+
+        if verbose:
+            elapsed = time.time() - start
+            print(
+                f"[WISE-SEARCH] Done in {elapsed:.1f}s; "
+                f"{len(all_results)} configs completed.",
+                flush=True,
+            )
+            _print_leaderboard()
+
+        return best_result, all_results
+
+
+# =====================================================================
+# Module-level helpers for multiprocessing (must be pickle-able)
+# =====================================================================
+
+def _make_nan_result(
+    cfg: Tuple[int, int, int, int],
+    d: int,
+    m_traps: int,
+    n_traps: int,
+    trap_capacity: int,
+    gate_improvements: Sequence[float],
+    error: str = "",
+) -> Dict[str, Any]:
+    """Create an all-NaN result dict for a failed config."""
+    return {
+        "lookahead": cfg[0],
+        "subgrid_width": cfg[1],
+        "subgrid_height": cfg[2],
+        "subgrid_increment": cfg[3],
+        "d": d,
+        "m_traps": m_traps,
+        "n_traps": n_traps,
+        "trap_capacity": trap_capacity,
+        "exec_time": float("nan"),
+        "comp_time": 0.0,
+        "reconfigTime": float("nan"),
+        "ElapsedTime": float("nan"),
+        "Operations": float("nan"),
+        "MeanConcurrency": float("nan"),
+        "QubitOperations": float("nan"),
+        "LogicalErrorRates": [float("nan") for _ in gate_improvements],
+        "PhysicalZErrorRates": [float("nan") for _ in gate_improvements],
+        "PhysicalXErrorRates": [float("nan") for _ in gate_improvements],
+        "error": error,
+    }
+
+
+def _run_single_config_entry(
+    lookahead: int,
+    subgrid_width: int,
+    subgrid_height: int,
+    subgrid_increment: int,
+    *,
+    d: int,
+    m_traps: int,
+    n_traps: int,
+    trap_capacity: int,
+    barrier_threshold: float,
+    go_back_threshold: float,
+    base_pmax_in: Optional[int],
+    sat_workers_per_config: int,
+    time_budget_s: Optional[float],
+    gate_improvements: Sequence[float] = (1.0,),
+    num_shots: int = 100_000,
+) -> Dict[str, Any]:
+    """Worker entry point — runs one config in a sub-process.
+
+    Sets SAT worker / timeout env-vars, then calls ``run_single_config``.
+    """
+    WISECompiler.configure_logging(
+        log_prefix=f"wise_d{d}_k{trap_capacity}",
+    )
+
+    if sat_workers_per_config and sat_workers_per_config > 0:
+        os.environ["WISE_SAT_WORKERS"] = str(sat_workers_per_config)
+
+    if time_budget_s is not None and time_budget_s > 0:
+        cap = max(time_budget_s / 2.0, 1.0)
+        for var in ("WISE_MAX_SAT_TIME", "WISE_MAX_RC2_TIME"):
+            cur = os.environ.get(var)
+            val = cap
+            if cur is not None:
+                try:
+                    val = min(cap, float(cur)) if float(cur) > 0 else cap
+                except ValueError:
+                    pass
+            os.environ[var] = f"{val}"
+
+    exec_time, comp_time, results, reconfig_time = run_single_config(
+        lookahead=lookahead,
+        subgrid_width=subgrid_width,
+        subgrid_height=subgrid_height,
+        subgrid_increment=subgrid_increment,
+        d=d,
+        m_traps=m_traps,
+        n_traps=n_traps,
+        trap_capacity=trap_capacity,
+        barrier_threshold=barrier_threshold,
+        go_back_threshold=go_back_threshold,
+        base_pmax_in=base_pmax_in,
+        gate_improvements=gate_improvements,
+        num_shots=num_shots,
+    )
+
+    row: Dict[str, Any] = {
+        "lookahead": lookahead,
+        "subgrid_width": subgrid_width,
+        "subgrid_height": subgrid_height,
+        "subgrid_increment": subgrid_increment,
+        "d": d,
+        "m_traps": m_traps,
+        "n_traps": n_traps,
+        "trap_capacity": trap_capacity,
+        "exec_time": exec_time,
+        "comp_time": comp_time,
+        "reconfigTime": reconfig_time,
+    }
+    row.update(results)
+    return row
+
+
+def run_single_config(
+    lookahead: int,
+    subgrid_width: int,
+    subgrid_height: int,
+    subgrid_increment: int,
+    *,
+    d: int = 4,
+    m_traps: int = 6,
+    n_traps: int = 6,
+    trap_capacity: int = 2,
+    barrier_threshold: float = np.inf,
+    go_back_threshold: float = 0.0,
+    base_pmax_in: Optional[int] = None,
+    gate_improvements: Sequence[float] = (1.0,),
+    num_shots: int = 100_000,
+) -> Tuple[float, float, Dict[str, Any], float]:
+    """Run WISE routing for a single parameter configuration.
+
+    Uses the full WISECompiler pipeline: decompose → map → route → schedule.
+    Collects execution time, operation counts, and concurrency metrics.
+
+    Parameters
+    ----------
+    lookahead : int
+        SAT solver look-ahead depth.
+    subgrid_width, subgrid_height, subgrid_increment : int
+        Patch-slicer dimensions.
+    d : int
+        Surface-code distance.
+    m_traps, n_traps : int
+        WISE grid dimensions (columns, rows).
+    trap_capacity : int
+        Ions per trap (*k*).
+    barrier_threshold : float
+        Disable barriers when capacity > threshold.
+    gate_improvements : sequence of float
+        Gate-error scaling factors for sweep.
+    num_shots : int
+        Simulation shots.
+
+    Returns
+    -------
+    (exec_time, comp_time, results, reconfig_time)
+    """
+    import stim
+    from qectostim.experiments.hardware_simulation.trapped_ion.architecture import (
+        WISEArchitecture,
+    )
+    from qectostim.experiments.hardware_simulation.trapped_ion.routing.config import (
+        WISERoutingConfig,
+    )
+
+    t0 = time.perf_counter()
+    try:
+        # 1) Build stim surface-code circuit
+        circuit = stim.Circuit.generated(
+            "surface_code:rotated_memory_z",
+            rounds=1,
+            distance=d,
+        )
+        num_ions = m_traps * n_traps * trap_capacity
+
+        # 2) Build architecture + routing config
+        arch = WISEArchitecture(
+            col_groups=m_traps,
+            rows=n_traps,
+            ions_per_segment=trap_capacity,
+        )
+        rc = WISERoutingConfig(
+            subgridsize=(subgrid_width, subgrid_height, subgrid_increment),
+            lookahead=lookahead,
+        )
+
+        # 3) Build compiler and run pipeline
+        compiler = WISECompiler(architecture=arch, routing_config=rc)
+        native = compiler.decompose_to_native(circuit)
+        mapped = compiler.map_qubits(native)
+        routed = compiler.route(mapped)
+        scheduled = compiler.schedule(routed)
+
+        # 4) Extract metrics from scheduled result
+        # Old pipeline uses: exec_time = float(max(parallelOpsMap.keys()))
+        # i.e. the max START time of the last batch (in seconds).
+        # New pipeline time_map keys are in µs → convert to seconds.
+        sched_meta = scheduled.metadata or {}
+        time_map_raw = sched_meta.get("time_map", {})
+        if time_map_raw:
+            exec_time = float(max(time_map_raw.keys())) * 1e-6
+        else:
+            exec_time = 0.0
+        reconfig_time = (routed.metadata or {}).get("reconfig_time", 0.0)
+
+        # Count operations and concurrency
+        routing_meta = routed.metadata or {}
+        num_old_ops = routing_meta.get("num_old_ops", len(routed.operations))
+        num_qubit_ops = len(mapped.native_circuit.operations) if mapped.native_circuit else 0
+
+        time_map = sched_meta.get("time_map", {})
+        mean_concurrency = 0.0
+        if time_map:
+            slot_sizes = [
+                len(ops) if isinstance(ops, (list, tuple)) else 1
+                for ops in time_map.values()
+            ]
+            mean_concurrency = float(np.mean(slot_sizes)) if slot_sizes else 0.0
+
+        t1 = time.perf_counter()
+        comp_time = t1 - t0
+
+        # 5) Simulation / error rates  (placeholder — returns NaN until
+        #    TrappedIonSimulator integration is wired in)
+        logical_errors: List[float] = [float("nan") for _ in gate_improvements]
+        physical_z: List[float] = [float("nan") for _ in gate_improvements]
+        physical_x: List[float] = [float("nan") for _ in gate_improvements]
+
+        results: Dict[str, Any] = {
+            "ElapsedTime": exec_time,
+            "Operations": num_old_ops,
+            "MeanConcurrency": mean_concurrency,
+            "QubitOperations": num_qubit_ops,
+            "LogicalErrorRates": logical_errors,
+            "PhysicalZErrorRates": physical_z,
+            "PhysicalXErrorRates": physical_x,
+        }
+
+        hw = WISECompiler.estimate_resources(num_ions, trap_capacity)
+        results["DACs"] = hw["dacs"]
+        results["Electrodes"] = hw["electrodes"]
+
+        return exec_time, comp_time, results, reconfig_time
+
+    except Exception as e:
+        t1 = time.perf_counter()
+        comp_time = t1 - t0
+        print(
+            f"[WARN] Failed: la={lookahead}, "
+            f"sub=({subgrid_width},{subgrid_height},{subgrid_increment}), "
+            f"d={d}, m={m_traps}, n={n_traps}: {e!r}"
+        )
+        results = {
+            "ElapsedTime": float("nan"),
+            "Operations": float("nan"),
+            "MeanConcurrency": float("nan"),
+            "QubitOperations": float("nan"),
+            "LogicalErrorRates": [float("nan") for _ in gate_improvements],
+            "PhysicalZErrorRates": [float("nan") for _ in gate_improvements],
+            "PhysicalXErrorRates": [float("nan") for _ in gate_improvements],
+        }
+        return float("nan"), comp_time, results, float("nan")

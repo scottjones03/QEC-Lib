@@ -205,9 +205,20 @@ class FlatConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
                 global_idx = self.data_offset + local_idx
                 circuit.append("QUBIT_COORDS", [global_idx], [float(coord[0]), float(coord[1])])
     
-    def emit_reset_all(self, circuit: stim.Circuit) -> None:
-        """Reset all data and ancilla qubits."""
-        all_qubits = self.data_qubits + self.x_ancillas + self.z_ancillas
+    def emit_reset_all(self, circuit: stim.Circuit, *, skip_data: bool = False) -> None:
+        """Reset data and ancilla qubits.
+
+        Parameters
+        ----------
+        circuit : stim.Circuit
+            Target circuit.
+        skip_data : bool
+            If ``True``, only reset ancilla qubits (data prepared by ``RX``).
+        """
+        if skip_data:
+            all_qubits = self.x_ancillas + self.z_ancillas
+        else:
+            all_qubits = self.data_qubits + self.x_ancillas + self.z_ancillas
         if all_qubits:
             circuit.append("R", all_qubits)
     
@@ -227,11 +238,13 @@ class FlatConcatenatedStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
                     circuit.append("X", [self.data_offset + q])
         
         elif state in ("+", "-"):
+            # RX atomically prepares |+⟩ (no H gate needed)
+            circuit.append("RX", self.data_qubits)
+            # Z|+⟩ = |−⟩  →  apply Z *after* RX for |-⟩
             if state == "-" and hasattr(code, 'logical_x_support'):
                 support = code.logical_x_support(logical_idx)
                 for q in support:
                     circuit.append("Z", [self.data_offset + q])
-            circuit.append("H", self.data_qubits)
         
         circuit.append("TICK")
     

@@ -1,0 +1,60 @@
+lookahead,subgrid_width,subgrid_height,subgrid_increment,d,m_traps,n_traps,trap_capacity,exec_time,comp_time,reconfigTime,ElapsedTime,Operations,MeanConcurrency,QubitOperations,LogicalErrorRates,PhysicalZErrorRates,PhysicalXErrorRates,DACs,Electrodes,error
+1,4,3,0,2,2,3,2,0.0060019999999999995,10.359461541287601,0.0040620000000000005,0.0060019999999999995,69.0,2.3055555555555554,65.0,[nan],[nan],[nan],102.0,300.0,
+1,2,2,2,2,2,3,2,0.008687,15.220194916706532,0.0067020000000000005,0.008687,76.0,1.9574468085106382,65.0,[nan],[nan],[nan],102.0,300.0,
+4,2,2,2,2,2,3,2,0.007254,76.70636941678822,0.005184,0.007254,74.0,1.875,65.0,[nan],[nan],[nan],102.0,300.0,
+4,4,3,0,2,2,3,2,0.003679,106.89401454105973,0.001684,0.003679,69.0,2.135135135135135,65.0,[nan],[nan],[nan],102.0,300.0,
+1,4,3,0,2,1,3,4,0.00394,7.025010791607201,0.00177,0.00394,69.0,1.6037735849056605,65.0,[nan],[nan],[nan],102.0,270.0,
+1,2,2,2,2,1,3,4,0.006679999999999999,17.07059087511152,0.004490000000000001,0.006679999999999999,77.0,1.4262295081967213,65.0,[nan],[nan],[nan],102.0,270.0,
+4,4,3,0,2,1,3,4,0.004725,31.259476291947067,0.00126,0.004725,69.0,1.3508771929824561,65.0,[nan],[nan],[nan],102.0,270.0,
+4,2,2,2,2,1,3,4,0.007272,60.80624912492931,0.004192000000000001,0.007272,77.0,1.353846153846154,65.0,[nan],[nan],[nan],102.0,270.0,
+1,5,1,2,2,1,3,8,0.00401,4.826356874778867,0.00024000000000000003,0.00401,69.0,1.0,65.0,[nan],[nan],[nan],103.0,510.0,
+4,5,1,2,2,1,3,8,0.00401,8.007804542314261,0.00024000000000000003,0.00401,69.0,1.0,65.0,[nan],[nan],[nan],103.0,510.0,
+1,8,3,0,2,1,3,8,0.004405,39.8024336672388,0.00126,0.004405,69.0,1.2881355932203389,65.0,[nan],[nan],[nan],103.0,510.0,
+1,3,1,4,2,1,3,8,0.006085,44.94568333402276,0.003660000000000001,0.006085,73.0,1.2,65.0,[nan],[nan],[nan],103.0,510.0,
+1,3,1,2,2,1,3,8,0.006085,45.27739054104313,0.003660000000000001,0.006085,73.0,1.2,65.0,[nan],[nan],[nan],103.0,510.0,
+4,8,3,0,2,1,3,8,0.00401,97.91902899974957,0.00024000000000000003,0.00401,69.0,1.0,65.0,[nan],[nan],[nan],103.0,510.0,
+4,3,1,2,2,1,3,8,0.0057339999999999995,149.63770487485453,0.001964,0.0057339999999999995,72.0,1.0,65.0,[nan],[nan],[nan],103.0,510.0,
+4,3,1,4,2,1,3,8,0.0057339999999999995,147.45301608275622,0.001964,0.0057339999999999995,72.0,1.0,65.0,[nan],[nan],[nan],103.0,510.0,
+1,7,1,4,2,1,3,16,0.00401,9.05764679191634,0.00024000000000000003,0.00401,69.0,1.0,65.0,[nan],[nan],[nan],105.0,990.0,
+1,7,1,2,2,1,3,16,0.00401,9.103040709160268,0.00024000000000000003,0.00401,69.0,1.0,65.0,[nan],[nan],[nan],105.0,990.0,
+4,7,1,4,2,1,3,16,0.004222,15.960464166011661,0.00045200000000000004,0.004222,69.0,1.0,65.0,[nan],[nan],[nan],105.0,990.0,
+4,7,1,2,2,1,3,16,0.004222,16.0764133753255,0.00045200000000000004,0.004222,69.0,1.0,65.0,[nan],[nan],[nan],105.0,990.0,
+1,9,1,2,2,1,3,16,0.00401,27.832011833321303,0.00024000000000000003,0.00401,69.0,1.0,65.0,[nan],[nan],[nan],105.0,990.0,
+1,9,1,4,2,1,3,16,0.00401,28.180077416822314,0.00024000000000000003,0.00401,69.0,1.0,65.0,[nan],[nan],[nan],105.0,990.0,
+4,9,1,2,2,1,3,16,0.00401,56.88219429226592,0.00024000000000000003,0.00401,69.0,1.0,65.0,[nan],[nan],[nan],105.0,990.0,
+4,9,1,4,2,1,3,16,0.00401,56.94673837535083,0.00024000000000000003,0.00401,69.0,1.0,65.0,[nan],[nan],[nan],105.0,990.0,
+1,16,3,0,2,1,3,16,0.0054199999999999995,249.4086312907748,0.00177,0.0054199999999999995,69.0,1.1290322580645162,65.0,[nan],[nan],[nan],105.0,990.0,
+1,5,1,4,2,1,3,16,0.005614999999999999,256.97241341741756,0.00315,0.005614999999999999,73.0,1.1818181818181819,65.0,[nan],[nan],[nan],105.0,990.0,
+1,5,1,2,2,1,3,16,0.005614999999999999,238.34221662487835,0.00315,0.005614999999999999,73.0,1.1818181818181819,65.0,[nan],[nan],[nan],105.0,990.0,
+4,16,3,0,2,1,3,16,0.00401,515.3290690002032,0.00024000000000000003,0.00401,69.0,1.0,65.0,[nan],[nan],[nan],105.0,990.0,
+4,5,1,2,2,1,3,16,0.007258,914.8492989158258,0.0034880000000000006,0.007258,73.0,1.0,65.0,[nan],[nan],[nan],105.0,990.0,
+1,4,4,2,3,3,5,2,0.014931,58.24912583315745,0.012346,0.014931,190.0,4.175438596491228,178.0,[nan],[nan],[nan],103.0,750.0,
+1,2,2,2,3,3,5,2,0.018057,106.30811154190451,0.015352000000000001,0.018057,200.0,3.5217391304347827,178.0,[nan],[nan],[nan],103.0,750.0,
+1,6,5,0,3,3,5,2,0.007391,154.55955829191953,0.0049960000000000004,0.007391,182.0,5.2272727272727275,178.0,[nan],[nan],[nan],103.0,750.0,
+2,2,2,2,3,3,5,2,0.01694,235.71101995790377,0.014270000000000003,0.01694,196.0,3.9130434782608696,178.0,[nan],[nan],[nan],103.0,750.0,
+2,4,4,2,3,3,5,2,0.014537999999999999,404.0724636670202,0.011928000000000001,0.014537999999999999,189.0,4.175438596491228,178.0,[nan],[nan],[nan],103.0,750.0,
+2,6,5,0,3,3,5,2,0.006619,4692.839047417045,0.004274,0.006619,182.0,5.585365853658536,178.0,[nan],[nan],[nan],103.0,750.0,
+2,8,5,0,3,2,5,4,,0.0,,,,,,[nan],[nan],[nan],,,BrokenProcessPool('A process in the process pool was terminated abruptly while the future was running or pending.')
+1,5,3,2,3,2,5,4,,0.0,,,,,,[nan],[nan],[nan],,,BrokenProcessPool('A process in the process pool was terminated abruptly while the future was running or pending.')
+2,3,1,2,3,2,5,4,,0.0,,,,,,[nan],[nan],[nan],,,BrokenProcessPool('A process in the process pool was terminated abruptly while the future was running or pending.')
+1,3,1,2,3,2,5,4,,0.0,,,,,,[nan],[nan],[nan],,,BrokenProcessPool('A process in the process pool was terminated abruptly while the future was running or pending.')
+1,8,5,0,3,2,5,4,,0.0,,,,,,[nan],[nan],[nan],,,BrokenProcessPool('A process in the process pool was terminated abruptly while the future was running or pending.')
+2,5,3,2,3,2,5,4,,0.0,,,,,,[nan],[nan],[nan],,,BrokenProcessPool('A process in the process pool was terminated abruptly while the future was running or pending.')
+1,8,5,0,3,1,5,8,,0.0,,,,,,[nan],[nan],[nan],,,BrokenProcessPool('A process in the process pool was terminated abruptly while the future was running or pending.')
+2,5,3,2,3,1,5,8,,0.0,,,,,,[nan],[nan],[nan],,,BrokenProcessPool('A process in the process pool was terminated abruptly while the future was running or pending.')
+2,3,1,2,3,1,5,8,,0.0,,,,,,[nan],[nan],[nan],,,BrokenProcessPool('A process in the process pool was terminated abruptly while the future was running or pending.')
+1,5,3,2,3,1,5,8,,0.0,,,,,,[nan],[nan],[nan],,,BrokenProcessPool('A process in the process pool was terminated abruptly while the future was running or pending.')
+2,8,5,0,3,1,5,8,,0.0,,,,,,[nan],[nan],[nan],,,BrokenProcessPool('A process in the process pool was terminated abruptly while the future was running or pending.')
+1,3,1,2,3,1,5,8,,0.0,,,,,,[nan],[nan],[nan],,,BrokenProcessPool('A process in the process pool was terminated abruptly while the future was running or pending.')
+1,16,5,0,3,1,5,16,,0.0,,,,,,[nan],[nan],[nan],,,BrokenProcessPool('A process in the process pool was terminated abruptly while the future was running or pending.')
+1,4,1,2,3,1,5,16,,0.0,,,,,,[nan],[nan],[nan],,,BrokenProcessPool('A process in the process pool was terminated abruptly while the future was running or pending.')
+2,11,3,2,3,1,5,16,,0.0,,,,,,[nan],[nan],[nan],,,BrokenProcessPool('A process in the process pool was terminated abruptly while the future was running or pending.')
+1,14,4,2,3,1,5,16,,0.0,,,,,,[nan],[nan],[nan],,,BrokenProcessPool('A process in the process pool was terminated abruptly while the future was running or pending.')
+1,11,3,2,3,1,5,16,,0.0,,,,,,[nan],[nan],[nan],,,BrokenProcessPool('A process in the process pool was terminated abruptly while the future was running or pending.')
+1,7,2,2,3,1,5,16,,0.0,,,,,,[nan],[nan],[nan],,,BrokenProcessPool('A process in the process pool was terminated abruptly while the future was running or pending.')
+1,4,4,2,4,3,6,2,,0.0,,,,,,[nan],[nan],[nan],,,BrokenProcessPool('A process in the process pool was terminated abruptly while the future was running or pending.')
+1,6,6,0,4,3,6,2,,0.0,,,,,,[nan],[nan],[nan],,,BrokenProcessPool('A process in the process pool was terminated abruptly while the future was running or pending.')
+1,8,6,0,4,2,6,4,,0.0,,,,,,[nan],[nan],[nan],,,BrokenProcessPool('A process in the process pool was terminated abruptly while the future was running or pending.')
+1,5,3,2,4,2,6,4,,0.0,,,,,,[nan],[nan],[nan],,,BrokenProcessPool('A process in the process pool was terminated abruptly while the future was running or pending.')
+1,8,6,0,4,1,6,8,,0.0,,,,,,[nan],[nan],[nan],,,BrokenProcessPool('A process in the process pool was terminated abruptly while the future was running or pending.')
+1,13,4,2,4,1,6,16,,0.0,,,,,,[nan],[nan],[nan],,,BrokenProcessPool('A process in the process pool was terminated abruptly while the future was running or pending.')

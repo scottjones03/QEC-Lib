@@ -162,8 +162,9 @@ class HardwareSimulator(Experiment):
         # Apply pre-compile hook
         circuit = self.pre_compile(circuit)
         
-        # Run compilation
-        self._compiled = self.compiler.compile(circuit)
+        # Run compilation — pass QEC metadata if available
+        _qec_meta = getattr(self, '_qec_metadata', None)
+        self._compiled = self.compiler.compile(circuit, qec_metadata=_qec_meta)
         
         # Apply post-compile hook
         self._compiled = self.post_compile(self._compiled)

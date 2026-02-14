@@ -474,6 +474,16 @@
 			"label": "Trace Observable Targets",
 			"type": "shell",
 			"command": "\"/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/my_venv/bin/python\" \"/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/debug_teleport_obs3.py\""
+		},
+		{
+			"label": "Run all QECMetadata tests",
+			"type": "shell",
+			"command": "cd \"/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim\" && ./my_venv/bin/python -m pytest test_qec_metadata.py test_routing_exploitation.py test_routing_dimensions.py -v 2>&1"
+		},
+		{
+			"label": "Compare Schedules",
+			"type": "shell",
+			"command": "\"${workspaceFolder}/my_venv/bin/python\" \"${workspaceFolder}/diag_compare_schedules.py\""
 		}
 	]
 }

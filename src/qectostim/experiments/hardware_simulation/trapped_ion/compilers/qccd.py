@@ -121,9 +121,12 @@ class QCCDCompiler(TrappedIonCompiler):
         from qectostim.experiments.hardware_simulation.trapped_ion.architecture import (
             QCCDArchitecture,
         )
-        from qectostim.experiments.hardware_simulation.trapped_ion.routing.greedy import (
-            route_ions_junction,
-            GateRequest,
+        from qectostim.experiments.hardware_simulation.trapped_ion.operations import (
+            MSGate,
+        )
+        from qectostim.experiments.hardware_simulation.trapped_ion.routing import (
+            ionRouting,
+            old_ops_to_transport_list,
         )
 
         physical_ops = self._native_ops_to_physical(
@@ -133,48 +136,108 @@ class QCCDCompiler(TrappedIonCompiler):
 
         # --- attempt junction-based routing if architecture supports it ---
         routing_metadata: Dict[str, Any] = {"routing_strategy": "qccd_junction"}
-        routing_ops: List[Any] = []
         routing_overhead = 0
+        ops_list: list = []
 
         arch = self.architecture
         if isinstance(arch, QCCDArchitecture):
-            qccd_graph = arch.qccd_graph
+            # Use the architecture directly (no adapter needed)
+            # qubit_ions maps logical qubit index → Ion object
+            qi = arch.qubit_ions
+            old_operations = []
+            for op in physical_ops:
+                qs = getattr(op, "qubits", ())
+                if len(qs) == 2:
+                    q0, q1 = qs[0], qs[1]
+                    if 0 <= q0 < len(qi) and 0 <= q1 < len(qi):
+                        gate = MSGate.qubitOperation(qi[q0], qi[q1])
+                        old_operations.append(gate)
 
-            # Build gate requests for two-qubit gates
-            gate_requests: List[GateRequest] = []
-            for gid, op in enumerate(physical_ops):
-                if len(getattr(op, "qubits", ())) == 2:
-                    q0, q1 = op.qubits[0], op.qubits[1]
-                    # Find ion objects
-                    all_ions = qccd_graph.ions
-                    ion0 = all_ions.get(q0)
-                    ion1 = all_ions.get(q1)
-                    if ion0 is not None and ion1 is not None:
-                        gate_requests.append(GateRequest(
-                            ancilla_ion=ion0,
-                            data_ion=ion1,
-                            priority=gid,
-                            gate_id=gid,
-                        ))
+            if old_operations:
+                # ── Capture pre-routing ion arrangement ──────────────
+                # ionRouting() mutates the architecture: ions physically
+                # move between traps.  We save a snapshot so the animation
+                # can *replay* transport ops from the initial positions.
+                _pre_routing_arrangement: Dict[Any, list] = {}
+                for _node in arch.qccd_graph.nodes.values():
+                    _pre_routing_arrangement[_node] = list(_node.ions)
+                for _cx in arch.qccd_graph.crossings.values():
+                    if _cx.ion is not None:
+                        _pre_routing_arrangement[_cx] = [_cx.ion]
 
-            if gate_requests:
+                # Trap capacity for routing matches ions_per_trap
                 trap_cap = arch.ions_per_trap
-                result = route_ions_junction(qccd_graph, gate_requests, trap_cap)
-                routing_ops = result.transport_ops
-                routing_overhead = len(routing_ops)
-                routing_metadata["barriers"] = result.barriers
-                routing_metadata["total_transport_time_s"] = result.total_time_s
-                routing_metadata["total_transport_heating"] = result.total_heating
-                routing_metadata["gate_execution_order"] = result.gate_execution_order
+                all_ops, barriers = ionRouting(
+                    arch, old_operations, trap_cap,
+                )
+                ops_list, barrier_list, meta = old_ops_to_transport_list(
+                    all_ops, barriers,
+                )
+                # Filter out gate objects (MSGate, GateSwap) from routing ops —
+                # they're already in physical_ops and would cause double-counting.
+                # Keep only transport ops (_EdgeOp, Split, Merge, Move, etc.).
+                _GATE_CLASSES = {"MSGate", "GateSwap", "QubitGate"}
+                ops_list = [
+                    o for o in ops_list
+                    if type(o).__name__ not in _GATE_CLASSES
+                ]
+                routing_overhead = len(ops_list)
+                routing_metadata["barriers"] = barrier_list
+                routing_metadata["old_operations"] = ops_list
+                routing_metadata["old_barriers"] = barrier_list
+
+                # ── Restore ions to pre-routing positions ───────────
+                # This lets the animation replay ops from the start.
+                # 1) Clear all nodes and crossings
+                for _node in arch.qccd_graph.nodes.values():
+                    while _node.ions:
+                        _node.remove_ion(_node.ions[0])
+                for _cx in arch.qccd_graph.crossings.values():
+                    if getattr(_cx, 'ion', None) is not None:
+                        try:
+                            _cx.clearIon()
+                        except Exception:
+                            try:
+                                _cx.clear_ion()
+                            except Exception:
+                                pass
+                # 2) Put ions back in their original traps
+                for _container, _ions in _pre_routing_arrangement.items():
+                    _ctype = type(_container).__name__
+                    if 'Crossing' in _ctype:
+                        if _ions:
+                            try:
+                                _container.setIon(_ions[0], None)
+                            except Exception:
+                                try:
+                                    _container.set_ion(_ions[0], None)
+                                except Exception:
+                                    pass
+                    else:
+                        for _ion in _ions:
+                            try:
+                                _container.add_ion(_ion)
+                            except Exception:
+                                try:
+                                    _container.addIon(_ion)
+                                except Exception:
+                                    pass
+                # 3) Rebuild the graph
+                if hasattr(arch, 'refreshGraph'):
+                    arch.refreshGraph()
+                elif hasattr(arch, 'refresh_graph'):
+                    arch.refresh_graph()
+
+                routing_metadata["pre_routing_arrangement"] = _pre_routing_arrangement
         else:
             routing_metadata = {"routing_strategy": "qccd_placeholder"}
 
         return RoutedCircuit(
             operations=physical_ops,
+            routing_operations=ops_list,
             final_mapping=circuit.mapping.copy(),
             routing_overhead=routing_overhead,
             mapped_circuit=circuit,
-            routing_operations=routing_ops,
             metadata=routing_metadata,
         )
     

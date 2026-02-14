@@ -939,18 +939,6 @@ class CSSSurgeryCNOTGadget(Gadget):
     def get_blocks_to_skip_post_rounds(self) -> Set[str]:
         return {"block_1"}
 
-    def get_x_stabilizer_mode(self) -> str:
-        """
-        Return the gate type to use for X stabilizer measurement.
-        
-        For |+⟩ state preparation, CZ-based X-stabilizer measurement gives
-        non-deterministic results. Using CX (CNOT ancilla→data) with H-CX-H
-        correctly measures X-parity on |+⟩ states.
-        
-        Block_1 (ancilla) is always |+⟩, so we always need CX mode.
-        """
-        return "cx"
-
     # ------------------------------------------------------------------
     # Preparation / measurement configs
     # ------------------------------------------------------------------

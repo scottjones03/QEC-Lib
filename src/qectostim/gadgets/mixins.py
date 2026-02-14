@@ -256,15 +256,6 @@ class TeleportationGadgetMixin:
         """Return ancilla block name (carries output after teleportation)."""
         return self._ancilla_block_name
 
-    def get_x_stabilizer_mode(self) -> str:
-        """
-        Return 'cx' for teleportation gadgets.
-
-        Teleportation requires CX (CNOT) for X stabilizer measurement to match
-        the ground truth builder and ensure X anchor detectors are deterministic.
-        """
-        return "cx"
-
     def requires_parallel_extraction(self) -> bool:
         """
         Teleportation gadgets require parallel syndrome extraction.

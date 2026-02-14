@@ -143,7 +143,7 @@ _ROLE_COLORS: Dict[str, str] = {
 _ROLE_LEGEND: List[Tuple[str, str, str]] = [
     ("D", "Data qubit", DATA_COLOR),
     ("M", "Ancilla / Meas", ANCILLA_COLOR),
-    ("P", "Spectator", SPECTATOR_COLOR),
+    ("P", "Placeholder (unused)", SPECTATOR_COLOR),
     ("C", "Cooling ion", COOLING_COLOR),
 ]
 
@@ -680,198 +680,20 @@ def display_architecture(arch, fig=None, ax=None, title="",
 
 
 # =============================================================================
-# WISE Grid Renderer
+# WISE Grid Renderer  (thin wrapper → shared renderer)
 # =============================================================================
 
 def _display_wise_grid(arch, fig, ax, title,
                        show_ions, show_labels, highlight_qubits, ion_roles=None):
-    """Render WISE m × n × k architecture with traps, junctions, crossings.
-
-    Each trap segment is drawn as a rounded rectangle containing ``k``
-    ion circles.  Junctions are labelled with their ``J(b,r)`` index.
-    Horizontal crossings are labelled ``E(b↔b+1,r)`` and vertical
-    links are shown as dashed lines.  An info panel summarises grid
-    dimensions and role counts.
-    """
-    rows = arch.rows
-    k = arch.ions_per_segment
-    m = arch.col_groups
-    total_cols = arch.total_columns
-    highlight_set = set(highlight_qubits or [])
-
-    # --- coordinate system (generous spacing to avoid overlaps) ---
+    """Render WISE m × n × k architecture via the shared renderer."""
     ion_sp = SPACING * ION_SPACING_RATIO
-    trap_inner_w = (k - 1) * ion_sp
-    trap_w = trap_inner_w + 2 * TRAP_PAD_X
-    trap_h = 2 * ION_RADIUS + 2 * TRAP_PAD_Y
-    junc_gap = SPACING * 1.2           # wider gap so junction label fits
-    block_pitch = trap_w + junc_gap
-    row_pitch = SPACING * 3.5          # more vertical space
-
-    def _trap_xy(b, r):
-        """Centre of trap block (b, r)."""
-        return (b * block_pitch, r * row_pitch)
-
-    def _junc_xy(b, r):
-        """Centre of the junction between block b and b+1 in row r."""
-        tx, _ = _trap_xy(b, r)
-        return (tx + trap_w / 2 + junc_gap / 2, r * row_pitch)
-
-    def _ion_xy(b, r, slot):
-        """Position of ion *slot* inside trap (b, r)."""
-        tx, ty = _trap_xy(b, r)
-        return (tx - trap_inner_w / 2 + slot * ion_sp, ty)
-
-    # ---- 1. Crossing edges (horizontal & vertical) ----
-    for r in range(rows):
-        for b in range(m - 1):
-            tx1, ty1 = _trap_xy(b, r)
-            jx, jy = _junc_xy(b, r)
-            tx2, ty2 = _trap_xy(b + 1, r)
-            re = tx1 + trap_w / 2
-            le = tx2 - trap_w / 2
-            # Trap → junction
-            ax.plot([re, jx - JUNCTION_SIDE / 2], [ty1, jy],
-                    color=CROSSING_COLOR, linewidth=CROSSING_LW,
-                    solid_capstyle="round", zorder=1)
-            # Junction → next trap
-            ax.plot([jx + JUNCTION_SIDE / 2, le], [jy, ty2],
-                    color=CROSSING_COLOR, linewidth=CROSSING_LW,
-                    solid_capstyle="round", zorder=1)
-            # Edge label at midpoint
-            if show_labels:
-                emx = (re + le) / 2
-                emy = ty1 + trap_h / 2 + 0.35
-                ax.text(emx, emy, f"E({b}\u2194{b+1},r{r})",
-                        fontsize=7, ha="center", va="bottom",
-                        color="#607D8B", fontstyle="italic",
-                        path_effects=_STROKE_THIN)
-
-    for r in range(rows - 1):
-        for b in range(m - 1):
-            jx1, jy1 = _junc_xy(b, r)
-            jx2, jy2 = _junc_xy(b, r + 1)
-            ax.plot([jx1, jx2],
-                    [jy1 + JUNCTION_SIDE / 2, jy2 - JUNCTION_SIDE / 2],
-                    color=CROSSING_VERT_COLOR, linewidth=CROSSING_LW * 0.85,
-                    linestyle="--", dash_capstyle="round", zorder=1)
-
-    # ---- 2. Trap blocks ----
-    for b in range(m):
-        for r in range(rows):
-            cx, cy = _trap_xy(b, r)
-            rect = FancyBboxPatch(
-                (cx - trap_w / 2, cy - trap_h / 2), trap_w, trap_h,
-                boxstyle="round,pad=0.20",
-                facecolor=TRAP_FILL, edgecolor=TRAP_EDGE,
-                linewidth=TRAP_LINEWIDTH, zorder=2, alpha=0.92)
-            ax.add_patch(rect)
-            ax.text(cx, cy + trap_h / 2 + 0.22,
-                    f"T({b},{r}) k={k}",
-                    fontsize=TRAP_LABEL_FONT, ha="center", va="bottom",
-                    color=TRAP_EDGE, fontweight="bold",
-                    path_effects=_STROKE_THIN)
-
-    # ---- 3. Junctions ----
-    half = JUNCTION_SIDE / 2
-    for b in range(m - 1):
-        for r in range(rows):
-            jx, jy = _junc_xy(b, r)
-            jrect = FancyBboxPatch(
-                (jx - half, jy - half), JUNCTION_SIDE, JUNCTION_SIDE,
-                boxstyle="round,pad=0.07",
-                facecolor=JUNCTION_FILL, edgecolor=JUNCTION_EDGE,
-                linewidth=1.5, zorder=4, alpha=0.88)
-            ax.add_patch(jrect)
-            # Always show junction index
-            jlabel = f"J({b},{r})"
-            ax.text(jx, jy, jlabel,
-                    fontsize=JUNCTION_FONT - 1, ha="center", va="center",
-                    color="white", fontweight="bold", zorder=5,
-                    path_effects=[path_effects.withStroke(
-                        linewidth=2, foreground=JUNCTION_EDGE)])
-
-    # ---- 4. Ions ----
-    ion_positions = {}
-    if show_ions:
-        for r in range(rows):
-            for b in range(m):
-                for slot in range(k):
-                    ion_idx = r * total_cols + b * k + slot
-                    ix, iy = _ion_xy(b, r, slot)
-                    ion_positions[ion_idx] = (ix, iy)
-                    _draw_ion(ax, ix, iy, ion_idx,
-                              highlight_set, ion_roles,
-                              show_label=show_labels,
-                              radius=ION_RADIUS, zorder=6)
-
-    # ---- 5. Highlight routing path ----
-    if highlight_qubits and len(highlight_qubits) >= 2:
-        hq = [q for q in highlight_qubits if q in ion_positions]
-        if len(hq) >= 2:
-            xs = [ion_positions[q][0] for q in hq]
-            ys = [ion_positions[q][1] for q in hq]
-            cx = (min(xs) + max(xs)) / 2
-            cy = (min(ys) + max(ys)) / 2
-            ew = max(xs) - min(xs) + ION_RADIUS * 6
-            eh = max(ys) - min(ys) + ION_RADIUS * 6
-            ellip = Ellipse(
-                (cx, cy), max(ew, ION_RADIUS * 6), max(eh, ION_RADIUS * 6),
-                edgecolor="#FF6600", facecolor=HIGHLIGHT_BG,
-                alpha=0.35, linewidth=HIGHLIGHT_LW, linestyle="--", zorder=3)
-            ax.add_patch(ellip)
-            ax.plot(xs, ys, color="#FF6600", linewidth=2.0,
-                    linestyle=":", alpha=0.80, zorder=3,
-                    marker="o", markersize=4)
-
-    # ---- 6. Info panel (bottom-left) ----
-    info_lines = [
-        f"m={m}  n={rows}  k={k}",
-        f"Ions: {arch.num_qubits}   Traps: {m*rows}",
-        f"Junctions: {(m-1)*rows}",
-    ]
-    if ion_roles:
-        role_counts: Dict[str, int] = {}
-        for v in ion_roles.values():
-            ch = v[0].upper()
-            role_counts[ch] = role_counts.get(ch, 0) + 1
-        parts = [f"{rk}:{rv}" for rk, rv in sorted(role_counts.items())]
-        info_lines.append("Roles: " + "  ".join(parts))
-    info_text = "\n".join(info_lines)
-    ax.text(0.01, 0.01, info_text,
-            transform=ax.transAxes,
-            fontsize=INFO_FONT, va="bottom", ha="left",
-            fontfamily="monospace",
-            bbox=dict(facecolor="white", alpha=0.88,
-                      edgecolor="#bbb", boxstyle="round,pad=0.5"),
-            zorder=100)
-
-    # ---- 7. Title & limits ----
-    if title:
-        ax.set_title(title, fontsize=FONT_SIZE + 2, fontweight="bold", pad=14)
-    else:
-        ax.set_title(
-            f"WISE  m={m} \u00d7 n={rows} \u00d7 k={k}  [{arch.num_qubits} ions]",
-            fontsize=FONT_SIZE + 1, fontweight="bold", pad=14)
-    ax.set_aspect("equal")
-    ax.set_facecolor("#FAFBFE")
-    ax.axis("off")
-
-    all_x, all_y = [], []
-    for b in range(m):
-        for r in range(rows):
-            cx, cy = _trap_xy(b, r)
-            all_x.extend([cx - trap_w / 2, cx + trap_w / 2])
-            all_y.extend([cy - trap_h / 2, cy + trap_h / 2])
-    for b in range(m - 1):
-        for r in range(rows):
-            jx, jy = _junc_xy(b, r)
-            all_x.append(jx)
-            all_y.append(jy)
-    pad = SPACING * 0.9
-    if all_x and all_y:
-        ax.set_xlim(min(all_x) - pad, max(all_x) + pad)
-        ax.set_ylim(min(all_y) - pad - 0.8, max(all_y) + pad + 1.0)
+    layout = _extract_wise_layout(arch, ion_sp)
+    _display_trapped_ion_graph(
+        layout, ax, title,
+        show_junctions=True, show_edges=True,
+        show_ions=show_ions, show_labels=show_labels,
+        highlight_qubits=highlight_qubits, ion_roles=ion_roles,
+    )
 
 
 # =============================================================================
@@ -940,196 +762,21 @@ def _display_linear_chain(arch, fig, ax, title,
 
 
 # =============================================================================
-# QCCD Renderer
+# QCCD Renderer  (thin wrapper → shared renderer)
 # =============================================================================
 
 def _display_qccd(arch, fig, ax, title,
                   show_junctions, show_edges, show_ions, show_labels,
                   highlight_qubits, ion_roles=None):
-    """Render QCCD architecture with styled traps, junctions, crossings.
-
-    Follows the same visual language as ``_display_wise_grid``:
-    FancyBboxPatch traps, ``_draw_ion()`` ion circles with role letters,
-    junction boxes, crossing edges, and an info panel.
-    """
-    graph = arch.qccd_graph
-    highlight_set = set(highlight_qubits or [])
-
-    # --- Coordinate helpers --------------------------------------------------
-    all_x: List[float] = []
-    all_y: List[float] = []
-
+    """Render QCCD architecture via the shared renderer."""
     ion_sp = SPACING * ION_SPACING_RATIO
-    trap_pad_x = TRAP_PAD_X
-    trap_pad_y = TRAP_PAD_Y
-
-    ion_positions: Dict[int, Tuple[float, float]] = {}
-
-    # ---- 1. Crossing edges (drawn first so traps sit on top) ----------------
-    if show_edges:
-        seen_pairs: set = set()
-        for crossing in graph.crossings.values():
-            si = crossing.source.idx
-            ti = crossing.target.idx
-            pair = (min(si, ti), max(si, ti))
-            if pair in seen_pairs:
-                continue
-            seen_pairs.add(pair)
-            s_node = graph.nodes.get(si)
-            t_node = graph.nodes.get(ti)
-            if s_node is None or t_node is None:
-                continue
-            sx, sy = s_node.position
-            tx, ty = t_node.position
-            ax.plot([sx, tx], [sy, ty],
-                    color=CROSSING_COLOR, linewidth=CROSSING_LW,
-                    solid_capstyle="round", zorder=1, alpha=0.6)
-            if show_labels:
-                mx, my = (sx + tx) / 2, (sy + ty) / 2
-                ax.text(mx, my + 0.6, f"E({si}\u2194{ti})",
-                        fontsize=7, ha="center", va="bottom",
-                        color="#607D8B", fontstyle="italic",
-                        path_effects=_STROKE_THIN)
-
-    # ---- 2. Trap blocks -----------------------------------------------------
-    for node in graph.nodes.values():
-        _ntype = type(node).__name__
-        px, py = node.position
-
-        if "Trap" in _ntype:
-            cap = getattr(node, "capacity", 3)
-            horiz = getattr(node, "is_horizontal", True)
-            node_ions = list(getattr(node, "ions", []))
-            ni = len(node_ions)
-            node_spacing = getattr(node, "spacing", 1.0)
-            if node_spacing <= 0:
-                node_spacing = ion_sp
-
-            inner_span = max(0, (ni - 1)) * ion_sp
-            if horiz:
-                tw = inner_span + 2 * trap_pad_x
-                th = 2 * ION_RADIUS + 2 * trap_pad_y
-            else:
-                tw = 2 * ION_RADIUS + 2 * trap_pad_y
-                th = inner_span + 2 * trap_pad_x
-
-            rect = FancyBboxPatch(
-                (px - tw / 2, py - th / 2), tw, th,
-                boxstyle="round,pad=0.20",
-                facecolor=TRAP_FILL, edgecolor=TRAP_EDGE,
-                linewidth=TRAP_LINEWIDTH, zorder=2, alpha=0.92)
-            ax.add_patch(rect)
-
-            _label = getattr(node, "display_label",
-                             getattr(node, "label", f"T{node.idx}"))
-            label_y_off = th / 2 + 0.22
-            ax.text(px, py + label_y_off,
-                    f"{_label} k={cap}",
-                    fontsize=TRAP_LABEL_FONT, ha="center", va="bottom",
-                    color=TRAP_EDGE, fontweight="bold",
-                    path_effects=_STROKE_THIN)
-
-            if show_ions and node_ions:
-                for i, ion in enumerate(node_ions):
-                    if horiz:
-                        ix = px - inner_span / 2 + i * ion_sp
-                        iy = py
-                    else:
-                        ix = px
-                        iy = py - inner_span / 2 + i * ion_sp
-                    ion_positions[ion.idx] = (ix, iy)
-                    _draw_ion(ax, ix, iy, ion.idx,
-                              highlight_set, ion_roles,
-                              show_label=show_labels,
-                              radius=ION_RADIUS, zorder=6)
-
-            all_x.extend([px - tw / 2, px + tw / 2])
-            all_y.extend([py - th / 2, py + th / 2])
-
-        elif "Junction" in _ntype or "Crossing" in _ntype:
-            if show_junctions:
-                half = JUNCTION_SIDE / 2
-                jrect = FancyBboxPatch(
-                    (px - half, py - half), JUNCTION_SIDE, JUNCTION_SIDE,
-                    boxstyle="round,pad=0.07",
-                    facecolor=JUNCTION_FILL, edgecolor=JUNCTION_EDGE,
-                    linewidth=1.5, zorder=4, alpha=0.88)
-                ax.add_patch(jrect)
-                _jlabel = getattr(node, "display_label",
-                                  getattr(node, "label", f"J{node.idx}"))
-                ax.text(px, py, _jlabel,
-                        fontsize=JUNCTION_FONT - 1, ha="center", va="center",
-                        color="white", fontweight="bold", zorder=5,
-                        path_effects=[path_effects.withStroke(
-                            linewidth=2, foreground=JUNCTION_EDGE)])
-                all_x.append(px)
-                all_y.append(py)
-        else:
-            ax.plot(px, py, "o", color="#888888", markersize=6, zorder=3)
-            if show_labels:
-                ax.text(px, py + 0.25,
-                        getattr(node, "display_label", str(node.idx)),
-                        fontsize=6.5, ha="center", va="bottom", color="#555555")
-            all_x.append(px)
-            all_y.append(py)
-
-    # ---- 3. Highlight routing path ------------------------------------------
-    if highlight_qubits and len(highlight_qubits) >= 2:
-        hq = [q for q in highlight_qubits if q in ion_positions]
-        if len(hq) >= 2:
-            xs = [ion_positions[q][0] for q in hq]
-            ys = [ion_positions[q][1] for q in hq]
-            cx = (min(xs) + max(xs)) / 2
-            cy = (min(ys) + max(ys)) / 2
-            ew = max(xs) - min(xs) + ION_RADIUS * 6
-            eh = max(ys) - min(ys) + ION_RADIUS * 6
-            ellip = Ellipse(
-                (cx, cy), max(ew, ION_RADIUS * 6), max(eh, ION_RADIUS * 6),
-                edgecolor="#FF6600", facecolor=HIGHLIGHT_BG,
-                alpha=0.35, linewidth=HIGHLIGHT_LW, linestyle="--", zorder=3)
-            ax.add_patch(ellip)
-            ax.plot(xs, ys, color="#FF6600", linewidth=2.0,
-                    linestyle=":", alpha=0.80, zorder=3,
-                    marker="o", markersize=4)
-
-    # ---- 4. Info panel (bottom-left) ----------------------------------------
-    n_traps = sum(1 for n in graph.nodes.values() if "Trap" in type(n).__name__)
-    n_junctions = sum(1 for n in graph.nodes.values() if "Junction" in type(n).__name__)
-    info_lines = [
-        f"Traps: {n_traps}   Junctions: {n_junctions}",
-        f"Ions: {arch.num_qubits}   k={getattr(arch, 'ions_per_trap', '?')}",
-    ]
-    if ion_roles:
-        role_counts: Dict[str, int] = {}
-        for v in ion_roles.values():
-            ch = v[0].upper()
-            role_counts[ch] = role_counts.get(ch, 0) + 1
-        parts = [f"{rk}:{rv}" for rk, rv in sorted(role_counts.items())]
-        info_lines.append("Roles: " + "  ".join(parts))
-    info_text = "\n".join(info_lines)
-    ax.text(0.01, 0.01, info_text,
-            transform=ax.transAxes,
-            fontsize=INFO_FONT, va="bottom", ha="left",
-            fontfamily="monospace",
-            bbox=dict(facecolor="white", alpha=0.88,
-                      edgecolor="#bbb", boxstyle="round,pad=0.5"),
-            zorder=100)
-
-    # ---- 5. Title & limits --------------------------------------------------
-    if title:
-        ax.set_title(title, fontsize=FONT_SIZE + 2, fontweight="bold", pad=14)
-    else:
-        ax.set_title(
-            f"{type(arch).__name__}  [{arch.num_qubits} ions]",
-            fontsize=FONT_SIZE + 1, fontweight="bold", pad=14)
-    ax.set_aspect("equal")
-    ax.set_facecolor("#FAFBFE")
-    ax.axis("off")
-
-    pad = SPACING * 0.9
-    if all_x and all_y:
-        ax.set_xlim(min(all_x) - pad, max(all_x) + pad)
-        ax.set_ylim(min(all_y) - pad - 0.8, max(all_y) + pad + 1.0)
+    layout = _extract_qccd_layout(arch, ion_sp)
+    _display_trapped_ion_graph(
+        layout, ax, title,
+        show_junctions=show_junctions, show_edges=show_edges,
+        show_ions=show_ions, show_labels=show_labels,
+        highlight_qubits=highlight_qubits, ion_roles=ion_roles,
+    )
 
 
 def _display_generic(arch, fig, ax, title):
@@ -1380,24 +1027,59 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
         return (full[0], full[1]) if full else None
 
     # --- Classify operations -----------------------------------------------
+    # Old-style transport class names from qccd_operations.py
+    _OLD_TRANSPORT_CLASSES = {
+        "Move", "JunctionCrossing", "Split", "Merge",
+        "ReconfigurationStep", "GlobalReconfiguration",
+    }
+
     def _is_transport(op) -> bool:
-        return (type(op).__name__ == "TransportOperation"
-                or hasattr(op, "source_zone"))
+        cls_name = type(op).__name__
+        if cls_name == "TransportOperation" or cls_name in _OLD_TRANSPORT_CLASSES:
+            return True
+        if hasattr(op, "source_zone"):
+            return True
+        # Old-style: Move has ._crossing attribute
+        if hasattr(op, "_crossing"):
+            return True
+        return False
 
     def _op_label(op) -> str:
         cls = type(op).__name__
         if _is_transport(op):
             src = getattr(op, "source_zone", "?")
             tgt = getattr(op, "target_zone", "?")
-            return f"Transport → {tgt}"
+            if tgt != "?":
+                return f"Transport → {tgt}"
+            return f"Transport ({cls})"
         lbl = getattr(op, "label", None) or getattr(op, "name", None) or cls
         return str(lbl)
 
     def _op_qubits(op) -> List[int]:
+        # New-style: qubits, targets, ion_indices
         for attr in ("qubits", "targets", "ion_indices"):
             v = getattr(op, attr, None)
             if v is not None:
                 return list(v)
+        # Old-style: .ions property returns list of Ion objects
+        ions = getattr(op, "ions", None) or getattr(op, "_ions", None)
+        if ions:
+            result = []
+            for ion in ions:
+                # Ion object has .idx attribute
+                idx = getattr(ion, "idx", None)
+                if idx is not None:
+                    result.append(idx)
+                elif isinstance(ion, int):
+                    result.append(ion)
+            if result:
+                return result
+        # Old-style Move: single ._ion attribute
+        single_ion = getattr(op, "_ion", None)
+        if single_ion:
+            idx = getattr(single_ion, "idx", None)
+            if idx is not None:
+                return [idx]
         return []
 
     # --- Pre-compute per-step snapshots of ion positions ---
@@ -1460,15 +1142,32 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
         return False
 
     # --- Classify gate type for laser-beam colouring ---
+    # Class names from qubit_operations.py
+    _OLD_MS_CLASSES = {"TwoQubitMSGate", "MSGate", "TwoQubitGate"}
+    _OLD_1Q_CLASSES = {"OneQubitGate", "XRotation", "YRotation"}
+    _OLD_MEAS_CLASSES = {"Measurement"}
+    _OLD_RESET_CLASSES = {"QubitReset"}
+
     def _gate_kind(op) -> Optional[str]:
         """Return 'ms', 'rotation', 'measure' or None."""
-        # Direct class-based detection (MeasurementOperation/ResetOperation
-        # lack .gate_name / .name attributes)
+        # Direct class-based detection for both old and new styles
         _cls = type(op).__name__
+        # New-style operations
         if _cls == "MeasurementOperation":
             return "measure"
         if _cls == "ResetOperation":
             return "reset"
+        # Operations from qubit_operations.py
+        if _cls in _OLD_MS_CLASSES:
+            return "ms"
+        if _cls in _OLD_1Q_CLASSES:
+            return "rotation"
+        if _cls in _OLD_MEAS_CLASSES:
+            return "measure"
+        if _cls in _OLD_RESET_CLASSES:
+            return "reset"
+        
+        # Name-based detection
         name = (getattr(op, "gate_name", None)
                 or getattr(op, "name", None)
                 or getattr(op, "label", None)
@@ -2045,15 +1744,18 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
         _qg = arch.qccd_graph
 
         # --- Edges (draw first so traps/junctions sit on top) ---
-        for _edge in getattr(_qg, 'edges', getattr(_qg, '_edges', [])):
-            _src_idx = getattr(_edge, 'src', getattr(_edge, 'source', None))
-            _tgt_idx = getattr(_edge, 'tgt', getattr(_edge, 'target', None))
-            if _src_idx is None or _tgt_idx is None:
-                continue
-            _src_node = _qg.nodes.get(_src_idx if isinstance(_src_idx, int) else _src_idx.idx)
-            _tgt_node = _qg.nodes.get(_tgt_idx if isinstance(_tgt_idx, int) else _tgt_idx.idx)
+        # Use crossings dict which contains Crossing objects with .source/.target nodes
+        _seen_pairs = set()
+        for _crossing in _qg.crossings.values():
+            _src_node = _crossing.source
+            _tgt_node = _crossing.target
             if _src_node is None or _tgt_node is None:
                 continue
+            # Avoid drawing duplicate edges
+            _pair = (min(_src_node.idx, _tgt_node.idx), max(_src_node.idx, _tgt_node.idx))
+            if _pair in _seen_pairs:
+                continue
+            _seen_pairs.add(_pair)
             sx, sy = _src_node.position
             tx, ty = _tgt_node.position
             ax_local.plot([sx, tx], [sy, ty],
@@ -2416,6 +2118,34 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
                               edgecolor="#E0C050", boxstyle="round,pad=0.25"),
                     zorder=100)
 
+        # Progress bar showing execution time
+        _total_time_us = sum(_step_duration_us) if _step_duration_us else 0
+        if _total_time_us > 0 and n_ops > 0:
+            # Compute elapsed time up to current step
+            _elapsed_us = sum(_step_duration_us[:op_idx+1]) if op_idx >= 0 else 0
+            _progress = _elapsed_us / _total_time_us
+            _bar_width = 0.30
+            _bar_height = 0.016
+            _bar_x = 0.50
+            _bar_y = 0.015
+            # Background bar
+            ax.add_patch(plt.Rectangle(
+                (_bar_x, _bar_y), _bar_width, _bar_height,
+                transform=ax.transAxes, facecolor="#E0E0E0",
+                edgecolor="#BDBDBD", linewidth=0.8, zorder=99))
+            # Progress fill
+            ax.add_patch(plt.Rectangle(
+                (_bar_x, _bar_y), _bar_width * _progress, _bar_height,
+                transform=ax.transAxes, facecolor="#4CAF50",
+                edgecolor="none", zorder=100))
+            # Time label
+            _time_str = f"{_elapsed_us:.0f} / {_total_time_us:.0f} µs"
+            ax.text(_bar_x + _bar_width / 2, _bar_y + _bar_height + 0.008,
+                    _time_str,
+                    transform=ax.transAxes,
+                    fontsize=7, ha="center", va="bottom",
+                    fontfamily="monospace", color="#424242", zorder=100)
+
         # Gate-type legend (right side)
         legend_y = 0.02
         for lbl, lc in [("MS/2Q", LASER_MS),
@@ -2437,19 +2167,19 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
                               fontweight='bold', pad=4)
 
             # Determine which stim line to highlight
+            # Use direct gate count mapping for better alignment
             _cur_stim_line = 0
             if frame > 0:
+                # Count how many gate steps we've completed
                 _n_gates_done = sum(
                     1 for _gsi in _gate_step_indices
                     if _gsi <= op_idx + 1
                 )
                 _n_stim_gates = len(_stim_gate_line_idxs)
                 if _n_stim_gates > 0 and _n_gates_done > 0:
-                    _prog = min(1.0, _n_gates_done / max(1, len(_gate_step_indices)))
-                    _sg_idx2 = min(
-                        _n_stim_gates - 1,
-                        int(_prog * _n_stim_gates))
-                    _cur_stim_line = _stim_gate_line_idxs[_sg_idx2]
+                    # Direct index mapping: gate N → stim gate line N
+                    _sg_idx = min(_n_gates_done - 1, _n_stim_gates - 1)
+                    _cur_stim_line = _stim_gate_line_idxs[_sg_idx]
 
             # Show a scrolling window centred on current line
             _window = min(25, len(_stim_lines))

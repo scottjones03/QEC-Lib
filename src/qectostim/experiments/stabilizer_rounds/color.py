@@ -40,9 +40,8 @@ class ColorCodeStabilizerRoundBuilder(CSSStabilizerRoundBuilder):
         data_offset: int = 0,
         ancilla_offset: Optional[int] = None,
         measurement_basis: str = "Z",
-        x_stabilizer_mode: str = "cz",
     ):
-        super().__init__(code, ctx, block_name, data_offset, ancilla_offset, measurement_basis, x_stabilizer_mode=x_stabilizer_mode)
+        super().__init__(code, ctx, block_name, data_offset, ancilla_offset, measurement_basis)
         
         # Validate and cache color metadata
         if not self._meta.get("is_chromobius_compatible", False):

@@ -217,11 +217,11 @@ class ConcatenatedCSSMemoryExperiment(CSSMemoryExperiment):
         # Emit qubit coordinates
         builder.emit_qubit_coords(c)
         
-        # Reset all qubits
-        builder.emit_reset_all(c)
+        # Reset qubits — skip data reset for X-basis (RX handles it atomically)
+        initial_state = "+" if basis == "X" else "0"
+        builder.emit_reset_all(c, skip_data=(basis == "X"))
         
         # Prepare logical state
-        initial_state = "+" if basis == "X" else "0"
         builder.emit_prepare_logical_state(c, state=initial_state, logical_idx=self.logical_qubit)
         
         if self.d_inner > 1:

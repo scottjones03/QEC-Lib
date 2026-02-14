@@ -44,7 +44,6 @@ from qectostim.experiments.hardware_simulation.trapped_ion.compiler import (
     TrappedIonCompiler,
     WISECompiler,
     QCCDCompiler,
-    LinearChainCompiler,
     AugmentedGridCompiler,
     NetworkedGridCompiler,
     DecomposedGate,
@@ -66,7 +65,7 @@ from qectostim.experiments.hardware_simulation.trapped_ion.execution import (
     DEFAULT_GATE_TIMES,
     DEFAULT_FIDELITIES,
 )
-from qectostim.experiments.hardware_simulation.trapped_ion.gates import (
+from qectostim.experiments.hardware_simulation.trapped_ion.operations import (
     TrappedIonGateSet,
 )
 from qectostim.experiments.hardware_simulation.trapped_ion.architecture import (
@@ -127,7 +126,8 @@ from qectostim.experiments.hardware_simulation.trapped_ion.operations import (
     QCCDOperationBase,
     TransportOperation,
     CrystalOperation,
-    QubitOperation,
+    QubitGate,
+    QubitGateBase,
     OperationResult,
     # Transport operations
     Split,
@@ -139,6 +139,8 @@ from qectostim.experiments.hardware_simulation.trapped_ion.operations import (
     SympatheticCooling,
     # Qubit operations
     SingleQubitGate,
+    XRotation,
+    YRotation,
     MSGate,
     GateSwap,
     Measurement,
@@ -153,50 +155,33 @@ from qectostim.experiments.hardware_simulation.trapped_ion.operations import (
     create_single_qubit_gate,
     create_measurement,
 )
-from qectostim.experiments.hardware_simulation.trapped_ion.scheduling import (
-    # Schedulers
-    WISEBatchScheduler,
-    WISECriticalPathScheduler,
-    BarrierAwareScheduler,
-    # Scheduling functions
-    schedule_operations_wise,
-    schedule_operations_with_barriers,
-    build_happens_before_dag,
-    # Dephasing
-    calculate_dephasing_fidelity,
-    calculate_dephasing_from_idling,
-    # Data structures
-    ParallelOperationGroup,
-    # Constants
-    T2_DEPHASING_TIME,
-)
+# ── Routing (old code, copied verbatim from old/) ────────────
 from qectostim.experiments.hardware_simulation.trapped_ion.routing import (
-    # SAT Encoder
-    WISESATEncoder,
-    WISESATContext,
-    # Routers
-    WiseSatRouter,
-    WisePatchRouter,
-    GreedyIonRouter,
-    # Compilation Pass
-    WISERoutingPass,
-    # Cost Model
-    WISECostModel,
-    # Configuration
+    # Config
     WISERoutingConfig,
-    # Data structures
-    GridLayout,
-    RoutingPass,
-    RoutingSchedule,
-    GatePairRequirement,
+    RoutingProgress,
+    ProgressCallback,
+    make_tqdm_progress_callback,
     # Utilities
-    compute_target_positions,
-)
-from qectostim.experiments.hardware_simulation.trapped_ion.clustering import (
-    regular_partition,
-    arrange_clusters,
-    hill_climb_on_arrange_clusters,
-    merge_clusters_to_limit,
+    old_ops_to_transport_list,
+    # WISE SAT routing
+    ionRoutingWISEArch,
+    # Greedy junction routing (augmented grid)
+    ionRouting,
+    # Qubit-to-ion mapping
+    regularPartition,
+    arrangeClusters,
+    hillClimbOnArrangeClusters,
+    # Scheduling / parallelisation
+    paralleliseOperations,
+    paralleliseOperationsSimple,
+    paralleliseOperationsWithBarriers,
+    calculateDephasingFromIdling,
+    calculateDephasingFidelity,
+    NoFeasibleLayoutError,
+    ReconfigurationPlanner,
+    GlobalReconfigurations,  # Alias for backwards compat
+    ParallelOperation,
 )
 from qectostim.experiments.hardware_simulation.trapped_ion.viz import (
     display_architecture,
@@ -216,7 +201,6 @@ __all__ = [
     "TrappedIonCompiler",
     "WISECompiler",
     "QCCDCompiler",
-    "LinearChainCompiler",
     "AugmentedGridCompiler",
     "NetworkedGridCompiler",
     "DecomposedGate",
@@ -266,7 +250,8 @@ __all__ = [
     "QCCDOperationBase",
     "TransportOperation",
     "CrystalOperation",
-    "QubitOperation",
+    "QubitGate",
+    "QubitGateBase",
     "OperationResult",
     # Operations - Transport
     "Split",
@@ -278,6 +263,8 @@ __all__ = [
     "SympatheticCooling",
     # Operations - Quantum
     "SingleQubitGate",
+    "XRotation",
+    "YRotation",
     "MSGate",
     "GateSwap",
     "Measurement",
@@ -291,43 +278,32 @@ __all__ = [
     "create_ms_gate",
     "create_single_qubit_gate",
     "create_measurement",
-    # Scheduling - Schedulers
-    "WISEBatchScheduler",
-    "WISECriticalPathScheduler",
-    "BarrierAwareScheduler",
-    # Scheduling - Functions
-    "schedule_operations_wise",
-    "schedule_operations_with_barriers",
-    "build_happens_before_dag",
-    "calculate_dephasing_fidelity",
-    "calculate_dephasing_from_idling",
-    # Scheduling - Data structures
-    "ParallelOperationGroup",
-    "T2_DEPHASING_TIME",
-    # Routing - SAT Encoder
-    "WISESATEncoder",
-    "WISESATContext",
-    # Routing - Routers
-    "WiseSatRouter",
-    "WisePatchRouter",
-    "GreedyIonRouter",
-    # Routing - Compilation Pass
-    "WISERoutingPass",
-    # Routing - Cost Model
-    "WISECostModel",
     # Routing - Config
     "WISERoutingConfig",
-    # Routing - Data structures
-    "GridLayout",
-    "RoutingPass",
-    "RoutingSchedule",
-    "GatePairRequirement",
-    "compute_target_positions",
-    # Clustering
-    "regular_partition",
-    "arrange_clusters",
-    "hill_climb_on_arrange_clusters",
-    "merge_clusters_to_limit",
+    "RoutingProgress",
+    "ProgressCallback",
+    "make_tqdm_progress_callback",
+    # Routing - Utilities
+    "old_ops_to_transport_list",
+    # Routing - WISE SAT
+    "ionRoutingWISEArch",
+    # Routing - Greedy junction
+    "ionRouting",
+    # Routing - Qubit mapping
+    "regularPartition",
+    "arrangeClusters",
+    "hillClimbOnArrangeClusters",
+    # Routing - Scheduling
+    "paralleliseOperations",
+    "paralleliseOperationsSimple",
+    "paralleliseOperationsWithBarriers",
+    "calculateDephasingFromIdling",
+    "calculateDephasingFidelity",
+    # Routing - Operation types
+    "NoFeasibleLayoutError",
+    "ReconfigurationPlanner",
+    "GlobalReconfigurations",
+    "ParallelOperation",
     # Visualization
     "display_architecture",
     "animate_transport",

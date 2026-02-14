@@ -117,10 +117,10 @@ class TrappedIonSimulator(HardwareSimulator):
     def _create_default_compiler(self) -> "TrappedIonCompiler":
         """Create default trapped ion compiler."""
         from qectostim.experiments.hardware_simulation.trapped_ion.compiler import (
-            LinearChainCompiler,
+            QCCDCompiler,
         )
-        # Default to linear chain compiler (simpler, works for any architecture)
-        return LinearChainCompiler(self.architecture)
+        # Default to QCCD compiler
+        return QCCDCompiler(self.architecture)
     
     def apply_hardware_noise(self, circuit: stim.Circuit) -> stim.Circuit:
         """Apply timing-aware trapped ion noise.

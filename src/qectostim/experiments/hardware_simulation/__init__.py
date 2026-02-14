@@ -84,10 +84,8 @@ from qectostim.experiments.hardware_simulation.base import HardwareSimulator
 from qectostim.experiments.hardware_simulation.trapped_ion import (
     TrappedIonArchitecture,
     QCCDArchitecture,
-    LinearChainArchitecture,
     TrappedIonCompiler,
     QCCDCompiler,
-    LinearChainCompiler,
     TrappedIonSimulator,
     TrappedIonNoiseModel,
     TrappedIonExperiment,
@@ -156,16 +154,14 @@ _PLATFORM_REGISTRY: Dict[str, PlatformInfo] = {
         architecture_classes=[
             TrappedIonArchitecture,
             QCCDArchitecture,
-            LinearChainArchitecture,
         ],
         compiler_classes=[
             TrappedIonCompiler,
             QCCDCompiler,
-            LinearChainCompiler,
         ],
         simulator_class=TrappedIonSimulator,
         noise_model_class=TrappedIonNoiseModel,
-        description="Trapped ion quantum computers (QCCD, linear chain)",
+        description="Trapped ion quantum computers (QCCD, WISE, augmented grid)",
     ),
     "superconducting": PlatformInfo(
         name="superconducting",
@@ -356,10 +352,8 @@ __all__ = [
     # Trapped Ion
     "TrappedIonArchitecture",
     "QCCDArchitecture",
-    "LinearChainArchitecture",
     "TrappedIonCompiler",
     "QCCDCompiler",
-    "LinearChainCompiler",
     "TrappedIonSimulator",
     "TrappedIonNoiseModel",
     "TrappedIonExperiment",

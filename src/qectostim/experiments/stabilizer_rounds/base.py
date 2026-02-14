@@ -260,8 +260,18 @@ class BaseStabilizerRoundBuilder:
                 global_idx = self.data_offset + local_idx
                 circuit.append("QUBIT_COORDS", [global_idx], [float(coord[0]), float(coord[1])])
     
-    def emit_reset_all(self, circuit: stim.Circuit) -> None:
-        """Reset all data and ancilla qubits."""
+    def emit_reset_all(self, circuit: stim.Circuit, *, skip_data: bool = False) -> None:
+        """Reset all data and ancilla qubits.
+
+        Parameters
+        ----------
+        circuit : stim.Circuit
+            Target circuit.
+        skip_data : bool
+            If ``True``, only reset ancilla (and metacheck) qubits.
+            Use when the caller will prepare data qubits with ``RX``
+            so that the redundant ``R`` → ``RX`` is avoided.
+        """
         raise NotImplementedError("Subclass must implement emit_reset_all")
     
     def emit_prepare_logical_state(

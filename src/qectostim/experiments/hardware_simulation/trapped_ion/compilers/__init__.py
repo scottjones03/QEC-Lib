@@ -5,14 +5,12 @@ Trapped ion compilers package.
 Provides architecture-specific compilers for different trapped ion platforms:
 - TrappedIonCompiler: Abstract base with shared gate decompositions
 - WISECompiler: WISE grid architecture with SAT-based routing
-- LinearChainCompiler: Single linear chain, all-to-all connectivity
 - QCCDCompiler: General QCCD with split/merge/shuttle routing
 
 Example
 -------
 >>> from qectostim.experiments.hardware_simulation.trapped_ion.compilers import (
 ...     WISECompiler,
-...     LinearChainCompiler,
 ... )
 >>> compiler = WISECompiler(architecture, routing_config=config)
 >>> result = compiler.compile(circuit)
@@ -28,9 +26,6 @@ from qectostim.experiments.hardware_simulation.trapped_ion.compilers.base import
 )
 from qectostim.experiments.hardware_simulation.trapped_ion.compilers.wise import (
     WISECompiler,
-)
-from qectostim.experiments.hardware_simulation.trapped_ion.compilers.linear import (
-    LinearChainCompiler,
 )
 from qectostim.experiments.hardware_simulation.trapped_ion.compilers.qccd import (
     QCCDCompiler,
@@ -53,7 +48,6 @@ __all__ = [
     "TrappedIonCompiler",
     # Concrete compilers
     "WISECompiler",
-    "LinearChainCompiler",
     "QCCDCompiler",
     "AugmentedGridCompiler",
     "NetworkedGridCompiler",

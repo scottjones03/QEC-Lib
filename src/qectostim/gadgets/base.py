@@ -1237,32 +1237,6 @@ class Gadget(ABC):
         """
         return False
     
-    def get_x_stabilizer_mode(self) -> str:
-        """
-        Return the gate type to use for X stabilizer measurement.
-        
-        For most gadgets, CZ-based X stabilizer measurement works correctly.
-        However, teleportation gadgets require CX (CNOT) for X stabilizers
-        to match the ground truth and ensure correct backward error propagation.
-        
-        The modes are:
-        - "cz": Use H-CZ-H circuit (default, symmetric, good for memory experiments)
-        - "cx": Use H-CX-H circuit (required for teleportation gadgets)
-        
-        The difference is in backward Pauli propagation:
-        - CZ: X_syndrome → X_syndrome ⊗ Z_data (couples to data Z)
-        - CX: X_syndrome → X_syndrome (stays local to syndrome)
-        
-        For teleportation, CZ would make X anchors non-deterministic because
-        the Z_data term propagates through H to become X_data on |0⟩.
-        
-        Returns
-        -------
-        str
-            "cz" or "cx"
-        """
-        return "cz"  # Default for most gadgets
-    
     def get_observable_config(self) -> ObservableConfig:
         """
         Return configuration for how observables should be constructed.

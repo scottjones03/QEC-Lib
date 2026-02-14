@@ -8,13 +8,11 @@ compilers subpackage:
 
 >>> from qectostim.experiments.hardware_simulation.trapped_ion.compilers import (
 ...     WISECompiler,
-...     LinearChainCompiler,
 ... )
 
 Architecture hierarchy:
 - TrappedIonCompiler (ABC): Technology-specific base (MS gates, ion physics)
   - WISECompiler: WISE grid architecture with SAT-based routing
-  - LinearChainCompiler: Single linear chain, all-to-all connectivity
   - QCCDCompiler: General QCCD with split/merge/shuttle routing
 
 Each concrete compiler handles the specific constraints of its architecture.
@@ -34,7 +32,6 @@ from qectostim.experiments.hardware_simulation.trapped_ion.compilers import (
     TrappedIonCompiler,
     # Concrete compilers
     WISECompiler,
-    LinearChainCompiler,
     QCCDCompiler,
     AugmentedGridCompiler,
     NetworkedGridCompiler,
@@ -51,7 +48,6 @@ __all__ = [
     "TrappedIonCompiler",
     # Concrete compilers
     "WISECompiler",
-    "LinearChainCompiler",
     "QCCDCompiler",
     "AugmentedGridCompiler",
     "NetworkedGridCompiler",

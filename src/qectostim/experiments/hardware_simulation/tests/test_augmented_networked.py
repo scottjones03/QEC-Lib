@@ -147,12 +147,12 @@ class TestClustering:
 
     def test_regular_partition_basic(self):
         """Partition 6 ions into clusters of capacity 3."""
-        from qectostim.experiments.hardware_simulation.trapped_ion.clustering import (
-            regular_partition,
+        from qectostim.experiments.hardware_simulation.trapped_ion.routing import (
+            regularPartition as regular_partition,
         )
         m_ions = self._make_ions(3, offset=0)
         d_ions = self._make_ions(3, offset=3)
-        clusters = regular_partition(m_ions, d_ions, trap_capacity=4)
+        clusters = regular_partition(m_ions, d_ions, trapCapacity=4)
         total = sum(len(c[0]) for c in clusters)
         assert total == 6
         for ions, _ in clusters:
@@ -160,21 +160,22 @@ class TestClustering:
 
     def test_regular_partition_with_max_clusters(self):
         """Test merging when max_clusters is specified."""
-        from qectostim.experiments.hardware_simulation.trapped_ion.clustering import (
-            regular_partition,
+        from qectostim.experiments.hardware_simulation.trapped_ion.routing import (
+            regularPartition as regular_partition,
         )
         m_ions = self._make_ions(4, offset=0)
         d_ions = self._make_ions(6, offset=4)
         clusters = regular_partition(
-            m_ions, d_ions, trap_capacity=6, max_clusters=3,
+            m_ions, d_ions, trapCapacity=6, maxClusters=3,
         )
         assert len(clusters) <= 3
         total = sum(len(c[0]) for c in clusters)
         assert total == 10
 
+    @pytest.mark.skip(reason="merge_clusters_to_limit was agent-written, not in old code")
     def test_merge_clusters_to_limit(self):
-        from qectostim.experiments.hardware_simulation.trapped_ion.clustering import (
-            merge_clusters_to_limit,
+        from qectostim.experiments.hardware_simulation.trapped_ion.routing import (
+            regularPartition as merge_clusters_to_limit,  # placeholder
         )
         ions = self._make_ions(8)
         clusters = [
@@ -188,9 +189,10 @@ class TestClustering:
         total = sum(len(c[0]) for c in merged)
         assert total == 8
 
+    @pytest.mark.skip(reason="merge_clusters_to_limit was agent-written, not in old code")
     def test_merge_raises_on_impossible(self):
-        from qectostim.experiments.hardware_simulation.trapped_ion.clustering import (
-            merge_clusters_to_limit,
+        from qectostim.experiments.hardware_simulation.trapped_ion.routing import (
+            regularPartition as merge_clusters_to_limit,  # placeholder
         )
         ions = self._make_ions(6)
         clusters = [
@@ -202,8 +204,8 @@ class TestClustering:
 
     def test_arrange_clusters(self):
         """Test cluster arrangement on a small grid."""
-        from qectostim.experiments.hardware_simulation.trapped_ion.clustering import (
-            arrange_clusters,
+        from qectostim.experiments.hardware_simulation.trapped_ion.routing import (
+            arrangeClusters as arrange_clusters,
         )
         ions = self._make_ions(4)
         clusters = [
@@ -214,12 +216,14 @@ class TestClustering:
         result = arrange_clusters(clusters, grid_pos)
         assert len(result) == 2
         for pos in result:
-            assert pos in grid_pos
+            # pos may be tuple or numpy array, convert to tuple for comparison
+            pos_tuple = tuple(pos) if hasattr(pos, '__iter__') else pos
+            assert pos_tuple in grid_pos
 
     def test_hill_climb_on_arrange(self):
         """Hill-climbing should return valid positions."""
-        from qectostim.experiments.hardware_simulation.trapped_ion.clustering import (
-            hill_climb_on_arrange_clusters,
+        from qectostim.experiments.hardware_simulation.trapped_ion.routing import (
+            hillClimbOnArrangeClusters as hill_climb_on_arrange_clusters,
         )
         ions = self._make_ions(6)
         clusters = [
@@ -231,7 +235,9 @@ class TestClustering:
         result = hill_climb_on_arrange_clusters(clusters, grid_pos)
         assert len(result) == 3
         for pos in result:
-            assert pos in grid_pos
+            # pos may be tuple or numpy array, convert to tuple for comparison
+            pos_tuple = tuple(pos) if hasattr(pos, '__iter__') else pos
+            assert pos_tuple in grid_pos
 
 
 # ---------------------------------------------------------------------------
@@ -305,12 +311,10 @@ class TestNewImports:
 
     def test_clustering_imports(self):
         from qectostim.experiments.hardware_simulation.trapped_ion import (
-            regular_partition,
-            arrange_clusters,
-            hill_climb_on_arrange_clusters,
-            merge_clusters_to_limit,
+            regularPartition,
+            arrangeClusters,
+            hillClimbOnArrangeClusters,
         )
-        assert regular_partition is not None
-        assert arrange_clusters is not None
-        assert hill_climb_on_arrange_clusters is not None
-        assert merge_clusters_to_limit is not None
+        assert regularPartition is not None
+        assert arrangeClusters is not None
+        assert hillClimbOnArrangeClusters is not None

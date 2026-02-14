@@ -111,9 +111,20 @@ class GeneralStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
                 global_idx = self.data_offset + local_idx
                 circuit.append("QUBIT_COORDS", [global_idx], [float(coord[0]), float(coord[1])])
     
-    def emit_reset_all(self, circuit: stim.Circuit) -> None:
-        """Reset all data and ancilla qubits."""
-        all_qubits = self.data_qubits + self.ancilla_qubits
+    def emit_reset_all(self, circuit: stim.Circuit, *, skip_data: bool = False) -> None:
+        """Reset data and ancilla qubits.
+
+        Parameters
+        ----------
+        circuit : stim.Circuit
+            Target circuit.
+        skip_data : bool
+            If ``True``, only reset ancilla qubits (data prepared by ``RX``).
+        """
+        if skip_data:
+            all_qubits = self.ancilla_qubits
+        else:
+            all_qubits = self.data_qubits + self.ancilla_qubits
         if all_qubits:
             circuit.append("R", all_qubits)
     
@@ -150,9 +161,9 @@ class GeneralStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
                     circuit.append("X", [self.data_offset + q])
         
         elif state in ("+", "-"):
-            # X-basis eigenstate - apply H to all data qubits
-            # Then apply Z to logical X support for |-⟩
-            circuit.append("H", self.data_qubits)
+            # RX atomically prepares |+⟩ (no H gate needed)
+            circuit.append("RX", self.data_qubits)
+            # Z|+⟩ = |−⟩  →  apply Z *after* RX for |-⟩
             if state == "-" and logical_x is not None:
                 support = _parse_pauli_support(logical_x, ('X', 'Y', 'Z'), self._n)
                 for q in support:

@@ -54,53 +54,95 @@ class AugmentedGridCompiler(QCCDCompiler):
     def map_qubits(self, circuit: NativeCircuit) -> MappedCircuit:
         """Map logical qubits to physical ions via clustering + Hungarian placement.
 
-        Falls back to sequential mapping if the architecture is not an
-        :class:`AugmentedGridArchitecture`.
+        Replicates the old ``processCircuitAugmentedGrid`` pipeline:
+
+        1. Create ``Ion`` objects with proper **D** / **M** labels from
+           the circuit's ``QUBIT_COORDS``.
+        2. Cluster with ``regularPartition(isWISEArch=False)`` so each
+           trap keeps one routing-headroom slot free.
+        3. Place clusters on the grid via ``hillClimbOnArrangeClusters``.
+        4. Rebuild the architecture's traps with the clustered ions.
+        5. Return a mapping from logical qubit index → physical ion
+           position in the new ``qubit_ions`` list.
+
+        Falls back to the parent ``QCCDCompiler.map_qubits`` if the
+        architecture is not an :class:`AugmentedGridArchitecture`.
         """
         from qectostim.experiments.hardware_simulation.trapped_ion.architecture import (
             AugmentedGridArchitecture,
             Ion,
         )
-        from qectostim.experiments.hardware_simulation.trapped_ion.clustering import (
-            regular_partition,
-            hill_climb_on_arrange_clusters,
+        from qectostim.experiments.hardware_simulation.trapped_ion.routing import (
+            regularPartition as regular_partition,
+            hillClimbOnArrangeClusters as hill_climb_on_arrange_clusters,
         )
 
         arch = self.architecture
         if not isinstance(arch, AugmentedGridArchitecture):
             return super().map_qubits(circuit)
 
-        # Build ions for each logical qubit using positions from the architecture.
-        # Ions sharing a trap have identical coordinates; give each a unique
-        # micro-offset (< 0.01) so the BSP clustering can distinguish them.
-        all_ions = arch.qccd_graph.ions
-        ion_list = sorted(all_ions.values(), key=lambda i: i.idx)
+        # ── 1. Derive D/M ions from the circuit ─────────────────────────
+        # Extract QUBIT_COORDS from the underlying stim circuit.
+        stim_src = getattr(circuit, "stim_source", None) or circuit
+        qubit_coords: Dict[int, tuple] = {}
+        if hasattr(stim_src, "flattened"):
+            for inst in stim_src.flattened():
+                if inst.name == "QUBIT_COORDS":
+                    args = inst.gate_args_copy()
+                    for t in inst.targets_copy():
+                        qubit_coords[t.value] = tuple(args)
 
-        _seen_pos: Dict[tuple, int] = {}
-        for ion in ion_list:
-            key = tuple(ion.position)
-            slot = _seen_pos.get(key, 0)
-            _seen_pos[key] = slot + 1
-            if slot > 0:
-                eps = slot * 0.001
-                ion.position = (ion.position[0] + eps, ion.position[1] + eps)
-
-        # Split into data (first n_logical) and measurement (remaining).
+        # Determine which logical qubits are data vs measurement.
+        # The old code uses coordinate parity: x-coord odd → Data,
+        # x-coord even → Measurement.  We also accept an explicit
+        # data_qubit_indices from QEC metadata when available.
         n_logical = circuit.num_qubits
-        data_ions = ion_list[:n_logical]
-        measurement_ions = ion_list[n_logical:]
+        meta = getattr(circuit, "qec_metadata", None)
+        if meta and hasattr(meta, "data_qubit_indices") and meta.data_qubit_indices:
+            data_set = set(meta.data_qubit_indices)
+        else:
+            # Fallback: derive from QUBIT_COORDS parity (old convention)
+            data_set = set()
+            for q in range(n_logical):
+                coords = qubit_coords.get(q)
+                if coords is not None:
+                    # Old convention: odd x-coordinate → data qubit
+                    if int(coords[0]) % 2 != 0:
+                        data_set.add(q)
+                else:
+                    # No coords — treat first n qubits as data
+                    # (rotated surface code: n_data = d*d)
+                    pass
+            if not data_set:
+                # Last resort: assume first half are data
+                import math
+                d = int(math.sqrt(n_logical))
+                n_data_guess = d * d if d * d < n_logical else n_logical // 2
+                data_set = set(range(n_data_guess))
 
-        # Cluster — limit to # available traps so placement can succeed
+        data_ions: List[Ion] = []
+        measurement_ions: List[Ion] = []
+        logical_to_ion: Dict[int, Ion] = {}
+
+        for q in range(n_logical):
+            coords = qubit_coords.get(q, (0.0, 0.0))
+            if q in data_set:
+                ion = Ion(idx=q, label="D", position=coords)
+                data_ions.append(ion)
+            else:
+                ion = Ion(idx=q, label="M", position=coords)
+                measurement_ions.append(ion)
+            logical_to_ion[q] = ion
+
+        # ── 2. Cluster with routing headroom ─────────────────────────────
         all_grid_pos = list(arch.traps_dict.keys())
         clusters = regular_partition(
             measurement_ions, data_ions, arch.ions_per_trap,
-            max_clusters=len(all_grid_pos),
+            maxClusters=len(all_grid_pos),
+            isWISEArch=False,   # AugGrid: eff_capacity = k-1
         )
 
-        # Build available grid positions from the architecture traps
-        all_grid_pos = list(arch.traps_dict.keys())
-
-        # Place clusters on grid
+        # ── 3. Place clusters on the grid ────────────────────────────────
         if clusters and all_grid_pos:
             grid_positions = hill_climb_on_arrange_clusters(
                 clusters, all_grid_pos,
@@ -108,21 +150,28 @@ class AugmentedGridCompiler(QCCDCompiler):
         else:
             grid_positions = []
 
-        # Build mapping: cluster_idx → grid_pos → physical trap → ion indices
-        mapping = QubitMapping()
-        mapped_ions = set()
-        for cidx, (col, row) in enumerate(grid_positions):
+        # ── 4. Build initial_ions dict and rebuild architecture ──────────
+        trap_for_grid: Dict[tuple, List[Ion]] = {}
+        for cidx, grid_pos in enumerate(grid_positions):
             if cidx < len(clusters):
-                cluster_ions = clusters[cidx][0]
-                for ion in cluster_ions:
-                    if ion.idx not in mapped_ions:
-                        mapping.assign(ion.idx, ion.idx)
-                        mapped_ions.add(ion.idx)
+                gkey = (int(grid_pos[0]), int(grid_pos[1]))
+                trap_for_grid[gkey] = list(clusters[cidx][0])
 
-        # Map any remaining
-        for logical_q in range(circuit.num_qubits):
-            if logical_q not in mapped_ions:
-                mapping.assign(logical_q, logical_q)
+        # Rebuild the architecture's topology with the clustered ions.
+        # _build_grid_topology resets _qccd_graph, _traps_dict, etc.
+        arch._build_grid_topology(initial_ions=trap_for_grid)
+
+        # ── 5. Build logical → physical mapping ─────────────────────────
+        # After rebuild, qubit_ions is the new ordered list.
+        # Walk the traps to find each ion and map logical→physical.
+        mapping = QubitMapping()
+        qi = arch.qccd_graph.qubit_ions  # new ordered list
+        ion_obj_to_phys = {id(ion): pidx for pidx, ion in enumerate(qi)}
+
+        for lq, ion in logical_to_ion.items():
+            phys = ion_obj_to_phys.get(id(ion))
+            if phys is not None:
+                mapping.assign(lq, phys)
 
         return MappedCircuit(
             native_circuit=circuit,

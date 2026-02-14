@@ -59,9 +59,9 @@ class NetworkedGridCompiler(QCCDCompiler):
             NetworkedGridArchitecture,
             Ion,
         )
-        from qectostim.experiments.hardware_simulation.trapped_ion.clustering import (
-            regular_partition,
-            arrange_clusters,
+        from qectostim.experiments.hardware_simulation.trapped_ion.routing import (
+            regularPartition as regular_partition,
+            arrangeClusters as arrange_clusters,
         )
 
         arch = self.architecture

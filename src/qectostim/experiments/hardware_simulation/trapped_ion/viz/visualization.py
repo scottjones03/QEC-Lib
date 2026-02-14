@@ -143,7 +143,7 @@ _ROLE_COLORS: Dict[str, str] = {
 _ROLE_LEGEND: List[Tuple[str, str, str]] = [
     ("D", "Data qubit", DATA_COLOR),
     ("M", "Ancilla / Meas", ANCILLA_COLOR),
-    ("P", "Spectator", SPECTATOR_COLOR),
+    ("P", "Placeholder (unused)", SPECTATOR_COLOR),
     ("C", "Cooling ion", COOLING_COLOR),
 ]
 
@@ -812,13 +812,243 @@ def _highlight_ions(ax, pos, qubit_indices):
 
 
 # =============================================================================
+# Stim Timeslice SVG — Parser & Renderer
+# =============================================================================
+
+def _parse_stim_timeslice_svg(svg_string: str) -> dict:
+    """Parse a stim ``diagram('timeslice-svg')`` SVG string.
+
+    Returns a dict with lists of drawing primitives:
+      circles  – (cx, cy, r, fill, stroke)
+      rects    – (x, y, w, h, fill, stroke)
+      texts    – (x, y, text, font_size, fill)
+      paths    – (d, stroke, stroke_width, fill)
+      viewBox  – (min_x, min_y, width, height)
+    """
+    import re
+    data: dict = {'circles': [], 'rects': [], 'texts': [],
+                  'paths': [], 'viewBox': (0, 0, 100, 100)}
+
+    # viewBox
+    vb = re.search(r'viewBox\s*=\s*"([^"]+)"', svg_string)
+    if vb:
+        parts = vb.group(1).split()
+        if len(parts) == 4:
+            data['viewBox'] = tuple(float(p) for p in parts)
+
+    # Circles
+    for m in re.finditer(
+            r'<circle[^>]*?'
+            r'cx\s*=\s*"([^"]+)"[^>]*?'
+            r'cy\s*=\s*"([^"]+)"[^>]*?'
+            r'r\s*=\s*"([^"]+)"', svg_string):
+        cx, cy, r = float(m.group(1)), float(m.group(2)), float(m.group(3))
+        fill = 'black'
+        stroke = 'none'
+        fm = re.search(r'fill\s*=\s*"([^"]+)"', m.group(0))
+        sm = re.search(r'stroke\s*=\s*"([^"]+)"', m.group(0))
+        if fm:
+            fill = fm.group(1)
+        if sm:
+            stroke = sm.group(1)
+        data['circles'].append((cx, cy, r, fill, stroke))
+
+    # Rects
+    for m in re.finditer(
+            r'<rect[^>]*?'
+            r'x\s*=\s*"([^"]+)"[^>]*?'
+            r'y\s*=\s*"([^"]+)"[^>]*?'
+            r'width\s*=\s*"([^"]+)"[^>]*?'
+            r'height\s*=\s*"([^"]+)"', svg_string):
+        x, y = float(m.group(1)), float(m.group(2))
+        w, h = float(m.group(3)), float(m.group(4))
+        fill = 'none'
+        stroke = 'none'
+        fm = re.search(r'fill\s*=\s*"([^"]+)"', m.group(0))
+        sm = re.search(r'stroke\s*=\s*"([^"]+)"', m.group(0))
+        if fm:
+            fill = fm.group(1)
+        if sm:
+            stroke = sm.group(1)
+        data['rects'].append((x, y, w, h, fill, stroke))
+
+    # Texts
+    for m in re.finditer(
+            r'<text[^>]*?'
+            r'x\s*=\s*"([^"]+)"[^>]*?'
+            r'y\s*=\s*"([^"]+)"[^>]*?'
+            r'font-size\s*=\s*"([^"]+)"[^>]*?'
+            r'(?:fill\s*=\s*"([^"]+)")?[^>]*>'
+            r'([^<]*)</text>', svg_string):
+        tx, ty = float(m.group(1)), float(m.group(2))
+        fs = float(m.group(3))
+        fill = m.group(4) or 'black'
+        txt = m.group(5).strip()
+        if txt:
+            data['texts'].append((tx, ty, txt, fs, fill))
+
+    # Paths
+    for m in re.finditer(
+            r'<path[^>]*?d\s*=\s*"([^"]+)"', svg_string):
+        d = m.group(1)
+        stroke = 'black'
+        sw = 1.0
+        fill = 'none'
+        sm = re.search(r'stroke\s*=\s*"([^"]+)"', m.group(0))
+        wm = re.search(r'stroke-width\s*=\s*"([^"]+)"', m.group(0))
+        fm = re.search(r'fill\s*=\s*"([^"]+)"', m.group(0))
+        if sm:
+            stroke = sm.group(1)
+        if wm:
+            sw = float(wm.group(1))
+        if fm:
+            fill = fm.group(1)
+        data['paths'].append((d, stroke, sw, fill))
+
+    return data
+
+
+def _draw_stim_svg(ax_local, svg_data: dict,
+                   title: str = 'Timeslice') -> None:
+    """Render parsed SVG primitives onto a matplotlib axes.
+
+    Uses axes-fraction coordinates so the drawing scales to whatever
+    panel size GridSpec assigns.
+    """
+    from matplotlib.patches import FancyBboxPatch as _FBP
+    ax_local.clear()
+    ax_local.set_facecolor('#FAFBFE')
+    ax_local.axis('off')
+
+    vb = svg_data['viewBox']
+    vb_x, vb_y, vb_w, vb_h = vb
+    margin = 0.06
+
+    span = 1.0 - 2 * margin
+    # Aspect-ratio-aware: scale to fit the larger dimension
+    scale_x = span / max(vb_w, 1)
+    scale_y = span / max(vb_h, 1)
+    scale = min(scale_x, scale_y)
+    # Centre the drawing in the available space
+    _off_x = margin + (span - vb_w * scale) / 2
+    _off_y = margin + (span - vb_h * scale) / 2
+
+    def _tx(sx):
+        return _off_x + (sx - vb_x) * scale
+
+    def _ty(sy):
+        return 1.0 - _off_y - (sy - vb_y) * scale  # Y flipped
+
+    ax_local.set_title(title, fontsize=11, fontweight='bold', pad=6)
+
+    # --- Draw rectangles (gate boxes) ---
+    # Normalise: use fixed visual size for gate boxes, position by centre
+    _gate_box_size = 0.04  # axes-fraction: consistent gate box size
+    for x, y, w, h, fill, stroke in svg_data['rects']:
+        # Use proportional sizing but clamp to reasonable range
+        _rw = max(_gate_box_size * 0.8, min(_gate_box_size * 2.5, w * scale))
+        _rh = max(_gate_box_size * 0.6, min(_gate_box_size * 2.0, h * scale))
+        _cx_r = _tx(x + w / 2)
+        _cy_r = _ty(y + h / 2)
+        _ax = _cx_r - _rw / 2
+        _ay = _cy_r - _rh / 2
+        rect_patch = _FBP(
+            (_ax, _ay), _rw, _rh,
+            boxstyle='round,pad=0.003',
+            facecolor=fill if fill != 'none' else '#333',
+            edgecolor=stroke if stroke != 'none' else fill,
+            linewidth=0.8,
+            transform=ax_local.transAxes, zorder=3,
+            clip_on=False)
+        ax_local.add_patch(rect_patch)
+
+    # --- Draw circles (qubit dots, gate control/target) ---
+    # Normalise: fixed visual radius for all dots
+    _dot_r = 0.012  # axes-fraction: consistent dot radius
+    for cx, cy, r, fill, stroke in svg_data['circles']:
+        from matplotlib.patches import Circle as _Circ
+        _mcx = _tx(cx)
+        _mcy = _ty(cy)
+        circ_patch = _Circ(
+            (_mcx, _mcy), _dot_r,
+            facecolor=fill if fill != 'none' else 'black',
+            edgecolor=stroke if stroke != 'none' else 'none',
+            linewidth=0.8,
+            transform=ax_local.transAxes, zorder=4,
+            clip_on=False)
+        ax_local.add_patch(circ_patch)
+
+    # --- Draw text labels (gate names) ---
+    for tx, ty, txt, fs, fill in svg_data['texts']:
+        _mtx = _tx(tx)
+        _mty = _ty(ty)
+        _mfs = max(8, min(11, fs * scale * 50))
+        ax_local.text(
+            _mtx, _mty, txt,
+            fontsize=_mfs, fontfamily='monospace',
+            fontweight='bold',
+            color=fill if fill != 'none' else 'white',
+            ha='center', va='center',
+            transform=ax_local.transAxes, zorder=5,
+            clip_on=False)
+
+    # --- Draw paths (qubit wires, connections) ---
+    import re as _re_path
+    for d_str, stroke, sw, fill in svg_data['paths']:
+        if stroke == 'none' and fill == 'none':
+            continue
+        _segs = _re_path.findall(
+            r'([MLHVCSQTAZ])\s*([\d\s.,e+-]*)', d_str, _re_path.IGNORECASE)
+        _px, _py = 0.0, 0.0
+        _pts_x, _pts_y = [], []
+        for cmd, args in _segs:
+            nums = [float(n) for n in _re_path.findall(r'[\d.eE+-]+', args)]
+            cu = cmd.upper()
+            if cu == 'M':
+                if len(nums) >= 2:
+                    _px, _py = (nums[0], nums[1]) if cmd == 'M' else (_px + nums[0], _py + nums[1])
+                    if _pts_x:
+                        _lw = max(0.5, sw * scale * 8)
+                        ax_local.plot(
+                            _pts_x, _pts_y,
+                            color=stroke if stroke != 'none' else '#333',
+                            linewidth=_lw,
+                            transform=ax_local.transAxes,
+                            solid_capstyle='round', zorder=2, clip_on=False)
+                    _pts_x, _pts_y = [_tx(_px)], [_ty(_py)]
+            elif cu == 'L':
+                for i in range(0, len(nums) - 1, 2):
+                    _px, _py = (nums[i], nums[i+1]) if cmd == 'L' else (_px + nums[i], _py + nums[i+1])
+                    _pts_x.append(_tx(_px))
+                    _pts_y.append(_ty(_py))
+            elif cu == 'H':
+                for n in nums:
+                    _px = n if cmd == 'H' else _px + n
+                    _pts_x.append(_tx(_px))
+                    _pts_y.append(_ty(_py))
+            elif cu == 'V':
+                for n in nums:
+                    _py = n if cmd == 'V' else _py + n
+                    _pts_x.append(_tx(_px))
+                    _pts_y.append(_ty(_py))
+        if len(_pts_x) >= 2:
+            _lw = max(0.5, sw * scale * 8)
+            ax_local.plot(
+                _pts_x, _pts_y,
+                color=stroke if stroke != 'none' else '#333',
+                linewidth=_lw,
+                transform=ax_local.transAxes,
+                solid_capstyle='round', zorder=2, clip_on=False)
+
+
+# =============================================================================
 # Transport Animation
 # =============================================================================
 
 def animate_transport(arch, operations, interval=1200, show_labels=True,
-                      ion_roles=None, interp_frames=4,
-                      gate_hold_frames=4, stim_circuit=None,
-                      stim_instruction_map=None, qubit_mapping=None):
+                      ion_roles=None, interp_frames=12,
+                      gate_hold_frames=18, stim_circuit=None,
+                      ion_idx_remap=None, physical_to_logical=None):
     """Animate step-by-step ion transport with actual state simulation.
 
     Maintains mutable ion positions and updates them as transport
@@ -858,13 +1088,6 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
         If provided, the original stim circuit is displayed as a
         scrolling sidebar alongside the animation with a tracking
         pointer showing the current position.
-    stim_instruction_map : dict | None
-        Maps stim instruction index → list of native op indices.
-        Used for accurate pointer tracking in the stim sidebar.
-    qubit_mapping : QubitMapping | None
-        Logical-to-physical qubit mapping.  Used to remap qubit
-        indices in the stim sidebar so they match the physical ion
-        numbers shown in the animation.
 
     Returns
     -------
@@ -885,12 +1108,25 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
     # them out entirely, we batch consecutive 1Q gates into one
     # animation frame so users can see rotation "layers" as brief
     # purple flashes without cluttering the animation.
+
+    # NOTE: _is_transport is defined properly later (after _OLD_TRANSPORT_CLASSES).
+    # _is_1q_gate uses it via closure and resolves at call-time.
+
     def _is_1q_gate(op):
+        """True for single-qubit gate ops (rotations, measurements, resets).
+
+        Handles both old-style (QubitOperation with .ions) and new-style
+        (PhysicalOperation with .qubits) operation objects.
+        """
         if _is_transport(op):  # Transport → never a 1Q gate
             return False
-        qs = getattr(op, 'qubits', None) or getattr(op, 'targets', None)
-        if qs is not None and len(qs) < 2:
+        qs = _op_qubits(op)
+        if len(qs) == 1:
             return True
+        if len(qs) == 0:
+            # No qubit info — check gate kind hints
+            gk = _gate_kind(op)
+            return gk in ("rotation", "measure", "reset")
         return False
 
     # ----- WISE grid geometry (same constants as _display_wise_grid) -----
@@ -903,6 +1139,8 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
         rows = k = m = total_cols = 0
 
     ion_sp = SPACING * ION_SPACING_RATIO
+    # Minimum visual spacing for QCCD grids so ion circles don't overlap
+    _VISUAL_ION_SP = max(ION_RADIUS * 2.5, 0.95)
     trap_inner_w = max(0, (k - 1) * ion_sp)
     trap_w = trap_inner_w + 2 * TRAP_PAD_X
     trap_h = 2 * ION_RADIUS + 2 * TRAP_PAD_Y
@@ -926,6 +1164,8 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
     ion_pos: Dict[int, Tuple[float, float]] = {}
     ion_trap: Dict[int, Tuple[int, int]] = {}   # ion → (block, row)
     trap_ions: Dict[Tuple[int, int], List[int]] = {}  # (b,r) → [ion_idxs]
+    # Remap from gate-op positional qubit index → actual ion.idx (QCCD only)
+    _phys_to_ion_idx: Dict[int, int] = {}
 
     if is_wise:
         for r in range(rows):
@@ -957,8 +1197,8 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
     elif is_qccd:
         # --- QCCD-graph-based ion position init (AugGrid / Networked / etc.) ---
         _qccd_graph = arch.qccd_graph
-        _node_positions: Dict[int, Tuple[float, float]] = {}  # node_idx → (x, y)
-        _node_ions: Dict[int, List[int]] = {}  # node_idx → [ion_idxs]
+        _node_positions: Dict[int, Tuple[float, float]] = {}
+        _node_ions: Dict[int, List[int]] = {}
         for _node in _qccd_graph.nodes.values():
             _ntype = type(_node).__name__
             _node_positions[_node.idx] = _node.position
@@ -966,7 +1206,8 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
                 _node_ions[_node.idx] = []
                 _nx, _ny = _node.position
                 _ni = len(_node.ions)
-                _sp = _node.spacing if _node.spacing > 0 else 0.3
+                _sp = max(_node.spacing if _node.spacing > 0 else 0.3,
+                          _VISUAL_ION_SP)
                 _horiz = _node.is_horizontal
                 for _ii, _ion in enumerate(_node.ions):
                     if _horiz:
@@ -976,17 +1217,42 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
                         _ix = _nx
                         _iy = _ny - (_ni - 1) * _sp / 2 + _ii * _sp
                     ion_pos[_ion.idx] = (_ix, _iy)
-                    ion_trap[_ion.idx] = (_node.idx, 0)  # (node_idx, 0)
+                    ion_trap[_ion.idx] = (_node.idx, 0)
                     _node_ions[_node.idx].append(_ion.idx)
                     trap_ions.setdefault((_node.idx, 0), []).append(_ion.idx)
 
-        # Discover off-grid ions from operations
+        # Build a remap from physical-position index (0..N-1 in qubit_ions)
+        # to ion.idx.  Gate ops use positional indices; transport ops and the
+        # ion_pos dict use ion.idx.  Without this remap, gate qubit indices
+        # land in staging because they don't exist in ion_pos.
+        _phys_to_ion_idx: Dict[int, int] = {}
+        _qi_list = getattr(_qccd_graph, "qubit_ions", [])
+        for _pi, _qi_ion in enumerate(_qi_list):
+            _phys_to_ion_idx[_pi] = _qi_ion.idx
+
+        # Discover off-grid ions from operations (after remap)
         _all_op_ions_q: set = set()
         for _op in operations:
             for _attr in ("qubits", "targets", "ion_indices"):
                 _v = getattr(_op, _attr, None)
                 if _v is not None:
-                    _all_op_ions_q.update(int(x) for x in _v if int(x) >= 0)
+                    for _x in _v:
+                        _xi = int(_x)
+                        if _xi >= 0:
+                            # Remap positional index → ion.idx if applicable
+                            _all_op_ions_q.add(_phys_to_ion_idx.get(_xi, _xi))
+            # Also check transport op ion attributes
+            _t_ion = getattr(_op, "_ion", None)
+            if _t_ion is not None:
+                _ti = getattr(_t_ion, "idx", None)
+                if _ti is not None:
+                    _all_op_ions_q.add(int(_ti))
+            _t_ions = getattr(_op, "_ions", None) or getattr(_op, "ions", None)
+            if _t_ions:
+                for _tio in _t_ions:
+                    _ti = getattr(_tio, "idx", None)
+                    if _ti is not None:
+                        _all_op_ions_q.add(int(_ti))
         _off_grid_q = sorted(_all_op_ions_q - set(ion_pos.keys()))
         if _off_grid_q:
             _all_ys = [p[1] for p in ion_pos.values()] if ion_pos else [0]
@@ -1023,48 +1289,109 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
         return (full[0], full[1]) if full else None
 
     # --- Classify operations -----------------------------------------------
-    _QCCD_XPORT_NAMES = frozenset({
-        "Split", "Merge", "Move", "JunctionCrossing", "Shuttle",
-        "TransportOperation",
-    })
+    # Old-style transport class names from qccd_operations.py
+    _OLD_TRANSPORT_CLASSES = {
+        "Move", "JunctionCrossing", "Split", "Merge",
+        "ReconfigurationStep", "GlobalReconfigurations",
+        "ReconfigurationPlanner", "GlobalReconfiguration",
+        "CrystalRotation", "SympatheticCooling", "CoolingOperation",
+        "_EdgeOp",  # new-style transport from architecture.py
+    }
 
     def _is_transport(op) -> bool:
-        _cn = type(op).__name__
-        if _cn in _QCCD_XPORT_NAMES:
+        cls_name = type(op).__name__
+        if cls_name == "TransportOperation" or cls_name in _OLD_TRANSPORT_CLASSES:
             return True
-        return hasattr(op, "source_zone")
+        if hasattr(op, "source_zone"):
+            return True
+        # Old-style: Move has ._crossing attribute
+        if hasattr(op, "_crossing"):
+            return True
+        # ParallelOperation wraps sub-operations — treat as transport
+        # if all sub-ops are transport
+        if cls_name == "ParallelOperation":
+            sub_ops = getattr(op, "operations", [])
+            return bool(sub_ops) and all(_is_transport(s) for s in sub_ops)
+        # Check MRO for transport / crystal base classes
+        for _base_name in _mro_names(op):
+            if _base_name in ("TransportOperation", "CrystalOperation"):
+                return True
+        return False
 
     def _op_label(op) -> str:
         cls = type(op).__name__
         if _is_transport(op):
-            if hasattr(op, "source_zone"):
-                tgt = getattr(op, "target_zone", "?")
+            src = getattr(op, "source_zone", "?")
+            tgt = getattr(op, "target_zone", "?")
+            if tgt != "?":
                 return f"Transport → {tgt}"
-            # QCCD ops: use their .label property
-            lbl = getattr(op, "label", cls)
-            return str(lbl)
+            return f"Transport ({cls})"
         lbl = getattr(op, "label", None) or getattr(op, "name", None) or cls
         return str(lbl)
 
     def _op_qubits(op) -> List[int]:
+        """Extract integer qubit indices from any operation type.
+
+        For QCCD gate ops, remaps positional qubit indices (0..N-1 in
+        qubit_ions) to actual ion.idx values so they match ion_pos keys.
+
+        Handles:
+        - New-style PhysicalOperation.qubits → tuple[int]
+        - Old-style QubitOperation.ions → list[Ion]
+        - New-style Split/Merge .ion (singular) → Ion
+        - Old-style Move ._ion → Ion
+        - ParallelOperation.operations → merge sub-op qubits
+        """
+        def _to_int_list(seq):
+            """Convert a sequence of ints / Ion objects to int list."""
+            out: List[int] = []
+            for x in seq:
+                if isinstance(x, int):
+                    out.append(x)
+                else:
+                    idx = getattr(x, "idx", None)
+                    if idx is not None:
+                        out.append(int(idx))
+                    else:
+                        try:
+                            out.append(int(x))
+                        except (TypeError, ValueError):
+                            pass
+            return out
+
+        # New-style PhysicalOperation.qubits → tuple[int]
+        # (skip empty tuples so we fall through to .ions for old ops)
         for attr in ("qubits", "targets", "ion_indices"):
             v = getattr(op, attr, None)
-            if v is not None:
-                return list(v)
-        # QCCD transport ops: extract ion index from .ion / .crossing.ion
-        _ion_obj = getattr(op, 'ion', None)
-        if _ion_obj is None:
-            _crossing_obj = getattr(op, 'crossing', None)
-            if _crossing_obj is not None:
-                _ion_obj = getattr(_crossing_obj, 'ion', None)
-        if _ion_obj is not None and hasattr(_ion_obj, 'idx'):
-            return [_ion_obj.idx]
-        # Try ions list from trap
-        _trap_obj = getattr(op, 'trap', None)
-        if _trap_obj is not None:
-            _ions_list = getattr(_trap_obj, 'ions', [])
-            if _ions_list:
-                return [_ions_list[-1].idx]  # edge ion for split
+            if v is not None and len(v) > 0:
+                result = _to_int_list(v)
+                if result:
+                    # For QCCD gate ops, remap positional → ion.idx
+                    if is_qccd and not _is_transport(op) and _phys_to_ion_idx:
+                        result = [_phys_to_ion_idx.get(r, r) for r in result]
+                    return result
+        # Old-style QubitOperation: .ions property → list[Ion]
+        ions = getattr(op, "ions", None) or getattr(op, "_ions", None)
+        if ions:
+            result = _to_int_list(ions)
+            if result:
+                return result
+        # New-style Split/Merge: .ion attribute (singular)
+        single_ion = (getattr(op, "ion", None)
+                      or getattr(op, "_ion", None))
+        if single_ion is not None:
+            idx = getattr(single_ion, "idx", None)
+            if idx is not None:
+                return [int(idx)]
+            elif isinstance(single_ion, int):
+                return [single_ion]
+        # ParallelOperation: merge sub-op qubits
+        sub_ops = getattr(op, "operations", None)
+        if sub_ops:
+            merged: List[int] = []
+            for sub in sub_ops:
+                merged.extend(_op_qubits(sub))
+            return list(dict.fromkeys(merged))  # dedupe, keep order
         return []
 
     # --- Pre-compute per-step snapshots of ion positions ---
@@ -1081,34 +1408,31 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
     current_trap_ions = {k2: list(v2) for k2, v2 in trap_ions.items()}
 
     def _recompute_trap_positions(trap_key):
-        """Recompute X/Y positions for all ions in *trap_key*."""
+        """Recompute X/Y positions for all ions in *trap_key*.
+
+        Works for both WISE grids (trap_key = (block, row)) and
+        QCCD graphs (trap_key = (node_idx, 0)).
+        """
         if trap_key not in current_trap_ions:
             return
         members = current_trap_ions[trap_key]
-        if is_qccd:
-            # trap_key = (node_idx, 0) for QCCD
-            _nidx = trap_key[0]
-            _nd = arch.qccd_graph.nodes.get(_nidx)
-            if _nd is None:
-                return
-            cx2, cy2 = _nd.position
-            _sp = getattr(_nd, 'spacing', 0.3) or 0.3
-            _horiz = getattr(_nd, 'is_horizontal', True)
+        if is_qccd and '_node_positions' in dir():
+            # QCCD: use the stored node position
+            _nid = trap_key[0]
+            if _nid in _node_positions:
+                _nx, _ny = _node_positions[_nid]
+            else:
+                _nx, _ny = (0.0, 0.0)
             n_in2 = len(members)
+            _sp = max(0.3, _VISUAL_ION_SP)
             for i3, iid2 in enumerate(members):
                 if n_in2 == 1:
-                    current_pos[iid2] = (cx2, cy2)
+                    current_pos[iid2] = (_nx, _ny)
                 else:
-                    if _horiz:
-                        current_pos[iid2] = (
-                            cx2 - (n_in2 - 1) * _sp / 2 + i3 * _sp,
-                            cy2,
-                        )
-                    else:
-                        current_pos[iid2] = (
-                            cx2,
-                            cy2 - (n_in2 - 1) * _sp / 2 + i3 * _sp,
-                        )
+                    current_pos[iid2] = (
+                        _nx - (n_in2 - 1) * _sp / 2 + i3 * _sp,
+                        _ny,
+                    )
         else:
             bt2, rt2 = trap_key
             cx2, cy2 = _trap_xy(bt2, rt2)
@@ -1128,21 +1452,16 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
 
         *tgt_parsed* is ``(block, row, slot)`` from ``_parse_zone``
         or ``(block, row)`` for legacy callers.
-        For QCCD: *tgt_parsed* is ``(node_idx,)`` or ``(node_idx, slot)``.
         """
         old_trap_t = current_trap.get(ion_idx_t)
         if old_trap_t and old_trap_t in current_trap_ions:
             if ion_idx_t in current_trap_ions[old_trap_t]:
                 current_trap_ions[old_trap_t].remove(ion_idx_t)
-        if is_qccd:
-            _nidx_t = tgt_parsed[0]
-            clamped = (_nidx_t, 0)
-        else:
-            bt3 = tgt_parsed[0]
-            rt3 = tgt_parsed[1]
-            bt3 = min(bt3, m - 1)
-            rt3 = min(rt3, rows - 1)
-            clamped = (bt3, rt3)
+        bt3 = tgt_parsed[0]
+        rt3 = tgt_parsed[1]
+        bt3 = min(bt3, m - 1)
+        rt3 = min(rt3, rows - 1)
+        clamped = (bt3, rt3)
         if clamped not in current_trap_ions:
             current_trap_ions[clamped] = []
         current_trap_ions[clamped].append(ion_idx_t)
@@ -1157,15 +1476,32 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
         return False
 
     # --- Classify gate type for laser-beam colouring ---
+    # Class names from qubit_operations.py
+    _OLD_MS_CLASSES = {"TwoQubitMSGate", "MSGate", "TwoQubitGate", "GateSwap"}
+    _OLD_1Q_CLASSES = {"OneQubitGate", "XRotation", "YRotation", "SingleQubitGate"}
+    _OLD_MEAS_CLASSES = {"Measurement", "MeasurementOperation"}
+    _OLD_RESET_CLASSES = {"QubitReset", "ResetOperation"}
+
     def _gate_kind(op) -> Optional[str]:
         """Return 'ms', 'rotation', 'measure' or None."""
-        # Direct class-based detection (MeasurementOperation/ResetOperation
-        # lack .gate_name / .name attributes)
+        # Direct class-based detection for both old and new styles
         _cls = type(op).__name__
+        # New-style operations
         if _cls == "MeasurementOperation":
             return "measure"
         if _cls == "ResetOperation":
             return "reset"
+        # Operations from qubit_operations.py
+        if _cls in _OLD_MS_CLASSES:
+            return "ms"
+        if _cls in _OLD_1Q_CLASSES:
+            return "rotation"
+        if _cls in _OLD_MEAS_CLASSES:
+            return "measure"
+        if _cls in _OLD_RESET_CLASSES:
+            return "reset"
+        
+        # Name-based detection
         name = (getattr(op, "gate_name", None)
                 or getattr(op, "name", None)
                 or getattr(op, "label", None)
@@ -1180,8 +1516,10 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
             return "ms"
         if name_lower in ("m", "mz", "mx", "measure", "measurement"):
             return "measure"
+        if name_lower in ("reset", "r_reset", "init", "initialize"):
+            return "reset"
         if name_lower in ("h", "s", "t", "rx", "ry", "rz", "sdg", "tdg",
-                          "x", "y", "z", "r", "reset"):
+                          "x", "y", "z", "r"):
             return "rotation"
         # Check via GateOperation attribute
         op_type = getattr(op, "operation_type", None)
@@ -1205,10 +1543,22 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
             H_PASS_TIME_US as _H_US,
             V_PASS_TIME_US as _V_US,
         )
-    except ImportError:
+    except Exception:
         _H_US, _V_US = 212.0, 510.0
-    _GATE_TIME_US = {"ms": 100.0, "rotation": 10.0,
-                     "measure": 100.0, "reset": 5.0}
+    # Gate times from physics.py (converted to µs)
+    try:
+        from qectostim.experiments.hardware_simulation.trapped_ion.physics import (
+            DEFAULT_CALIBRATION as _CAL,
+        )
+        _GATE_TIME_US = {
+            "ms": _CAL.ms_gate_time * 1e6,
+            "rotation": _CAL.single_qubit_gate_time * 1e6,
+            "measure": _CAL.measurement_time * 1e6,
+            "reset": _CAL.reset_time * 1e6,
+        }
+    except Exception:
+        _GATE_TIME_US = {"ms": 40.0, "rotation": 5.0,
+                         "measure": 400.0, "reset": 50.0}
 
     # --- Pre-group operations into animation steps ---
     # Transport ops between PASS_BOUNDARY markers form one atomic step.
@@ -1218,14 +1568,13 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
     def _apply_swap_group(swap_list):
         """Apply a list of (ion_a, tgt_a, ion_b, tgt_b) atomically.
 
-        Each *tgt* is ``(block, row, slot)`` from ``_parse_zone``
-        (WISE) or ``(node_idx,)`` / ``(node_idx, slot)`` (QCCD).
+        Each *tgt* is ``(block, row, slot)`` from ``_parse_zone``.
         Slot information is used so intra-block swaps place ions
         at the correct column within the trap, instead of blindly
         re-distributing evenly.
         """
         affected_traps = set()
-        # Collect explicit slot assignments: trap_key → {slot: ion}
+        # Collect explicit slot assignments: (block, row) → {slot: ion}
         slot_assignments: Dict[Tuple[int, int], Dict[int, int]] = {}
 
         # Phase 1: remove all ions from their current traps
@@ -1241,23 +1590,17 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
         for q_a_idx, tgt_a, q_b_idx, tgt_b in swap_list:
             for qid, tgt_full in ((q_a_idx, tgt_a), (q_b_idx, tgt_b)):
                 if tgt_full and qid in current_pos:
-                    if is_qccd:
-                        _nidx_s = tgt_full[0]
-                        slot4 = tgt_full[1] if len(tgt_full) >= 2 else None
-                        clamped2 = (_nidx_s, 0)
-                    else:
-                        bt4, rt4 = tgt_full[0], tgt_full[1]
-                        slot4 = tgt_full[2] if len(tgt_full) >= 3 else None
-                        bt4 = min(bt4, m - 1)
-                        rt4 = min(rt4, rows - 1)
-                        clamped2 = (bt4, rt4)
+                    bt4, rt4 = tgt_full[0], tgt_full[1]
+                    slot4 = tgt_full[2] if len(tgt_full) >= 3 else None
+                    bt4 = min(bt4, m - 1)
+                    rt4 = min(rt4, rows - 1)
+                    clamped2 = (bt4, rt4)
                     if clamped2 not in current_trap_ions:
                         current_trap_ions[clamped2] = []
-                    _cap = k if not is_qccd else 20  # QCCD trap capacity varies
-                    if len(current_trap_ions[clamped2]) >= _cap:
+                    if len(current_trap_ions[clamped2]) >= k:
                         import warnings
                         warnings.warn(
-                            f"Trap {clamped2} capacity {_cap} exceeded by "
+                            f"Trap {clamped2} capacity {k} exceeded by "
                             f"ion {qid}; routing may be incorrect",
                             stacklevel=2,
                         )
@@ -1271,7 +1614,7 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
         # Recompute visual positions — use slot info when available
         for tk in affected_traps:
             sa = slot_assignments.get(tk, {})
-            if sa and tk in current_trap_ions and not is_qccd:
+            if sa and tk in current_trap_ions:
                 # Place ions with known slots at exact positions;
                 # distribute remaining ions in leftover slots.
                 bt5, rt5 = tk
@@ -1376,105 +1719,150 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
         all_xport = all(_is_transport(o) for o in group)
         qubits_in_step = []
 
-        if all_xport and (is_wise or is_qccd):
-            if is_qccd:
-                # ---- QCCD transport step: move ions directly to dest pos ----
-                for ga in group:
-                    ion_idx_g = _op_qubits(ga)
-                    ion_idx_g = ion_idx_g[0] if ion_idx_g else -1
-                    if ion_idx_g < 0 or ion_idx_g not in current_pos:
+        if all_xport and is_wise:
+            # Pair up mirror transports into atomic swaps
+            swap_list = []
+            consumed = set()
+            for gi, ga in enumerate(group):
+                if gi in consumed:
+                    continue
+                qa = _op_qubits(ga)
+                src_a = getattr(ga, "source_zone", None)
+                tgt_a = getattr(ga, "target_zone", None)
+                # Look for mirror partner in the group
+                partner = None
+                for gj in range(gi + 1, len(group)):
+                    if gj in consumed:
                         continue
-                    # Figure out destination position from the operation
-                    _dest_pos = None
-                    _cls_g = type(ga).__name__
-                    if _cls_g == "Split":
-                        # Ion moves from trap into crossing
-                        _c_obj = getattr(ga, 'crossing', None)
-                        if _c_obj and hasattr(_c_obj, 'position'):
-                            _dest_pos = _c_obj.position
-                    elif _cls_g == "Merge":
-                        # Ion moves from crossing into trap
-                        _t_obj = getattr(ga, 'trap', None)
-                        if _t_obj and hasattr(_t_obj, 'position'):
-                            _dest_pos = _t_obj.position
-                    elif _cls_g == "Move":
-                        _c_obj = getattr(ga, 'crossing', None)
-                        if _c_obj and hasattr(_c_obj, 'position'):
-                            _dest_pos = _c_obj.position
-                    elif _cls_g == "JunctionCrossing":
-                        # Ion moves to/from junction
-                        _j_obj = getattr(ga, 'junction', None)
-                        _c_obj = getattr(ga, 'crossing', None)
-                        if _j_obj and hasattr(_j_obj, 'position'):
-                            _dest_pos = _j_obj.position
-                        elif _c_obj and hasattr(_c_obj, 'position'):
-                            _dest_pos = _c_obj.position
-                    else:
-                        # Generic: try .target_zone, or keep current
-                        tgt_zone_g = getattr(ga, "target_zone", None)
-                        if tgt_zone_g:
-                            tgt_p = _parse_zone(tgt_zone_g)
-                            if tgt_p:
-                                _nidx_g = tgt_p[0]
-                                _nd_g = arch.qccd_graph.nodes.get(_nidx_g)
-                                if _nd_g:
-                                    _dest_pos = _nd_g.position
+                    gb = group[gj]
+                    src_b = getattr(gb, "source_zone", None)
+                    tgt_b = getattr(gb, "target_zone", None)
+                    if (src_a and tgt_a and src_b and tgt_b
+                            and src_a == tgt_b and tgt_a == src_b):
+                        partner = gj
+                        break
+                if partner is not None:
+                    consumed.add(partner)
+                    gb = group[partner]
+                    q_a = qa[0] if qa else -1
+                    q_b = _op_qubits(gb)
+                    q_b = q_b[0] if q_b else -1
+                    tgt_a_parsed = _parse_zone(tgt_a)       # (block, row, slot)
+                    tgt_b_parsed = _parse_zone(getattr(gb, "target_zone", None))
+                    swap_list.append((q_a, tgt_a_parsed, q_b, tgt_b_parsed))
+                    qubits_in_step.extend([q_a, q_b])
+                else:
+                    # Unpaired transport — apply individually
+                    ion_idx = qa[0] if qa else -1
+                    tgt_zone = getattr(ga, "target_zone", None)
+                    tgt_parsed = _parse_zone(tgt_zone) if tgt_zone else None
+                    if tgt_parsed and ion_idx in current_pos:
+                        old_t, dest = _apply_transport(ion_idx, tgt_parsed)
+                        _recompute_trap_positions(dest)
+                        if old_t and old_t != dest:
+                            _recompute_trap_positions(old_t)
+                    qubits_in_step.append(ion_idx)
 
-                    if _dest_pos is not None:
-                        current_pos[ion_idx_g] = _dest_pos
-                    qubits_in_step.append(ion_idx_g)
-            else:
-                # ---- WISE transport step (original logic) ----
-                # Pair up mirror transports into atomic swaps
-                swap_list = []
-                consumed = set()
-                for gi, ga in enumerate(group):
-                    if gi in consumed:
-                        continue
-                    qa = _op_qubits(ga)
-                    src_a = getattr(ga, "source_zone", None)
-                    tgt_a = getattr(ga, "target_zone", None)
-                    # Look for mirror partner in the group
-                    partner = None
-                    for gj in range(gi + 1, len(group)):
-                        if gj in consumed:
-                            continue
-                        gb = group[gj]
-                        src_b = getattr(gb, "source_zone", None)
-                        tgt_b = getattr(gb, "target_zone", None)
-                        if (src_a and tgt_a and src_b and tgt_b
-                                and src_a == tgt_b and tgt_a == src_b):
-                            partner = gj
-                            break
-                    if partner is not None:
-                        consumed.add(partner)
-                        gb = group[partner]
-                        q_a = qa[0] if qa else -1
-                        q_b = _op_qubits(gb)
-                        q_b = q_b[0] if q_b else -1
-                        tgt_a_parsed = _parse_zone(tgt_a)       # (block, row, slot)
-                        tgt_b_parsed = _parse_zone(getattr(gb, "target_zone", None))
-                        swap_list.append((q_a, tgt_a_parsed, q_b, tgt_b_parsed))
-                        qubits_in_step.extend([q_a, q_b])
-                    else:
-                        # Unpaired transport — apply individually
-                        ion_idx = qa[0] if qa else -1
-                        tgt_zone = getattr(ga, "target_zone", None)
-                        tgt_parsed = _parse_zone(tgt_zone) if tgt_zone else None
-                        if tgt_parsed and ion_idx in current_pos:
-                            old_t, dest = _apply_transport(ion_idx, tgt_parsed)
-                            _recompute_trap_positions(dest)
-                            if old_t and old_t != dest:
-                                _recompute_trap_positions(old_t)
-                        qubits_in_step.append(ion_idx)
-
-                if swap_list:
-                    _apply_swap_group(swap_list)
+            if swap_list:
+                _apply_swap_group(swap_list)
 
             snapshots.append(dict(current_pos))
             active_ions_per_step.append(qubits_in_step)
             labels_per_step.append(
                 f"Pass: {len(group)} transports ({len(swap_list)} swaps)")
+            is_transport_step.append(True)
+            gate_kind_per_step.append(None)
+        elif all_xport and is_qccd:
+            # --- QCCD transport ops (_EdgeOp / Split / Merge / Move) ---
+            # REPLAY each transport op to mutate the architecture, then
+            # re-read ion positions so the animation shows real movement.
+            _moved_ions: set = set()
+            _n_splits = 0
+            _n_merges = 0
+            _n_moves = 0
+
+            # Snapshot BEFORE this transport group
+            _pre_snap = dict(current_pos)
+
+            for _xop in group:
+                _xcls = type(_xop).__name__
+                if _xcls == "ParallelOperation":
+                    _sub_ops = getattr(_xop, "operations", [_xop])
+                else:
+                    _sub_ops = [_xop]
+                for _sop in _sub_ops:
+                    # Count transport types from _EdgeOp labels
+                    _slbl = getattr(_sop, "_label_str", "") or ""
+                    if _slbl.startswith("Split"):
+                        _n_splits += 1
+                    elif _slbl.startswith("Merge"):
+                        _n_merges += 1
+                    elif _slbl.startswith("Move") or _slbl.startswith("JCross"):
+                        _n_moves += 1
+
+                    # Execute the transport op to mutate architecture state
+                    _run_fn = getattr(_sop, "run", None)
+                    if callable(_run_fn):
+                        try:
+                            _run_fn()
+                        except Exception:
+                            pass  # best-effort replay
+
+                    # Collect involved ion indices for highlighting
+                    _comps = getattr(_sop, "_involvedComponents", None) or \
+                             getattr(_sop, "involvedComponents", None) or []
+                    for _comp in _comps:
+                        _comp_ions = getattr(_comp, "ions", None)
+                        if _comp_ions:
+                            for _ci in _comp_ions:
+                                _ci_idx = getattr(_ci, "idx", None)
+                                if _ci_idx is not None:
+                                    _moved_ions.add(int(_ci_idx))
+                    _ion_obj = getattr(_sop, "_ion", None)
+                    if _ion_obj:
+                        _ii = getattr(_ion_obj, "idx", None)
+                        if _ii is not None:
+                            _moved_ions.add(int(_ii))
+
+            # Re-read ion positions from the (now mutated) architecture
+            _new_node_ions: Dict[int, List[int]] = {}
+            for _node in _qccd_graph.nodes.values():
+                _ntype = type(_node).__name__
+                if 'Trap' in _ntype or 'Storage' in _ntype:
+                    _nx2, _ny2 = _node.position
+                    _ni2 = len(_node.ions)
+                    _sp2 = max(_node.spacing if _node.spacing > 0 else 0.3,
+                               _VISUAL_ION_SP)
+                    _horiz2 = _node.is_horizontal
+                    for _ii2, _ion2 in enumerate(_node.ions):
+                        if _horiz2:
+                            _ix2 = _nx2 - (_ni2 - 1) * _sp2 / 2 + _ii2 * _sp2
+                            _iy2 = _ny2
+                        else:
+                            _ix2 = _nx2
+                            _iy2 = _ny2 - (_ni2 - 1) * _sp2 / 2 + _ii2 * _sp2
+                        current_pos[_ion2.idx] = (_ix2, _iy2)
+                        current_trap[_ion2.idx] = (_node.idx, 0)
+                        _new_node_ions.setdefault(_node.idx, []).append(_ion2.idx)
+            # Also check crossings for ions in transit
+            for _cx in _qccd_graph.crossings.values():
+                _cxion = getattr(_cx, 'ion', None)
+                if _cxion is not None:
+                    _cxpos = getattr(_cxion, 'position', None)
+                    if _cxpos:
+                        current_pos[_cxion.idx] = _cxpos
+                    _moved_ions.add(int(_cxion.idx))
+
+            # Update current_trap_ions
+            for _nid, _ilist in _new_node_ions.items():
+                current_trap_ions[(_nid, 0)] = _ilist
+
+            qubits_in_step = list(_moved_ions)
+            snapshots.append(dict(current_pos))
+            active_ions_per_step.append(qubits_in_step)
+            labels_per_step.append(
+                f"Transport: {len(group)} ops "
+                f"({_n_splits}S {_n_merges}M {_n_moves}T)")
             is_transport_step.append(True)
             gate_kind_per_step.append(None)
         else:
@@ -1553,7 +1941,7 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
         _is_ms_b = (len(sg) >= 1
                     and all(_gate_kind(g) == "ms" for g in sg)
                     and not _is_1q_b)
-        if (all_xp2 and (is_wise or is_qccd)) or _is_1q_b or _is_ms_b:
+        if (all_xp2 and is_wise) or _is_1q_b or _is_ms_b:
             # Batched → 1 snapshot
             _step_op_map.append(op_map)
         else:
@@ -1564,68 +1952,66 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
     waypoints_per_step: List[Dict[int, List[Tuple[float, float]]]] = [{}]
     for step_i in range(1, len(snapshots)):
         wp: Dict[int, List[Tuple[float, float]]] = {}
-        # Waypoint routing only applies to WISE grid (junction-based routing)
-        if is_wise:
-            # Get the per-ion op map for this step
-            step_ops = _step_op_map[step_i] if step_i < len(_step_op_map) else {}
-            for idx_w in active_ions_per_step[step_i]:
-                prev_xy = snapshots[step_i - 1].get(idx_w)
-                next_xy = snapshots[step_i].get(idx_w)
-                if prev_xy and next_xy:
-                    px_prev, py_prev = prev_xy
-                    _, py_next = next_xy
-                    if abs(py_prev - py_next) > 0.05:
-                        # --- Determine the junction block from metadata ---
-                        _ion_op = step_ops.get(idx_w)
-                        _meta = getattr(_ion_op, "metadata", None) or {}
-                        _swap_col = _meta.get("swap_col")
-                        if _swap_col is not None and k > 0:
-                            # Junction lives at block boundary swap_col//k
-                            # (between block b and block b+1).
-                            # For a V_SWAP at absolute col c, the ion
-                            # travels through the junction to the right of
-                            # block c//k if c is the rightmost slot, or
-                            # the junction to the left otherwise.
-                            _sw_block = _swap_col // k
-                            _sw_slot = _swap_col % k
-                            # Right junction of block b has index b
-                            # Left junction of block b has index b-1
-                            if _sw_slot >= k // 2 and _sw_block <= m - 2:
-                                junc_b = _sw_block
-                            elif _sw_block - 1 >= 0:
-                                junc_b = _sw_block - 1
-                            elif _sw_block <= m - 2:
-                                junc_b = _sw_block
-                            else:
-                                junc_b = max(0, m - 2)
-                            jx, _ = _junc_xy(junc_b, 0)
-                            # 2-waypoint path: horizontal to junction,
-                            # then vertical through junction
-                            wp[idx_w] = [(jx, py_prev), (jx, py_next)]
+        # Get the per-ion op map for this step
+        step_ops = _step_op_map[step_i] if step_i < len(_step_op_map) else {}
+        for idx_w in active_ions_per_step[step_i]:
+            prev_xy = snapshots[step_i - 1].get(idx_w)
+            next_xy = snapshots[step_i].get(idx_w)
+            if prev_xy and next_xy:
+                px_prev, py_prev = prev_xy
+                _, py_next = next_xy
+                if abs(py_prev - py_next) > 0.05:
+                    # --- Determine the junction block from metadata ---
+                    _ion_op = step_ops.get(idx_w)
+                    _meta = getattr(_ion_op, "metadata", None) or {}
+                    _swap_col = _meta.get("swap_col")
+                    if _swap_col is not None and k > 0:
+                        # Junction lives at block boundary swap_col//k
+                        # (between block b and block b+1).
+                        # For a V_SWAP at absolute col c, the ion
+                        # travels through the junction to the right of
+                        # block c//k if c is the rightmost slot, or
+                        # the junction to the left otherwise.
+                        _sw_block = _swap_col // k
+                        _sw_slot = _swap_col % k
+                        # Right junction of block b has index b
+                        # Left junction of block b has index b-1
+                        if _sw_slot >= k // 2 and _sw_block <= m - 2:
+                            junc_b = _sw_block
+                        elif _sw_block - 1 >= 0:
+                            junc_b = _sw_block - 1
+                        elif _sw_block <= m - 2:
+                            junc_b = _sw_block
                         else:
-                            # Fallback: infer block from X position
-                            ion_block = max(0, min(
-                                m - 1,
-                                round(px_prev / block_pitch)
-                                if block_pitch > 0 else 0
-                            ))
-                            candidates = []
-                            if ion_block <= m - 2:
-                                candidates.append(ion_block)
-                            if ion_block - 1 >= 0:
-                                candidates.append(ion_block - 1)
-                            if not candidates and m >= 2:
-                                candidates.append(0)
-                            best_junc = None
-                            best_dist = float("inf")
-                            for bj in candidates:
-                                jx2, _ = _junc_xy(bj, 0)
-                                dist = abs(px_prev - jx2)
-                                if dist < best_dist:
-                                    best_dist = dist
-                                    best_junc = [(jx2, py_prev), (jx2, py_next)]
-                            if best_junc:
-                                wp[idx_w] = best_junc
+                            junc_b = max(0, m - 2)
+                        jx, _ = _junc_xy(junc_b, 0)
+                        # 2-waypoint path: horizontal to junction,
+                        # then vertical through junction
+                        wp[idx_w] = [(jx, py_prev), (jx, py_next)]
+                    else:
+                        # Fallback: infer block from X position
+                        ion_block = max(0, min(
+                            m - 1,
+                            round(px_prev / block_pitch)
+                            if block_pitch > 0 else 0
+                        ))
+                        candidates = []
+                        if ion_block <= m - 2:
+                            candidates.append(ion_block)
+                        if ion_block - 1 >= 0:
+                            candidates.append(ion_block - 1)
+                        if not candidates and m >= 2:
+                            candidates.append(0)
+                        best_junc = None
+                        best_dist = float("inf")
+                        for bj in candidates:
+                            jx2, _ = _junc_xy(bj, 0)
+                            dist = abs(px_prev - jx2)
+                            if dist < best_dist:
+                                best_dist = dist
+                                best_junc = [(jx2, py_prev), (jx2, py_next)]
+                        if best_junc:
+                            wp[idx_w] = best_junc
         waypoints_per_step.append(wp)
 
     # ----- Figure setup ---------------------------------------------------
@@ -1650,15 +2036,23 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
                     _has_v = True
                     break
             _t_us = _V_US if _has_v else _H_US
-            _nf = max(6, int(_t_us / _US_PER_FRAME))
+            _nf = max(10, int(_t_us / _US_PER_FRAME))
             _step_nframes.append(_nf)
             _step_duration_us.append(_t_us)
         else:
             _gk_si = gate_kind_per_step[_si + 1] or "rotation"
-            _g_us = _GATE_TIME_US.get(_gk_si, 10.0)
+            _g_us = max(15.0, _GATE_TIME_US.get(_gk_si, 10.0))
             _nf = max(8, int(_g_us / _US_PER_FRAME) + gate_hold_frames)
             _step_nframes.append(_nf)
             _step_duration_us.append(_g_us)
+
+    # --- Auto-scale frame counts so the full circuit stays fast ---
+    # If naïve total exceeds a budget, uniformly reduce per-step frames.
+    _MAX_FRAMES = 1200  # keeps jshtml < ~80 MB at 100 DPI
+    _raw_total = sum(_step_nframes) + 1
+    if _raw_total > _MAX_FRAMES and _step_nframes:
+        _shrink = _MAX_FRAMES / _raw_total
+        _step_nframes = [max(2, int(_nf * _shrink)) for _nf in _step_nframes]
 
     # Cumulative frame offsets: _cum[i] = first frame of step i.
     # Frame 0 is the initial-state frame (before any steps).
@@ -1667,14 +2061,213 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
         _cum.append(_cum[-1] + _nf)
     total_frames = _cum[-1] if _step_nframes else 1
 
+    # ===================================================================
+    # TICK-based qubit-identity matching  (stim instruction ↔ anim step)
+    # ===================================================================
+    # Build a mapping  anim_step → stim TICK index  so that the sidebar
+    # highlight and SVG timeslice panel track what is *actually* being
+    # executed rather than using proportional interpolation.
+    #
+    # The chain is:
+    #   raw QCCD ion.idx  →  ion_idx_remap  →  grid position  →
+    #   physical_to_logical  →  logical qubit  →  stim circuit qubit
+    #
+    # We match each animation gate step to the first TICK block in the
+    # stim circuit whose qubit-set is compatible.
+
+    stim_tick_per_step: List[Optional[int]] = [None] * len(snapshots)
+    _tick_to_first_line: Dict[int, int] = {}  # tick → first stim line idx
+
+    # For QCCD: build ion.idx → logical qubit remap automatically.
+    # _phys_to_ion_idx maps physical-position → ion.idx.
+    # We invert it to get ion.idx → physical-position (= logical qubit
+    # for the simple sequential mapping used by AugGrid/QCCD).
+    _auto_ion_to_logical: Dict[int, int] = {}
+    if is_qccd and _phys_to_ion_idx:
+        for _phys, _iidx in _phys_to_ion_idx.items():
+            _auto_ion_to_logical[_iidx] = _phys
+
+    def _raw_to_logical(raw_idx: int) -> Optional[int]:
+        """Map a raw QCCD ion index to a logical qubit via the remap chain."""
+        if ion_idx_remap is not None:
+            grid_pos = ion_idx_remap.get(raw_idx)
+            if grid_pos is None:
+                return None
+        elif _auto_ion_to_logical:
+            # Use auto-built QCCD remap: ion.idx → physical position
+            grid_pos = _auto_ion_to_logical.get(raw_idx)
+            if grid_pos is None:
+                return None
+        else:
+            grid_pos = raw_idx
+        if physical_to_logical is not None:
+            return physical_to_logical.get(grid_pos)
+        return grid_pos
+
+    if stim_circuit is not None:
+        import stim as _stim_mod
+        _stim_str_raw = str(stim_circuit)
+        _stim_raw_lines = _stim_str_raw.strip().split('\n')
+
+        # Parse stim into TICK blocks: list of (tick_idx, qubit_pairs_2q, qubit_set_1q)
+        _tick_blocks: List[Dict] = []  # each: {tick, pairs_2q, qubits_1q, first_line}
+        _cur_tick = 0
+        _cur_2q: List[Tuple[int, int]] = []
+        _cur_1q: List[int] = []
+        _cur_first_line: Optional[int] = None
+
+        for _tli, _tl in enumerate(_stim_raw_lines):
+            _tl_s = _tl.strip()
+            if _tl_s.startswith('TICK'):
+                if _cur_2q or _cur_1q:
+                    _tick_blocks.append({
+                        'tick': _cur_tick,
+                        'pairs_2q': list(_cur_2q),
+                        'qubits_1q': list(_cur_1q),
+                        'first_line': _cur_first_line or 0,
+                    })
+                _cur_tick += 1
+                _cur_2q = []
+                _cur_1q = []
+                _cur_first_line = None
+                continue
+            # Skip non-gate lines
+            if not _tl_s or _tl_s.startswith(('DETECTOR', 'OBSERVABLE',
+                    'QUBIT_COORDS', '#', 'REPEAT', '{', '}')):
+                continue
+            # Parse gate: NAME targets...
+            _parts = _tl_s.split()
+            if len(_parts) < 2:
+                continue
+            _gate_name = _parts[0]
+            try:
+                _targets = [int(x) for x in _parts[1:] if x.isdigit()
+                            or (x.startswith('-') and x[1:].isdigit())]
+            except ValueError:
+                continue
+            if _cur_first_line is None:
+                _cur_first_line = _tli
+            if len(_targets) >= 2 and _gate_name.upper() in (
+                    'CX', 'CZ', 'CNOT', 'XX', 'ZZ', 'SQRT_XX',
+                    'XCX', 'XCZ', 'YCZ', 'ISWAP', 'SQRT_ZZ',
+                    'SPP', 'MPP'):
+                for _ti in range(0, len(_targets) - 1, 2):
+                    _cur_2q.append((_targets[_ti], _targets[_ti + 1]))
+            else:
+                _cur_1q.extend(_targets)
+        # Flush last block
+        if _cur_2q or _cur_1q:
+            _tick_blocks.append({
+                'tick': _cur_tick,
+                'pairs_2q': list(_cur_2q),
+                'qubits_1q': list(_cur_1q),
+                'first_line': _cur_first_line or 0,
+            })
+
+        # Build tick → first_line map
+        for _tb in _tick_blocks:
+            _tick_to_first_line[_tb['tick']] = _tb['first_line']
+
+        # Also index TICK lines themselves for the SVG
+        _tick_line_indices: List[int] = []
+        for _tli2, _tl2 in enumerate(_stim_raw_lines):
+            if _tl2.strip().startswith('TICK'):
+                _tick_line_indices.append(_tli2)
+
+        # Match animation steps to TICK blocks using a simple sequential
+        # approach: each gate step advances to the next tick block whose
+        # gate kind (2Q vs 1Q) matches.  This avoids the fragile qubit-
+        # overlap heuristic that caused the sidebar to jump around.
+        _tick_ptr = 0  # pointer into _tick_blocks (advances monotonically)
+        _last_matched_tick = -1
+
+        for _si2 in range(1, len(snapshots)):
+            _gk2 = gate_kind_per_step[_si2] if _si2 < len(gate_kind_per_step) else None
+            if _gk2 is None:
+                # Transport step — carry forward last tick
+                stim_tick_per_step[_si2] = _last_matched_tick if _last_matched_tick >= 0 else None
+                continue
+
+            # Determine if this animation step is 2Q or 1Q/meas/reset
+            _is_2q_step = (_gk2 == "ms")
+
+            # Advance tick pointer to next matching tick block
+            _best_tick_idx = None
+            for _tp in range(_tick_ptr, len(_tick_blocks)):
+                _tb2 = _tick_blocks[_tp]
+                _has_2q = bool(_tb2['pairs_2q'])
+                _has_1q = bool(_tb2['qubits_1q'])
+                if _is_2q_step and _has_2q:
+                    _best_tick_idx = _tp
+                    break
+                elif not _is_2q_step and _has_1q:
+                    _best_tick_idx = _tp
+                    break
+                elif not _is_2q_step and _has_2q:
+                    # 1Q step but only 2Q ticks remain — advance anyway
+                    continue
+                elif _is_2q_step and _has_1q:
+                    # 2Q step but only 1Q ticks remain — advance anyway
+                    continue
+
+            # If strict match failed, just take the next tick sequentially
+            if _best_tick_idx is None and _tick_ptr < len(_tick_blocks):
+                _best_tick_idx = _tick_ptr
+
+            if _best_tick_idx is not None:
+                stim_tick_per_step[_si2] = _tick_blocks[_best_tick_idx]['tick']
+                _last_matched_tick = _tick_blocks[_best_tick_idx]['tick']
+                _tick_ptr = _best_tick_idx + 1  # consume this tick
+            else:
+                # Exhausted ticks — hold at last
+                stim_tick_per_step[_si2] = _last_matched_tick if _last_matched_tick >= 0 else None
+
+    # ===================================================================
+    # Stim timeslice SVG cache  (one parsed SVG dict per TICK index)
+    # ===================================================================
+    _tick_svg_cache: Dict[int, Any] = {}  # tick_idx → parsed SVG dict
+    _has_stim_svg = False
+    _stim_n_ticks = len(_tick_blocks)
+
+    if stim_circuit is not None and _tick_blocks:
+        try:
+            import stim as _stim_mod2
+            _sc = stim_circuit if isinstance(stim_circuit, _stim_mod2.Circuit) else _stim_mod2.Circuit(str(stim_circuit))
+            # Parse per-tick timeslice SVGs
+            for _tidx in range(len(_tick_blocks)):
+                try:
+                    _ts_svg = _sc.diagram('timeslice-svg', tick=range(_tidx, _tidx + 1))
+                    _ts_str = str(_ts_svg)
+                    if _ts_str and '<svg' in _ts_str:
+                        _tick_svg_cache[_tidx] = _parse_stim_timeslice_svg(_ts_str)
+                except Exception:
+                    pass
+            # Normalise viewBox across all ticks for visual consistency
+            if _tick_svg_cache:
+                _all_vb = [d['viewBox'] for d in _tick_svg_cache.values()]
+                _union_vb = (
+                    min(v[0] for v in _all_vb),
+                    min(v[1] for v in _all_vb),
+                    max(v[0] + v[2] for v in _all_vb) - min(v[0] for v in _all_vb),
+                    max(v[1] + v[3] for v in _all_vb) - min(v[1] for v in _all_vb),
+                )
+                for _svd in _tick_svg_cache.values():
+                    _svd['viewBox'] = _union_vb
+            _has_stim_svg = bool(_tick_svg_cache)
+        except Exception:
+            _has_stim_svg = False
+
     if is_wise:
         fw = max(9, m * 4.5)
         fh = max(6, rows * 3.8)
     elif is_qccd:
         _all_xs_q = [p[0] for p in ion_pos.values()] if ion_pos else [0, 10]
         _all_ys_q = [p[1] for p in ion_pos.values()] if ion_pos else [0, 10]
-        fw = max(12, (max(_all_xs_q) - min(_all_xs_q)) * 0.5 + 4)
-        fh = max(9, (max(_all_ys_q) - min(_all_ys_q)) * 0.5 + 4)
+        _x_span = max(1, max(_all_xs_q) - min(_all_xs_q))
+        _y_span = max(1, max(_all_ys_q) - min(_all_ys_q))
+        # Scale to reasonable figure size: 0.6 in/unit, capped at 22 in
+        fw = min(22, max(14, _x_span * 0.6 + 6))
+        fh = min(18, max(10, _y_span * 0.6 + 5))
     else:
         fw, fh = 12, 9
 
@@ -1682,55 +2275,11 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
     _stim_lines: List[str] = []
     _stim_gate_line_idxs: List[int] = []   # indices of gate lines
     _gate_step_indices: List[int] = []     # animation steps that are gates
-    ax_stim = None
-    ax_slice = None                        # timeslice panel
-
-    # --- Build inverse map: native_op_idx → stim instruction idx ---
-    # Used for accurate pointer tracking in the stim sidebar.
-    _native_to_stim: Dict[int, int] = {}
-    if stim_instruction_map:
-        for _s_idx, _n_idxs in stim_instruction_map.items():
-            for _n_idx in _n_idxs:
-                _native_to_stim[_n_idx] = _s_idx
-
-    # --- Build logical→physical mapping for qubit remapping ---
-    _l2p: Dict[int, int] = {}
-    if qubit_mapping is not None:
-        _l2p = dict(getattr(qubit_mapping, 'logical_to_physical', {}))
-
+    ax_sidebar = None        # right-hand sidebar axis (stim or ops)
+    _sidebar_mode = "none"   # "stim", "ops", or "none"
     if stim_circuit is not None:
-        import re as _re
         _stim_str = str(stim_circuit)
-        _raw_lines = _stim_str.strip().split('\n')
-
-        # Remap qubit indices in stim lines to physical indices
-        def _remap_qubit_line(line: str) -> str:
-            """Replace logical qubit numbers with physical ones."""
-            if not _l2p:
-                return line
-            # Match gate lines like "CX 0 1" or "M 3 4 5"
-            # The pattern finds bare integers that follow a gate name.
-            def _repl(m):
-                q = int(m.group(0))
-                return str(_l2p.get(q, q))
-            stripped = line.strip()
-            # Only remap lines that look like gate instructions
-            _skip_pf = ('TICK', 'DETECTOR', 'OBSERVABLE_INCLUDE',
-                        'QUBIT_COORDS', 'SHIFT_COORDS', '#',
-                        'REPEAT', '{', '}')
-            if stripped and not stripped.startswith(_skip_pf):
-                # Split: gate name part vs qubit part
-                parts = stripped.split(None, 1)
-                if len(parts) == 2:
-                    gate_part, rest = parts
-                    # Remap integers in rest
-                    remapped_rest = _re.sub(r'\b(\d+)\b', _repl, rest)
-                    indent = line[:len(line) - len(line.lstrip())]
-                    return f"{indent}{gate_part} {remapped_rest}"
-            return line
-
-        _stim_lines = [_remap_qubit_line(l) for l in _raw_lines]
-
+        _stim_lines = _stim_str.strip().split('\n')
         # Identify "gate" lines (not TICK, annotations, coords, braces)
         _skip_prefixes = ('TICK', 'DETECTOR', 'OBSERVABLE_INCLUDE',
                           'QUBIT_COORDS', '#', 'REPEAT', '{', '}')
@@ -1743,90 +2292,28 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
             if gate_kind_per_step[_gi] is not None:
                 _gate_step_indices.append(_gi)
 
-    # --- Build stim-instruction-idx → sidebar line-idx mapping ---
-    # The flattened stim circuit's instruction indices map 1:1 to the
-    # non-annotation lines in order.  We walk the original circuit text
-    # to build stim_idx → sidebar line idx.
-    _stim_idx_to_line: Dict[int, int] = {}
     if stim_circuit is not None and _stim_lines:
-        _flat_gate_idx = 0
-        for _li2, _line2 in enumerate(_stim_lines):
-            _s2 = _line2.strip()
-            if not _s2 or _s2.startswith(('REPEAT', '{', '}', '#')):
-                continue
-            # This line corresponds to stim instruction _flat_gate_idx
-            _stim_idx_to_line[_flat_gate_idx] = _li2
-            _flat_gate_idx += 1
+        _sidebar_mode = "stim"
+    elif n_ops > 0:
+        _sidebar_mode = "ops"
 
-    # --- Build per-animation-step → stim line index mapping ---
-    # Walk step_groups: count native 2Q gates seen so far, look up
-    # the stim instruction that produced each one.
-    _step_to_stim_line: Dict[int, int] = {}
-    if _native_to_stim and _stim_idx_to_line:
-        _native_2q_count = 0
-        _native_all_count = 0
-        # Count native ops per step_group to track which native op idx
-        # each animation step corresponds to.
-        # The step_groups were built from `operations` which is now
-        # properly interleaved.  We track the index into `operations`
-        # that each step_group starts at.
-        _op_cursor = 0
-        for _sg_i, _sg in enumerate(step_groups):
-            # Find native op indices for ops in this group
-            for _sg_op in _sg:
-                if _op_cursor in _native_to_stim:
-                    _s_idx = _native_to_stim[_op_cursor]
-                    _l_idx = _stim_idx_to_line.get(_s_idx)
-                    if _l_idx is not None:
-                        # animation step = _sg_i + 1 (step 0 is initial)
-                        _step_to_stim_line[_sg_i + 1] = _l_idx
-                _op_cursor += 1
-
-    # --- Pre-compute timeslice text per TICK for the timeslice panel ---
-    # Manually split the stim text at TICK boundaries (works with all
-    # stim versions, unlike diagram("timeslice-text") which requires ≥1.16).
-    _tick_slices: Dict[int, str] = {}
-    _stim_tick_positions: List[int] = []   # line indices of TICK instructions
-    if stim_circuit is not None and _stim_lines:
-        # Locate TICK lines
-        for _li3, _line3 in enumerate(_stim_lines):
-            if _line3.strip() == 'TICK':
-                _stim_tick_positions.append(_li3)
-        # Build tick boundaries: [0, tick0, tick1, ..., end]
-        _tick_bounds = [0] + _stim_tick_positions + [len(_stim_lines)]
-        _skip_ts = ('QUBIT_COORDS', 'SHIFT_COORDS', '#',
-                    'REPEAT', '{', '}')
-        for _ti in range(len(_tick_bounds) - 1):
-            _ts_start = _tick_bounds[_ti]
-            _ts_end = _tick_bounds[_ti + 1]
-            _slice_lines: List[str] = []
-            for _li4 in range(_ts_start, _ts_end):
-                _s4 = _stim_lines[_li4].strip()
-                if _s4 and _s4 != 'TICK' and not _s4.startswith(_skip_ts):
-                    _slice_lines.append(_s4)
-            if _slice_lines:
-                _tick_slices[_ti] = '\n'.join(_slice_lines)
-
-    # Animation DPI is deliberately lower than the static-plot DPI to
-    # keep per-frame PNG sizes small (and total animation < 20 MB).
-    _ANIM_DPI = 72
-
-    if stim_circuit is not None and _stim_lines:
-        import matplotlib.gridspec as _gs
-        _has_timeslice = bool(_tick_slices)
-        if _has_timeslice:
-            fig = plt.figure(figsize=(fw + 6, fh + 1.0), dpi=_ANIM_DPI)
-            _spec = _gs.GridSpec(1, 3, width_ratios=[3, 1, 1], wspace=0.05)
+    import matplotlib.gridspec as _gs
+    ax_topo = None  # timeslice SVG panel
+    if _sidebar_mode != "none":
+        if _has_stim_svg:
+            # 3-column: architecture | SVG timeslice | sidebar
+            fig = plt.figure(figsize=(fw + 16, fh + 1.2), dpi=min(DPI, 100))
+            _spec = _gs.GridSpec(1, 3, width_ratios=[2.5, 2.0, 1.5], wspace=0.05)
             ax = fig.add_subplot(_spec[0])
-            ax_stim = fig.add_subplot(_spec[1])
-            ax_slice = fig.add_subplot(_spec[2])
+            ax_topo = fig.add_subplot(_spec[1])
+            ax_sidebar = fig.add_subplot(_spec[2])
         else:
-            fig = plt.figure(figsize=(fw + 4, fh + 1.0), dpi=_ANIM_DPI)
-            _spec = _gs.GridSpec(1, 2, width_ratios=[3, 1], wspace=0.05)
+            fig = plt.figure(figsize=(fw + 7, fh + 1.2), dpi=min(DPI, 100))
+            _spec = _gs.GridSpec(1, 2, width_ratios=[3, 1.3], wspace=0.04)
             ax = fig.add_subplot(_spec[0])
-            ax_stim = fig.add_subplot(_spec[1])
+            ax_sidebar = fig.add_subplot(_spec[1])
     else:
-        fig, ax = plt.subplots(figsize=(fw, fh + 1.0), dpi=_ANIM_DPI)
+        fig, ax = plt.subplots(figsize=(fw, fh + 1.2), dpi=min(DPI, 120))
 
     # Pre-compute axis limits
     all_x, all_y = [], []
@@ -1849,11 +2336,11 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
         for _pxy in ion_pos.values():
             all_x.append(_pxy[0])
             all_y.append(_pxy[1])
-    pad = SPACING * 0.8
+    pad = SPACING * (1.6 if is_qccd else 0.8)
     x_lo = min(all_x, default=0) - pad
-    x_hi = max(all_x, default=10) + pad + 1.5  # extra for right-side labels
-    y_lo = min(all_y, default=0) - pad - 0.8
-    y_hi = max(all_y, default=10) + pad + 1.2
+    x_hi = max(all_x, default=10) + pad + (2.5 if is_qccd else 1.5)
+    y_lo = min(all_y, default=0) - pad - (1.5 if is_qccd else 0.8)
+    y_hi = max(all_y, default=10) + pad + (2.0 if is_qccd else 1.2)
 
     def _ease(t):
         return t * t * (3 - 2 * t)
@@ -1920,15 +2407,18 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
         _qg = arch.qccd_graph
 
         # --- Edges (draw first so traps/junctions sit on top) ---
-        for _edge in getattr(_qg, 'edges', getattr(_qg, '_edges', [])):
-            _src_idx = getattr(_edge, 'src', getattr(_edge, 'source', None))
-            _tgt_idx = getattr(_edge, 'tgt', getattr(_edge, 'target', None))
-            if _src_idx is None or _tgt_idx is None:
-                continue
-            _src_node = _qg.nodes.get(_src_idx if isinstance(_src_idx, int) else _src_idx.idx)
-            _tgt_node = _qg.nodes.get(_tgt_idx if isinstance(_tgt_idx, int) else _tgt_idx.idx)
+        # Use crossings dict which contains Crossing objects with .source/.target nodes
+        _seen_pairs = set()
+        for _crossing in _qg.crossings.values():
+            _src_node = _crossing.source
+            _tgt_node = _crossing.target
             if _src_node is None or _tgt_node is None:
                 continue
+            # Avoid drawing duplicate edges
+            _pair = (min(_src_node.idx, _tgt_node.idx), max(_src_node.idx, _tgt_node.idx))
+            if _pair in _seen_pairs:
+                continue
+            _seen_pairs.add(_pair)
             sx, sy = _src_node.position
             tx, ty = _tgt_node.position
             ax_local.plot([sx, tx], [sy, ty],
@@ -1943,16 +2433,18 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
                              getattr(_node, 'label', str(_node.idx)))
 
             if 'Trap' in _ntype:
-                _tw = 1.6
-                _th = 0.7
+                _ni_draw = len(list(getattr(_node, 'ions', [])))
+                _tw = max(2.2, max(0, _ni_draw - 1) * _VISUAL_ION_SP
+                          + 2 * TRAP_PAD_X + 0.6)
+                _th = max(1.2, 2 * ION_RADIUS * 1.2 + 2 * TRAP_PAD_Y + 0.3)
                 rect = FancyBboxPatch(
                     (px - _tw / 2, py - _th / 2), _tw, _th,
                     boxstyle="round,pad=0.15",
                     facecolor=TRAP_FILL, edgecolor=TRAP_EDGE,
                     linewidth=1.6, zorder=2, alpha=0.88)
                 ax_local.add_patch(rect)
-                ax_local.text(px, py + _th / 2 + 0.12, _label,
-                              fontsize=7.5, ha="center", va="bottom",
+                ax_local.text(px, py + _th / 2 + 0.15, _label,
+                              fontsize=10, ha="center", va="bottom",
                               color=TRAP_EDGE, fontweight="bold",
                               path_effects=_STROKE_THIN)
             elif 'Junction' in _ntype or 'Crossing' in _ntype:
@@ -1964,7 +2456,7 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
                     linewidth=1.2, zorder=4, alpha=0.85)
                 ax_local.add_patch(jrect)
             else:
-                # Generic node \u2014 small circle
+                # Generic node — small circle
                 ax_local.plot(px, py, 'o', color='#888888',
                               markersize=6, zorder=3)
                 ax_local.text(px, py + 0.25, _label,
@@ -1981,8 +2473,10 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
             If this step is a gate, one of 'ms', 'rotation', 'measure'.
             Draws laser beams on active ions accordingly.
         """
-        ion_r = ION_RADIUS * 0.85
-        laser_offset = trap_h * 0.7  # beam starts above the ion
+        ion_r = ION_RADIUS * (1.2 if is_qccd else 0.85)
+        laser_offset = trap_h * (1.0 if is_qccd else 0.7)  # beam starts above the ion
+        _ion_font = 12 if is_qccd else 9
+        _idx_font = 9 if is_qccd else 7
 
         for idx, (ix, iy) in sorted(positions.items()):
             is_active = idx in active_set
@@ -2005,13 +2499,13 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
             ax_local.add_patch(circ)
             role_ch = _ion_role_letter(idx, ion_roles)
             ax_local.text(ix, iy, role_ch,
-                          fontsize=9, ha="center", va="center",
+                          fontsize=_ion_font, ha="center", va="center",
                           fontweight="bold", color="white", zorder=11,
                           path_effects=[path_effects.withStroke(
                               linewidth=2, foreground=color)])
             if show_labels:
                 ax_local.text(ix, iy - ion_r - 0.12, str(idx),
-                              fontsize=7, ha="center", va="top",
+                              fontsize=_idx_font, ha="center", va="top",
                               fontweight="bold", color="#555", zorder=11)
 
         # --- Laser beams for gate steps ---
@@ -2022,6 +2516,8 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
                 beam_color = LASER_ROTATION
             elif gate_kind == "measure":
                 beam_color = LASER_MEASURE
+            elif gate_kind == "reset":
+                beam_color = LASER_RESET
             else:
                 beam_color = None
 
@@ -2097,16 +2593,16 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
                         # Glow behind beam
                         ax_local.plot(
                             [bx_start, ix], [by_start, iy + ion_r],
-                            color=beam_color, linewidth=12.0, alpha=0.15,
+                            color=beam_color, linewidth=14.0, alpha=0.30,
                             solid_capstyle="round", zorder=7)
                         # Glow circle at ion
-                        glow = Circle((ix, iy), ion_r * 2.2,
-                                      facecolor=beam_color, alpha=0.35,
+                        glow = Circle((ix, iy), ion_r * 2.5,
+                                      facecolor=beam_color, alpha=0.45,
                                       edgecolor="none", zorder=9)
                         ax_local.add_patch(glow)
                         # Outer halo
-                        halo = Circle((ix, iy), ion_r * 3.5,
-                                      facecolor=beam_color, alpha=0.10,
+                        halo = Circle((ix, iy), ion_r * 4.0,
+                                      facecolor=beam_color, alpha=0.20,
                                       edgecolor="none", zorder=7)
                         ax_local.add_patch(halo)
                         # Coloured ring outline on active ion
@@ -2117,7 +2613,8 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
                         ax_local.add_patch(ring)
                     # Gate-type label above the group
                     if active_positions:
-                        _lbl = {"rotation": "ROT", "measure": "MEAS"}.get(
+                        _lbl = {"rotation": "ROT", "measure": "MEAS",
+                                "reset": "RESET"}.get(
                             gate_kind, "GATE")
                         _lx = sum(p[0] for _, p in active_positions) / len(active_positions)
                         _ly = max(p[1] for _, p in active_positions) + laser_offset * 1.7
@@ -2130,9 +2627,49 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
                                 linewidth=3, foreground="white")])
 
         # Draw arrows for active transport ions showing motion
+        # Detect swap pairs: two ions whose old/new positions are swapped
         if show_trail:
-            for idx_t, (old_xy, new_xy) in show_trail.items():
-                if old_xy != new_xy:
+            _drawn_pairs = set()
+            _trail_keys = list(show_trail.keys())
+            for _ti, idx_t in enumerate(_trail_keys):
+                old_xy, new_xy = show_trail[idx_t]
+                if old_xy == new_xy:
+                    continue
+                # Check if there's a swap partner
+                _partner = None
+                for _tj in range(_ti + 1, len(_trail_keys)):
+                    idx_t2 = _trail_keys[_tj]
+                    old2, new2 = show_trail[idx_t2]
+                    # Swap: A's old ≈ B's new and B's old ≈ A's new
+                    if (abs(old_xy[0] - new2[0]) < 1.0
+                            and abs(old_xy[1] - new2[1]) < 1.0
+                            and abs(new_xy[0] - old2[0]) < 1.0
+                            and abs(new_xy[1] - old2[1]) < 1.0):
+                        _partner = idx_t2
+                        break
+                if _partner is not None and (_partner, idx_t) not in _drawn_pairs:
+                    _drawn_pairs.add((idx_t, _partner))
+                    _drawn_pairs.add((_partner, idx_t))
+                    # Draw connecting line between STATIC origin positions
+                    old2_p, _new2_p = show_trail[_partner]
+                    ax_local.plot(
+                        [old_xy[0], old2_p[0]],
+                        [old_xy[1], old2_p[1]],
+                        color='#E65100', linewidth=3.0, alpha=0.55,
+                        solid_capstyle='round', zorder=9,
+                        linestyle='--')
+                    # Arrows for each ion
+                    for _sid in (idx_t, _partner):
+                        _so, _sn = show_trail[_sid]
+                        ax_local.annotate(
+                            "", xy=_sn, xytext=_so,
+                            arrowprops=dict(arrowstyle="-|>",
+                                            color="#E65100", lw=2.5,
+                                            alpha=0.7,
+                                            connectionstyle="arc3,rad=0.08"),
+                            zorder=9)
+                elif idx_t not in {p for pair in _drawn_pairs for p in pair}:
+                    # Unpaired transport — single arrow
                     ax_local.annotate(
                         "", xy=new_xy, xytext=old_xy,
                         arrowprops=dict(arrowstyle="-|>",
@@ -2159,12 +2696,26 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
         else:
             _draw_grid_qccd(ax)
 
+        op_idx = -1  # default for frame 0; overwritten in frame > 0 branch
+
         if frame == 0:
             # Initial state
             _draw_ions(ax, snapshots[0], set())
             step_label = labels_per_step[0]
             op_detail = ""
             title_str = "Initial configuration"
+            if n_ops == 0:
+                title_str = "Initial configuration (no operations to animate)"
+                ax.text(0.5, 0.5,
+                        "No operations provided.\n"
+                        "Pass operations from a routed circuit\n"
+                        "to see transport & gate animations.",
+                        transform=ax.transAxes, ha="center", va="center",
+                        fontsize=12, color="#888",
+                        bbox=dict(facecolor="white", alpha=0.8,
+                                  edgecolor="#ccc",
+                                  boxstyle="round,pad=0.8"),
+                        zorder=50)
         else:
             # Variable-length step lookup
             import bisect as _bisect_mod
@@ -2234,7 +2785,7 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
                 bg_rect = FancyBboxPatch(
                     (x_lo, y_lo), x_hi - x_lo, y_hi - y_lo,
                     boxstyle="round,pad=0",
-                    facecolor="#FFD600", alpha=0.07,
+                    facecolor="#FFD600", alpha=0.18,
                     edgecolor="none", zorder=0)
                 ax.add_patch(bg_rect)
             elif gk == "measure":
@@ -2242,7 +2793,7 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
                 bg_rect = FancyBboxPatch(
                     (x_lo, y_lo), x_hi - x_lo, y_hi - y_lo,
                     boxstyle="round,pad=0",
-                    facecolor="#66BB6A", alpha=0.05,
+                    facecolor="#66BB6A", alpha=0.15,
                     edgecolor="none", zorder=0)
                 ax.add_patch(bg_rect)
             elif gk == "rotation":
@@ -2250,7 +2801,15 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
                 bg_rect = FancyBboxPatch(
                     (x_lo, y_lo), x_hi - x_lo, y_hi - y_lo,
                     boxstyle="round,pad=0",
-                    facecolor="#AB47BC", alpha=0.04,
+                    facecolor="#AB47BC", alpha=0.15,
+                    edgecolor="none", zorder=0)
+                ax.add_patch(bg_rect)
+            elif gk == "reset":
+                from matplotlib.patches import FancyBboxPatch
+                bg_rect = FancyBboxPatch(
+                    (x_lo, y_lo), x_hi - x_lo, y_hi - y_lo,
+                    boxstyle="round,pad=0",
+                    facecolor="#00BCD4", alpha=0.12,
                     edgecolor="none", zorder=0)
                 ax.add_patch(bg_rect)
 
@@ -2268,11 +2827,13 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
                 kind = "[ROTATION]"
             elif gk == "measure":
                 kind = "[MEASURE]"
+            elif gk == "reset":
+                kind = "[RESET]"
             else:
                 kind = "[GATE]"
             title_str = f"{kind} {op_detail}"
 
-        ax.set_title(title_str, fontsize=11, fontweight="bold", pad=8)
+        ax.set_title(title_str, fontsize=13, fontweight="bold", pad=10)
 
         # Status panel
         ax.text(0.02, 0.02, step_label,
@@ -2291,124 +2852,210 @@ def animate_transport(arch, operations, interval=1200, show_labels=True,
                               edgecolor="#E0C050", boxstyle="round,pad=0.25"),
                     zorder=100)
 
+        # Progress bar showing execution time — at top of architecture panel
+        _total_time_us = sum(_step_duration_us) if _step_duration_us else 0
+        if _total_time_us > 0 and n_ops > 0:
+            # Compute elapsed time up to current step
+            _elapsed_us = sum(_step_duration_us[:op_idx+1]) if op_idx >= 0 else 0
+            _progress = _elapsed_us / _total_time_us
+            _bar_width = 0.50
+            _bar_height = 0.022
+            _bar_x = 0.25
+            _bar_y = 0.96
+            # Background bar
+            ax.add_patch(plt.Rectangle(
+                (_bar_x, _bar_y), _bar_width, _bar_height,
+                transform=ax.transAxes, facecolor="#E0E0E0",
+                edgecolor="#BDBDBD", linewidth=0.8, zorder=99,
+                clip_on=False))
+            # Progress fill
+            ax.add_patch(plt.Rectangle(
+                (_bar_x, _bar_y), _bar_width * _progress, _bar_height,
+                transform=ax.transAxes, facecolor="#4CAF50",
+                edgecolor="none", zorder=100, clip_on=False))
+            # Time label
+            _pct_str = f"{_progress*100:.0f}%"
+            _time_str = f"{_elapsed_us:.0f} / {_total_time_us:.0f} µs  ({_pct_str})"
+            ax.text(_bar_x + _bar_width / 2, _bar_y - 0.008,
+                    _time_str,
+                    transform=ax.transAxes,
+                    fontsize=8, ha="center", va="top",
+                    fontfamily="monospace", color="#424242", zorder=100,
+                    clip_on=False)
+
         # Gate-type legend (right side)
         legend_y = 0.02
         for lbl, lc in [("MS/2Q", LASER_MS),
                          ("Rotation", LASER_ROTATION),
-                         ("Measure", LASER_MEASURE)]:
+                         ("Measure", LASER_MEASURE),
+                         ("Reset", LASER_RESET)]:
             ax.plot([], [], color=lc, linewidth=3, label=lbl)
         ax.legend(loc="lower right", fontsize=8, framealpha=0.85,
                   edgecolor="#ccc", fancybox=True, ncol=3,
                   bbox_to_anchor=(0.98, 0.01))
 
-        # --- Stim circuit sidebar rendering ---
-        if ax_stim is not None and _stim_lines:
-            ax_stim.clear()
-            ax_stim.set_facecolor('#F8F8FC')
-            ax_stim.axis('off')
-            ax_stim.set_xlim(0, 1)
-            ax_stim.set_ylim(0, 1)
-            ax_stim.set_title('Stim Circuit (physical qubits)', fontsize=8,
-                              fontweight='bold', pad=4)
+        # --- Sidebar rendering (stim circuit or operations list) ---
+        if ax_sidebar is not None:
+            ax_sidebar.clear()
+            ax_sidebar.set_facecolor('#F8F8FC')
+            ax_sidebar.axis('off')
+            ax_sidebar.set_xlim(0, 1)
+            ax_sidebar.set_ylim(0, 1)
 
-            # Determine which stim line to highlight using the
-            # stim_instruction_map-based lookup when available,
-            # falling back to the old proportional estimate.
-            _cur_stim_line = 0
-            if frame > 0:
-                # --- Strategy 1: exact lookup via stim_instruction_map ---
-                if _step_to_stim_line and (op_idx + 1) in _step_to_stim_line:
-                    _cur_stim_line = _step_to_stim_line[op_idx + 1]
-                elif _step_to_stim_line:
-                    # Find the most recent step that has a mapping
-                    _best = 0
-                    for _k_step in sorted(_step_to_stim_line.keys()):
-                        if _k_step <= op_idx + 1:
-                            _best = _step_to_stim_line[_k_step]
-                    _cur_stim_line = _best
-                else:
-                    # --- Strategy 2: proportional fallback ---
-                    _n_gates_done = sum(
-                        1 for _gsi in _gate_step_indices
-                        if _gsi <= op_idx + 1
-                    )
-                    _n_stim_gates = len(_stim_gate_line_idxs)
-                    if _n_stim_gates > 0 and _n_gates_done > 0:
-                        _prog = min(1.0, _n_gates_done / max(1, len(_gate_step_indices)))
-                        _sg_idx2 = min(
-                            _n_stim_gates - 1,
-                            int(_prog * _n_stim_gates))
-                        _cur_stim_line = _stim_gate_line_idxs[_sg_idx2]
+            if _sidebar_mode == "stim" and _stim_lines:
+                ax_sidebar.set_title('Stim Circuit', fontsize=9,
+                                     fontweight='bold', pad=4)
 
-            # Show a scrolling window centred on current line
-            _window = min(25, len(_stim_lines))
-            _w_start = max(0, _cur_stim_line - _window // 2)
-            _w_end = min(len(_stim_lines), _w_start + _window)
-            if _w_end - _w_start < _window:
-                _w_start = max(0, _w_end - _window)
+                # Determine which stim line to highlight using TICK matching.
+                _cur_stim_line = 0
+                if frame > 0 and n_ops > 0:
+                    _step_tick = stim_tick_per_step[op_idx + 1] if op_idx + 1 < len(stim_tick_per_step) else None
+                    if _step_tick is not None and _step_tick in _tick_to_first_line:
+                        _cur_stim_line = _tick_to_first_line[_step_tick]
+                    else:
+                        # Fallback: proportional mapping
+                        _step_frac = min(1.0, (op_idx + 1) / n_ops)
+                        _cur_stim_line = int(
+                            _step_frac * max(0, len(_stim_lines) - 1))
+                    _cur_stim_line = max(
+                        0, min(_cur_stim_line, len(_stim_lines) - 1))
 
-            for _vi, _lidx in enumerate(range(_w_start, _w_end)):
-                _is_cur = (_lidx == _cur_stim_line and frame > 0)
-                _y_frac = 1.0 - (_vi + 0.5) / _window
-                # Highlight background for current line
-                if _is_cur:
-                    ax_stim.axhspan(
-                        _y_frac - 0.5 / _window,
-                        _y_frac + 0.5 / _window,
-                        facecolor='#FFD600', alpha=0.35, zorder=0)
-                    # Pointer arrow
-                    ax_stim.text(
-                        0.98, _y_frac, '\u25C0',
-                        transform=ax_stim.transAxes,
-                        fontsize=10, color='#E65100',
-                        fontweight='bold', ha='right', va='center',
-                        zorder=5)
-                _line_txt = _stim_lines[_lidx]
-                _trunc = _line_txt[:42]
-                ax_stim.text(
-                    0.02, _y_frac,
-                    f'{_lidx+1:3d}\u2502 {_trunc}',
-                    transform=ax_stim.transAxes,
-                    fontsize=5.5, fontfamily='monospace',
-                    color='#000' if _is_cur else '#888',
-                    fontweight='bold' if _is_cur else 'normal',
-                    va='center', zorder=3)
+                # Show a scrolling window centred on current line
+                _window = min(40, len(_stim_lines))
+                _w_start = max(0, _cur_stim_line - _window // 2)
+                _w_end = min(len(_stim_lines), _w_start + _window)
+                if _w_end - _w_start < _window:
+                    _w_start = max(0, _w_end - _window)
 
-        # --- Timeslice panel rendering ---
-        if ax_slice is not None and _tick_slices:
-            ax_slice.clear()
-            ax_slice.set_facecolor('#F8F9FF')
-            ax_slice.axis('off')
-            ax_slice.set_xlim(0, 1)
-            ax_slice.set_ylim(0, 1)
-            ax_slice.set_title('Timeslice', fontsize=8,
-                               fontweight='bold', pad=4)
+                for _vi, _lidx in enumerate(range(_w_start, _w_end)):
+                    _is_cur = (_lidx == _cur_stim_line and frame > 0)
+                    _y_frac = 1.0 - (_vi + 0.5) / _window
+                    # Highlight background for current line
+                    if _is_cur:
+                        ax_sidebar.axhspan(
+                            _y_frac - 0.5 / _window,
+                            _y_frac + 0.5 / _window,
+                            facecolor='#FFD600', alpha=0.45, zorder=0)
+                        # Pointer arrow
+                        ax_sidebar.text(
+                            0.98, _y_frac, '\u25C0',
+                            transform=ax_sidebar.transAxes,
+                            fontsize=12, color='#E65100',
+                            fontweight='bold', ha='right', va='center',
+                            zorder=5)
+                    _line_txt = _stim_lines[_lidx]
+                    _trunc = _line_txt[:60]
+                    if len(_line_txt) > 60:
+                        _trunc += '\u2026'
+                    ax_sidebar.text(
+                        0.02, _y_frac,
+                        f'{_lidx+1:3d}\u2502 {_trunc}',
+                        transform=ax_sidebar.transAxes,
+                        fontsize=7.5, fontfamily='monospace',
+                        color='#000' if _is_cur else '#666',
+                        fontweight='bold' if _is_cur else 'normal',
+                        va='center', zorder=3)
 
-            # Determine current tick from the stim sidebar position
+            elif _sidebar_mode == "ops":
+                # Operations-list sidebar (fallback when no stim circuit)
+                ax_sidebar.set_title('Timeslice  (steps)', fontsize=9,
+                                     fontweight='bold', pad=4)
+                _cur_step = max(0, op_idx + 1) if frame > 0 else 0
+                _n_labels = len(labels_per_step)
+                _window_o = min(28, _n_labels)
+                _w_start_o = max(0, _cur_step - _window_o // 2)
+                _w_end_o = min(_n_labels, _w_start_o + _window_o)
+                if _w_end_o - _w_start_o < _window_o:
+                    _w_start_o = max(0, _w_end_o - _window_o)
+
+                # Colour map for step kinds
+                _kind_colors = {
+                    'ms': LASER_MS, 'rotation': LASER_ROTATION,
+                    'measure': LASER_MEASURE, 'reset': '#00BCD4',
+                    None: '#78909C',  # transport / unknown
+                }
+                for _vi_o, _sidx in enumerate(
+                        range(_w_start_o, _w_end_o)):
+                    _is_cur_o = (_sidx == _cur_step and frame > 0)
+                    _y_frac_o = 1.0 - (_vi_o + 0.5) / _window_o
+                    _gk_o = (gate_kind_per_step[_sidx]
+                             if _sidx < len(gate_kind_per_step) else None)
+                    _is_xport = (is_transport_step[_sidx]
+                                 if _sidx < len(is_transport_step)
+                                 else False)
+
+                    # Highlight current step
+                    if _is_cur_o:
+                        ax_sidebar.axhspan(
+                            _y_frac_o - 0.5 / _window_o,
+                            _y_frac_o + 0.5 / _window_o,
+                            facecolor='#FFD600', alpha=0.40, zorder=0)
+                        ax_sidebar.text(
+                            0.98, _y_frac_o, '\u25C0',
+                            transform=ax_sidebar.transAxes,
+                            fontsize=11, color='#E65100',
+                            fontweight='bold', ha='right', va='center',
+                            zorder=5)
+
+                    # Coloured dot for step kind
+                    _dot_c = _kind_colors.get(_gk_o, '#78909C')
+                    if _is_xport:
+                        _dot_c = '#42A5F5'  # blue for transport
+                    ax_sidebar.plot(
+                        0.04, _y_frac_o, 'o', color=_dot_c,
+                        markersize=4, transform=ax_sidebar.transAxes,
+                        zorder=4, clip_on=False)
+
+                    # Step label text
+                    _lbl_o = (labels_per_step[_sidx]
+                              if _sidx < len(labels_per_step)
+                              else f"Step {_sidx}")
+                    _trunc_o = _lbl_o[:44]
+                    ax_sidebar.text(
+                        0.08, _y_frac_o,
+                        f'{_sidx:3d}\u2502 {_trunc_o}',
+                        transform=ax_sidebar.transAxes,
+                        fontsize=6.0, fontfamily='monospace',
+                        color='#000' if _is_cur_o else '#777',
+                        fontweight='bold' if _is_cur_o else 'normal',
+                        va='center', zorder=3)
+
+        # --- Topological circuit-view (stim timeslice-svg) ---
+        # Redraw every frame (FuncAnimation clears the figure each time).
+        if ax_topo is not None and _tick_svg_cache:
+            # Determine current tick from step mapping
             _cur_tick = 0
-            if frame > 0 and _stim_tick_positions:
-                # Count how many TICK lines we have passed
-                for _tp in _stim_tick_positions:
-                    if _tp <= _cur_stim_line:
-                        _cur_tick += 1
+            if frame > 0 and n_ops > 0:
+                _st = stim_tick_per_step[op_idx + 1] if op_idx + 1 < len(stim_tick_per_step) else None
+                if _st is not None:
+                    _cur_tick = _st
+                else:
+                    # Forward-fill from nearest earlier step
+                    for _sb in range(op_idx, -1, -1):
+                        _bt = (stim_tick_per_step[_sb]
+                               if _sb < len(stim_tick_per_step)
+                               else None)
+                        if _bt is not None:
+                            _cur_tick = _bt
+                            break
+                _cur_tick = max(0, min(_cur_tick,
+                                       len(_tick_svg_cache) - 1))
 
-            if _cur_tick in _tick_slices:
-                _ts_text = _tick_slices[_cur_tick]
-                _ts_lines = _ts_text.strip().split('\n')
-                _n_ts = len(_ts_lines)
-                _ts_window = min(30, _n_ts)
-                for _tsi, _ts_line in enumerate(_ts_lines[:_ts_window]):
-                    _y_ts = 1.0 - (_tsi + 0.5) / max(_ts_window, 1)
-                    ax_slice.text(
-                        0.03, _y_ts, _ts_line[:50],
-                        transform=ax_slice.transAxes,
-                        fontsize=5.0, fontfamily='monospace',
-                        color='#333', va='center', zorder=3)
-                ax_slice.text(
-                    0.5, 0.0, f'tick={_cur_tick}',
-                    transform=ax_slice.transAxes,
-                    fontsize=7, ha='center', va='bottom',
-                    color='#666', fontstyle='italic', zorder=3)
+            _svg_data = _tick_svg_cache.get(_cur_tick)
+            if _svg_data:
+                _draw_stim_svg(
+                    ax_topo, _svg_data,
+                    title=f'Timeslice  TICK {_cur_tick}/{_stim_n_ticks}')
+            else:
+                ax_topo.clear()
+                ax_topo.set_facecolor('#F8F8FC')
+                ax_topo.axis('off')
+                ax_topo.text(
+                    0.5, 0.5,
+                    f'TICK {_cur_tick}\n(no SVG data)',
+                    transform=ax_topo.transAxes,
+                    ha='center', va='center', fontsize=10,
+                    color='#999')
 
     anim = _FA(fig, _update, frames=total_frames,
                interval=interval,

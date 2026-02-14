@@ -306,20 +306,17 @@ class CSSStatePreparation:
         noise_model : NoiseModel, optional
             Noise model for adding errors to operations.
         skip_reset : bool
-            If True, skip the initial R (reset) on data_qubits.  Use this
-            when the caller has already reset all qubits (e.g. via
-            emit_reset_all) to avoid non-deterministic detectors caused
-            by duplicate resets.
+            If True, skip the ``RX`` on data_qubits.  Use this when
+            the caller has already prepared qubits in |+⟩.
             
         Returns
         -------
         ProjectionResult
             Contains measurement indices for Pauli frame tracking.
         """
-        # Reset all data qubits to |0⟩, then H to get |+⟩ (skip reset if caller already did this)
+        # RX atomically resets to |+⟩ (no H gate needed)
         if not skip_reset:
-            circuit.append("R", data_qubits)
-        circuit.append("H", data_qubits)
+            circuit.append("RX", data_qubits)
         circuit.append("TICK")
         
         return self._measure_stabilizers(

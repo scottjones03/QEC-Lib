@@ -200,6 +200,8 @@ class TrappedIonExperiment(TrappedIonSimulator):
         
         # Cache for ideal circuit
         self._ideal_circuit: Optional[stim.Circuit] = None
+        # Rich QEC metadata captured from internal experiment builder
+        self._qec_metadata: Optional[Any] = None
     
     def build_ideal_circuit(self) -> stim.Circuit:
         """Build the ideal (noise-free) circuit for this experiment.
@@ -228,6 +230,49 @@ class TrappedIonExperiment(TrappedIonSimulator):
         
         return self._ideal_circuit
     
+    @property
+    def qec_metadata(self) -> Optional[Any]:
+        """Rich QEC metadata for the hardware compiler.
+
+        Available after ``build_ideal_circuit()`` has been called.
+        Returns a :class:`QECMetadata` instance populated from the
+        builder and code, or ``None`` if the ideal circuit was built
+        via a path that does not produce metadata (e.g. ``code.to_stim()``).
+        """
+        return self._qec_metadata
+
+    @property
+    def qubit_roles(self) -> Dict[int, str]:
+        """Map of qubit index → role ('D', 'X', 'Z', 'P') from QEC metadata."""
+        meta = self._qec_metadata
+        if meta is None:
+            return {}
+        return dict(meta.qubit_roles)
+
+    @property
+    def data_qubit_indices(self) -> frozenset:
+        """Indices of data qubits from QEC metadata."""
+        meta = self._qec_metadata
+        if meta is None:
+            return frozenset()
+        return meta.data_qubit_indices
+
+    @property
+    def ancilla_qubit_indices(self) -> frozenset:
+        """Indices of ancilla qubits from QEC metadata."""
+        meta = self._qec_metadata
+        if meta is None:
+            return frozenset()
+        return meta.ancilla_qubit_indices
+
+    @property
+    def preparation_qubit_indices(self) -> frozenset:
+        """Indices of preparation qubits from QEC metadata."""
+        meta = self._qec_metadata
+        if meta is None:
+            return frozenset()
+        return meta.preparation_qubit_indices
+
     # ------------------------------------------------------------------
     # Memory experiment path (gadget=None)
     # ------------------------------------------------------------------
@@ -295,7 +340,13 @@ class TrappedIonExperiment(TrappedIonSimulator):
             rounds=self.rounds,
             basis=basis,
         )
-        return css_exp.to_stim()
+        circuit = css_exp.to_stim()
+        # Capture QECMetadata before the local experiment is discarded
+        try:
+            self._qec_metadata = css_exp.qec_metadata
+        except (RuntimeError, AttributeError):
+            pass
+        return circuit
     
     def _build_stabilizer_memory_circuit(self) -> stim.Circuit:
         """Build a memory circuit for general stabiliser codes.
@@ -353,7 +404,13 @@ class TrappedIonExperiment(TrappedIonSimulator):
             num_rounds_after=self.rounds,
             metadata=self.metadata,
         )
-        return ft_exp.to_stim()
+        circuit = ft_exp.to_stim()
+        # Capture QECMetadata before the local experiment is discarded
+        try:
+            self._qec_metadata = ft_exp.qec_metadata
+        except (RuntimeError, AttributeError):
+            pass
+        return circuit
     
     # ------------------------------------------------------------------
     # Helpers
@@ -641,7 +698,7 @@ class TrappedIonExperiment(TrappedIonSimulator):
                 "reconfiguration_time_us", 0.0)
             simulation_metrics["Operations"] = cm.get("total_operations", 0)
             simulation_metrics["MeanConcurrency"] = cm.get("parallelism", 0.0)
-            simulation_metrics["QubitOperations"] = cm.get("two_qubit_operations", 0)
+            simulation_metrics["QubitOperations"] = cm.get("two_qubit_ops", 0)
             simulation_metrics["ReconfigurationTime"] = cm.get(
                 "reconfiguration_time_us", 0.0)
 

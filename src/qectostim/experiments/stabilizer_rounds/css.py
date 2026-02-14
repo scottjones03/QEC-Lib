@@ -20,7 +20,6 @@ from .base import BaseStabilizerRoundBuilder, StabilizerBasis
 
 if TYPE_CHECKING:
     from qectostim.codes.abstract_css import CSSCode
-    from qectostim.gadgets.preparation import CSSStatePreparation, LogicalBasis
 
 
 class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
@@ -38,6 +37,16 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
     - Graph-coloring fallback for conflict-free CNOT layers
     - SHIFT_COORDS for time advancement
     - Interleaved X/Z scheduling for surface codes
+    
+    X Stabilizer Measurement
+    ------------------------
+    Uses CX-based measurement with native RX/MRX instructions:
+    - RX resets ancillas to |+⟩ directly (no H gate needed)
+    - CX(ancilla → data) for parity extraction  
+    - MRX measures in X basis directly (no H gate needed)
+    
+    This approach is simpler and avoids the error propagation issues
+    that CZ-based measurement has with certain initial states.
     """
     
     def __init__(
@@ -50,24 +59,9 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         measurement_basis: str = "Z",
         enable_metachecks: bool = False,
         single_shot_metachecks: bool = True,
-        x_stabilizer_mode: str = "cz",
         coord_offset: Optional[Tuple[float, ...]] = None,
     ):
         super().__init__(code, ctx, block_name, data_offset, ancilla_offset, measurement_basis, coord_offset=coord_offset)
-        
-        # X-stabilizer extraction mode:
-        # - "cz": Use CZ gates (default, safe for memory experiments)
-        #         H-CZ-H-Measure measures X parity without disturbing Z-basis state
-        # - "cx": Use CX gates (required for teleportation gadgets)
-        #         H-CX-H-Measure: after teleportation CNOT, post-CNOT X_D syndrome
-        #         remains local to the data block, enabling deterministic detectors
-        # 
-        # IMPORTANT: Teleportation requires "cx" mode because CZ-based extraction
-        # couples X_D measurements to Z_A after the teleportation CNOT, making
-        # the boundary detectors non-deterministic.
-        if x_stabilizer_mode not in ("cz", "cx"):
-            raise ValueError(f"x_stabilizer_mode must be 'cz' or 'cx', got {x_stabilizer_mode!r}")
-        self._x_stabilizer_mode = x_stabilizer_mode
         
         # Get code's FT gadget config for code-specific behavior
         self._ft_config = code.get_ft_gadget_config()
@@ -274,30 +268,184 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
     def total_qubits(self) -> int:
         """Total qubits used by this block (data + ancillas + metacheck ancillas)."""
         return self.code.n + self._n_x + self._n_z + self._n_meta_x + self._n_meta_z
-    
+
+    @property
+    def qubit_roles(self) -> Dict[int, str]:
+        """Authoritative mapping of qubit index → role string.
+
+        Returns a dict keyed by global qubit index with values:
+
+        - ``'D'`` — data qubit
+        - ``'X'`` — X-stabilizer ancilla
+        - ``'Z'`` — Z-stabilizer ancilla
+        - ``'MX'`` — metacheck ancilla for X syndrome
+        - ``'MZ'`` — metacheck ancilla for Z syndrome
+
+        This is the *source of truth* for qubit roles; downstream
+        consumers (hardware compilers, visualisation) should use this
+        rather than reverse-engineering roles from MR vs M instructions.
+        """
+        roles: Dict[int, str] = {}
+        for q in self.data_qubits:
+            roles[q] = "D"
+        for q in self.x_ancillas:
+            roles[q] = "X"
+        for q in self.z_ancillas:
+            roles[q] = "Z"
+        for q in self.meta_x_ancillas:
+            roles[q] = "MX"
+        for q in self.meta_z_ancillas:
+            roles[q] = "MZ"
+        return roles
+
+    # ------------------------------------------------------------------
+    # CNOT schedule export (for QECMetadata → routing)
+    # ------------------------------------------------------------------
+
+    def get_cnot_layers(self, stab_type: str) -> Optional[List[List[Tuple[int, int]]]]:
+        """Return parallel CNOT layers for the given stabilizer type.
+
+        Each layer is a list of ``(ctrl, tgt)`` pairs that can execute
+        simultaneously (no qubit conflicts within a layer).  The layer
+        ordering matches the actual circuit emission order.
+
+        Parameters
+        ----------
+        stab_type : str
+            ``"x"`` or ``"z"``.
+
+        Returns
+        -------
+        list or None
+            ``None`` when the code has no stabilizers of this type.
+        """
+        if stab_type == "x":
+            return self._get_cnot_layers_for_type(
+                self._hx, self._x_schedule, self._x_stab_coords,
+                self.x_ancillas, is_x_type=True,
+            )
+        else:
+            return self._get_cnot_layers_for_type(
+                self._hz, self._z_schedule, self._z_stab_coords,
+                self.z_ancillas, is_x_type=False,
+            )
+
+    def get_all_cnot_layers(self) -> Dict[str, Optional[List[List[Tuple[int, int]]]]]:
+        """Return CNOT layers for both X and Z stabilizers."""
+        return {"x": self.get_cnot_layers("x"), "z": self.get_cnot_layers("z")}
+
+    def _get_cnot_layers_for_type(
+        self,
+        stab_matrix,
+        schedule,
+        stab_coords,
+        ancillas: List[int],
+        is_x_type: bool,
+    ) -> Optional[List[List[Tuple[int, int]]]]:
+        """Build parallel CNOT layers using geometric or graph-coloring."""
+        if stab_matrix is None or not hasattr(stab_matrix, "shape") or stab_matrix.size == 0:
+            return None
+
+        if schedule is not None and stab_coords:
+            # Geometric scheduling — mirror _emit_geometric_cnots logic
+            layers: List[List[Tuple[int, int]]] = []
+            for dx, dy in schedule:
+                layer: List[Tuple[int, int]] = []
+                for s_idx, (sx, sy) in enumerate(stab_coords):
+                    if s_idx >= len(ancillas):
+                        continue
+                    anc = ancillas[s_idx]
+                    nbr = (float(sx) + dx, float(sy) + dy)
+                    dq = self._lookup_data_qubit(nbr)
+                    if dq is not None:
+                        if is_x_type:
+                            layer.append((anc, dq))
+                        else:
+                            layer.append((dq, anc))
+                if layer:
+                    layers.append(layer)
+            return layers if layers else None
+
+        # Graph-coloring fallback — mirror _emit_graph_coloring_cnots logic
+        from qectostim.utils.scheduling_core import graph_coloring_cnots
+
+        n_stabs, n_data = stab_matrix.shape
+        all_gates: List[Tuple[int, int]] = []
+        data_qubits = self.data_qubits
+        for s_idx in range(min(n_stabs, len(ancillas))):
+            anc = ancillas[s_idx]
+            for d_idx in range(min(n_data, len(data_qubits))):
+                if stab_matrix[s_idx, d_idx]:
+                    dq = data_qubits[d_idx]
+                    if is_x_type:
+                        all_gates.append((anc, dq))
+                    else:
+                        all_gates.append((dq, anc))
+        if not all_gates:
+            return None
+        return graph_coloring_cnots(all_gates)
+
     def emit_qubit_coords(self, circuit: stim.Circuit) -> None:
-        """Emit QUBIT_COORDS for all qubits in this block."""
+        """Emit QUBIT_COORDS for all qubits in this block.
+
+        Covers data qubits, X/Z stabiliser ancillas, and metacheck ancillas.
+        Every qubit that may appear in the circuit gets coordinates so
+        that downstream consumers (compilers, visualisation) can always
+        look up a position.
+        """
+        used_positions: set = set()
+
         # Data qubits
         for local_idx, coord in enumerate(self._data_coords):
             if len(coord) >= 2:
                 global_idx = self.data_offset + local_idx
-                circuit.append("QUBIT_COORDS", [global_idx], [float(coord[0]), float(coord[1])])
+                pos = (float(coord[0]), float(coord[1]))
+                circuit.append("QUBIT_COORDS", [global_idx], list(pos))
+                used_positions.add(pos)
         
         # X ancillas
         for local_idx, coord in enumerate(self._x_stab_coords):
             if len(coord) >= 2 and local_idx < self._n_x:
                 global_idx = self.ancilla_offset + local_idx
-                circuit.append("QUBIT_COORDS", [global_idx], [float(coord[0]), float(coord[1])])
+                pos = (float(coord[0]), float(coord[1]))
+                circuit.append("QUBIT_COORDS", [global_idx], list(pos))
+                used_positions.add(pos)
         
         # Z ancillas
         for local_idx, coord in enumerate(self._z_stab_coords):
             if len(coord) >= 2 and local_idx < self._n_z:
                 global_idx = self.ancilla_offset + self._n_x + local_idx
-                circuit.append("QUBIT_COORDS", [global_idx], [float(coord[0]), float(coord[1])])
+                pos = (float(coord[0]), float(coord[1]))
+                circuit.append("QUBIT_COORDS", [global_idx], list(pos))
+                used_positions.add(pos)
+
+        # Metacheck ancillas (if any)
+        meta_base = self.ancilla_offset + self._n_x + self._n_z
+        for i in range(self._n_meta_x + self._n_meta_z):
+            global_idx = meta_base + i
+            # Place at a unique position outside the code footprint
+            pos = (-1.0, float(i))
+            while pos in used_positions:
+                pos = (pos[0] - 0.01, pos[1])
+            circuit.append("QUBIT_COORDS", [global_idx], list(pos))
+            used_positions.add(pos)
     
-    def emit_reset_all(self, circuit: stim.Circuit) -> None:
-        """Reset all data, ancilla, and metacheck ancilla qubits."""
-        all_qubits = self.data_qubits + self.x_ancillas + self.z_ancillas
+    def emit_reset_all(self, circuit: stim.Circuit, *, skip_data: bool = False) -> None:
+        """Reset data, ancilla, and metacheck ancilla qubits.
+
+        Parameters
+        ----------
+        circuit : stim.Circuit
+            Target circuit.
+        skip_data : bool
+            If ``True``, only reset ancilla (and metacheck) qubits.
+            Use when the caller will prepare data qubits with ``RX``
+            so that the redundant ``R`` → ``RX`` is avoided.
+        """
+        if skip_data:
+            all_qubits = self.x_ancillas + self.z_ancillas
+        else:
+            all_qubits = self.data_qubits + self.x_ancillas + self.z_ancillas
         if self._enable_metachecks:
             all_qubits = all_qubits + self.meta_x_ancillas + self.meta_z_ancillas
         if all_qubits:
@@ -308,256 +456,64 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         circuit: stim.Circuit,
         state: str = "0",
         logical_idx: int = 0,
-        use_projection: bool = True,
+        use_projection: bool = False,
     ) -> Dict[str, List[int]]:
         """
-        Prepare a logical eigenstate using Pauli frame projection.
-        
-        This implements the correct Pauli frame approach for CSS code preparation
-        using the CSSStatePreparation strategy:
-        - For |0⟩_L: Reset to |0⟩^⊗n, measure stabilizers to project into codespace
-        - For |+⟩_L: Reset to |0⟩^⊗n, H on all, measure stabilizers to project
-        - For |1⟩_L: Same as |0⟩_L + logical X
-        - For |-⟩_L: Same as |+⟩_L + logical Z
-        
-        The stabilizer measurements PROJECT into the codespace. The eigenvalues
-        may be random (±1), but they are CONSISTENT - this is the Pauli frame.
-        The frame information is returned so it can be tracked and applied
-        at final measurement.
-        
+        Prepare a logical eigenstate via data-qubit initialisation.
+
+        For CSS codes the product state |0⟩^⊗n (or |+⟩^⊗n) already satisfies
+        one set of stabilisers deterministically:
+
+        - |0⟩^⊗n  →  Z stabilisers  = +1  (deterministic)
+        - |+⟩^⊗n  →  X stabilisers  = +1  (deterministic)
+
+        Projection into the code-space happens automatically when the first
+        syndrome round is measured by ``emit_round()``, which also establishes
+        anchor detectors for the deterministic stabiliser type.  No extra
+        projection ancilla or serial stabiliser measurements are needed.
+
         Parameters
         ----------
         circuit : stim.Circuit
             Target circuit.
         state : str
-            "0" for |0⟩_L, "1" for |1⟩_L, "+" for |+⟩_L, "-" for |-⟩_L.
+            ``"0"`` for |0⟩_L, ``"1"`` for |1⟩_L,
+            ``"+"`` for |+⟩_L, ``"-"`` for |−⟩_L.
         logical_idx : int
             Which logical qubit.
         use_projection : bool
-            If True (default), use stabilizer projection for proper Pauli frame
-            encoding. If False, use the simple (incorrect for general CSS) approach
-            of assuming |0⟩^⊗n is already in codespace.
-            
+            Ignored (kept for API compatibility).  Serial projection is no
+            longer performed; the first ``emit_round()`` call handles it.
+
         Returns
         -------
         Dict[str, List[int]]
-            Measurement indices from projection:
-            - 'x_stab_meas': X stabilizer measurement indices
-            - 'z_stab_meas': Z stabilizer measurement indices
-            - 'logical_meas': Logical operator measurement index (if measured)
-            Empty dict if use_projection=False.
+            Always ``{'x_stab_meas': [], 'z_stab_meas': [], 'logical_meas': []}``.
         """
         code = self.code
-        result: Dict[str, List[int]] = {
-            'x_stab_meas': [],
-            'z_stab_meas': [],
-            'logical_meas': [],
-        }
-        
-        if not use_projection:
-            # Legacy behavior - simple but incorrect for general CSS codes
-            # Kept for backward compatibility and testing
-            if state in ("0", "1"):
-                if state == "1" and hasattr(code, 'logical_x_support'):
-                    support = code.logical_x_support(logical_idx)
-                    for q in support:
-                        circuit.append("X", [self.data_offset + q])
-            elif state in ("+", "-"):
-                if state == "-" and hasattr(code, 'logical_x_support'):
-                    support = code.logical_x_support(logical_idx)
-                    for q in support:
-                        circuit.append("Z", [self.data_offset + q])
-                circuit.append("H", self.data_qubits)
-            circuit.append("TICK")
-            return result
-        
-        # === USE CSSStatePreparation STRATEGY ===
-        # This ensures consistent state preparation across all CSS components
-        # Import lazily to avoid circular imports
-        from qectostim.gadgets.preparation import CSSStatePreparation
-        css_prep = CSSStatePreparation(code)
-        
-        # Get the projection ancilla (after all stabilizer ancillas)
-        proj_ancilla = self.ancilla_offset + self._n_x + self._n_z
-        if self._enable_metachecks:
-            proj_ancilla += self._n_meta_x + self._n_meta_z
-        
-        # Record where measurements will start in the DetectorContext
-        meas_start = self.ctx.measurement_index
-        
-        # Prepare the state using CSSStatePreparation
-        # skip_reset=True because emit_reset_all() has already been called
-        # by the experiment before emit_prepare_logical_state(); a duplicate
-        # reset would create non-deterministic detectors in Stim.
+
         if state in ("0", "1"):
-            prep_result = css_prep.prepare_zero(
-                circuit, self.data_qubits, proj_ancilla,
-                num_rounds=1, emit_detectors=False,
-                skip_reset=True,
-            )
-        else:  # "+" or "-"
-            prep_result = css_prep.prepare_plus(
-                circuit, self.data_qubits, proj_ancilla,
-                num_rounds=1, emit_detectors=False,
-                skip_reset=True,
-            )
-        
-        # Map the local measurement indices from CSSStatePreparation to global DetectorContext indices
-        # CSSStatePreparation uses local indices starting from 0, we need to add meas_start
-        num_meas = len(prep_result.all_measurements)
-        for _ in range(num_meas):
-            self.ctx.add_measurement(1)  # Register each measurement with context
-        
-        # Convert local indices to global indices
-        result['z_stab_meas'] = [m + meas_start for m in prep_result.final_z_meas]
-        result['x_stab_meas'] = [m + meas_start for m in prep_result.final_x_meas]
-        
-        # Apply logical operator for |1⟩_L or |-⟩_L
-        if state == "1" and hasattr(code, 'logical_x_support'):
-            support = code.logical_x_support(logical_idx)
-            for q in support:
-                circuit.append("X", [self.data_offset + q])
-            circuit.append("TICK")
-        elif state == "-" and hasattr(code, 'logical_z_support'):
-            support = code.logical_z_support(logical_idx)
-            for q in support:
-                circuit.append("Z", [self.data_offset + q])
-            circuit.append("TICK")
-        
-        # Initialize stabilizer history from projection measurements
-        self._initialize_stabilizer_history_from_projection(result)
-        
-        # CRITICAL: Skip first-round detectors after projection!
-        # Projection measurements give random ±1 outcomes, so detectors comparing
-        # first round to projection would be non-deterministic. We establish the
-        # stabilizer history for measurement index tracking, but don't emit detectors.
-        # Second and subsequent rounds will have deterministic time-like detectors.
-        self._skip_first_round = True
-        
-        return result
-    
-    def _emit_projection_measurements(
-        self,
-        circuit: stim.Circuit,
-        state_type: str,
-    ) -> Dict[str, List[int]]:
-        """
-        Emit stabilizer measurements to project into the codespace.
-        
-        DEPRECATED: This method is kept for backward compatibility.
-        New code should use emit_prepare_logical_state() which delegates
-        to CSSStatePreparation.
-        
-        This is the core of Pauli frame encoding. The measurements project
-        |0⟩^⊗n or |+⟩^⊗n into the code space. The measurement outcomes are
-        random (±1) but define a consistent Pauli frame.
-        
-        Parameters
-        ----------
-        circuit : stim.Circuit
-            Target circuit.
-        state_type : str
-            "0" or "1" for Z-basis, "+" or "-" for X-basis.
-            
-        Returns
-        -------
-        Dict[str, List[int]]
-            Measurement indices for each stabilizer type.
-        """
-        n = self.code.n
-        data_qubits = self.data_qubits
-        
-        # Use a dedicated projection ancilla (after all stabilizer ancillas)
-        # This avoids conflicts with the parallel stabilizer ancillas
-        proj_ancilla = self.ancilla_offset + self._n_x + self._n_z
-        if self._enable_metachecks:
-            proj_ancilla += self._n_meta_x + self._n_meta_z
-        
-        result = {
+            # |0⟩^⊗n is the reset default; only apply X for |1⟩_L
+            if state == "1" and hasattr(code, 'logical_x_support'):
+                support = code.logical_x_support(logical_idx)
+                for q in support:
+                    circuit.append("X", [self.data_offset + q])
+        elif state in ("+", "-"):
+            # RX atomically prepares |+⟩ (no H gate needed).
+            circuit.append("RX", self.data_qubits)
+            # Z|+⟩ = |−⟩  →  apply Z *after* RX for |−⟩_L
+            if state == "-" and hasattr(code, 'logical_z_support'):
+                support = code.logical_z_support(logical_idx)
+                for q in support:
+                    circuit.append("Z", [self.data_offset + q])
+
+        circuit.append("TICK")
+
+        return {
             'x_stab_meas': [],
             'z_stab_meas': [],
             'logical_meas': [],
         }
-        
-        # === Measure Z-type stabilizers ===
-        # Circuit: R-CX(data→anc)-M (NO H gates!)
-        # CNOT propagates Z: measures Z parity directly
-        if self._hz is not None and self._n_z > 0:
-            for row_idx in range(self._n_z):
-                # Reset ancilla to |0⟩
-                circuit.append("R", [proj_ancilla])
-                
-                # CNOT from each data qubit in stabilizer support to ancilla
-                # data controls ancilla → measures Z parity
-                for q in range(n):
-                    if self._hz[row_idx, q]:
-                        circuit.append("CX", [data_qubits[q], proj_ancilla])
-                
-                # Measure in Z-basis
-                meas_idx = self.ctx.add_measurement(1)
-                circuit.append("M", [proj_ancilla])
-                result['z_stab_meas'].append(meas_idx)
-            
-            circuit.append("TICK")
-        
-        # === Measure X-type stabilizers ===
-        # Circuit: R-H-CX[anc→data]-H-M
-        # Ancilla in |+⟩, CNOT applies X to data, measures X parity
-        if self._hx is not None and self._n_x > 0:
-            for row_idx in range(self._n_x):
-                # Reset and prepare ancilla in |+⟩
-                circuit.append("R", [proj_ancilla])
-                circuit.append("H", [proj_ancilla])
-                
-                # CNOT from ancilla to each data qubit in stabilizer support
-                # This measures X parity non-destructively for X eigenstates
-                for q in range(n):
-                    if self._hx[row_idx, q]:
-                        circuit.append("CX", [proj_ancilla, data_qubits[q]])  # anc controls data
-                
-                # Measure in X-basis to get parity
-                circuit.append("H", [proj_ancilla])
-                meas_idx = self.ctx.add_measurement(1)
-                circuit.append("M", [proj_ancilla])
-                result['x_stab_meas'].append(meas_idx)
-            
-            circuit.append("TICK")
-        
-        return result
-    
-    def _initialize_stabilizer_history_from_projection(
-        self,
-        projection_result: Dict[str, List[int]],
-    ) -> None:
-        """
-        Initialize stabilizer measurement history from projection.
-        
-        After projection, the stabilizer measurements establish a baseline
-        for subsequent time-like detectors. We record these so emit_round()
-        can compare against them.
-        
-        Parameters
-        ----------
-        projection_result : Dict[str, List[int]]
-            Result from _emit_projection_measurements.
-        """
-        # Record X stabilizer measurements
-        x_meas = projection_result.get('x_stab_meas', [])
-        for s_idx, meas_idx in enumerate(x_meas):
-            if s_idx < self._n_x:
-                self._last_x_meas[s_idx] = meas_idx
-                self.ctx.record_stabilizer_measurement(
-                    self.block_name, "x", s_idx, meas_idx
-                )
-        
-        # Record Z stabilizer measurements
-        z_meas = projection_result.get('z_stab_meas', [])
-        for s_idx, meas_idx in enumerate(z_meas):
-            if s_idx < self._n_z:
-                self._last_z_meas[s_idx] = meas_idx
-                self.ctx.record_stabilizer_measurement(
-                    self.block_name, "z", s_idx, meas_idx
-                )
     
     def _can_interleave(self) -> bool:
         """Check if interleaved X/Z scheduling is possible.
@@ -823,35 +779,35 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         CNOTs happen in parallel within each phase, reducing circuit depth.
         
         Circuit structure (normal mode):
-        1. H on X ancillas (prepare in |+⟩)
+        1. RX on X ancillas, R on Z ancillas (prepare |+⟩ and |0⟩)
         2. For each phase: X and Z CNOTs together in same TICK
-        3. H on X ancillas (rotate back to computational basis)
-        4. Measure all ancillas
+        3. MRX on X ancillas, MR on Z ancillas
         
         After Hadamard (_stabilizer_swapped=True):
-        - X ancillas now measure Z-type stabilizers → no H gates, data controls
-        - Z ancillas now measure X-type stabilizers → H gates, ancilla controls
+        - X ancillas now measure Z-type stabilizers → R, data controls, MR
+        - Z ancillas now measure X-type stabilizers → RX, ancilla controls, MRX
         """
         x_anc = self.x_ancillas
         z_anc = self.z_ancillas
         
         if self._stabilizer_swapped:
             # After Hadamard: swap the circuit patterns
-            # Z ancillas measure X-type → H-CZ-H-M (use CZ to not disturb data!)
-            # X ancillas measure Z-type → CNOT(data→anc)-M
+            # Z ancillas measure X-type → RX - CX(anc→data) - MRX
+            # X ancillas measure Z-type → R - CNOT(data→anc) - MR
             
-            # Step 1: Prepare Z ancillas with H (they now measure X-type)
-            circuit.append("H", z_anc)
+            # Step 1: Prepare ancillas
+            circuit.append("R", x_anc)    # X ancillas: |0⟩ for Z-type measurement
+            circuit.append("RX", z_anc)   # Z ancillas: |+⟩ for X-type measurement
             circuit.append("TICK")
             
-            # Step 2: Interleaved CZ/CNOT phases - swapped control/target
+            # Step 2: Interleaved CNOT phases - swapped control/target
             for phase_idx, ((dx_x, dy_x), (dx_z, dy_z)) in enumerate(
                 zip(self._x_schedule, self._z_schedule)
             ):
                 if phase_idx > 0:
                     circuit.append("TICK")
                 
-                # X ancillas: now measuring Z-type → data controls ancilla (CNOT)
+                # X ancillas: now measuring Z-type → data controls ancilla
                 for s_idx, (sx, sy) in enumerate(self._x_stab_coords):
                     if s_idx >= len(x_anc):
                         continue
@@ -859,10 +815,9 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
                     nbr = (float(sx) + dx_x, float(sy) + dy_x)
                     dq = self._lookup_data_qubit(nbr)
                     if dq is not None:
-                        circuit.append("CNOT", [dq, anc])  # data controls ancilla
+                        circuit.append("CX", [dq, anc])  # data controls ancilla
                 
-                # Z ancillas: now measuring X-type → use CZ (same fix as normal mode)
-                # CRITICAL: Must use CZ, not CNOT[anc,data], to avoid flipping data!
+                # Z ancillas: now measuring X-type → ancilla controls data
                 for s_idx, (sx, sy) in enumerate(self._z_stab_coords):
                     if s_idx >= len(z_anc):
                         continue
@@ -870,34 +825,25 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
                     nbr = (float(sx) + dx_z, float(sy) + dy_z)
                     dq = self._lookup_data_qubit(nbr)
                     if dq is not None:
-                        circuit.append("CZ", [anc, dq])  # CZ measures X parity
+                        circuit.append("CX", [anc, dq])  # ancilla controls data
             
-            circuit.append("TICK")
-            
-            # Step 3: Final H on Z ancillas (they measure X-type)
-            circuit.append("H", z_anc)
             circuit.append("TICK")
             
         else:
             # Normal mode: standard surface code interleaving
-            # Step 1: Prepare X ancillas with H
-            circuit.append("H", x_anc)
+            # Step 1: Prepare ancillas - RX for X-type, R for Z-type
+            circuit.append("RX", x_anc)  # X ancillas: |+⟩ for X-type measurement
+            circuit.append("R", z_anc)   # Z ancillas: |0⟩ for Z-type measurement
             circuit.append("TICK")
             
-            # Step 2: Interleaved CNOT/CZ phases - X and Z in parallel
+            # Step 2: Interleaved CNOT phases - X and Z in parallel
             for phase_idx, ((dx_x, dy_x), (dx_z, dy_z)) in enumerate(
                 zip(self._x_schedule, self._z_schedule)
             ):
                 if phase_idx > 0:
                     circuit.append("TICK")
                 
-                # X stabilizer measurement for this phase
-                # Gate choice depends on x_stabilizer_mode:
-                # - "cz": Use CZ (default for memory experiments)
-                #         CZ is symmetric and measures X parity without disturbing Z-basis
-                # - "cx": Use CX(ancilla → data) (required for teleportation)
-                #         After teleportation CNOT, CX keeps X_D syndromes local
-                x_gate = "CZ" if self._x_stabilizer_mode == "cz" else "CNOT"
+                # X stabilizer measurement: CX(ancilla → data)
                 for s_idx, (sx, sy) in enumerate(self._x_stab_coords):
                     if s_idx >= len(x_anc):
                         continue
@@ -905,14 +851,10 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
                     nbr = (float(sx) + dx_x, float(sy) + dy_x)
                     dq = self._lookup_data_qubit(nbr)
                     if dq is not None:
-                        if self._x_stabilizer_mode == "cz":
-                            circuit.append("CZ", [anc, dq])
-                        else:
-                            circuit.append("CNOT", [anc, dq])  # CX(anc → data)
+                        circuit.append("CX", [anc, dq])  # ancilla controls data
                 
                 # Z CNOTs for this phase (SAME TICK - parallel with X)
                 # For Z stabilizers: data qubits control ancilla (standard parity check)
-                # This doesn't change data because target is ancilla.
                 for s_idx, (sx, sy) in enumerate(self._z_stab_coords):
                     if s_idx >= len(z_anc):
                         continue
@@ -920,133 +862,34 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
                     nbr = (float(sx) + dx_z, float(sy) + dy_z)
                     dq = self._lookup_data_qubit(nbr)
                     if dq is not None:
-                        circuit.append("CNOT", [dq, anc])  # data controls ancilla
+                        circuit.append("CX", [dq, anc])  # data controls ancilla
             
-            # Separate final CNOT layer from H gates for proper DEM error granularity
-            circuit.append("TICK")
-            
-            # Step 3: Final H on X ancillas
-            circuit.append("H", x_anc)
             circuit.append("TICK")
         
-        # Step 4: Measure all ancillas
-        # X ancillas first, then Z ancillas
-        x_meas_start = self.ctx.add_measurement(self._n_x)
-        circuit.append("MR", x_anc)
+        # Step 3: Measure all ancillas with appropriate basis
+        if self._stabilizer_swapped:
+            # X ancillas measured Z-type, Z ancillas measured X-type
+            x_meas_start = self.ctx.add_measurement(self._n_x)
+            circuit.append("MR", x_anc)
+            
+            z_meas_start = self.ctx.add_measurement(self._n_z)
+            circuit.append("MRX", z_anc)
+        else:
+            # X ancillas measure X-type, Z ancillas measure Z-type
+            x_meas_start = self.ctx.add_measurement(self._n_x)
+            circuit.append("MRX", x_anc)
+            
+            z_meas_start = self.ctx.add_measurement(self._n_z)
+            circuit.append("MR", z_anc)
         
-        z_meas_start = self.ctx.add_measurement(self._n_z)
-        circuit.append("MR", z_anc)
-        
-        # Emit detectors - after Hadamard, first-round logic changes
-        # X ancillas now measure Z-type → first-round OK if basis == "Z"
-        # Z ancillas now measure X-type → first-round OK if basis == "X"
+        # Emit detectors using the unified helper
+        # X effective basis: after swap X ancillas measure Z, before swap they measure X
+        # Z effective basis: after swap Z ancillas measure X, before swap they measure Z
         x_effective_basis = "Z" if self._stabilizer_swapped else "X"
         z_effective_basis = "X" if self._stabilizer_swapped else "Z"
         
-        # Emit detectors for X stabilizers
-        if emit_detectors:
-            for s_idx in range(self._n_x):
-                cur_meas = x_meas_start + s_idx
-                prev_meas = self._last_x_meas[s_idx]
-                
-                # Check for pending transforms (from CZ/CNOT gates)
-                has_transforms = self.ctx.has_pending_transforms(self.block_name, "x", s_idx)
-                
-                if prev_meas is None and not has_transforms:
-                    # First round: emit anchor detector if appropriate
-                    # 
-                    # In explicit_anchor_mode, ONLY use the explicit flag:
-                    # - emit_x_anchors=True => emit anchor
-                    # - emit_x_anchors=False => no anchor
-                    #
-                    # In legacy mode (no explicit flags set), use measurement_basis:
-                    # After swap, X ancillas measure Z-type, so first-round OK if state is |0⟩
-                    # Before swap, X ancillas measure X-type, so first-round OK if state is |+⟩
-                    if getattr(self, '_explicit_anchor_mode', False):
-                        should_emit = not self._skip_first_round and self._emit_x_anchors
-                    else:
-                        should_emit = (
-                            not self._skip_first_round and (
-                                self._emit_x_anchors or
-                                self.measurement_basis == x_effective_basis
-                            )
-                        )
-                    if should_emit:
-                        coord = self._get_stab_coord("x", s_idx)
-                        self.ctx.emit_detector(circuit, [cur_meas], coord)
-                elif not self._skip_first_round:
-                    # Only emit time-like detector if not skipping first round
-                    # (After projection, first round should skip detectors since
-                    # projection outcomes are random - frame is established but
-                    # first comparison would be non-deterministic)
-                    meas_indices = self.ctx.get_x_detector_measurements(
-                        self.block_name, s_idx, cur_meas
-                    )
-                    coord = self._get_stab_coord("x", s_idx)
-                    self.ctx.emit_detector(circuit, meas_indices, coord)
-                    # Consume the transforms after emitting
-                    self.ctx.consume_x_transforms(self.block_name, s_idx)
-                
-                self._last_x_meas[s_idx] = cur_meas
-                self.ctx.record_stabilizer_measurement(self.block_name, "x", s_idx, cur_meas)
-        else:
-            for s_idx in range(self._n_x):
-                cur_meas = x_meas_start + s_idx
-                self._last_x_meas[s_idx] = cur_meas
-                self.ctx.record_stabilizer_measurement(self.block_name, "x", s_idx, cur_meas)
-        
-        # Emit detectors for Z stabilizers
-        if emit_detectors:
-            for s_idx in range(self._n_z):
-                cur_meas = z_meas_start + s_idx
-                prev_meas = self._last_z_meas[s_idx]
-                
-                # Check for pending transforms (from CNOT gates)
-                has_transforms = self.ctx.has_pending_transforms(self.block_name, "z", s_idx)
-                
-                if prev_meas is None and not has_transforms:
-                    # First round: emit anchor detector if appropriate
-                    #
-                    # In explicit_anchor_mode, ONLY use the explicit flag:
-                    # - emit_z_anchors=True => emit anchor
-                    # - emit_z_anchors=False => no anchor
-                    #
-                    # In legacy mode (no explicit flags set), use measurement_basis:
-                    # After swap, Z ancillas measure X-type, so first-round OK if state is |+⟩
-                    # Before swap, Z ancillas measure Z-type, so first-round OK if state is |0⟩
-                    if getattr(self, '_explicit_anchor_mode', False):
-                        should_emit = not self._skip_first_round and self._emit_z_anchors
-                    else:
-                        should_emit = (
-                            not self._skip_first_round and (
-                                self._emit_z_anchors or
-                                self.measurement_basis == z_effective_basis
-                            )
-                        )
-                    if should_emit:
-                        coord = self._get_stab_coord("z", s_idx)
-                        self.ctx.emit_detector(circuit, [cur_meas], coord)
-                elif not self._skip_first_round:
-                    # Only emit time-like detector if not skipping first round
-                    # (After projection, first round should skip detectors since
-                    # projection outcomes are random - frame is established but
-                    # first comparison would be non-deterministic)
-                    # Use transform-aware detector measurements
-                    meas_indices = self.ctx.get_z_detector_measurements(
-                        self.block_name, s_idx, cur_meas
-                    )
-                    coord = self._get_stab_coord("z", s_idx)
-                    self.ctx.emit_detector(circuit, meas_indices, coord)
-                    # Consume the transforms after emitting
-                    self.ctx.consume_z_transforms(self.block_name, s_idx)
-                
-                self._last_z_meas[s_idx] = cur_meas
-                self.ctx.record_stabilizer_measurement(self.block_name, "z", s_idx, cur_meas)
-        else:
-            for s_idx in range(self._n_z):
-                cur_meas = z_meas_start + s_idx
-                self._last_z_meas[s_idx] = cur_meas
-                self.ctx.record_stabilizer_measurement(self.block_name, "z", s_idx, cur_meas)
+        self._emit_detectors_for_type(circuit, "x", x_meas_start, emit_detectors, x_effective_basis)
+        self._emit_detectors_for_type(circuit, "z", z_meas_start, emit_detectors, z_effective_basis)
         
         # Add final TICK after measurements to separate from next round
         circuit.append("TICK")
@@ -1054,8 +897,13 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
     def _emit_x_round(self, circuit: stim.Circuit, emit_detectors: bool) -> None:
         """Emit X stabilizer measurements.
         
+        Uses CX-based measurement with native RX/MRX instructions:
+        - RX resets ancillas to |+⟩ directly
+        - CX(ancilla → data) for parity extraction
+        - MRX measures in X basis directly
+        
         After Hadamard (when _stabilizer_swapped=True), the X ancillas measure
-        what are now Z stabilizers, so we use a Z-style circuit (no H gates).
+        what are now Z stabilizers, so we use standard Z-style R/CNOT/MR circuit.
         """
         if self._hx is None or self._n_x == 0:
             return
@@ -1064,19 +912,22 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         
         if self._stabilizer_swapped:
             # After Hadamard: X ancillas measure Z-type stabilizers
-            # Use Z syndrome circuit: CNOT - M (no H gates)
-            # But we still use _hx matrix because that describes the qubit support
+            # Use Z syndrome circuit: R - CNOT(data→anc) - MR
+            circuit.append("R", x_anc)
+            circuit.append("TICK")
+            
             if self._use_geometric_x():
                 self._emit_geometric_cnots(circuit, "x")
             else:
-                # Use is_x_type=False to use CZ-like CNOT pattern (control on ancilla)
                 self._emit_graph_coloring_cnots(circuit, self._hx, self.data_qubits, x_anc, is_x_type=False)
             
             circuit.append("TICK")
+            meas_start = self.ctx.add_measurement(self._n_x)
+            circuit.append("MR", x_anc)
         else:
             # Normal: X ancillas measure X-type stabilizers
-            # Use X syndrome circuit: H - CNOT - H - M
-            circuit.append("H", x_anc)
+            # Use X syndrome circuit: RX - CX(anc→data) - MRX
+            circuit.append("RX", x_anc)
             circuit.append("TICK")
             
             if self._use_geometric_x():
@@ -1085,76 +936,20 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
                 self._emit_graph_coloring_cnots(circuit, self._hx, self.data_qubits, x_anc, is_x_type=True)
             
             circuit.append("TICK")
-            circuit.append("H", x_anc)
-            circuit.append("TICK")
+            meas_start = self.ctx.add_measurement(self._n_x)
+            circuit.append("MRX", x_anc)
         
-        # Measure X ancillas
-        meas_start = self.ctx.add_measurement(self._n_x)
-        circuit.append("MR", x_anc)
-        
-        # Time-like detectors with proper first-round logic
-        # After swap: X ancillas measure Z, so first-round OK if measurement_basis == "Z"
-        # Before swap: X ancillas measure X, so first-round OK if measurement_basis == "X"
-        effective_first_round_basis = "Z" if self._stabilizer_swapped else "X"
-        
-        if emit_detectors:
-            for s_idx in range(self._n_x):
-                cur_meas = meas_start + s_idx
-                prev_meas = self._last_x_meas[s_idx]
-                
-                # Check for pending transforms (from CZ/CNOT gates)
-                has_transforms = self.ctx.has_pending_transforms(self.block_name, "x", s_idx)
-                
-                if prev_meas is None and not has_transforms:
-                    # First round: emit anchor detector if appropriate
-                    #
-                    # In explicit_anchor_mode, ONLY use the explicit flag:
-                    # - emit_x_anchors=True => emit anchor
-                    # - emit_x_anchors=False => no anchor
-                    #
-                    # In legacy mode (no explicit flags set), use measurement_basis:
-                    # - Before swap: X ancillas measure X → first-round OK if state is |+⟩ (measurement_basis=="X")
-                    # - After swap: X ancillas measure Z → first-round OK if state is |0⟩ (measurement_basis=="Z")
-                    if getattr(self, '_explicit_anchor_mode', False):
-                        should_emit = not self._skip_first_round and self._emit_x_anchors
-                    else:
-                        should_emit = (
-                            not self._skip_first_round and (
-                                self._emit_x_anchors or  # Explicit anchor request
-                                (self._ft_config.first_round_x_detectors and
-                                 self.measurement_basis == effective_first_round_basis)
-                            )
-                        )
-                    if should_emit:
-                        coord = self._get_stab_coord("x", s_idx)
-                        self.ctx.emit_detector(circuit, [cur_meas], coord)
-                elif not self._skip_first_round:
-                    # Use transform-aware detector measurements
-                    meas_indices = self.ctx.get_x_detector_measurements(
-                        self.block_name, s_idx, cur_meas
-                    )
-                    coord = self._get_stab_coord("x", s_idx)
-                    self.ctx.emit_detector(circuit, meas_indices, coord)
-                    # Consume the transforms after emitting
-                    self.ctx.consume_x_transforms(self.block_name, s_idx)
-                
-                self._last_x_meas[s_idx] = cur_meas
-                self.ctx.record_stabilizer_measurement(
-                    self.block_name, "x", s_idx, cur_meas
-                )
-        else:
-            for s_idx in range(self._n_x):
-                cur_meas = meas_start + s_idx
-                self._last_x_meas[s_idx] = cur_meas
-                self.ctx.record_stabilizer_measurement(
-                    self.block_name, "x", s_idx, cur_meas
-                )
+        # Effective basis: after swap X ancillas measure Z, before swap they measure X
+        effective_basis = "Z" if self._stabilizer_swapped else "X"
+        self._emit_detectors_for_type(circuit, "x", meas_start, emit_detectors, effective_basis)
     
     def _emit_z_round(self, circuit: stim.Circuit, emit_detectors: bool) -> None:
         """Emit Z stabilizer measurements.
         
+        Uses standard Z measurement: R - CNOT(data→anc) - MR
+        
         After Hadamard (when _stabilizer_swapped=True), the Z ancillas measure
-        what are now X stabilizers, so we use an X-style circuit (with H gates).
+        what are now X stabilizers, so we use RX/CX/MRX pattern.
         """
         if self._hz is None or self._n_z == 0:
             return
@@ -1163,90 +958,36 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         
         if self._stabilizer_swapped:
             # After Hadamard: Z ancillas measure X-type stabilizers  
-            # Use X syndrome circuit: H - CNOT - H - M
-            circuit.append("H", z_anc)
+            # Use X syndrome circuit: RX - CX(anc→data) - MRX
+            circuit.append("RX", z_anc)
             circuit.append("TICK")
             
             if self._use_geometric_z():
                 self._emit_geometric_cnots(circuit, "z")
             else:
-                # Use is_x_type=True to use X-style CNOT pattern (control on data)
                 self._emit_graph_coloring_cnots(circuit, self._hz, self.data_qubits, z_anc, is_x_type=True)
             
             circuit.append("TICK")
-            circuit.append("H", z_anc)
-            circuit.append("TICK")
+            meas_start = self.ctx.add_measurement(self._n_z)
+            circuit.append("MRX", z_anc)
         else:
             # Normal: Z ancillas measure Z-type stabilizers
-            # Use Z syndrome circuit: CNOT - M (no H gates)
+            # Use Z syndrome circuit: R - CNOT(data→anc) - MR
+            circuit.append("R", z_anc)
+            circuit.append("TICK")
+            
             if self._use_geometric_z():
                 self._emit_geometric_cnots(circuit, "z")
             else:
                 self._emit_graph_coloring_cnots(circuit, self._hz, self.data_qubits, z_anc, is_x_type=False)
             
             circuit.append("TICK")
+            meas_start = self.ctx.add_measurement(self._n_z)
+            circuit.append("MR", z_anc)
         
-        # Measure Z ancillas
-        meas_start = self.ctx.add_measurement(self._n_z)
-        circuit.append("MR", z_anc)
-        
-        # Time-like detectors with proper first-round logic
-        # After swap: Z ancillas measure X, so first-round OK if measurement_basis == "X"
-        # Before swap: Z ancillas measure Z, so first-round OK if measurement_basis == "Z"
-        effective_first_round_basis = "X" if self._stabilizer_swapped else "Z"
-        
-        if emit_detectors:
-            for s_idx in range(self._n_z):
-                cur_meas = meas_start + s_idx
-                prev_meas = self._last_z_meas[s_idx]
-                
-                # Check for pending transforms (from CNOT gates)
-                has_transforms = self.ctx.has_pending_transforms(self.block_name, "z", s_idx)
-                
-                if prev_meas is None and not has_transforms:
-                    # First round: emit anchor detector if appropriate
-                    #
-                    # In explicit_anchor_mode, ONLY use the explicit flag:
-                    # - emit_z_anchors=True => emit anchor
-                    # - emit_z_anchors=False => no anchor
-                    #
-                    # In legacy mode (no explicit flags set), use measurement_basis:
-                    # - Before swap: Z ancillas measure Z → first-round OK if state is |0⟩ (measurement_basis=="Z")
-                    # - After swap: Z ancillas measure X → first-round OK if state is |+⟩ (measurement_basis=="X")
-                    if getattr(self, '_explicit_anchor_mode', False):
-                        should_emit = not self._skip_first_round and self._emit_z_anchors
-                    else:
-                        should_emit = (
-                            not self._skip_first_round and (
-                                self._emit_z_anchors or  # Explicit anchor request
-                                (self._ft_config.first_round_z_detectors and
-                                 self.measurement_basis == effective_first_round_basis)
-                            )
-                        )
-                    if should_emit:
-                        coord = self._get_stab_coord("z", s_idx)
-                        self.ctx.emit_detector(circuit, [cur_meas], coord)
-                elif not self._skip_first_round:
-                    # Use transform-aware detector measurements
-                    meas_indices = self.ctx.get_z_detector_measurements(
-                        self.block_name, s_idx, cur_meas
-                    )
-                    coord = self._get_stab_coord("z", s_idx)
-                    self.ctx.emit_detector(circuit, meas_indices, coord)
-                    # Consume the transforms after emitting
-                    self.ctx.consume_z_transforms(self.block_name, s_idx)
-                
-                self._last_z_meas[s_idx] = cur_meas
-                self.ctx.record_stabilizer_measurement(
-                    self.block_name, "z", s_idx, cur_meas
-                )
-        else:
-            for s_idx in range(self._n_z):
-                cur_meas = meas_start + s_idx
-                self._last_z_meas[s_idx] = cur_meas
-                self.ctx.record_stabilizer_measurement(
-                    self.block_name, "z", s_idx, cur_meas
-                )
+        # Effective basis: after swap Z ancillas measure X, before swap they measure Z
+        effective_basis = "X" if self._stabilizer_swapped else "Z"
+        self._emit_detectors_for_type(circuit, "z", meas_start, emit_detectors, effective_basis)
     
     def _emit_metacheck_round(
         self,
@@ -1383,39 +1124,134 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         for meta_idx in range(self._n_meta_z):
             self._last_meta_z_meas[meta_idx] = cur_syndrome_indices_list[meta_idx]
 
-    def _use_geometric_x(self) -> bool:
-        """Check if geometric scheduling should be used for X stabilizers."""
+    def _emit_detectors_for_type(
+        self,
+        circuit: stim.Circuit,
+        stab_type: str,
+        meas_start: int,
+        emit_detectors: bool,
+        effective_first_round_basis: str,
+    ) -> None:
+        """Emit detectors for one stabilizer type (X or Z).
+        
+        This is a unified helper that handles all detector emission logic:
+        - First-round anchor detectors (based on measurement basis)
+        - Time-like detectors (comparing current to previous round)
+        - Transform-aware measurements (after CZ/CNOT gates)
+        - Measurement recording in the context
+        
+        Parameters
+        ----------
+        circuit : stim.Circuit
+            Target circuit to emit detectors into.
+        stab_type : str
+            'x' for X stabilizers or 'z' for Z stabilizers.
+        meas_start : int
+            Starting measurement index for this stabilizer type.
+        emit_detectors : bool
+            Whether to emit detector instructions (False just records measurements).
+        effective_first_round_basis : str
+            The basis that matches this stabilizer type for first-round detectors.
+            E.g. "X" for X-type (|+⟩ state), "Z" for Z-type (|0⟩ state).
+        """
+        if stab_type == "x":
+            n_stab = self._n_x
+            last_meas = self._last_x_meas
+            emit_anchors = self._emit_x_anchors
+            first_round_config = self._ft_config.first_round_x_detectors
+            get_detector_meas = self.ctx.get_x_detector_measurements
+            consume_transforms = self.ctx.consume_x_transforms
+        else:
+            n_stab = self._n_z
+            last_meas = self._last_z_meas
+            emit_anchors = self._emit_z_anchors
+            first_round_config = self._ft_config.first_round_z_detectors
+            get_detector_meas = self.ctx.get_z_detector_measurements
+            consume_transforms = self.ctx.consume_z_transforms
+        
+        if emit_detectors:
+            for s_idx in range(n_stab):
+                cur_meas = meas_start + s_idx
+                prev_meas = last_meas[s_idx]
+                
+                # Check for pending transforms (from CZ/CNOT gates)
+                has_transforms = self.ctx.has_pending_transforms(self.block_name, stab_type, s_idx)
+                
+                if prev_meas is None and not has_transforms:
+                    # First round: emit anchor detector if appropriate
+                    #
+                    # In explicit_anchor_mode, ONLY use the explicit flag:
+                    # - emit_anchors=True => emit anchor
+                    # - emit_anchors=False => no anchor
+                    #
+                    # In legacy mode (no explicit flags set), use measurement_basis
+                    if getattr(self, '_explicit_anchor_mode', False):
+                        should_emit = not self._skip_first_round and emit_anchors
+                    else:
+                        should_emit = (
+                            not self._skip_first_round and (
+                                emit_anchors or  # Explicit anchor request
+                                (first_round_config and
+                                 self.measurement_basis == effective_first_round_basis)
+                            )
+                        )
+                    if should_emit:
+                        coord = self._get_stab_coord(stab_type, s_idx)
+                        self.ctx.emit_detector(circuit, [cur_meas], coord)
+                elif not self._skip_first_round:
+                    # Time-like detector: use transform-aware detector measurements
+                    meas_indices = get_detector_meas(self.block_name, s_idx, cur_meas)
+                    coord = self._get_stab_coord(stab_type, s_idx)
+                    self.ctx.emit_detector(circuit, meas_indices, coord)
+                    # Consume the transforms after emitting
+                    consume_transforms(self.block_name, s_idx)
+                
+                last_meas[s_idx] = cur_meas
+                self.ctx.record_stabilizer_measurement(self.block_name, stab_type, s_idx, cur_meas)
+        else:
+            for s_idx in range(n_stab):
+                cur_meas = meas_start + s_idx
+                last_meas[s_idx] = cur_meas
+                self.ctx.record_stabilizer_measurement(self.block_name, stab_type, s_idx, cur_meas)
+
+    def _use_geometric(self, stab_type: str) -> bool:
+        """Check if geometric scheduling should be used for the given stabilizer type.
+        
+        Parameters
+        ----------
+        stab_type : str
+            'x' for X stabilizers or 'z' for Z stabilizers.
+            
+        Returns
+        -------
+        bool
+            True if geometric scheduling can be used, False otherwise.
+        """
         mode = self._ft_config.schedule_mode
         if mode == ScheduleMode.GRAPH_COLORING:
             return False
         
-        if not (
-            self._x_schedule is not None and
-            self._data_coords and
-            len(self._x_stab_coords) == self._n_x
-        ):
+        if stab_type == "x":
+            schedule, stab_coords, matrix, n_stab = (
+                self._x_schedule, self._x_stab_coords, self._hx, self._n_x
+            )
+        else:
+            schedule, stab_coords, matrix, n_stab = (
+                self._z_schedule, self._z_stab_coords, self._hz, self._n_z
+            )
+        
+        if not (schedule is not None and self._data_coords and len(stab_coords) == n_stab):
             return False
         
-        return self._validate_geometric_schedule(
-            self._x_schedule, self._x_stab_coords, self._hx
-        )
+        return self._validate_geometric_schedule(schedule, stab_coords, matrix)
+    
+    def _use_geometric_x(self) -> bool:
+        """Check if geometric scheduling should be used for X stabilizers."""
+        return self._use_geometric("x")
     
     def _use_geometric_z(self) -> bool:
         """Check if geometric scheduling should be used for Z stabilizers."""
-        mode = self._ft_config.schedule_mode
-        if mode == ScheduleMode.GRAPH_COLORING:
-            return False
-        
-        if not (
-            self._z_schedule is not None and
-            self._data_coords and
-            len(self._z_stab_coords) == self._n_z
-        ):
-            return False
-        
-        return self._validate_geometric_schedule(
-            self._z_schedule, self._z_stab_coords, self._hz
-        )
+        return self._use_geometric("z")
     
     def _validate_geometric_schedule(
         self,
@@ -1449,21 +1285,11 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         return True
     
     def _emit_geometric_cnots(self, circuit: stim.Circuit, stab_type: str) -> None:
-        """Emit controlled gates using geometric scheduling.
+        """Emit CNOTs using geometric scheduling.
         
-        Gate Choice for X-Type Stabilizers
-        -----------------------------------
-        The gate type depends on self._x_stabilizer_mode:
-        
-        - "cz" (default): Use CZ gates. CZ is symmetric and measures X parity
-          correctly with H-CZ-H circuit. Good for memory experiments.
-          
-        - "cx": Use CNOT[ancilla → data]. Required for teleportation gadgets to
-          match ground truth and ensure deterministic X anchor detectors.
-          
-        The difference is in backward Pauli propagation:
-        - CZ: X_ancilla → X_ancilla ⊗ Z_data (Z_data on |0⟩ prep = random)
-        - CX: X_ancilla → X_ancilla (stays local, deterministic on |0⟩ prep)
+        Gate directions:
+        - X-type stabilizers: CX(ancilla → data) - ancilla controls data
+        - Z-type stabilizers: CX(data → ancilla) - data controls ancilla
         """
         if stab_type == "x":
             schedule = self._x_schedule
@@ -1476,10 +1302,6 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
             ancillas = self.z_ancillas
             is_x_type = False
         
-        # Choose gate based on x_stabilizer_mode for X stabilizers
-        if is_x_type:
-            x_gate = "CZ" if self._x_stabilizer_mode == "cz" else "CNOT"
-        
         for layer_idx, (dx, dy) in enumerate(schedule):
             if layer_idx > 0:
                 circuit.append("TICK")
@@ -1491,10 +1313,11 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
                 dq = self._lookup_data_qubit(nbr)
                 if dq is not None:
                     if is_x_type:
-                        # Use x_stabilizer_mode to determine gate (CZ or CNOT)
-                        circuit.append(x_gate, [anc, dq])
+                        # X-type: ancilla controls data
+                        circuit.append("CX", [anc, dq])
                     else:
-                        circuit.append("CNOT", [dq, anc])
+                        # Z-type: data controls ancilla
+                        circuit.append("CX", [dq, anc])
 
     def _emit_graph_coloring_cnots(
         self,
@@ -1504,28 +1327,18 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         ancilla_qubits: List[int],
         is_x_type: bool = True,
     ) -> None:
-        """Emit controlled gates using greedy graph coloring.
+        """Emit CNOTs using greedy graph coloring.
         
-        Gate Choice for X-Type Stabilizers
-        -----------------------------------
-        The gate type depends on self._x_stabilizer_mode:
-        
-        - "cz" (default): Use CZ gates. CZ is symmetric and measures X parity
-          correctly with H-CZ-H circuit. Good for memory experiments.
-          
-        - "cx": Use CNOT[ancilla → data]. Required for teleportation gadgets to
-          match ground truth and ensure deterministic X anchor detectors.
-          
-        The difference is in backward Pauli propagation:
-        - CZ: X_ancilla → X_ancilla ⊗ Z_data (Z_data → H → X_data on |0⟩ = random)
-        - CX: X_ancilla → X_ancilla (stays local, deterministic on |0⟩)
+        Gate directions:
+        - X-type stabilizers (is_x_type=True): CX(ancilla → data)
+        - Z-type stabilizers (is_x_type=False): CX(data → ancilla)
         """
         if stab_matrix is None or stab_matrix.size == 0:
             return
         
         n_stabs, n_data = stab_matrix.shape
         
-        # Build list of (ancilla, data) pairs for graph coloring
+        # Build list of (ctrl, tgt) pairs for graph coloring
         all_gates: List[Tuple[int, int]] = []
         for s_idx in range(min(n_stabs, len(ancilla_qubits))):
             anc = ancilla_qubits[s_idx]
@@ -1533,7 +1346,7 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
                 if stab_matrix[s_idx, d_idx]:
                     dq = data_qubits[d_idx]
                     if is_x_type:
-                        # Ancilla is control for both CZ and CNOT
+                        # X-type: ancilla controls data
                         all_gates.append((anc, dq))
                     else:
                         # Z-type: data controls ancilla
@@ -1544,19 +1357,11 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         
         layers = graph_coloring_cnots(all_gates)
         
-        # Choose gate type based on is_x_type and x_stabilizer_mode
-        if is_x_type:
-            # Use x_stabilizer_mode to choose CZ vs CNOT
-            gate_name = "CZ" if self._x_stabilizer_mode == "cz" else "CNOT"
-        else:
-            # Z-type always uses CNOT (data controls ancilla)
-            gate_name = "CNOT"
-        
         for layer_idx, layer in enumerate(layers):
             if layer_idx > 0:
                 circuit.append("TICK")
             for ctrl, tgt in layer:
-                circuit.append(gate_name, [ctrl, tgt])
+                circuit.append("CX", [ctrl, tgt])
     
     def _get_stab_coord(self, stab_type: str, s_idx: int) -> Tuple[float, float, float]:
         """Get detector coordinate for a stabilizer.

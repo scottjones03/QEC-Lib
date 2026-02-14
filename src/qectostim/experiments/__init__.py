@@ -108,13 +108,20 @@ from .ft_gadget_experiment import (
     FTGadgetExperimentResult,
     run_ft_gadget_experiment,
 )
-from .logical_gates import (
-    LogicalGateExperiment,
-    GateRouter,
-    GateRoute,
-    get_gate_route,
-    run_logical_gate,
-)
+try:
+    from .logical_gates import (
+        LogicalGateExperiment,
+        GateRouter,
+        GateRoute,
+        get_gate_route,
+        run_logical_gate,
+    )
+except (ImportError, ModuleNotFoundError):
+    LogicalGateExperiment = None
+    GateRouter = None
+    GateRoute = None
+    get_gate_route = None
+    run_logical_gate = None
 from .stabilizer_rounds import (
     DetectorContext,
     StabilizerRoundBuilder,

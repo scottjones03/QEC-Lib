@@ -166,9 +166,20 @@ class XYZColorCodeStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
             global_idx = self.ancilla_offset + local_idx
             circuit.append("QUBIT_COORDS", [global_idx], [float(x), float(y)])
     
-    def emit_reset_all(self, circuit: stim.Circuit) -> None:
-        """Reset all data and ancilla qubits."""
-        all_qubits = self.data_qubits + self.ancilla_qubits
+    def emit_reset_all(self, circuit: stim.Circuit, *, skip_data: bool = False) -> None:
+        """Reset data and ancilla qubits.
+
+        Parameters
+        ----------
+        circuit : stim.Circuit
+            Target circuit.
+        skip_data : bool
+            If ``True``, only reset ancilla qubits (data prepared by ``RX``).
+        """
+        if skip_data:
+            all_qubits = self.ancilla_qubits
+        else:
+            all_qubits = self.data_qubits + self.ancilla_qubits
         if all_qubits:
             circuit.append("R", all_qubits)
     
@@ -193,12 +204,13 @@ class XYZColorCodeStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
                     circuit.append("X", [self.data_offset + q])
         
         elif state in ("+", "-"):
-            # X-basis eigenstate
+            # RX atomically prepares |+⟩ (no H gate needed)
+            circuit.append("RX", self.data_qubits)
+            # Z|+⟩ = |−⟩  →  apply Z *after* RX for |-⟩
             if state == "-":
                 logical_support = self._meta.get("logical_x_support", [])
                 for q in logical_support:
                     circuit.append("Z", [self.data_offset + q])
-            circuit.append("H", self.data_qubits)
         
         circuit.append("TICK")
     

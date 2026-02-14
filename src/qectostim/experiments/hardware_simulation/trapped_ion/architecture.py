@@ -38,12 +38,12 @@ from qectostim.experiments.hardware_simulation.core.gates import (
     GateSpec,
     GateType,
 )
-from qectostim.experiments.hardware_simulation.trapped_ion.gates import (
-    TRAPPED_ION_NATIVE_GATES,
-)
+# TRAPPED_ION_NATIVE_GATES is imported lazily in native_gate_set()
+# to avoid circular import (operations.py imports architecture.py).
 from qectostim.experiments.hardware_simulation.trapped_ion.physics import (
     ModeSnapshot,
     ModeStructure,
+    DEFAULT_CALIBRATION as _CAL,
 )
 
 
@@ -66,6 +66,10 @@ class QCCDOperationType(Enum):
     RECOOLING = auto()
     PARALLEL = auto()
     GLOBAL_RECONFIG = auto()
+
+
+# Alias for backward compatibility with old routing code
+Operations = QCCDOperationType
 
 
 @dataclass
@@ -97,6 +101,7 @@ class Ion(PhysicalQubit):
     is_cooling: bool = False
     motional_energy: float = 0.0
     parent: Optional["QCCDNode"] = None
+    _color: str = "lightblue"
     
     def __init__(
         self,
@@ -107,6 +112,7 @@ class Ion(PhysicalQubit):
         motional_energy: float = 0.0,
         parent: Optional["QCCDNode"] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        color: str = "lightblue",
     ):
         # Initialize parent PhysicalQubit
         super().__init__(
@@ -119,6 +125,7 @@ class Ion(PhysicalQubit):
         self.is_cooling = is_cooling
         self.motional_energy = motional_energy
         self.parent = parent
+        self._color = color
     
     @property
     def idx(self) -> int:
@@ -126,12 +133,61 @@ class Ion(PhysicalQubit):
         return self.index
     
     @property
+    def pos(self) -> Tuple[float, float]:
+        """Alias for position (old API compatibility)."""
+        return self.position
+    
+    @property
+    def color(self) -> str:
+        """Ion color for visualization."""
+        return self._color
+    
+    @property
     def display_label(self) -> str:
         return f"{self.label}{self.idx}"
+    
+    @property
+    def allowedOperations(self) -> List[QCCDOperationType]:
+        """Operations allowed for this ion (old API compatibility)."""
+        return [
+            QCCDOperationType.CRYSTAL_ROTATION,
+            QCCDOperationType.GATE_SWAP,
+            QCCDOperationType.JUNCTION_CROSSING,
+            QCCDOperationType.MERGE,
+            QCCDOperationType.SPLIT,
+            QCCDOperationType.MOVE,
+            QCCDOperationType.RECOOLING,
+            QCCDOperationType.MEASUREMENT,
+            QCCDOperationType.ONE_QUBIT_GATE,
+            QCCDOperationType.TWO_QUBIT_MS_GATE,
+            QCCDOperationType.QUBIT_RESET,
+        ]
+    
+    def set(
+        self,
+        idx: int,
+        x: float,
+        y: float,
+        parent: Optional["QCCDNode"] = None,
+    ) -> None:
+        """Set ion position and parent (old API compatibility)."""
+        self.index = idx
+        self.id = f"{self.label}{idx}"
+        self.position = (float(x), float(y))
+        self.parent = parent
+    
+    @property
+    def motionalMode(self) -> float:
+        """Alias for motional_energy (old API compatibility)."""
+        return self.motional_energy
     
     def add_motional_energy(self, energy: float) -> None:
         """Add motional energy (heating)."""
         self.motional_energy += energy
+    
+    def addMotionalEnergy(self, energy: float) -> None:
+        """Old API compatibility alias."""
+        self.add_motional_energy(energy)
     
     def reset_motional_energy(self) -> None:
         """Reset motional energy (after cooling)."""
@@ -141,6 +197,16 @@ class Ion(PhysicalQubit):
         """Reset ion to initial state including motional energy."""
         super().reset()
         self.motional_energy = 0.0
+    
+    def __hash__(self) -> int:
+        """Hash based on unique ion index for use as dict keys."""
+        return hash(self.idx)
+    
+    def __eq__(self, other: object) -> bool:
+        """Equality based on ion index."""
+        if isinstance(other, Ion):
+            return self.idx == other.idx
+        return False
 
 
 # =============================================================================
@@ -169,6 +235,32 @@ def create_cooling_ion(
 ) -> Ion:
     """Create a cooling ion for sympathetic cooling."""
     return Ion(idx=idx, position=position, label=label, is_cooling=True)
+
+
+# =============================================================================
+# Abstract Base for QCCD Components (Old API Compatibility)
+# =============================================================================
+
+class QCCDComponent:
+    """Abstract base class for QCCD components (old API compatibility).
+    
+    Provides the interface expected by old routing code.
+    """
+    
+    @property
+    def pos(self) -> Tuple[float, float]:
+        """Component position."""
+        raise NotImplementedError
+    
+    @property
+    def idx(self) -> int:
+        """Component index."""
+        raise NotImplementedError
+    
+    @property
+    def allowedOperations(self) -> Sequence[QCCDOperationType]:
+        """Allowed operations for this component."""
+        return []
 
 
 # =============================================================================
@@ -204,6 +296,10 @@ class QCCDWISEConfig:
     def num_junctions(self) -> int:
         """Total number of junctions."""
         return (self.m - 1) * self.n + self.m * (self.n - 1)
+
+
+# Old API alias
+QCCDWiseArch = QCCDWISEConfig
 
 
 @dataclass
@@ -248,6 +344,13 @@ class QCCDNode:
     capacity: int
     label: str = ""
     ions: List[Ion] = field(default_factory=list)
+    _color: str = "lightgray"
+    
+    # Mutable counter for routing (old API compatibility)
+    numIons: int = field(default=0, repr=False)
+    
+    def __post_init__(self):
+        self.numIons = len(self.ions)
     
     @property
     def num_ions(self) -> int:
@@ -265,15 +368,51 @@ class QCCDNode:
     def display_label(self) -> str:
         return f"{self.label}{self.idx}"
     
+    @property
+    def pos(self) -> Tuple[float, float]:
+        """Alias for position (old API compatibility)."""
+        return self.position
+    
+    @property
+    def color(self) -> str:
+        """Node color for visualization."""
+        return self._color
+    
+    @property
+    def nodes(self) -> List[int]:
+        """List of node indices (self + ions) for old API compatibility."""
+        n = [self.idx]
+        if self.ions:
+            n += [i.idx for i in self.ions]
+        return n
+    
+    @property
+    def positions(self) -> List[Tuple[float, float]]:
+        """List of positions (self + ions) for old API compatibility."""
+        n = [self.pos]
+        if self.ions:
+            n += [i.pos for i in self.ions]
+        return n
+    
     def add_ion(self, ion: Ion, position_idx: int = -1) -> None:
-        """Add an ion to this node."""
-        if self.is_full:
-            raise ValueError(f"Node {self.idx} is at capacity {self.capacity}")
+        """Add an ion to this node.
+
+        ``numIons`` is **not** auto-updated here — the greedy routing
+        algorithm manages the counter manually via direct assignment.
+        """
         if position_idx < 0:
             self.ions.append(ion)
         else:
             self.ions.insert(position_idx, ion)
         ion.parent = self
+    
+    def addIon(
+        self, ion: Ion, adjacentIon: Optional[Ion] = None, offset: int = 0
+    ) -> None:
+        """Old API compatibility: add ion next to adjacentIon."""
+        pos_idx = (self.ions.index(adjacentIon) + offset if adjacentIon else offset)
+        self.ions.insert(pos_idx, ion)
+        ion.set(ion.idx, *self.pos, parent=self)
     
     def remove_ion(self, ion: Optional[Ion] = None) -> Ion:
         """Remove and return an ion from this node."""
@@ -287,10 +426,55 @@ class QCCDNode:
         removed.parent = None
         return removed
     
+    def removeIon(self, ion: Optional[Ion] = None) -> Ion:
+        """Old API compatibility alias."""
+        return self.remove_ion(ion)
+    
     @property
     def allowed_operations(self) -> List[QCCDOperationType]:
         """Operations allowed at this node."""
         return []
+    
+    @property
+    def allowedOperations(self) -> Sequence[QCCDOperationType]:
+        """Old API compatibility alias."""
+        return self.allowed_operations
+    
+    def subgraph(self, graph: "nx.Graph") -> "nx.Graph":
+        """Add this node to a networkx graph (old API compatibility)."""
+        for n, p in zip(self.nodes, self.positions):
+            graph.add_node(n, pos=p)
+        return graph
+    
+    def addMotionalEnergy(self, energy: float) -> None:
+        """Add motional energy to all ions (old API compatibility)."""
+        if self.ions:
+            energy_per_ion = energy / len(self.ions)
+            for ion in self.ions:
+                ion.addMotionalEnergy(energy_per_ion)
+    
+    @property
+    def motionalMode(self) -> float:
+        """Total motional energy of non-cooling ions (old API compatibility)."""
+        return sum(
+            ion.motionalMode for ion in self.ions
+            if not getattr(ion, 'is_cooling', False)
+        )
+    
+    @property
+    def motional_energy(self) -> float:
+        """Total motional energy of ions in this node (alias for motionalMode)."""
+        return self.motionalMode
+    
+    def __hash__(self) -> int:
+        """Hash based on unique node index for use as dict keys/set members."""
+        return hash(self.idx)
+    
+    def __eq__(self, other: object) -> bool:
+        """Equality based on node index."""
+        if isinstance(other, QCCDNode):
+            return self.idx == other.idx
+        return False
 
 
 @dataclass
@@ -311,21 +495,43 @@ class ManipulationTrap(QCCDNode):
     spacing: float = 1.0
     label: str = "MT"
     secular_frequencies: Tuple[float, float, float] = (1.0e6, 5.0e6, 5.0e6)
+    _color: str = "lightyellow"
+    
+    # Constants for old API compatibility (from physics.py)
+    BACKGROUND_HEATING_RATE: float = _CAL.heating_rate
+    CAPACITY_SCALING: int = 1
 
     def __post_init__(self):
+        super().__post_init__()
         self.mode_structure: Optional[ModeStructure] = None
+        self._desired_capacity = self.capacity
+        self._spacing = self.spacing
+        self._isHorizontal = self.is_horizontal
+        self._arrangeIons()
 
     # ------ Override add_ion / remove_ion to recompute modes ------
 
     def add_ion(self, ion: Ion, position_idx: int = -1) -> None:
-        """Add an ion and recompute the 3N mode structure."""
-        if self.is_full:
-            raise ValueError(f"Node {self.idx} is at capacity {self.capacity}")
+        """Add an ion and recompute the 3N mode structure.
+
+        ``numIons`` is not updated — managed by routing.
+        """
         if position_idx < 0:
             self.ions.append(ion)
         else:
             self.ions.insert(position_idx, ion)
         ion.parent = self
+        self._arrangeIons()
+        self._recompute_modes()
+
+    def addIon(
+        self, ion: Ion, adjacentIon: Optional[Ion] = None, offset: int = 0
+    ) -> None:
+        """Old API compatibility: add ion next to adjacentIon."""
+        pos_idx = (self.ions.index(adjacentIon) + offset if adjacentIon else offset)
+        self.ions.insert(pos_idx, ion)
+        ion.set(ion.idx, *self.pos, parent=self)
+        self._arrangeIons()
         self._recompute_modes()
 
     def remove_ion(self, ion: Optional[Ion] = None) -> Ion:
@@ -338,8 +544,21 @@ class ManipulationTrap(QCCDNode):
             self.ions.remove(ion)
             removed = ion
         removed.parent = None
+        self._arrangeIons()
         self._recompute_modes()
         return removed
+
+    def removeIon(self, ion: Optional[Ion] = None) -> Ion:
+        """Old API compatibility alias."""
+        return self.remove_ion(ion)
+
+    def _arrangeIons(self) -> None:
+        """Arrange ion positions within the trap (old API compatibility)."""
+        for i, ion in enumerate(self.ions):
+            o = i - len(self.ions) / 2
+            x = self.pos[0] + o * self._spacing * self._isHorizontal
+            y = self.pos[1] + o * self._spacing * (1 - self._isHorizontal)
+            ion.set(ion.idx, x, y, parent=self)
 
     def _recompute_modes(self) -> None:
         """Recompute mode structure for the current ion crystal."""
@@ -352,6 +571,36 @@ class ManipulationTrap(QCCDNode):
             n, axial_freq=wz, radial_freqs=(wx, wy),
         )
 
+    @property
+    def backgroundHeatingRate(self) -> float:
+        """Background heating rate (old API compatibility)."""
+        return self.BACKGROUND_HEATING_RATE
+
+    @property
+    def desiredCapacity(self) -> int:
+        """Desired capacity (old API compatibility)."""
+        return self._desired_capacity
+
+    @property
+    def hasCoolingIon(self) -> bool:
+        """Check if trap has a cooling ion (old API compatibility)."""
+        return any(getattr(ion, 'is_cooling', False) for ion in self.ions)
+
+    def coolTrap(self) -> bool:
+        """Old API compatibility: reset motional energy via cooling ions."""
+        cooling_ions = [ion for ion in self.ions if getattr(ion, 'is_cooling', False)]
+        qubit_ions = [ion for ion in self.ions if not getattr(ion, 'is_cooling', False)]
+        if not cooling_ions:
+            return False
+        energy = 0.0
+        for ion in qubit_ions:
+            energy += ion.motionalMode
+            ion.motional_energy = 0.0
+        energy_per_cooling = energy / len(cooling_ions)
+        for ion in cooling_ions:
+            ion.addMotionalEnergy(energy_per_cooling)
+        return True
+
     def cool_trap(self) -> None:
         """Sympathetic recooling: reset all mode occupancies to zero.
 
@@ -360,6 +609,10 @@ class ManipulationTrap(QCCDNode):
         has_cooling = any(getattr(ion, 'is_cooling', False) for ion in self.ions)
         if has_cooling and self.mode_structure is not None:
             self.mode_structure.cool_to_ground()
+    
+    def __hash__(self) -> int:
+        """Hash based on unique node index for use as dict keys/set members."""
+        return hash(self.idx)
     
     @property
     def allowed_operations(self) -> List[QCCDOperationType]:
@@ -377,12 +630,32 @@ class ManipulationTrap(QCCDNode):
         ]
 
 
+# Old API alias
+Trap = ManipulationTrap
+
+
 @dataclass
 class StorageTrap(QCCDNode):
     """Trap zone for storing idle ions."""
     is_horizontal: bool = True
     spacing: float = 1.0
     label: str = "ST"
+    _color: str = "grey"
+    
+    # Constants for old API compatibility (from physics.py)
+    BACKGROUND_HEATING_RATE: float = _CAL.heating_rate
+    CAPACITY_SCALING: int = 1
+    
+    def __post_init__(self):
+        super().__post_init__()
+        self._desired_capacity = self.capacity
+        self._spacing = self.spacing
+        self._isHorizontal = self.is_horizontal
+    
+    @property
+    def backgroundHeatingRate(self) -> float:
+        """Background heating rate (old API compatibility)."""
+        return self.BACKGROUND_HEATING_RATE
     
     @property
     def allowed_operations(self) -> List[QCCDOperationType]:
@@ -392,12 +665,25 @@ class StorageTrap(QCCDNode):
             QCCDOperationType.MOVE,
             QCCDOperationType.CRYSTAL_ROTATION,
         ]
+    
+    def __hash__(self) -> int:
+        """Hash based on unique node index for use as dict keys/set members."""
+        return hash(self.idx)
 
 
 @dataclass
 class Junction(QCCDNode):
     """Junction node for routing between traps."""
     label: str = "J"
+    _color: str = "orange"
+    
+    # Default constants for old API compatibility
+    DEFAULT_COLOR: str = "orange"
+    DEFAULT_LABEL: str = "J"
+    DEFAULT_CAPACITY: int = 1
+    
+    def __post_init__(self):
+        super().__post_init__()
     
     @property
     def allowed_operations(self) -> List[QCCDOperationType]:
@@ -407,6 +693,10 @@ class Junction(QCCDNode):
             QCCDOperationType.MERGE,
             QCCDOperationType.MOVE,
         ]
+    
+    def __hash__(self) -> int:
+        """Hash based on unique node index for use as dict keys/set members."""
+        return hash(self.idx)
 
 
 @dataclass
@@ -420,6 +710,16 @@ class Crossing:
     target: QCCDNode
     ion: Optional[Ion] = None  # Ion currently in transit
     label: str = "C"
+    _ionAtSource: bool = False
+    
+    # Constants for old API compatibility
+    DEFAULT_LABEL: str = "C"
+    MOVE_AMOUNT: int = 8
+    
+    @property
+    def pos(self) -> Tuple[float, float]:
+        """Alias for position (old API compatibility)."""
+        return self.position
     
     @property
     def position(self) -> Tuple[float, float]:
@@ -435,6 +735,262 @@ class Crossing:
     @property
     def display_label(self) -> str:
         return f"{self.label}{self.idx}"
+    
+    @property
+    def allowedOperations(self) -> Sequence[QCCDOperationType]:
+        """Allowed operations (old API compatibility)."""
+        return [
+            QCCDOperationType.SPLIT,
+            QCCDOperationType.MOVE,
+            QCCDOperationType.MERGE,
+            QCCDOperationType.JUNCTION_CROSSING,
+        ]
+    
+    def ionAt(self) -> QCCDNode:
+        """Return node where ion currently is (old API compatibility)."""
+        if not self.ion:
+            raise ValueError(f"ionAt: no ion for crossing {self.idx}")
+        return self.source if self._ionAtSource else self.target
+    
+    def hasTrap(self, trap: "Trap") -> bool:
+        """Check if this crossing connects to a trap (old API compatibility)."""
+        return trap == self.source or trap == self.target
+    
+    def hasJunction(self, junction: Junction) -> bool:
+        """Check if this crossing connects to a junction (old API compatibility)."""
+        return junction == self.source or junction == self.target
+    
+    def _getEdgeIdxs(self) -> Tuple[int, int]:
+        """Get edge indices for visualization (old API compatibility)."""
+        import numpy as np
+        permutations = [[1, 1], [1, -1], [-1, 1], [-1, -1]]
+        if not self.source.ions:
+            permutations[0][0] = 0
+            permutations[1][0] = 0
+        if not self.target.ions:
+            permutations[0][1] = 0
+            permutations[2][1] = 0
+        pairs_distances = [
+            (self.source.positions[i][0] - self.target.positions[j][0]) ** 2
+            + (self.source.positions[i][1] - self.target.positions[j][1]) ** 2
+            for (i, j) in permutations
+        ]
+        return permutations[np.argmin(pairs_distances)]
+    
+    def graphEdge(self) -> Tuple[int, int]:
+        """Get graph edge tuple (old API compatibility)."""
+        idx1, idx2 = self._getEdgeIdxs()
+        return (self.source.nodes[idx1], self.target.nodes[idx2])
+    
+    def getEdgeIon(self, node: QCCDNode) -> Ion:
+        """Get edge ion for a node (old API compatibility)."""
+        if not node.ions:
+            raise ValueError("getEdgeIon: no edge ions")
+        ionIdx = node.nodes[self._getEdgeIdxs()[1 - (node == self.source)]]
+        return [i for i in node.ions if i.idx == ionIdx][0]
+    
+    def setIon(self, ion: Ion, node: QCCDNode) -> None:
+        """Set ion in crossing (old API compatibility)."""
+        if self.ion is not None:
+            raise ValueError(f"setIon: crossing has not been cleared")
+        self.ion = ion
+        self._ionAtSource = (self.source == node)
+        edgeIdxs = self._getEdgeIdxs()
+        w = (1 + (self.MOVE_AMOUNT - 2) * (self.source == node)) / self.MOVE_AMOUNT
+        x = self.source.positions[edgeIdxs[0]][0] * w + self.target.positions[
+            edgeIdxs[1]
+        ][0] * (1 - w)
+        y = self.source.positions[edgeIdxs[0]][1] * w + self.target.positions[
+            edgeIdxs[1]
+        ][1] * (1 - w)
+        self.ion.set(self.ion.idx, x, y, parent=self)
+    
+    def moveIon(self) -> None:
+        """Move ion to other side of crossing (old API compatibility)."""
+        if self.ion is None:
+            raise ValueError(f"moveIon: no ion to move in crossing")
+        node = self.target if self._ionAtSource else self.source
+        ion = self.ion
+        self.clearIon()
+        self.setIon(ion, node)
+    
+    def clearIon(self) -> None:
+        """Clear ion from crossing (old API compatibility)."""
+        self.ion = None
+    
+    def __hash__(self) -> int:
+        """Hash based on unique crossing index for use as dict keys/set members."""
+        return hash(self.idx)
+    
+    def __eq__(self, other: object) -> bool:
+        """Equality based on crossing index."""
+        if isinstance(other, Crossing):
+            return self.idx == other.idx
+        return False
+
+
+# =============================================================================
+# Lightweight edge-operation helpers (used by QCCDGraph.build_networkx_graph)
+# =============================================================================
+
+class _EdgeOp:
+    """Minimal transport operation for graph-edge routing.
+
+    ``greedy_routing.ionRouting`` reads ``graph.edges[n1,n2]["operations"]``
+    and calls ``.run()`` on each entry.  This class provides just enough
+    interface to satisfy that loop (and the ``isinstance`` checks that
+    follow it).  It is intentionally **not** a subclass of the legacy
+    ``routing.reconfiguration.Operation`` to avoid circular imports.
+    """
+
+    def __init__(
+        self,
+        run_fn,
+        label: str = "transport",
+        involved_components=None,
+    ):
+        self._run_fn = run_fn
+        self._label_str = label
+        self._involvedComponents = list(involved_components or [])
+        self._involvedIonsForLabel: list = []
+        self._addOns = ""
+        self._fidelity: float = 1.0
+        self._dephasingFidelity: float = 1.0
+        self._operationTime: float = 0.0
+
+    # ------ greedy_routing interface ------
+    def run(self) -> None:  # noqa: D401
+        self._run_fn()
+
+    @property
+    def label(self) -> str:
+        return self._label_str + self._addOns
+
+    @property
+    def involvedComponents(self):
+        return self._involvedComponents
+
+    @property
+    def involvedIonsForLabel(self):
+        return self._involvedIonsForLabel
+
+    # Timing stubs (used by Operation base but not by greedy loop)
+    def calculateOperationTime(self) -> None:
+        pass
+
+    def calculateFidelity(self) -> None:
+        pass
+
+    def calculateDephasingFidelity(self) -> None:
+        pass
+
+    def _generateLabelAddOns(self) -> None:
+        pass
+
+
+def _make_crossing_ops(
+    src_node: "QCCDNode",
+    tgt_node: "QCCDNode",
+    crossing: "Crossing",
+):
+    """Build directed transport ``_EdgeOp`` list for one crossing edge.
+
+    The operation sequence depends on the types of *src_node* and
+    *tgt_node*, faithfully matching the old ``QCCDArch.addEdge()``
+    logic:
+
+    * **Trap → Junction**: Split + Move + JunctionCrossing
+    * **Junction → Trap**: JunctionCrossing + Move + Merge
+    * **Junction → Junction**: JunctionCrossing + Move + JunctionCrossing
+    * **Trap → Trap**: Split + Move + Merge
+
+    Additionally, when the source is a Trap containing exactly one ion
+    a "rotation" edge-op (a self-``GateSwap``) is prepended so the
+    routing code can hit its ``isinstance(m, GateSwap) and
+    m._ions[0] == m._ions[1]`` skip-check.
+
+    The returned closures capture *references* to the architecture
+    objects so that the actual state mutation happens at ``.run()``-time.
+    """
+    from .operations import GateSwap as _GS
+
+    src_is_trap = isinstance(src_node, (ManipulationTrap, StorageTrap, Trap))
+    tgt_is_trap = isinstance(tgt_node, (ManipulationTrap, StorageTrap, Trap))
+
+    # ---- closure factories ------------------------------------------------
+
+    def _rotation():
+        """Self-GateSwap 'rotation' for single-ion source trap."""
+        pass  # no-op; greedy routing skips it via identity check
+
+    def _split():
+        edge_ion = crossing.getEdgeIon(src_node)
+        src_node.remove_ion(edge_ion)
+        crossing.setIon(edge_ion, src_node)
+
+    def _move():
+        crossing.moveIon()
+
+    def _merge():
+        ion = crossing.ion
+        crossing.clearIon()
+        tgt_node.add_ion(ion)
+
+    def _junction_enter():
+        """Ion enters a junction (from crossing side)."""
+        ion = crossing.ion
+        crossing.clearIon()
+        tgt_node.add_ion(ion)
+
+    def _junction_leave():
+        """Ion leaves a junction (into crossing)."""
+        if src_node.ions:
+            edge_ion = src_node.ions[0]
+        else:
+            edge_ion = crossing.getEdgeIon(src_node)
+        src_node.remove_ion(edge_ion)
+        crossing.setIon(edge_ion, src_node)
+
+    # ---- build sequence ---------------------------------------------------
+    ops: list = []
+
+    if src_is_trap and not tgt_is_trap:
+        # Trap → Junction
+        ops.append(_EdgeOp(_split, f"Split({src_node.label}{src_node.idx})",
+                           [src_node, crossing]))
+        ops.append(_EdgeOp(_move,  f"Move(C{crossing.idx})", [crossing]))
+        ops.append(_EdgeOp(_junction_enter,
+                           f"JCross({tgt_node.label}{tgt_node.idx})",
+                           [tgt_node, crossing]))
+
+    elif not src_is_trap and tgt_is_trap:
+        # Junction → Trap
+        ops.append(_EdgeOp(_junction_leave,
+                           f"JCross({src_node.label}{src_node.idx})",
+                           [src_node, crossing]))
+        ops.append(_EdgeOp(_move,  f"Move(C{crossing.idx})", [crossing]))
+        ops.append(_EdgeOp(_merge, f"Merge({tgt_node.label}{tgt_node.idx})",
+                           [tgt_node, crossing]))
+
+    elif not src_is_trap and not tgt_is_trap:
+        # Junction → Junction
+        ops.append(_EdgeOp(_junction_leave,
+                           f"JCross({src_node.label}{src_node.idx})",
+                           [src_node, crossing]))
+        ops.append(_EdgeOp(_move,  f"Move(C{crossing.idx})", [crossing]))
+        ops.append(_EdgeOp(_junction_enter,
+                           f"JCross({tgt_node.label}{tgt_node.idx})",
+                           [tgt_node, crossing]))
+
+    else:
+        # Trap → Trap (direct, no junction)
+        ops.append(_EdgeOp(_split, f"Split({src_node.label}{src_node.idx})",
+                           [src_node, crossing]))
+        ops.append(_EdgeOp(_move,  f"Move(C{crossing.idx})", [crossing]))
+        ops.append(_EdgeOp(_merge, f"Merge({tgt_node.label}{tgt_node.idx})",
+                           [tgt_node, crossing]))
+
+    return ops
 
 
 # =============================================================================
@@ -455,6 +1011,8 @@ class QCCDGraph:
         self._crossing_edges: Dict[Tuple[int, int], Crossing] = {}
         self._next_idx: int = 0
         self._routing_table: Dict[int, Dict[int, List[int]]] = {}
+        # Ordered list of all ions (logical qubit 0 → first ion added, etc.)
+        self._qubit_ions: List[Ion] = []
     
     @property
     def graph(self) -> nx.DiGraph:
@@ -472,6 +1030,11 @@ class QCCDGraph:
         return self._crossings
     
     @property
+    def crossingEdges(self) -> Dict[Tuple[int, int], Crossing]:
+        """Crossing edges (old API compatibility)."""
+        return self._crossing_edges
+    
+    @property
     def ions(self) -> Dict[int, Ion]:
         """All ions across all nodes."""
         all_ions = {}
@@ -482,6 +1045,15 @@ class QCCDGraph:
             if crossing.ion is not None:
                 all_ions[crossing.ion.idx] = crossing.ion
         return all_ions
+
+    @property
+    def qubit_ions(self) -> List[Ion]:
+        """Ordered list mapping logical qubit index → Ion object.
+
+        ``qubit_ions[i]`` is the Ion corresponding to logical qubit *i*
+        (in the order ions were added to traps).
+        """
+        return self._qubit_ions
     
     def add_manipulation_trap(
         self,
@@ -491,9 +1063,22 @@ class QCCDGraph:
         is_horizontal: bool = True,
         spacing: float = 1.0,
     ) -> ManipulationTrap:
-        """Add a manipulation trap to the graph."""
+        """Add a manipulation trap to the graph.
+
+        Index allocation follows the old ``QCCDArch`` convention:
+        ``_next_idx`` is used for the trap node, then each ion gets
+        indices ``_next_idx + 1 .. _next_idx + len(ions)``, and the
+        counter advances by ``len(ions) + 1``.  This guarantees
+        ``node.nodes == [trap_idx, ion0_idx, ion1_idx, ...]`` which
+        the greedy routing algorithm relies on.
+        """
+        trap_idx = self._next_idx
+        # Reassign ion indices to be contiguous with the trap
+        for i, ion in enumerate(ions):
+            ion.index = trap_idx + 1 + i
+            ion.id = f"{ion.label}{ion.index}"
         trap = ManipulationTrap(
-            idx=self._next_idx,
+            idx=trap_idx,
             position=position,
             capacity=capacity,
             ions=ions,
@@ -501,7 +1086,8 @@ class QCCDGraph:
             spacing=spacing,
         )
         self._nodes[trap.idx] = trap
-        self._next_idx += 1
+        self._qubit_ions.extend(ions)
+        self._next_idx += len(ions) + 1
         return trap
     
     def add_storage_trap(
@@ -512,9 +1098,13 @@ class QCCDGraph:
         is_horizontal: bool = True,
         spacing: float = 1.0,
     ) -> StorageTrap:
-        """Add a storage trap to the graph."""
+        """Add a storage trap to the graph (block index allocation)."""
+        trap_idx = self._next_idx
+        for i, ion in enumerate(ions):
+            ion.index = trap_idx + 1 + i
+            ion.id = f"{ion.label}{ion.index}"
         trap = StorageTrap(
-            idx=self._next_idx,
+            idx=trap_idx,
             position=position,
             capacity=capacity,
             ions=ions,
@@ -522,7 +1112,8 @@ class QCCDGraph:
             spacing=spacing,
         )
         self._nodes[trap.idx] = trap
-        self._next_idx += 1
+        self._qubit_ions.extend(ions)
+        self._next_idx += len(ions) + 1
         return trap
     
     def add_junction(
@@ -530,7 +1121,13 @@ class QCCDGraph:
         position: Tuple[float, float],
         capacity: int = 1,
     ) -> Junction:
-        """Add a junction to the graph."""
+        """Add a junction to the graph.
+
+        Default capacity is 1.  The greedy routing algorithm uses the
+        ``numIons`` counter (not actual ion count) to track junction
+        occupancy and checks ``isinstance(node, Junction) and
+        node.numIons == 1`` to mark a junction as full.
+        """
         junction = Junction(
             idx=self._next_idx,
             position=position,
@@ -557,29 +1154,79 @@ class QCCDGraph:
         self._next_idx += 1
         return crossing
     
-    def build_networkx_graph(self) -> nx.DiGraph:
-        """Build/refresh the NetworkX graph from nodes and crossings."""
+    def build_networkx_graph(self, include_intra_trap: bool = True) -> nx.DiGraph:
+        """Build/refresh the NetworkX graph from nodes and crossings.
+
+        Faithfully reproduces the old ``QCCDArch.refreshGraph()``
+        topology so that :func:`routing.greedy_routing.ionRouting`
+        works correctly:
+
+        1. **Ion + trap/junction nodes** — via ``node.subgraph(g)``.
+        2. **Ion → parent-trap edges** — weight-0, empty operations.
+        3. **Intra-trap GateSwap edges** — every ion pair in each trap.
+        4. **Crossing edges** — endpoints are *ion-level* indices
+           obtained from ``crossing.graphEdge()``.  The
+           ``_crossing_edges`` dict is re-keyed by those ion indices.
+        5. **``numIons`` reset** — set to ``len(node.ions)`` for every
+           node so that the routing's manual counter starts correct.
+
+        Parameters
+        ----------
+        include_intra_trap : bool
+            If True (default), add ion↔ion GateSwap edges inside traps.
+        """
+        from .operations import GateSwap as _GS
+
         g = nx.DiGraph()
-        
-        # Add nodes
+
+        # ---- 1. nodes (trap/junction + ions) via subgraph ----
         for node in self._nodes.values():
-            g.add_node(node.idx, pos=node.position, node=node)
-        
-        # Add edges from crossings
-        for crossing in self._crossings.values():
-            src, tgt = crossing.source.idx, crossing.target.idx
-            g.add_edge(src, tgt, crossing=crossing, weight=1)
-            g.add_edge(tgt, src, crossing=crossing, weight=1)
-        
-        # Add intra-trap edges (ions within same trap can interact)
+            node.subgraph(g)
+            # Reset numIons to actual count so routing counters start fresh
+            node.numIons = len(node.ions)
+
+        # ---- 2. ion → parent-trap edges ----
         for node in self._nodes.values():
             if isinstance(node, (ManipulationTrap, StorageTrap)):
-                for i, ion1 in enumerate(node.ions):
-                    for j, ion2 in enumerate(node.ions):
-                        if i != j:
-                            # Weight 0 for same-trap interactions
-                            g.add_edge(ion1.idx, ion2.idx, weight=0, same_trap=True)
-        
+                for ion in node.ions:
+                    g.add_edge(ion.idx, node.idx, operations=[], weight=0)
+
+        # ---- 3. intra-trap GateSwap edges (ion ↔ ion) ----
+        if include_intra_trap:
+            for node in self._nodes.values():
+                if isinstance(node, (ManipulationTrap, StorageTrap)):
+                    for i, ion1 in enumerate(node.ions):
+                        for j, ion2 in enumerate(node.ions):
+                            if i != j:
+                                swap = _GS.qubitOperation(ion1, ion2, trap=node)
+                                g.add_edge(
+                                    ion1.idx, ion2.idx,
+                                    weight=0, same_trap=True,
+                                    operations=[swap],
+                                )
+
+        # ---- 4. crossing edges (ion-level endpoints) ----
+        # Re-key _crossing_edges by ion-level indices as the old code did
+        self._crossing_edges.clear()
+        for crossing in self._crossings.values():
+            src_node, tgt_node = crossing.source, crossing.target
+            try:
+                n1Idx, n2Idx = crossing.graphEdge()
+            except (ValueError, IndexError):
+                # Fallback: use node-level indices if no ions (e.g. junction↔junction)
+                n1Idx, n2Idx = src_node.idx, tgt_node.idx
+
+            ops_fwd = _make_crossing_ops(src_node, tgt_node, crossing)
+            ops_rev = _make_crossing_ops(tgt_node, src_node, crossing)
+
+            g.add_edge(n1Idx, n2Idx, crossing=crossing, weight=1,
+                       operations=ops_fwd)
+            g.add_edge(n2Idx, n1Idx, crossing=crossing, weight=1,
+                       operations=ops_rev)
+
+            self._crossing_edges[(n1Idx, n2Idx)] = crossing
+            self._crossing_edges[(n2Idx, n1Idx)] = crossing
+
         self._graph = g
         return g
     
@@ -634,10 +1281,10 @@ class TrappedIonArchitecture(HardwareArchitecture):
         self,
         name: str,
         num_qubits: int,
-        ms_gate_time: float = 40.0,  # μs
-        single_qubit_time: float = 5.0,  # μs
-        measurement_time: float = 400.0,  # μs
-        t2_time: float = 2.2e6,  # μs (2.2 seconds)
+        ms_gate_time: float = _CAL.ms_gate_time * 1e6,  # μs (from physics.py)
+        single_qubit_time: float = _CAL.single_qubit_gate_time * 1e6,  # μs
+        measurement_time: float = _CAL.measurement_time * 1e6,  # μs
+        t2_time: float = _CAL.t2_time * 1e6,  # μs
         metadata: Optional[Dict[str, Any]] = None,
     ):
         super().__init__(name, num_qubits, metadata)
@@ -648,6 +1295,8 @@ class TrappedIonArchitecture(HardwareArchitecture):
     
     def native_gate_set(self) -> NativeGateSet:
         """Trapped ion native gates: MS + single-qubit rotations."""
+        # Lazy import to avoid circular dependency (operations imports architecture)
+        from qectostim.experiments.hardware_simulation.trapped_ion.operations import TRAPPED_ION_NATIVE_GATES
         gate_set = NativeGateSet("trapped_ion")
         
         # Add trapped ion native gates
@@ -678,7 +1327,7 @@ class TrappedIonArchitecture(HardwareArchitecture):
                 "Z": self.single_qubit_time,
             },
             readout_time=self.measurement_time,
-            reset_time=50.0,  # μs
+            reset_time=_CAL.reset_time * 1e6,  # μs (from physics.py)
         )
     
     def is_reconfigurable(self) -> bool:
@@ -803,7 +1452,47 @@ class QCCDArchitecture(TrappedIonArchitecture):
     def qccd_graph(self) -> QCCDGraph:
         """The underlying QCCD graph."""
         return self._qccd_graph
-    
+
+    # ── Routing-compatible delegation properties ─────────────────
+    # These let routing code use QCCDArchitecture / WISEArchitecture
+    # directly via duck-typed .graph, .ions, .nodes, etc.
+
+    @property
+    def graph(self) -> nx.DiGraph:
+        """The underlying NetworkX graph (routing-compatible)."""
+        return self._qccd_graph.graph
+
+    @property
+    def ions(self) -> Dict[int, Ion]:
+        """All ions across all nodes (routing-compatible)."""
+        return self._qccd_graph.ions
+
+    @property
+    def qubit_ions(self) -> List[Ion]:
+        """Ordered list: ``qubit_ions[logical_idx]`` → Ion."""
+        return self._qccd_graph.qubit_ions
+
+    @property
+    def nodes(self) -> Dict[int, QCCDNode]:
+        """All nodes (traps and junctions) (routing-compatible)."""
+        return self._qccd_graph.nodes
+
+    @property
+    def crossingEdges(self) -> Dict[Tuple[int, int], Crossing]:
+        """Crossing edges dict (routing-compatible)."""
+        return self._qccd_graph.crossingEdges
+
+    @property
+    def _manipulationTraps(self) -> List[ManipulationTrap]:
+        """All manipulation traps (routing-compatible)."""
+        return [n for n in self._qccd_graph.nodes.values()
+                if isinstance(n, ManipulationTrap)]
+
+    def refreshGraph(self) -> None:
+        """Rebuild the NetworkX graph and routing table (routing-compatible)."""
+        self._qccd_graph.build_networkx_graph()
+        self._qccd_graph.compute_routing_table()
+
     def connectivity_graph(self) -> ConnectivityGraph:
         """Build QCCD connectivity graph."""
         # Create connectivity from the QCCD graph
@@ -1164,6 +1853,16 @@ class WISEArchitecture(QCCDArchitecture):
         return (self.rows, self.total_columns)
 
     @property
+    def m(self) -> int:
+        """Number of column groups (QCCDWiseArch-compatible alias for ``col_groups``)."""
+        return self.col_groups
+
+    @property
+    def n(self) -> int:
+        """Number of rows (QCCDWiseArch-compatible alias for ``rows``)."""
+        return self.rows
+
+    @property
     def traps(self) -> Dict[Tuple[int, int], ManipulationTrap]:
         """Trap dict keyed by ``(block, row)``."""
         return self._traps
@@ -1172,6 +1871,14 @@ class WISEArchitecture(QCCDArchitecture):
     def junctions(self) -> Dict[Tuple[int, int], Junction]:
         """Junction dict keyed by ``(block, row)``."""
         return self._junctions
+
+    @property
+    def wise_config(self) -> "QCCDWISEConfig":
+        """Return a QCCDWISEConfig for this architecture.
+        
+        Used by the adapter layer to build old-style routing objects.
+        """
+        return QCCDWISEConfig(m=self.col_groups, n=self.rows, k=self.ions_per_segment)
 
     # --------------------------------------------------------------------- #
     #  Ion / trap lookup                                                     #
@@ -1285,7 +1992,10 @@ class AugmentedGridArchitecture(QCCDArchitecture):
 
     # --------------------------------------------------------------------- #
 
-    def _build_grid_topology(self) -> None:  # noqa: C901
+    def _build_grid_topology(  # noqa: C901
+        self,
+        initial_ions: Optional[Dict[Tuple[int, int], List[Ion]]] = None,
+    ) -> None:
         """Build the augmented (chequerboard) grid topology.
 
         Grid positions:
@@ -1293,6 +2003,17 @@ class AugmentedGridArchitecture(QCCDArchitecture):
         * Interleaved:          ``(2c+1, 2r+1)``   — diagonal traps
         * Junctions sit midway between vertical main-trap neighbours.
         * Horizontal edges connect junctions to diagonal traps.
+
+        Parameters
+        ----------
+        initial_ions : dict, optional
+            Mapping ``{(grid_col, grid_row): [Ion, ...]}`` specifying
+            which ions to place in each trap.  If *None* (the default),
+            every trap is filled with ``ions_per_trap`` generic "Q" ions.
+            When supplied, traps whose grid key is absent receive **no**
+            ions (empty traps).  Ion indices are reassigned by
+            :meth:`QCCDGraph.add_manipulation_trap` regardless of the
+            values passed in.
         """
         self._qccd_graph = QCCDGraph()
         self._traps_dict = {}
@@ -1307,29 +2028,38 @@ class AugmentedGridArchitecture(QCCDArchitecture):
         # ---- 1. Create main traps at (2c, 2r) ----------------------------
         for r in range(rows):
             for c in range(cols):
-                ions = [
-                    Ion(idx=ion_idx + i, label="Q", position=(float(2 * c), float(2 * r)))
-                    for i in range(k)
-                ]
-                ion_idx += k
+                grid_key = (2 * c, 2 * r)
+                if initial_ions is not None:
+                    ions = initial_ions.get(grid_key, [])
+                else:
+                    ions = [
+                        Ion(idx=ion_idx + i, label="Q",
+                            position=(float(2 * c), float(2 * r)))
+                        for i in range(k)
+                    ]
+                ion_idx += len(ions)
                 pos = (2 * c * self.trap_spacing, 2 * r * self.trap_spacing)
                 trap = self._qccd_graph.add_manipulation_trap(
                     position=pos,
                     ions=ions,
-                    capacity=k,
+                    capacity=k + 1,  # Extra slot for routing
                     is_horizontal=(rows == 1),
                 )
-                self._traps_dict[(2 * c, 2 * r)] = trap
+                self._traps_dict[grid_key] = trap
 
             # ---- 1b. Interleaved diagonal traps at (2c+1, 2r+1) ----------
             if r < rows - 1:
                 for c in range(cols - 1):
-                    ions = [
-                        Ion(idx=ion_idx + i, label="Q",
-                            position=(float(2 * c + 1), float(2 * r + 1)))
-                        for i in range(k)
-                    ]
-                    ion_idx += k
+                    grid_key = (2 * c + 1, 2 * r + 1)
+                    if initial_ions is not None:
+                        ions = initial_ions.get(grid_key, [])
+                    else:
+                        ions = [
+                            Ion(idx=ion_idx + i, label="Q",
+                                position=(float(2 * c + 1), float(2 * r + 1)))
+                            for i in range(k)
+                        ]
+                    ion_idx += len(ions)
                     pos = (
                         (2 * c + 1) * self.trap_spacing,
                         (2 * r + 1) * self.trap_spacing,
@@ -1337,10 +2067,10 @@ class AugmentedGridArchitecture(QCCDArchitecture):
                     trap = self._qccd_graph.add_manipulation_trap(
                         position=pos,
                         ions=ions,
-                        capacity=k,
+                        capacity=k + 1,  # Extra slot for routing
                         is_horizontal=True,
                     )
-                    self._traps_dict[(2 * c + 1, 2 * r + 1)] = trap
+                    self._traps_dict[grid_key] = trap
 
         # ---- 2. Edges / junctions -----------------------------------------
         if rows == 1:
@@ -1513,3 +2243,46 @@ class NetworkedGridArchitecture(QCCDArchitecture):
             f"NetworkedGridArchitecture(num_traps={self.num_traps}, "
             f"ions_per_trap={self.ions_per_trap})"
         )
+
+
+# =============================================================================
+# Re-export qubit operations for old API compatibility
+# =============================================================================
+# These imports must come at the end to avoid circular imports
+def _load_qubit_ops():
+    """Lazy load qubit operations to avoid circular imports."""
+    from qectostim.experiments.hardware_simulation.trapped_ion.operations import (
+        QubitOperation,
+        OneQubitGate,
+        XRotation,
+        YRotation,
+        Measurement,
+        QubitReset,
+        TwoQubitMSGate,
+        GateSwap,
+    )
+    return {
+        'QubitOperation': QubitOperation,
+        'OneQubitGate': OneQubitGate,
+        'XRotation': XRotation,
+        'YRotation': YRotation,
+        'Measurement': Measurement,
+        'QubitReset': QubitReset,
+        'TwoQubitMSGate': TwoQubitMSGate,
+        'GateSwap': GateSwap,
+    }
+
+# Lazy load and export
+_qubit_ops = None
+
+def __getattr__(name):
+    global _qubit_ops
+    qubit_op_names = {
+        'QubitOperation', 'OneQubitGate', 'XRotation', 'YRotation',
+        'Measurement', 'QubitReset', 'TwoQubitMSGate', 'GateSwap'
+    }
+    if name in qubit_op_names:
+        if _qubit_ops is None:
+            _qubit_ops = _load_qubit_ops()
+        return _qubit_ops[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

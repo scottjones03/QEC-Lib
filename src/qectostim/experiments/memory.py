@@ -286,11 +286,11 @@ class StabilizerMemoryExperiment(MemoryExperiment):
         # Emit qubit coordinates
         builder.emit_qubit_coords(c)
         
-        # Reset all qubits
-        builder.emit_reset_all(c)
+        # Reset qubits — skip data reset for X-basis (RX handles it atomically)
+        initial_state = "+" if basis == "X" else "0"
+        builder.emit_reset_all(c, skip_data=(basis == "X"))
         
         # Prepare logical state
-        initial_state = "+" if basis == "X" else "0"
         builder.emit_prepare_logical_state(c, state=initial_state, logical_idx=self.logical_qubit)
         
         # Emit stabilizer rounds with time-like detectors
@@ -333,6 +333,13 @@ class CSSMemoryExperiment(StabilizerMemoryExperiment):
         comparing consecutive rounds (less effective).
     metadata : Dict[str, Any] | None
         Additional metadata.
+
+    Attributes
+    ----------
+    qubit_roles : Dict[int, str]
+        Authoritative mapping of qubit index → role after ``to_stim()`` is
+        called.  Keys: ``'D'`` (data), ``'X'`` (X-ancilla), ``'Z'``
+        (Z-ancilla), ``'MX'``/``'MZ'`` (metachecks), ``'P'`` (projection).
     """
 
     def __init__(
@@ -354,6 +361,38 @@ class CSSMemoryExperiment(StabilizerMemoryExperiment):
         )
         self.enable_metachecks = enable_metachecks
         self.single_shot_metachecks = single_shot_metachecks
+        # Populated by to_stim() — authoritative qubit role mapping
+        self._qubit_roles: Optional[Dict[int, str]] = None
+        # Populated by to_stim() — rich QEC metadata for compiler
+        self._qec_metadata: Optional[Any] = None
+
+    @property
+    def qubit_roles(self) -> Dict[int, str]:
+        """Authoritative mapping of qubit index → role.
+
+        Available after ``to_stim()`` has been called.  Raises
+        ``RuntimeError`` if accessed before circuit generation.
+        """
+        if self._qubit_roles is None:
+            raise RuntimeError(
+                "qubit_roles not available until to_stim() is called"
+            )
+        return self._qubit_roles
+
+    @property
+    def qec_metadata(self) -> Any:
+        """Rich QEC metadata for the hardware compiler.
+
+        Available after ``to_stim()`` has been called.  Returns a
+        :class:`QECMetadata` instance populated from the builder and
+        code.  Raises ``RuntimeError`` if accessed before circuit
+        generation.
+        """
+        if self._qec_metadata is None:
+            raise RuntimeError(
+                "qec_metadata not available until to_stim() is called"
+            )
+        return self._qec_metadata
 
     def to_stim(self) -> stim.Circuit:
         """
@@ -370,6 +409,11 @@ class CSSMemoryExperiment(StabilizerMemoryExperiment):
         Note: Using REPEAT blocks is essential for matching Stim's DEM error
         mechanism counts. Without REPEAT, each round gets unique detector IDs
         and the DEM can't recognize time-translation-invariant error patterns.
+
+        Side Effects
+        ------------
+        Populates ``self._qubit_roles`` with the authoritative role mapping
+        from the builder, making ``self.qubit_roles`` available.
         """
         basis = self.basis.upper()
         
@@ -386,18 +430,30 @@ class CSSMemoryExperiment(StabilizerMemoryExperiment):
             enable_metachecks=use_metachecks,
             single_shot_metachecks=self.single_shot_metachecks
         )
+
+        # Capture qubit roles from the builder (authoritative source)
+        self._qubit_roles = dict(builder.qubit_roles)
         
         c = stim.Circuit()
         
         # Emit qubit coordinates
         builder.emit_qubit_coords(c)
         
-        # Reset all qubits
-        builder.emit_reset_all(c)
+        # Reset qubits — skip data reset for X-basis (RX handles it atomically)
+        initial_state = "+" if basis == "X" else "0"
+        builder.emit_reset_all(c, skip_data=(basis == "X"))
         
         # Prepare logical state
-        initial_state = "+" if basis == "X" else "0"
         builder.emit_prepare_logical_state(c, state=initial_state, logical_idx=self.logical_qubit)
+
+        # Build rich QEC metadata from builder + code
+        from qectostim.experiments.hardware_simulation.core.pipeline import QECMetadata
+        self._qec_metadata = QECMetadata.from_css_memory(
+            code=self.code,
+            builder=builder,
+            rounds=self.rounds,
+            measurement_basis=basis,
+        )
         
         # First stabilizer round (has special first-round detector logic)
         builder.emit_round(c, stab_type=StabilizerBasis.BOTH, emit_detectors=True, emit_metachecks=use_metachecks)
@@ -492,11 +548,11 @@ class ColorCodeMemoryExperiment(CSSMemoryExperiment):
         # Emit qubit coordinates
         builder.emit_qubit_coords(c)
         
-        # Reset all qubits
-        builder.emit_reset_all(c)
+        # Reset qubits — skip data reset for X-basis (RX handles it atomically)
+        initial_state = "+" if basis == "X" else "0"
+        builder.emit_reset_all(c, skip_data=(basis == "X"))
         
         # Prepare logical state
-        initial_state = "+" if basis == "X" else "0"
         builder.emit_prepare_logical_state(c, state=initial_state, logical_idx=self.logical_qubit)
         
         # Emit stabilizer rounds with time-like detectors (4D coords with color)

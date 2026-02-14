@@ -33,6 +33,7 @@ if TYPE_CHECKING:
         ScheduledCircuit,
         CompiledCircuit,
         QubitMapping,
+        QECMetadata,
     )
     from qectostim.experiments.hardware_simulation.core.gates import NativeGateSet
 
@@ -287,11 +288,17 @@ class CompilationContext:
         Additional compilation settings.
     intermediate_results : Dict[CompilationStage, CompilationResult]
         Results from completed stages.
+    qec_metadata : Optional[QECMetadata]
+        Rich QEC context from the experiment layer.  Contains qubit
+        roles, stabilizer structure, code geometry, block allocations,
+        and logical operators — everything the compiler might need
+        for topology-aware placement, routing, and scheduling.
     """
     architecture: "HardwareArchitecture"
     optimization_level: int = 1
     settings: Dict[str, Any] = field(default_factory=dict)
     intermediate_results: Dict[CompilationStage, CompilationResult] = field(default_factory=dict)
+    qec_metadata: Optional["QECMetadata"] = None
     
     def get_result(self, stage: CompilationStage) -> Optional[CompilationResult]:
         """Get result from a completed stage."""
@@ -812,13 +819,24 @@ class HardwareCompiler(ABC):
         """
         ...
     
-    def compile(self, circuit: stim.Circuit) -> "CompiledCircuit":
+    def compile(
+        self,
+        circuit: stim.Circuit,
+        qec_metadata: Optional["QECMetadata"] = None,
+    ) -> "CompiledCircuit":
         """Run the full compilation pipeline.
         
         Parameters
         ----------
         circuit : stim.Circuit
             Input Stim circuit to compile.
+        qec_metadata : Optional[QECMetadata]
+            Rich QEC context from the experiment layer.  When provided,
+            the metadata is stored on the ``CompilationContext`` and on
+            the ``NativeCircuit`` so that all downstream compilation
+            passes can access qubit roles, stabilizer structure, code
+            geometry, and block allocations without reverse-engineering
+            the circuit.
             
         Returns
         -------
@@ -833,10 +851,16 @@ class HardwareCompiler(ABC):
         context = CompilationContext(
             architecture=self.architecture,
             optimization_level=self.optimization_level,
+            qec_metadata=qec_metadata,
         )
         
         # Run pipeline stages
         native = self.decompose_to_native(circuit)
+
+        # Attach QEC metadata to native circuit when available
+        if qec_metadata is not None:
+            native.qec_metadata = qec_metadata
+
         mapped = self.map_qubits(native)
         routed = self.route(mapped)
         scheduled = self.schedule(routed)

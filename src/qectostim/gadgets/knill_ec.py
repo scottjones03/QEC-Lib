@@ -526,10 +526,6 @@ class KnillECGadget(Gadget):
     # Teleportation-specific interface methods
     # =========================================================================
 
-    def get_x_stabilizer_mode(self) -> str:
-        """Use CX for X stabilizer measurement (matches teleportation pattern)."""
-        return "cx"
-
     def get_blocks_to_skip_preparation(self) -> Set[str]:
         """Bell blocks are prepared inside the gadget (Phase 1)."""
         return {"bell_a", "bell_b"}
