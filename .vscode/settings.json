@@ -1,0 +1,8 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^cd \"/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim\" && ~/my_venv/bin/python3 -c \"\nfrom qectostim\\.experiments\\.hardware_simulation\\.trapped_ion\\.architecture import \\(\n    _EdgeOp, _make_crossing_ops, AugmentedGridArchitecture,\n    Ion, ManipulationTrap, Junction, Crossing, QCCDGraph,\n\\)\nprint\\('✓ architecture imports OK'\\)\n\nfrom qectostim\\.experiments\\.hardware_simulation\\.trapped_ion\\.compilers import \\(\n    AugmentedGridCompiler, QCCDCompiler,\n\\)\nprint\\('✓ compiler imports OK'\\)\n\nfrom qectostim\\.experiments\\.hardware_simulation\\.trapped_ion\\.routing import \\(\n    ionRouting, regularPartition, hillClimbOnArrangeClusters,\n    old_ops_to_transport_list,\n\\)\nprint\\('✓ routing imports OK'\\)\n\nfrom qectostim\\.experiments\\.hardware_simulation\\.trapped_ion\\.operations import \\(\n    MSGate, GateSwap, Split, Merge, Move, JunctionCrossing,\n\\)\nprint\\('✓ operations imports OK'\\)\n\nfrom qectostim\\.experiments\\.hardware_simulation\\.trapped_ion import \\(\n    TrappedIonExperiment, TrappedIonNoiseModel,\n    display_architecture, animate_transport,\n\\)\nprint\\('✓ top-level imports OK'\\)\n\nfrom qectostim\\.codes\\.surface\\.rotated_surface import RotatedSurfaceCode\nprint\\('✓ code imports OK'\\)\n\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}

@@ -273,126 +273,16 @@ class HardwareNoiseModel(NoiseModel):
         """
         ...
     
+    @abstractmethod
     def apply_with_plan(
         self,
         circuit: stim.Circuit,
-        plan: "ExecutionPlan",
+        plan: ExecutionPlan,
     ) -> stim.Circuit:
-        """Apply hardware noise using an execution plan for timing-aware injection.
-        
-        This method uses the ExecutionPlan to inject noise that accounts for:
-        - Idle dephasing based on actual timing gaps
-        - Gate swap errors from ion transport
-        - Per-qubit calibrated fidelities
-        - Architecture-specific noise characteristics
-        
-        The circuit structure is NEVER modified - only noise instructions
-        are appended after existing gates.
-        
-        Parameters
-        ----------
-        circuit : stim.Circuit
-            The Stim circuit to apply noise to.
-        plan : ExecutionPlan
-            Execution plan with timing/routing metadata.
-            
-        Returns
-        -------
-        stim.Circuit
-            Circuit with timing-aware noise applied.
-            
-        Notes
-        -----
-        Subclasses should override this for platform-specific noise.
-        The default implementation delegates to apply_to_operation()
-        and idle_noise() abstract methods.
-        """
-        from qectostim.experiments.hardware_simulation.core.execution import (
-            ExecutionPlan,
-            OperationTiming,
-        )
-        
-        noisy = stim.Circuit()
-        instruction_index = 0
-        
-        for inst in circuit:
-            if isinstance(inst, stim.CircuitRepeatBlock):
-                # For repeat blocks, we apply basic noise (no timing info)
-                noisy_body = self.apply(inst.body_copy())
-                noisy.append(stim.CircuitRepeatBlock(inst.repeat_count, noisy_body))
-                continue
-            
-            name = inst.name.upper()
-            qubit_targets = [t.value for t in inst.targets_copy() if t.is_qubit_target]
-            
-            # Skip non-gate instructions for noise injection
-            if name in {"TICK", "DETECTOR", "OBSERVABLE_INCLUDE", "SHIFT_COORDS", "QUBIT_COORDS"}:
-                noisy.append(inst)
-                continue
-            
-            # 1. Apply idle dephasing BEFORE this instruction
-            idle_intervals = plan.get_idle_before(instruction_index)
-            for idle in idle_intervals:
-                channels = self.idle_noise(idle.qubit, idle.duration)
-                for channel in channels:
-                    if channel.probability > 0:
-                        noisy.append_from_stim_program_text(channel.to_stim())
-            
-            # 2. Apply gate swap noise (if any transport was required)
-            swaps = plan.get_swaps_for_instruction(instruction_index)
-            for swap_info in swaps:
-                if swap_info.num_swaps > 0:
-                    error_prob = min(swap_info.error_probability / self.error_scaling, 0.5)
-                    if error_prob > 0:
-                        q1, q2 = swap_info.qubits
-                        noisy.append_from_stim_program_text(
-                            f"DEPOLARIZE2({error_prob}) {q1} {q2}"
-                        )
-            
-            # Determine if this is a measurement instruction
-            is_measurement = name in ("M", "MX", "MY", "MZ", "MR",
-                                       "MRX", "MRY", "MRZ")
-            
-            # 3. Get gate infidelity noise
-            gate_noise_text = []
-            op_timing = plan.get_operation(instruction_index)
-            if op_timing is not None and qubit_targets:
-                error_prob = (1.0 - op_timing.fidelity) / self.error_scaling
-                error_prob = min(error_prob, 0.5)
-                
-                if error_prob > 0:
-                    if is_measurement:
-                        for q in qubit_targets:
-                            gate_noise_text.append(f"X_ERROR({error_prob}) {q}")
-                    elif len(qubit_targets) == 1:
-                        gate_noise_text.append(
-                            f"DEPOLARIZE1({error_prob}) {qubit_targets[0]}")
-                    elif len(qubit_targets) >= 2:
-                        for i in range(0, len(qubit_targets) - 1, 2):
-                            q1, q2 = qubit_targets[i], qubit_targets[i + 1]
-                            gate_noise_text.append(
-                                f"DEPOLARIZE2({error_prob}) {q1} {q2}")
-            
-            if is_measurement:
-                # Noise BEFORE measurement (X_ERROR before M = meas error)
-                for txt in gate_noise_text:
-                    noisy.append_from_stim_program_text(txt)
-                noisy.append(inst)
-            else:
-                # Original instruction first, then noise AFTER
-                noisy.append(inst)
-                for txt in gate_noise_text:
-                    noisy.append_from_stim_program_text(txt)
-            
-            instruction_index += 1
-        
-        return noisy
+        ...
     
     def apply(self, circuit: stim.Circuit) -> stim.Circuit:
         """Apply noise to a Stim circuit.
-        
-        Default implementation adds depolarizing noise based on
-        calibration data. Override for platform-specific behavior.
         
         Parameters
         ----------
@@ -404,32 +294,7 @@ class HardwareNoiseModel(NoiseModel):
         stim.Circuit
             Circuit with noise applied.
         """
-        noisy = stim.Circuit()
-        
-        for inst in circuit:
-            if isinstance(inst, stim.CircuitRepeatBlock):
-                # Recursively apply to repeat blocks
-                noisy_body = self.apply(inst.body_copy())
-                noisy.append(stim.CircuitRepeatBlock(inst.repeat_count, noisy_body))
-                continue
-            
-            noisy.append(inst)
-            
-            # Add noise after gates
-            name = inst.name.upper()
-            qubit_targets = [t.value for t in inst.targets_copy() if t.is_qubit_target]
-            
-            if not qubit_targets:
-                continue
-            
-            # Get noise based on gate type
-            noise_channels = self._get_gate_noise(name, tuple(qubit_targets))
-            
-            for channel in noise_channels:
-                if channel.probability > 0:
-                    noisy.append_from_stim_program_text(channel.to_stim())
-        
-        return noisy
+        raise  NotImplementedError("apply() is not implemented in the base class. Use apply_with_plan() for timing-aware noise injection, or override apply() for simpler cases.")
     
     def _get_gate_noise(
         self,

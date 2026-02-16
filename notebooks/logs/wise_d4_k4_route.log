@@ -1,0 +1,16 @@
+2026-02-14 14:09:50,872 [INFO] [pid=19212] [PatchRoute] ionRoutingWISEArch: ops=349, MS_rounds=4, lookahead=1, subgrid=(5,3,2), active_ions=0
+2026-02-14 14:09:50,872 [INFO] [pid=19212] [PatchRoute] main loop: idx=0, remaining_operations=349, remaining_MS_rounds=4
+2026-02-14 14:09:50,872 [INFO] [pid=19212] [PatchRoute] computing routing window: idx=0, rounds=[0,1), lookahead=1, window_len=1
+2026-02-14 14:09:50,872 [INFO] [pid=19212] [PatchRoute] rechecked cache at idx=0 (rounds=[0,1)); old_blk_idx=0, old_blk_end=0, new_blk_end=4 ,cache_for_block length=0, new_cache_for_block length=0
+2026-02-14 14:09:50,872 [INFO] [pid=19212] [PatchRoute] starting patch routing: rounds=1, total_gates=12, patch_size=3x4, tilings=3, BTs=None
+2026-02-14 14:09:50,872 [INFO] [pid=19212] [PatchRoute] beginning tiling cycle 1; remaining_gates=12
+2026-02-14 14:09:50,873 [INFO] [pid=19212] [PatchRoute] cycle 1 tiling 1/3 offset=(0,0) patches=4 remaining_before=12
+2026-02-14 14:09:50,873 [INFO] [pid=19212] [PatchRoute] solving patch r[0:3] c[0:4] gates=1 per_round=[1] boundary_prefs=[{22: {'bottom'}, 11: {'right'}, 21: {'bottom'}, 2: {'bottom'}}], BTs=[{}]
+2026-02-14 14:09:50,878 [INFO] [pid=19211] [PatchRoute] ionRoutingWISEArch: ops=349, MS_rounds=4, lookahead=1, subgrid=(8,6,0), active_ions=0
+2026-02-14 14:09:50,878 [INFO] [pid=19211] [PatchRoute] main loop: idx=0, remaining_operations=349, remaining_MS_rounds=4
+2026-02-14 14:09:50,878 [INFO] [pid=19211] [PatchRoute] computing routing window: idx=0, rounds=[0,1), lookahead=1, window_len=1
+2026-02-14 14:09:50,878 [INFO] [pid=19211] [PatchRoute] rechecked cache at idx=0 (rounds=[0,1)); old_blk_idx=0, old_blk_end=0, new_blk_end=4 ,cache_for_block length=0, new_cache_for_block length=0
+2026-02-14 14:09:50,879 [INFO] [pid=19211] [PatchRoute] starting patch routing: rounds=1, total_gates=12, patch_size=6x8, tilings=3, BTs=None
+2026-02-14 14:09:50,879 [INFO] [pid=19211] [PatchRoute] beginning tiling cycle 1; remaining_gates=12
+2026-02-14 14:09:50,879 [INFO] [pid=19211] [PatchRoute] cycle 1 tiling 1/3 offset=(0,0) patches=1 remaining_before=12
+2026-02-14 14:09:50,879 [INFO] [pid=19211] [PatchRoute] solving patch r[0:6] c[0:8] gates=12 per_round=[12] boundary_prefs=[{}], BTs=[{}]

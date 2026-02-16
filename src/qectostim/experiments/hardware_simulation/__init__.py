@@ -81,15 +81,23 @@ from qectostim.experiments.hardware_simulation.core import (
 from qectostim.experiments.hardware_simulation.base import HardwareSimulator
 
 # Trapped Ion platform
-from qectostim.experiments.hardware_simulation.trapped_ion import (
-    TrappedIonArchitecture,
-    QCCDArchitecture,
-    TrappedIonCompiler,
-    QCCDCompiler,
-    TrappedIonSimulator,
-    TrappedIonNoiseModel,
+from qectostim.experiments.hardware_simulation.trapped_ion.utils.experiment import (
     TrappedIonExperiment,
 )
+from qectostim.experiments.hardware_simulation.trapped_ion.utils.noise import (
+    TrappedIonNoiseModel,
+)
+from qectostim.experiments.hardware_simulation.trapped_ion.utils.trapped_ion_compiler import (
+    TrappedIonCompiler,
+)
+from qectostim.experiments.hardware_simulation.trapped_ion.utils.qccd_arch import (
+    QCCDArch as QCCDArchitecture,
+)
+
+# Legacy aliases
+TrappedIonArchitecture = QCCDArchitecture
+QCCDCompiler = TrappedIonCompiler
+TrappedIonSimulator = TrappedIonExperiment
 
 # Superconducting platform
 from qectostim.experiments.hardware_simulation.superconducting import (

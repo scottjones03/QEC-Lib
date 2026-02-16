@@ -104,6 +104,7 @@ class PhaseInfo:
     is_repeated: bool = False
     round_signature: Optional[Tuple] = None
     identical_to_phase: Optional[int] = None
+    active_blocks: Optional[List[str]] = None
 
 
 def _build_round_signature(
@@ -793,9 +794,10 @@ class RoutedCircuit:
     def interleaved_operations(self) -> List[Any]:
         """Return operations with routing ops interleaved at barrier positions.
         
-        Uses the ``gate_execution_order`` from routing metadata to insert
+        Uses per-gate transport groups from routing metadata to insert
         transport operations before each 2Q gate that required routing.
-        If no routing metadata is available, returns operations unchanged.
+        Falls back to WISE-style pass boundaries or even distribution
+        when per-gate groups are unavailable.
         
         Returns
         -------
@@ -805,31 +807,41 @@ class RoutedCircuit:
         if not self.routing_operations:
             return list(self.operations)
         
-        # Get barrier positions from metadata (indices into routing_operations
-        # where a barrier occurs, i.e. a new routing pass starts)
-        barriers = self.metadata.get("barriers", [])
-        gate_exec_order = self.metadata.get("gate_execution_order", [])
+        # --- Strategy 1: per-gate transport groups (QCCD) ----------------
+        # route() builds a list of transport-op groups, one per gate in
+        # execution order.  Group[i] are the transport ops that must
+        # execute before gate i.
+        gate_groups = self.metadata.get("gate_transport_groups")
+        if gate_groups:
+            result: List[Any] = []
+            gate_ops = list(self.operations)
+            two_q_indices = [
+                i for i, op in enumerate(gate_ops)
+                if len(getattr(op, "qubits", ())) >= 2
+            ]
+            group_idx = 0
+            for op_idx, op in enumerate(gate_ops):
+                if op_idx in two_q_indices:
+                    if group_idx < len(gate_groups):
+                        result.extend(gate_groups[group_idx])
+                        group_idx += 1
+                result.append(op)
+            # Append remaining transport groups (trailing go-back ops)
+            while group_idx < len(gate_groups):
+                result.extend(gate_groups[group_idx])
+                group_idx += 1
+            return result
         
-        if not barriers and not gate_exec_order:
-            # No routing structure — just append all routing ops first
-            return list(self.routing_operations) + list(self.operations)
-        
-        # Build interleaved list: routing ops grouped by barriers,
-        # then corresponding gate ops
-        result: List[Any] = []
-        
-        # Identify 2Q gate ops by index
+        # --- Strategy 2: pass boundaries (WISE) -------------------------
         gate_ops = list(self.operations)
         two_q_indices = [
             i for i, op in enumerate(gate_ops)
             if len(getattr(op, "qubits", ())) >= 2
         ]
         
-        # Group routing ops by barrier
         routing_groups: List[List[Any]] = []
         current_group: List[Any] = []
         
-        # First try pass boundary sentinels (WISE-style)
         _has_boundaries = False
         for rop in self.routing_operations:
             src_zone = getattr(rop, "source_zone", None)
@@ -847,15 +859,12 @@ class RoutedCircuit:
                     current_group.append(rop)
                 else:
                     current_group.append(rop)
-        elif barriers:
-            # Use barrier indices to split routing ops into groups.
-            # Barriers are indices in the *original* all_ops list where
-            # a new routing pass starts.  Since we filtered out MSGate
-            # objects, approximate by splitting evenly across 2Q gates.
+        else:
+            # --- Strategy 3: even distribution (fallback) ----------------
+            barriers = self.metadata.get("barriers", [])
             n_routing = len(self.routing_operations)
             n_2q = len(two_q_indices)
             if n_2q > 0 and n_routing > 0:
-                # Distribute routing ops roughly evenly across 2Q gates
                 chunk = max(1, n_routing // n_2q)
                 for _ri in range(0, n_routing, chunk):
                     _end = min(_ri + chunk, n_routing)
@@ -863,22 +872,17 @@ class RoutedCircuit:
                         list(self.routing_operations[_ri:_end]))
             else:
                 current_group = list(self.routing_operations)
-        else:
-            current_group = list(self.routing_operations)
         if current_group:
             routing_groups.append(current_group)
         
         # Interleave: for each 2Q gate, emit its routing group first
-        used_2q = 0
+        result = []
         used_routing = 0
         for op_idx, op in enumerate(gate_ops):
-            # Check if this is a 2Q gate
             if op_idx in two_q_indices:
-                # Emit next routing group if available
                 if used_routing < len(routing_groups):
                     result.extend(routing_groups[used_routing])
                     used_routing += 1
-                used_2q += 1
             result.append(op)
         
         # Append any remaining routing groups
@@ -944,7 +948,13 @@ class ScheduledCircuit:
         """Average operations per layer."""
         if not self.layers:
             return 0.0
-        total_ops = sum(len(layer.operations) for layer in self.layers)
+        
+        def _layer_ops(layer):
+            if hasattr(layer, 'operations'):
+                return layer.operations
+            return layer
+        
+        total_ops = sum(len(_layer_ops(layer)) for layer in self.layers)
         return total_ops / len(self.layers)
 
 
@@ -1074,11 +1084,17 @@ class CompiledCircuit:
         if self.metrics:
             return self.metrics
         
-        total_ops = sum(len(layer.operations) for layer in self.scheduled.layers)
+        # Helper to get ops from a layer (may be list or object with .operations)
+        def _layer_ops(layer):
+            if hasattr(layer, 'operations'):
+                return layer.operations
+            return layer  # Already a list
+        
+        total_ops = sum(len(_layer_ops(layer)) for layer in self.scheduled.layers)
         two_qubit_ops = sum(
             1 for layer in self.scheduled.layers
-            for op in layer.operations
-            if len(op.qubits) == 2
+            for op in _layer_ops(layer)
+            if len(getattr(op, 'qubits', getattr(op, 'qubitSetCombined', lambda: ())()))  == 2
         )
         
         self.metrics = {

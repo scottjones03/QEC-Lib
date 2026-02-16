@@ -1,0 +1,252 @@
+2026-02-13 21:56:08,655 [INFO] [pid=82636] [PatchRoute] ionRoutingWISEArch: ops=334, MS_rounds=4, lookahead=1, subgrid=(6,6,0), active_ions=0
+2026-02-13 21:56:08,655 [INFO] [pid=82636] [PatchRoute] main loop: idx=0, remaining_operations=334, remaining_MS_rounds=4
+2026-02-13 21:56:08,655 [INFO] [pid=82636] [PatchRoute] computing routing window: idx=0, rounds=[0,1), lookahead=1, window_len=1
+2026-02-13 21:56:08,655 [INFO] [pid=82636] [PatchRoute] rechecked cache at idx=0 (rounds=[0,1)); old_blk_idx=0, old_blk_end=0, new_blk_end=4 ,cache_for_block length=0, new_cache_for_block length=0
+2026-02-13 21:56:08,655 [INFO] [pid=82636] [PatchRoute] starting patch routing: rounds=1, total_gates=12, patch_size=6x6, tilings=2, BTs=None
+2026-02-13 21:56:08,655 [INFO] [pid=82636] [PatchRoute] beginning tiling cycle 1; remaining_gates=12
+2026-02-13 21:56:08,655 [INFO] [pid=82636] [PatchRoute] cycle 1 tiling 1/2 offset=(0,0) patches=1 remaining_before=12
+2026-02-13 21:56:08,655 [INFO] [pid=82636] [PatchRoute] solving patch r[0:6] c[0:6] gates=12 per_round=[12] boundary_prefs=[{}], BTs=[{}]
+2026-02-13 21:56:08,656 [INFO] [pid=82637] [PatchRoute] ionRoutingWISEArch: ops=334, MS_rounds=4, lookahead=1, subgrid=(4,4,2), active_ions=0
+2026-02-13 21:56:08,656 [INFO] [pid=82637] [PatchRoute] main loop: idx=0, remaining_operations=334, remaining_MS_rounds=4
+2026-02-13 21:56:08,656 [INFO] [pid=82637] [PatchRoute] computing routing window: idx=0, rounds=[0,1), lookahead=1, window_len=1
+2026-02-13 21:56:08,656 [INFO] [pid=82637] [PatchRoute] rechecked cache at idx=0 (rounds=[0,1)); old_blk_idx=0, old_blk_end=0, new_blk_end=4 ,cache_for_block length=0, new_cache_for_block length=0
+2026-02-13 21:56:08,656 [INFO] [pid=82637] [PatchRoute] starting patch routing: rounds=1, total_gates=12, patch_size=4x4, tilings=3, BTs=None
+2026-02-13 21:56:08,656 [INFO] [pid=82637] [PatchRoute] beginning tiling cycle 1; remaining_gates=12
+2026-02-13 21:56:08,656 [INFO] [pid=82637] [PatchRoute] cycle 1 tiling 1/3 offset=(0,0) patches=4 remaining_before=12
+2026-02-13 21:56:08,656 [INFO] [pid=82637] [PatchRoute] solving patch r[0:4] c[0:4] gates=8 per_round=[8] boundary_prefs=[{}], BTs=[{}]
+2026-02-13 21:56:10,589 [INFO] [pid=82637] [PatchRoute] patch r[0:4] c[0:4] solved in 1.93s; moved_ions=0; details=none
+2026-02-13 21:56:10,590 [INFO] [pid=82637] [PatchRoute] solving patch r[0:4] c[4:6] gates=4 per_round=[4] boundary_prefs=[{}], BTs=[{}]
+2026-02-13 21:56:11,541 [INFO] [pid=82637] [PatchRoute] patch r[0:4] c[4:6] solved in 0.95s; moved_ions=0; details=none
+2026-02-13 21:56:11,542 [INFO] [pid=82637] [PatchRoute] completed tiling 1: solved_gates=12, remaining_gates=0
+2026-02-13 21:56:11,542 [INFO] [pid=82637] [PatchRoute] completed cycle 1: solved=12, remaining=0
+2026-02-13 21:56:11,542 [INFO] [pid=82637] [PatchRoute] finished patch routing successfully; all gates covered.
+2026-02-13 21:56:11,543 [INFO] [pid=82637] [PatchRoute] patch routing window idx=0 produced 1 tiling steps (meta entries); block_offset=0, cache_for_block size=1
+2026-02-13 21:56:11,543 [INFO] [pid=82637] [PatchRoute] built BTs for window idx=0: rounds=0, windows=0, pins=0, pinned_pairs=0
+2026-02-13 21:56:11,543 [INFO] [pid=82637] [PatchRoute] idx=0: initialised tiling_step list with 1 entries (from_cache=False)
+2026-02-13 21:56:11,543 [INFO] [pid=82637] [PatchRoute] idx=0: applying reconfiguration step; schedule_passes=0, solved_pairs=12, remaining_tiling_steps=0, using_cached_schedule=False
+2026-02-13 21:56:11,553 [INFO] [pid=82637] [PatchRoute] idx=0: reconfiguration applied; delta_reconfigTime=0.000000, total_reconfigTime=0.000000, total_ops=1
+2026-02-13 21:56:11,554 [INFO] [pid=82637] [PatchRoute] idx=0: executed 89 single-qubit ops; remaining_operations=245, total_ops=90
+2026-02-13 21:56:11,555 [INFO] [pid=82637] [PatchRoute] idx=0: executed 12/12 two-qubit MS gates; remaining_operations=233, total_ops=102
+2026-02-13 21:56:11,555 [INFO] [pid=82637] [PatchRoute] main loop: idx=1, remaining_operations=233, remaining_MS_rounds=3
+2026-02-13 21:56:11,555 [INFO] [pid=82637] [PatchRoute] computing routing window: idx=1, rounds=[1,2), lookahead=1, window_len=1
+2026-02-13 21:56:11,555 [INFO] [pid=82637] [PatchRoute] rechecked cache at idx=1 (rounds=[1,2)); old_blk_idx=1, old_blk_end=4, new_blk_end=3 ,cache_for_block length=1, new_cache_for_block length=0
+2026-02-13 21:56:11,555 [INFO] [pid=82637] [PatchRoute] starting patch routing: rounds=1, total_gates=12, patch_size=4x4, tilings=3, BTs=[]
+2026-02-13 21:56:11,555 [INFO] [pid=82637] [PatchRoute] beginning tiling cycle 1; remaining_gates=12
+2026-02-13 21:56:11,555 [INFO] [pid=82637] [PatchRoute] cycle 1 tiling 1/3 offset=(0,0) patches=4 remaining_before=12
+2026-02-13 21:56:11,555 [INFO] [pid=82637] [PatchRoute] solving patch r[0:4] c[0:4] gates=3 per_round=[3] boundary_prefs=[{1: {'bottom'}, 23: {'right'}, 10: {'right'}, 13: {'bottom', 'right'}, 29: {'right'}, 19: {'bottom'}, 5: {'right'}, 28: {'right'}}], BTs=[{}]
+2026-02-13 21:56:16,195 [INFO] [pid=82637] [PatchRoute] patch r[0:4] c[0:4] solved in 4.64s; moved_ions=15; details=ion 1: (0, 0)->(3, 2), ion 2: (0, 1)->(3, 1), ion 4: (0, 2)->(1, 0), ion 10: (1, 0)->(0, 2), ion 11: (1, 1)->(2, 0), ion 13: (1, 2)->(2, 3)
+2026-02-13 21:56:16,195 [INFO] [pid=82637] [PatchRoute] solving patch r[0:4] c[4:6] gates=1 per_round=[1] boundary_prefs=[{7: {'left'}, 26: {'left'}, 16: {'left'}, 25: {'left'}, 8: {'left'}}], BTs=[{}]
+2026-02-13 21:56:17,252 [INFO] [pid=82637] [PatchRoute] patch r[0:4] c[4:6] solved in 1.06s; moved_ions=7; details=ion 7: (0, 4)->(1, 4), ion 16: (1, 4)->(0, 4), ion 17: (1, 5)->(2, 5), ion 25: (2, 4)->(3, 4), ion 26: (2, 5)->(3, 5), ion 34: (3, 4)->(2, 4)
+2026-02-13 21:56:17,252 [INFO] [pid=82637] [PatchRoute] solving patch r[4:6] c[0:4] gates=0 per_round=[0] boundary_prefs=[{41: {'top'}, 49: {'top'}}], BTs=[{}]
+2026-02-13 21:56:18,136 [INFO] [pid=82637] [PatchRoute] patch r[4:6] c[0:4] solved in 0.88s; moved_ions=2; details=ion 40: (4, 2)->(5, 2), ion 49: (5, 2)->(4, 2)
+2026-02-13 21:56:18,136 [INFO] [pid=82637] [PatchRoute] solving patch r[4:6] c[4:6] gates=0 per_round=[0] boundary_prefs=[{44: {'top', 'left'}}], BTs=[{}]
+2026-02-13 21:56:18,797 [INFO] [pid=82636] [PatchRoute] patch r[0:6] c[0:6] solved in 10.14s; moved_ions=0; details=none
+2026-02-13 21:56:18,797 [INFO] [pid=82636] [PatchRoute] completed tiling 1: solved_gates=12, remaining_gates=0
+2026-02-13 21:56:18,797 [INFO] [pid=82636] [PatchRoute] completed cycle 1: solved=12, remaining=0
+2026-02-13 21:56:18,797 [INFO] [pid=82636] [PatchRoute] finished patch routing successfully; all gates covered.
+2026-02-13 21:56:18,797 [INFO] [pid=82636] [PatchRoute] patch routing window idx=0 produced 1 tiling steps (meta entries); block_offset=0, cache_for_block size=1
+2026-02-13 21:56:18,797 [INFO] [pid=82636] [PatchRoute] built BTs for window idx=0: rounds=0, windows=0, pins=0, pinned_pairs=0
+2026-02-13 21:56:18,797 [INFO] [pid=82636] [PatchRoute] idx=0: initialised tiling_step list with 1 entries (from_cache=False)
+2026-02-13 21:56:18,797 [INFO] [pid=82636] [PatchRoute] idx=0: applying reconfiguration step; schedule_passes=0, solved_pairs=12, remaining_tiling_steps=0, using_cached_schedule=False
+2026-02-13 21:56:18,835 [INFO] [pid=82636] [PatchRoute] idx=0: reconfiguration applied; delta_reconfigTime=0.000000, total_reconfigTime=0.000000, total_ops=1
+2026-02-13 21:56:18,838 [INFO] [pid=82636] [PatchRoute] idx=0: executed 89 single-qubit ops; remaining_operations=245, total_ops=90
+2026-02-13 21:56:18,838 [INFO] [pid=82636] [PatchRoute] idx=0: executed 12/12 two-qubit MS gates; remaining_operations=233, total_ops=102
+2026-02-13 21:56:18,838 [INFO] [pid=82636] [PatchRoute] main loop: idx=1, remaining_operations=233, remaining_MS_rounds=3
+2026-02-13 21:56:18,838 [INFO] [pid=82636] [PatchRoute] computing routing window: idx=1, rounds=[1,2), lookahead=1, window_len=1
+2026-02-13 21:56:18,838 [INFO] [pid=82636] [PatchRoute] rechecked cache at idx=1 (rounds=[1,2)); old_blk_idx=1, old_blk_end=4, new_blk_end=3 ,cache_for_block length=1, new_cache_for_block length=0
+2026-02-13 21:56:18,838 [INFO] [pid=82636] [PatchRoute] starting patch routing: rounds=1, total_gates=12, patch_size=6x6, tilings=2, BTs=[]
+2026-02-13 21:56:18,838 [INFO] [pid=82636] [PatchRoute] beginning tiling cycle 1; remaining_gates=12
+2026-02-13 21:56:18,838 [INFO] [pid=82636] [PatchRoute] cycle 1 tiling 1/2 offset=(0,0) patches=1 remaining_before=12
+2026-02-13 21:56:18,838 [INFO] [pid=82636] [PatchRoute] solving patch r[0:6] c[0:6] gates=12 per_round=[12] boundary_prefs=[{}], BTs=[{}]
+2026-02-13 21:56:18,929 [INFO] [pid=82637] [PatchRoute] patch r[4:6] c[4:6] solved in 0.79s; moved_ions=4; details=ion 43: (4, 4)->(4, 5), ion 44: (4, 5)->(4, 4), ion 52: (5, 4)->(5, 5), ion 53: (5, 5)->(5, 4)
+2026-02-13 21:56:18,930 [INFO] [pid=82637] [PatchRoute] completed tiling 1: solved_gates=4, remaining_gates=8
+2026-02-13 21:56:18,931 [INFO] [pid=82637] [PatchRoute] cycle 1 tiling 2/3 offset=(2,0) patches=2 remaining_before=8
+2026-02-13 21:56:18,931 [INFO] [pid=82637] [PatchRoute] solving patch r[2:6] c[0:4] gates=2 per_round=[2] boundary_prefs=[{13: {'right'}, 29: {'top', 'right'}}], BTs=[{}]
+2026-02-13 21:56:21,805 [INFO] [pid=82637] [PatchRoute] patch r[2:6] c[0:4] solved in 2.87s; moved_ions=9; details=ion 11: (2, 0)->(2, 1), ion 32: (2, 1)->(2, 0), ion 19: (2, 2)->(2, 3), ion 13: (2, 3)->(3, 2), ion 22: (3, 0)->(3, 1), ion 2: (3, 1)->(4, 0)
+2026-02-13 21:56:21,805 [INFO] [pid=82637] [PatchRoute] solving patch r[2:6] c[4:6] gates=0 per_round=[0] boundary_prefs=[{26: {'top', 'left'}, 44: {'left'}, 25: {'top', 'left'}}], BTs=[{}]
+2026-02-13 21:56:22,832 [INFO] [pid=82637] [PatchRoute] patch r[2:6] c[4:6] solved in 1.03s; moved_ions=2; details=ion 44: (4, 4)->(4, 5), ion 43: (4, 5)->(4, 4)
+2026-02-13 21:56:22,832 [INFO] [pid=82637] [PatchRoute] completed tiling 2: solved_gates=2, remaining_gates=6
+2026-02-13 21:56:22,832 [INFO] [pid=82637] [PatchRoute] cycle 1 tiling 3/3 offset=(0,2) patches=2 remaining_before=6
+2026-02-13 21:56:22,833 [INFO] [pid=82637] [PatchRoute] solving patch r[0:4] c[2:6] gates=5 per_round=[5] boundary_prefs=[{13: {'bottom'}}], BTs=[{}]
+2026-02-13 21:56:25,238 [INFO] [pid=82637] [PatchRoute] patch r[0:4] c[2:6] solved in 2.41s; moved_ions=14; details=ion 10: (0, 2)->(2, 4), ion 5: (0, 3)->(2, 2), ion 16: (0, 4)->(1, 3), ion 28: (1, 2)->(0, 4), ion 23: (1, 3)->(0, 2), ion 7: (1, 4)->(0, 3)
+2026-02-13 21:56:25,238 [INFO] [pid=82637] [PatchRoute] solving patch r[4:6] c[2:6] gates=0 per_round=[0] boundary_prefs=[{44: {'top'}}], BTs=[{}]
+2026-02-13 21:56:26,286 [INFO] [pid=82637] [PatchRoute] patch r[4:6] c[2:6] solved in 1.05s; moved_ions=0; details=none
+2026-02-13 21:56:26,286 [INFO] [pid=82637] [PatchRoute] completed tiling 3: solved_gates=5, remaining_gates=1
+2026-02-13 21:56:26,286 [INFO] [pid=82637] [PatchRoute] completed cycle 1: solved=11, remaining=1
+2026-02-13 21:56:26,286 [INFO] [pid=82637] [PatchRoute] starting patch routing: rounds=1, total_gates=1, patch_size=6x6, tilings=2, BTs=[]
+2026-02-13 21:56:26,286 [INFO] [pid=82637] [PatchRoute] beginning tiling cycle 2; remaining_gates=1
+2026-02-13 21:56:26,287 [INFO] [pid=82637] [PatchRoute] cycle 2 tiling 1/2 offset=(0,0) patches=1 remaining_before=1
+2026-02-13 21:56:26,287 [INFO] [pid=82637] [PatchRoute] solving patch r[0:6] c[0:6] gates=1 per_round=[1] boundary_prefs=[{}], BTs=[{}]
+2026-02-13 21:56:36,832 [INFO] [pid=82637] [PatchRoute] patch r[0:6] c[0:6] solved in 10.54s; moved_ions=2; details=ion 13: (3, 4)->(4, 4), ion 43: (4, 4)->(3, 4)
+2026-02-13 21:56:36,832 [INFO] [pid=82637] [PatchRoute] completed tiling 1: solved_gates=1, remaining_gates=0
+2026-02-13 21:56:36,832 [INFO] [pid=82637] [PatchRoute] completed cycle 2: solved=1, remaining=0
+2026-02-13 21:56:36,832 [INFO] [pid=82637] [PatchRoute] finished patch routing successfully; all gates covered.
+2026-02-13 21:56:36,832 [INFO] [pid=82637] [PatchRoute] patch routing window idx=1 produced 4 tiling steps (meta entries); block_offset=1, cache_for_block size=2
+2026-02-13 21:56:36,832 [INFO] [pid=82637] [PatchRoute] built BTs for window idx=1: rounds=0, windows=0, pins=0, pinned_pairs=0
+2026-02-13 21:56:36,832 [INFO] [pid=82637] [PatchRoute] idx=1: initialised tiling_step list with 4 entries (from_cache=False)
+2026-02-13 21:56:36,832 [INFO] [pid=82637] [PatchRoute] idx=1: applying reconfiguration step; schedule_passes=6, solved_pairs=4, remaining_tiling_steps=3, using_cached_schedule=False
+2026-02-13 21:56:36,841 [INFO] [pid=82637] [PatchRoute] idx=1: reconfiguration applied; delta_reconfigTime=0.002246, total_reconfigTime=0.002246, total_ops=103
+2026-02-13 21:56:36,841 [INFO] [pid=82637] [PatchRoute] idx=1: executed 49 single-qubit ops; remaining_operations=184, total_ops=152
+2026-02-13 21:56:36,849 [INFO] [pid=82637] [PatchRoute] idx=1: reconfiguration applied after MS round; delta_reconfigTime=0.001312, total_reconfigTime=0.003558, total_ops=157
+2026-02-13 21:56:36,858 [INFO] [pid=82637] [PatchRoute] idx=1: reconfiguration applied after MS round; delta_reconfigTime=0.001524, total_reconfigTime=0.005082, total_ops=160
+2026-02-13 21:56:36,866 [INFO] [pid=82637] [PatchRoute] idx=1: reconfiguration applied after MS round; delta_reconfigTime=0.000590, total_reconfigTime=0.005672, total_ops=166
+2026-02-13 21:56:36,866 [INFO] [pid=82637] [PatchRoute] idx=1: executed 12/12 two-qubit MS gates; remaining_operations=172, total_ops=167
+2026-02-13 21:56:36,866 [INFO] [pid=82637] [PatchRoute] main loop: idx=2, remaining_operations=172, remaining_MS_rounds=2
+2026-02-13 21:56:36,866 [INFO] [pid=82637] [PatchRoute] computing routing window: idx=2, rounds=[2,3), lookahead=1, window_len=1
+2026-02-13 21:56:36,866 [INFO] [pid=82637] [PatchRoute] rechecked cache at idx=2 (rounds=[2,3)); old_blk_idx=2, old_blk_end=4, new_blk_end=2 ,cache_for_block length=2, new_cache_for_block length=0
+2026-02-13 21:56:36,866 [INFO] [pid=82637] [PatchRoute] starting patch routing: rounds=1, total_gates=11, patch_size=4x4, tilings=3, BTs=[]
+2026-02-13 21:56:36,866 [INFO] [pid=82637] [PatchRoute] beginning tiling cycle 1; remaining_gates=11
+2026-02-13 21:56:36,866 [INFO] [pid=82637] [PatchRoute] cycle 1 tiling 1/3 offset=(0,0) patches=4 remaining_before=11
+2026-02-13 21:56:36,866 [INFO] [pid=82637] [PatchRoute] solving patch r[0:4] c[0:4] gates=5 per_round=[5] boundary_prefs=[{7: {'bottom', 'right'}, 29: {'right'}, 5: {'right'}, 31: {'right'}}], BTs=[{}]
+2026-02-13 21:56:40,209 [INFO] [pid=82637] [PatchRoute] patch r[0:4] c[0:4] solved in 3.34s; moved_ions=13; details=ion 31: (0, 0)->(0, 2), ion 14: (0, 1)->(1, 0), ion 23: (0, 2)->(0, 1), ion 7: (0, 3)->(2, 3), ion 4: (1, 0)->(0, 0), ion 29: (1, 2)->(2, 2)
+2026-02-13 21:56:40,210 [INFO] [pid=82637] [PatchRoute] solving patch r[0:4] c[4:6] gates=0 per_round=[0] boundary_prefs=[{26: {'bottom', 'left'}, 10: {'left'}, 28: {'left'}, 8: {'left'}, 17: {'bottom'}}], BTs=[{}]
+2026-02-13 21:56:41,324 [INFO] [pid=82637] [PatchRoute] patch r[0:4] c[4:6] solved in 1.11s; moved_ions=2; details=ion 28: (0, 4)->(0, 5), ion 8: (0, 5)->(0, 4)
+2026-02-13 21:56:41,324 [INFO] [pid=82637] [PatchRoute] solving patch r[4:6] c[0:4] gates=0 per_round=[0] boundary_prefs=[{38: {'top', 'right'}}], BTs=[{}]
+2026-02-13 21:56:42,400 [INFO] [pid=82637] [PatchRoute] patch r[4:6] c[0:4] solved in 1.08s; moved_ions=4; details=ion 38: (4, 1)->(4, 2), ion 1: (4, 2)->(4, 1), ion 47: (5, 1)->(5, 2), ion 40: (5, 2)->(5, 1)
+2026-02-13 21:56:42,400 [INFO] [pid=82637] [PatchRoute] solving patch r[4:6] c[4:6] gates=0 per_round=[0] boundary_prefs=[{44: {'top', 'left'}, 52: {'top'}}], BTs=[{}]
+2026-02-13 21:56:42,865 [INFO] [pid=82637] [PatchRoute] patch r[4:6] c[4:6] solved in 0.46s; moved_ions=3; details=ion 13: (4, 4)->(5, 5), ion 44: (4, 5)->(4, 4), ion 52: (5, 5)->(4, 5)
+2026-02-13 21:56:42,866 [INFO] [pid=82637] [PatchRoute] completed tiling 1: solved_gates=5, remaining_gates=6
+2026-02-13 21:56:42,866 [INFO] [pid=82637] [PatchRoute] cycle 1 tiling 2/3 offset=(2,0) patches=2 remaining_before=6
+2026-02-13 21:56:42,866 [INFO] [pid=82637] [PatchRoute] solving patch r[2:6] c[0:4] gates=0 per_round=[0] boundary_prefs=[{38: {'right'}, 7: {'right'}, 29: {'right'}}], BTs=[{}]
+2026-02-13 21:56:44,567 [INFO] [pid=82637] [PatchRoute] patch r[2:6] c[0:4] solved in 1.70s; moved_ions=0; details=none
+2026-02-13 21:56:44,568 [INFO] [pid=82637] [PatchRoute] solving patch r[2:6] c[4:6] gates=1 per_round=[1] boundary_prefs=[{26: {'left'}, 44: {'left'}, 10: {'left'}}], BTs=[{}]
+2026-02-13 21:56:45,722 [INFO] [pid=82637] [PatchRoute] patch r[2:6] c[4:6] solved in 1.15s; moved_ions=3; details=ion 43: (3, 4)->(4, 4), ion 44: (4, 4)->(4, 5), ion 52: (4, 5)->(3, 4)
+2026-02-13 21:56:45,722 [INFO] [pid=82637] [PatchRoute] completed tiling 2: solved_gates=1, remaining_gates=5
+2026-02-13 21:56:45,722 [INFO] [pid=82637] [PatchRoute] cycle 1 tiling 3/3 offset=(0,2) patches=2 remaining_before=5
+2026-02-13 21:56:45,722 [INFO] [pid=82637] [PatchRoute] solving patch r[0:4] c[2:6] gates=3 per_round=[3] boundary_prefs=[{26: {'bottom'}, 7: {'bottom'}}], BTs=[{}]
+2026-02-13 21:56:47,714 [INFO] [pid=82637] [PatchRoute] patch r[0:4] c[2:6] solved in 1.99s; moved_ions=4; details=ion 5: (0, 3)->(0, 4), ion 8: (0, 4)->(0, 3), ion 7: (2, 3)->(2, 4), ion 10: (2, 4)->(2, 3)
+2026-02-13 21:56:47,715 [INFO] [pid=82637] [PatchRoute] solving patch r[4:6] c[2:6] gates=0 per_round=[0] boundary_prefs=[{38: {'top'}, 44: {'top'}}], BTs=[{}]
+2026-02-13 21:56:48,601 [INFO] [pid=82637] [PatchRoute] patch r[4:6] c[2:6] solved in 0.89s; moved_ions=0; details=none
+2026-02-13 21:56:48,601 [INFO] [pid=82637] [PatchRoute] completed tiling 3: solved_gates=3, remaining_gates=2
+2026-02-13 21:56:48,601 [INFO] [pid=82637] [PatchRoute] completed cycle 1: solved=9, remaining=2
+2026-02-13 21:56:48,601 [INFO] [pid=82637] [PatchRoute] starting patch routing: rounds=1, total_gates=2, patch_size=6x6, tilings=2, BTs=[]
+2026-02-13 21:56:48,601 [INFO] [pid=82637] [PatchRoute] beginning tiling cycle 2; remaining_gates=2
+2026-02-13 21:56:48,602 [INFO] [pid=82637] [PatchRoute] cycle 2 tiling 1/2 offset=(0,0) patches=1 remaining_before=2
+2026-02-13 21:56:48,602 [INFO] [pid=82637] [PatchRoute] solving patch r[0:6] c[0:6] gates=2 per_round=[2] boundary_prefs=[{}], BTs=[{}]
+2026-02-13 21:57:09,393 [INFO] [pid=82637] [PatchRoute] patch r[0:6] c[0:6] solved in 20.79s; moved_ions=22; details=ion 11: (2, 0)->(2, 1), ion 34: (2, 1)->(3, 0), ion 29: (2, 2)->(4, 2), ion 7: (2, 4)->(4, 4), ion 26: (2, 5)->(3, 5), ion 37: (3, 0)->(4, 1)
+2026-02-13 21:57:09,394 [INFO] [pid=82637] [PatchRoute] completed tiling 1: solved_gates=2, remaining_gates=0
+2026-02-13 21:57:09,394 [INFO] [pid=82637] [PatchRoute] completed cycle 2: solved=2, remaining=0
+2026-02-13 21:57:09,394 [INFO] [pid=82637] [PatchRoute] finished patch routing successfully; all gates covered.
+2026-02-13 21:57:09,394 [INFO] [pid=82637] [PatchRoute] patch routing window idx=2 produced 4 tiling steps (meta entries); block_offset=2, cache_for_block size=3
+2026-02-13 21:57:09,394 [INFO] [pid=82637] [PatchRoute] built BTs for window idx=2: rounds=0, windows=0, pins=0, pinned_pairs=0
+2026-02-13 21:57:09,394 [INFO] [pid=82637] [PatchRoute] idx=2: initialised tiling_step list with 4 entries (from_cache=False)
+2026-02-13 21:57:09,394 [INFO] [pid=82637] [PatchRoute] idx=2: applying reconfiguration step; schedule_passes=5, solved_pairs=5, remaining_tiling_steps=3, using_cached_schedule=False
+2026-02-13 21:57:09,403 [INFO] [pid=82637] [PatchRoute] idx=2: reconfiguration applied; delta_reconfigTime=0.002034, total_reconfigTime=0.007706, total_ops=168
+2026-02-13 21:57:09,404 [INFO] [pid=82637] [PatchRoute] idx=2: executed 53 single-qubit ops; remaining_operations=119, total_ops=221
+2026-02-13 21:57:09,413 [INFO] [pid=82637] [PatchRoute] idx=2: reconfiguration applied after MS round; delta_reconfigTime=0.000802, total_reconfigTime=0.008508, total_ops=227
+2026-02-13 21:57:09,428 [INFO] [pid=82637] [PatchRoute] idx=2: reconfiguration applied after MS round; delta_reconfigTime=0.000292, total_reconfigTime=0.008800, total_ops=229
+2026-02-13 21:57:09,436 [INFO] [pid=82637] [PatchRoute] idx=2: reconfiguration applied after MS round; delta_reconfigTime=0.001524, total_reconfigTime=0.010324, total_ops=233
+2026-02-13 21:57:09,436 [INFO] [pid=82637] [PatchRoute] idx=2: executed 11/11 two-qubit MS gates; remaining_operations=108, total_ops=235
+2026-02-13 21:57:09,436 [INFO] [pid=82637] [PatchRoute] main loop: idx=3, remaining_operations=108, remaining_MS_rounds=1
+2026-02-13 21:57:09,436 [INFO] [pid=82637] [PatchRoute] computing routing window: idx=3, rounds=[3,4), lookahead=1, window_len=1
+2026-02-13 21:57:09,436 [INFO] [pid=82637] [PatchRoute] rechecked cache at idx=3 (rounds=[3,4)); old_blk_idx=3, old_blk_end=4, new_blk_end=1 ,cache_for_block length=3, new_cache_for_block length=0
+2026-02-13 21:57:09,436 [INFO] [pid=82637] [PatchRoute] starting patch routing: rounds=1, total_gates=11, patch_size=4x4, tilings=3, BTs=[]
+2026-02-13 21:57:09,436 [INFO] [pid=82637] [PatchRoute] beginning tiling cycle 1; remaining_gates=11
+2026-02-13 21:57:09,436 [INFO] [pid=82637] [PatchRoute] cycle 1 tiling 1/3 offset=(0,0) patches=4 remaining_before=11
+2026-02-13 21:57:09,436 [INFO] [pid=82637] [PatchRoute] solving patch r[0:4] c[0:4] gates=3 per_round=[3] boundary_prefs=[{10: {'right'}, 41: {'right'}, 23: {'right'}, 31: {'bottom', 'right'}, 34: {'bottom'}, 32: {'bottom'}}], BTs=[{}]
+2026-02-13 21:57:11,954 [INFO] [pid=82637] [PatchRoute] patch r[0:4] c[0:4] solved in 2.52s; moved_ions=14; details=ion 4: (0, 0)->(1, 0), ion 23: (0, 1)->(0, 3), ion 31: (0, 2)->(2, 2), ion 8: (0, 3)->(0, 1), ion 14: (1, 0)->(0, 2), ion 20: (1, 1)->(2, 1)
+2026-02-13 21:57:11,955 [INFO] [pid=82637] [PatchRoute] solving patch r[0:4] c[4:6] gates=0 per_round=[0] boundary_prefs=[{38: {'bottom', 'left'}, 5: {'left'}, 22: {'left'}, 28: {'left'}}], BTs=[{}]
+2026-02-13 21:57:13,344 [INFO] [pid=82637] [PatchRoute] patch r[0:4] c[4:6] solved in 1.39s; moved_ions=4; details=ion 5: (0, 4)->(1, 4), ion 28: (0, 5)->(1, 5), ion 19: (1, 4)->(0, 4), ion 35: (1, 5)->(0, 5)
+2026-02-13 21:57:13,344 [INFO] [pid=82637] [PatchRoute] solving patch r[4:6] c[0:4] gates=0 per_round=[0] boundary_prefs=[{37: {'top', 'right'}, 2: {'right'}, 29: {'top'}, 52: {'top'}}], BTs=[{}]
+2026-02-13 21:57:14,299 [INFO] [pid=82637] [PatchRoute] patch r[4:6] c[0:4] solved in 0.95s; moved_ions=2; details=ion 37: (4, 1)->(4, 2), ion 29: (4, 2)->(4, 1)
+2026-02-13 21:57:14,299 [INFO] [pid=82637] [PatchRoute] solving patch r[4:6] c[4:6] gates=0 per_round=[0] boundary_prefs=[{7: {'left'}, 44: {'top', 'left'}}], BTs=[{}]
+2026-02-13 21:57:14,707 [INFO] [pid=82637] [PatchRoute] patch r[4:6] c[4:6] solved in 0.41s; moved_ions=0; details=none
+2026-02-13 21:57:14,707 [INFO] [pid=82637] [PatchRoute] completed tiling 1: solved_gates=3, remaining_gates=8
+2026-02-13 21:57:14,708 [INFO] [pid=82637] [PatchRoute] cycle 1 tiling 2/3 offset=(2,0) patches=2 remaining_before=8
+2026-02-13 21:57:14,708 [INFO] [pid=82637] [PatchRoute] solving patch r[2:6] c[0:4] gates=2 per_round=[2] boundary_prefs=[{37: {'right'}, 2: {'right'}, 10: {'top', 'right'}, 31: {'right'}}], BTs=[{}]
+2026-02-13 21:57:16,844 [INFO] [pid=82637] [PatchRoute] patch r[2:6] c[0:4] solved in 2.14s; moved_ions=15; details=ion 25: (2, 0)->(2, 1), ion 20: (2, 1)->(2, 0), ion 32: (2, 3)->(3, 3), ion 34: (3, 0)->(3, 1), ion 46: (3, 1)->(4, 0), ion 10: (3, 2)->(2, 3)
+2026-02-13 21:57:16,845 [INFO] [pid=82637] [PatchRoute] solving patch r[2:6] c[4:6] gates=0 per_round=[0] boundary_prefs=[{38: {'left'}, 7: {'left'}, 22: {'top', 'left'}, 44: {'left'}}], BTs=[{}]
+2026-02-13 21:57:17,903 [INFO] [pid=82637] [PatchRoute] patch r[2:6] c[4:6] solved in 1.06s; moved_ions=0; details=none
+2026-02-13 21:57:17,904 [INFO] [pid=82637] [PatchRoute] completed tiling 2: solved_gates=2, remaining_gates=6
+2026-02-13 21:57:17,904 [INFO] [pid=82637] [PatchRoute] cycle 1 tiling 3/3 offset=(0,2) patches=2 remaining_before=6
+2026-02-13 21:57:17,904 [INFO] [pid=82637] [PatchRoute] solving patch r[0:4] c[2:6] gates=3 per_round=[3] boundary_prefs=[{38: {'bottom'}, 31: {'bottom'}}], BTs=[{}]
+2026-02-13 21:57:21,790 [INFO] [pid=82637] [PatchRoute] patch r[0:4] c[2:6] solved in 3.89s; moved_ions=15; details=ion 14: (0, 2)->(0, 4), ion 23: (0, 3)->(0, 2), ion 19: (0, 4)->(0, 5), ion 35: (0, 5)->(1, 3), ion 41: (1, 2)->(2, 4), ion 47: (1, 3)->(1, 2)
+2026-02-13 21:57:21,790 [INFO] [pid=82637] [PatchRoute] solving patch r[4:6] c[2:6] gates=1 per_round=[1] boundary_prefs=[{37: {'top'}, 44: {'top'}}], BTs=[{}]
+2026-02-13 21:57:22,811 [INFO] [pid=82637] [PatchRoute] patch r[4:6] c[2:6] solved in 1.02s; moved_ions=6; details=ion 43: (4, 2)->(5, 4), ion 37: (4, 3)->(4, 2), ion 7: (4, 4)->(4, 5), ion 44: (4, 5)->(4, 3), ion 2: (5, 3)->(4, 4), ion 13: (5, 4)->(5, 3)
+2026-02-13 21:57:22,812 [INFO] [pid=82637] [PatchRoute] completed tiling 3: solved_gates=4, remaining_gates=2
+2026-02-13 21:57:22,812 [INFO] [pid=82637] [PatchRoute] completed cycle 1: solved=9, remaining=2
+2026-02-13 21:57:22,813 [INFO] [pid=82637] [PatchRoute] starting patch routing: rounds=1, total_gates=2, patch_size=6x6, tilings=2, BTs=[]
+2026-02-13 21:57:22,813 [INFO] [pid=82637] [PatchRoute] beginning tiling cycle 2; remaining_gates=2
+2026-02-13 21:57:22,813 [INFO] [pid=82637] [PatchRoute] cycle 2 tiling 1/2 offset=(0,0) patches=1 remaining_before=2
+2026-02-13 21:57:22,813 [INFO] [pid=82637] [PatchRoute] solving patch r[0:6] c[0:6] gates=2 per_round=[2] boundary_prefs=[{}], BTs=[{}]
+2026-02-13 21:58:16,055 [INFO] [pid=82637] [PatchRoute] patch r[0:6] c[0:6] solved in 53.24s; moved_ions=33; details=ion 16: (0, 0)->(0, 2), ion 8: (0, 1)->(0, 0), ion 23: (0, 2)->(0, 1), ion 14: (0, 4)->(2, 5), ion 19: (0, 5)->(2, 4), ion 4: (1, 0)->(2, 2)
+2026-02-13 21:58:16,056 [INFO] [pid=82637] [PatchRoute] completed tiling 1: solved_gates=2, remaining_gates=0
+2026-02-13 21:58:16,056 [INFO] [pid=82637] [PatchRoute] completed cycle 2: solved=2, remaining=0
+2026-02-13 21:58:16,056 [INFO] [pid=82637] [PatchRoute] finished patch routing successfully; all gates covered.
+2026-02-13 21:58:16,056 [INFO] [pid=82637] [PatchRoute] patch routing window idx=3 produced 4 tiling steps (meta entries); block_offset=3, cache_for_block size=4
+2026-02-13 21:58:16,056 [INFO] [pid=82637] [PatchRoute] built BTs for window idx=3: rounds=0, windows=0, pins=0, pinned_pairs=0
+2026-02-13 21:58:16,056 [INFO] [pid=82637] [PatchRoute] idx=3: initialised tiling_step list with 4 entries (from_cache=False)
+2026-02-13 21:58:16,056 [INFO] [pid=82637] [PatchRoute] idx=3: applying reconfiguration step; schedule_passes=5, solved_pairs=3, remaining_tiling_steps=3, using_cached_schedule=False
+2026-02-13 21:58:16,065 [INFO] [pid=82637] [PatchRoute] idx=3: reconfiguration applied; delta_reconfigTime=0.001736, total_reconfigTime=0.012060, total_ops=236
+2026-02-13 21:58:16,066 [INFO] [pid=82637] [PatchRoute] idx=3: executed 43 single-qubit ops; remaining_operations=65, total_ops=279
+2026-02-13 21:58:16,074 [INFO] [pid=82637] [PatchRoute] idx=3: reconfiguration applied after MS round; delta_reconfigTime=0.001312, total_reconfigTime=0.013372, total_ops=283
+2026-02-13 21:58:16,083 [INFO] [pid=82637] [PatchRoute] idx=3: reconfiguration applied after MS round; delta_reconfigTime=0.001524, total_reconfigTime=0.014896, total_ops=286
+2026-02-13 21:58:16,097 [INFO] [pid=82637] [PatchRoute] idx=3: reconfiguration applied after MS round; delta_reconfigTime=0.001524, total_reconfigTime=0.016420, total_ops=291
+2026-02-13 21:58:16,097 [INFO] [pid=82637] [PatchRoute] idx=3: executed 11/11 two-qubit MS gates; remaining_operations=54, total_ops=293
+2026-02-13 21:58:16,097 [INFO] [pid=82637] [PatchRoute] main loop: idx=4, remaining_operations=54, remaining_MS_rounds=0
+2026-02-13 21:58:16,098 [INFO] [pid=82637] [PatchRoute] idx=4: executed 54 single-qubit ops; remaining_operations=0, total_ops=347
+2026-02-13 21:59:29,846 [INFO] [pid=82636] [PatchRoute] patch r[0:6] c[0:6] solved in 191.01s; moved_ions=35; details=ion 1: (0, 0)->(3, 1), ion 2: (0, 1)->(2, 0), ion 4: (0, 2)->(2, 5), ion 5: (0, 3)->(1, 2), ion 7: (0, 4)->(1, 4), ion 8: (0, 5)->(2, 3)
+2026-02-13 21:59:29,847 [INFO] [pid=82636] [PatchRoute] completed tiling 1: solved_gates=12, remaining_gates=0
+2026-02-13 21:59:29,847 [INFO] [pid=82636] [PatchRoute] completed cycle 1: solved=12, remaining=0
+2026-02-13 21:59:29,847 [INFO] [pid=82636] [PatchRoute] finished patch routing successfully; all gates covered.
+2026-02-13 21:59:29,847 [INFO] [pid=82636] [PatchRoute] patch routing window idx=1 produced 1 tiling steps (meta entries); block_offset=1, cache_for_block size=2
+2026-02-13 21:59:29,847 [INFO] [pid=82636] [PatchRoute] built BTs for window idx=1: rounds=0, windows=0, pins=0, pinned_pairs=0
+2026-02-13 21:59:29,847 [INFO] [pid=82636] [PatchRoute] idx=1: initialised tiling_step list with 1 entries (from_cache=False)
+2026-02-13 21:59:29,847 [INFO] [pid=82636] [PatchRoute] idx=1: applying reconfiguration step; schedule_passes=7, solved_pairs=12, remaining_tiling_steps=0, using_cached_schedule=False
+2026-02-13 21:59:29,863 [INFO] [pid=82636] [PatchRoute] idx=1: reconfiguration applied; delta_reconfigTime=0.002458, total_reconfigTime=0.002458, total_ops=103
+2026-02-13 21:59:29,864 [INFO] [pid=82636] [PatchRoute] idx=1: executed 49 single-qubit ops; remaining_operations=184, total_ops=152
+2026-02-13 21:59:29,864 [INFO] [pid=82636] [PatchRoute] idx=1: executed 12/12 two-qubit MS gates; remaining_operations=172, total_ops=164
+2026-02-13 21:59:29,864 [INFO] [pid=82636] [PatchRoute] main loop: idx=2, remaining_operations=172, remaining_MS_rounds=2
+2026-02-13 21:59:29,864 [INFO] [pid=82636] [PatchRoute] computing routing window: idx=2, rounds=[2,3), lookahead=1, window_len=1
+2026-02-13 21:59:29,865 [INFO] [pid=82636] [PatchRoute] rechecked cache at idx=2 (rounds=[2,3)); old_blk_idx=2, old_blk_end=4, new_blk_end=2 ,cache_for_block length=2, new_cache_for_block length=0
+2026-02-13 21:59:29,865 [INFO] [pid=82636] [PatchRoute] starting patch routing: rounds=1, total_gates=11, patch_size=6x6, tilings=2, BTs=[]
+2026-02-13 21:59:29,865 [INFO] [pid=82636] [PatchRoute] beginning tiling cycle 1; remaining_gates=11
+2026-02-13 21:59:29,865 [INFO] [pid=82636] [PatchRoute] cycle 1 tiling 1/2 offset=(0,0) patches=1 remaining_before=11
+2026-02-13 21:59:29,865 [INFO] [pid=82636] [PatchRoute] solving patch r[0:6] c[0:6] gates=11 per_round=[11] boundary_prefs=[{}], BTs=[{}]
+2026-02-13 22:00:11,606 [INFO] [pid=82636] [PatchRoute] patch r[0:6] c[0:6] solved in 41.74s; moved_ions=32; details=ion 31: (0, 0)->(2, 1), ion 14: (0, 1)->(0, 0), ion 26: (0, 2)->(3, 5), ion 29: (0, 4)->(0, 2), ion 16: (0, 5)->(2, 4), ion 35: (1, 1)->(0, 1)
+2026-02-13 22:00:11,607 [INFO] [pid=82636] [PatchRoute] completed tiling 1: solved_gates=11, remaining_gates=0
+2026-02-13 22:00:11,607 [INFO] [pid=82636] [PatchRoute] completed cycle 1: solved=11, remaining=0
+2026-02-13 22:00:11,607 [INFO] [pid=82636] [PatchRoute] finished patch routing successfully; all gates covered.
+2026-02-13 22:00:11,607 [INFO] [pid=82636] [PatchRoute] patch routing window idx=2 produced 1 tiling steps (meta entries); block_offset=2, cache_for_block size=3
+2026-02-13 22:00:11,607 [INFO] [pid=82636] [PatchRoute] built BTs for window idx=2: rounds=0, windows=0, pins=0, pinned_pairs=0
+2026-02-13 22:00:11,607 [INFO] [pid=82636] [PatchRoute] idx=2: initialised tiling_step list with 1 entries (from_cache=False)
+2026-02-13 22:00:11,607 [INFO] [pid=82636] [PatchRoute] idx=2: applying reconfiguration step; schedule_passes=6, solved_pairs=11, remaining_tiling_steps=0, using_cached_schedule=False
+2026-02-13 22:00:11,615 [INFO] [pid=82636] [PatchRoute] idx=2: reconfiguration applied; delta_reconfigTime=0.002246, total_reconfigTime=0.004704, total_ops=165
+2026-02-13 22:00:11,616 [INFO] [pid=82636] [PatchRoute] idx=2: executed 53 single-qubit ops; remaining_operations=119, total_ops=218
+2026-02-13 22:00:11,616 [INFO] [pid=82636] [PatchRoute] idx=2: executed 11/11 two-qubit MS gates; remaining_operations=108, total_ops=229
+2026-02-13 22:00:11,616 [INFO] [pid=82636] [PatchRoute] main loop: idx=3, remaining_operations=108, remaining_MS_rounds=1
+2026-02-13 22:00:11,616 [INFO] [pid=82636] [PatchRoute] computing routing window: idx=3, rounds=[3,4), lookahead=1, window_len=1
+2026-02-13 22:00:11,616 [INFO] [pid=82636] [PatchRoute] rechecked cache at idx=3 (rounds=[3,4)); old_blk_idx=3, old_blk_end=4, new_blk_end=1 ,cache_for_block length=3, new_cache_for_block length=0
+2026-02-13 22:00:11,616 [INFO] [pid=82636] [PatchRoute] starting patch routing: rounds=1, total_gates=11, patch_size=6x6, tilings=2, BTs=[]
+2026-02-13 22:00:11,616 [INFO] [pid=82636] [PatchRoute] beginning tiling cycle 1; remaining_gates=11
+2026-02-13 22:00:11,616 [INFO] [pid=82636] [PatchRoute] cycle 1 tiling 1/2 offset=(0,0) patches=1 remaining_before=11
+2026-02-13 22:00:11,616 [INFO] [pid=82636] [PatchRoute] solving patch r[0:6] c[0:6] gates=11 per_round=[11] boundary_prefs=[{}], BTs=[{}]
+2026-02-13 22:01:38,915 [INFO] [pid=82636] [PatchRoute] patch r[0:6] c[0:6] solved in 87.30s; moved_ions=33; details=ion 14: (0, 0)->(3, 0), ion 35: (0, 1)->(0, 4), ion 29: (0, 2)->(0, 1), ion 10: (0, 3)->(3, 5), ion 7: (0, 4)->(3, 2), ion 44: (0, 5)->(1, 3)
+2026-02-13 22:01:38,916 [INFO] [pid=82636] [PatchRoute] completed tiling 1: solved_gates=11, remaining_gates=0
+2026-02-13 22:01:38,916 [INFO] [pid=82636] [PatchRoute] completed cycle 1: solved=11, remaining=0
+2026-02-13 22:01:38,916 [INFO] [pid=82636] [PatchRoute] finished patch routing successfully; all gates covered.
+2026-02-13 22:01:38,916 [INFO] [pid=82636] [PatchRoute] patch routing window idx=3 produced 1 tiling steps (meta entries); block_offset=3, cache_for_block size=4
+2026-02-13 22:01:38,916 [INFO] [pid=82636] [PatchRoute] built BTs for window idx=3: rounds=0, windows=0, pins=0, pinned_pairs=0
+2026-02-13 22:01:38,916 [INFO] [pid=82636] [PatchRoute] idx=3: initialised tiling_step list with 1 entries (from_cache=False)
+2026-02-13 22:01:38,916 [INFO] [pid=82636] [PatchRoute] idx=3: applying reconfiguration step; schedule_passes=6, solved_pairs=11, remaining_tiling_steps=0, using_cached_schedule=False
+2026-02-13 22:01:38,926 [INFO] [pid=82636] [PatchRoute] idx=3: reconfiguration applied; delta_reconfigTime=0.002246, total_reconfigTime=0.006950, total_ops=230
+2026-02-13 22:01:38,926 [INFO] [pid=82636] [PatchRoute] idx=3: executed 43 single-qubit ops; remaining_operations=65, total_ops=273
+2026-02-13 22:01:38,926 [INFO] [pid=82636] [PatchRoute] idx=3: executed 11/11 two-qubit MS gates; remaining_operations=54, total_ops=284
+2026-02-13 22:01:38,926 [INFO] [pid=82636] [PatchRoute] main loop: idx=4, remaining_operations=54, remaining_MS_rounds=0
+2026-02-13 22:01:38,926 [INFO] [pid=82636] [PatchRoute] idx=4: executed 54 single-qubit ops; remaining_operations=0, total_ops=338
+2026-02-14 14:09:49,886 [INFO] [pid=19160] [PatchRoute] ionRoutingWISEArch: ops=349, MS_rounds=4, lookahead=1, subgrid=(6,6,0), active_ions=0
+2026-02-14 14:09:49,886 [INFO] [pid=19160] [PatchRoute] main loop: idx=0, remaining_operations=349, remaining_MS_rounds=4
+2026-02-14 14:09:49,886 [INFO] [pid=19160] [PatchRoute] computing routing window: idx=0, rounds=[0,1), lookahead=1, window_len=1
+2026-02-14 14:09:49,886 [INFO] [pid=19160] [PatchRoute] rechecked cache at idx=0 (rounds=[0,1)); old_blk_idx=0, old_blk_end=0, new_blk_end=4 ,cache_for_block length=0, new_cache_for_block length=0
+2026-02-14 14:09:49,886 [INFO] [pid=19160] [PatchRoute] starting patch routing: rounds=1, total_gates=12, patch_size=6x6, tilings=2, BTs=None
+2026-02-14 14:09:49,886 [INFO] [pid=19160] [PatchRoute] beginning tiling cycle 1; remaining_gates=12
+2026-02-14 14:09:49,886 [INFO] [pid=19160] [PatchRoute] cycle 1 tiling 1/2 offset=(0,0) patches=1 remaining_before=12
+2026-02-14 14:09:49,886 [INFO] [pid=19160] [PatchRoute] solving patch r[0:6] c[0:6] gates=12 per_round=[12] boundary_prefs=[{}], BTs=[{}]
+2026-02-14 14:09:49,889 [INFO] [pid=19162] [PatchRoute] ionRoutingWISEArch: ops=349, MS_rounds=4, lookahead=1, subgrid=(4,4,2), active_ions=0
+2026-02-14 14:09:49,889 [INFO] [pid=19162] [PatchRoute] main loop: idx=0, remaining_operations=349, remaining_MS_rounds=4
+2026-02-14 14:09:49,889 [INFO] [pid=19162] [PatchRoute] computing routing window: idx=0, rounds=[0,1), lookahead=1, window_len=1
+2026-02-14 14:09:49,889 [INFO] [pid=19162] [PatchRoute] rechecked cache at idx=0 (rounds=[0,1)); old_blk_idx=0, old_blk_end=0, new_blk_end=4 ,cache_for_block length=0, new_cache_for_block length=0
+2026-02-14 14:09:49,889 [INFO] [pid=19162] [PatchRoute] starting patch routing: rounds=1, total_gates=12, patch_size=4x4, tilings=3, BTs=None
+2026-02-14 14:09:49,890 [INFO] [pid=19162] [PatchRoute] beginning tiling cycle 1; remaining_gates=12
+2026-02-14 14:09:49,890 [INFO] [pid=19162] [PatchRoute] cycle 1 tiling 1/3 offset=(0,0) patches=4 remaining_before=12
+2026-02-14 14:09:49,890 [INFO] [pid=19162] [PatchRoute] solving patch r[0:4] c[0:4] gates=3 per_round=[3] boundary_prefs=[{13: {'right'}, 31: {'bottom'}, 4: {'right'}, 28: {'bottom'}, 22: {'bottom', 'right'}}], BTs=[{}]

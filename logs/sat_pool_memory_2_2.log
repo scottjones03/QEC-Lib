@@ -1,0 +1,1017 @@
+2026-02-16 10:50:17,554 [INFO] [pid=76917] [WISE] launching SAT pool over 48 configs (P_max∈[1, 8])
+2026-02-16 10:50:17,554 [INFO] [pid=76917] [WISE] nested call detected (parent_stop_event set); using sequential mode to avoid process explosion
+2026-02-16 10:50:17,554 [INFO] [pid=76917] [WISE] using sequential fallback (difficulty=2.00, budget=1200s)
+2026-02-16 10:50:17,557 [INFO] [pid=76917] [WISE] seq cfg 0/48 [discovery] P_max=8 cap=20.0 (eff_sat=20.0, eff_rc2=20.0, sat_count=0)
+2026-02-16 10:50:19,864 [INFO] [pid=76917] [WISE] config done: P_max=8 cap=1.00 best ΣP=2
+2026-02-16 10:50:19,864 [INFO] [pid=76917] [WISE] sequential result: P_max=8, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 10:50:19,864 [INFO] [pid=76917] [WISE] seq cfg 1/48 [optimization] P_max=8 cap=25.5 (eff_sat=25.5, eff_rc2=25.5, sat_count=1)
+2026-02-16 10:50:22,255 [INFO] [pid=76917] [WISE] config done: P_max=8 cap=0.80 best ΣP=2
+2026-02-16 10:50:22,256 [INFO] [pid=76917] [WISE] sequential result: P_max=8, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 10:50:22,256 [INFO] [pid=76917] [WISE] seq cfg 2/48 [optimization] P_max=8 cap=26.0 (eff_sat=26.0, eff_rc2=26.0, sat_count=2)
+2026-02-16 10:50:24,714 [INFO] [pid=76917] [WISE] config done: P_max=8 cap=0.60 best ΣP=2
+2026-02-16 10:50:24,715 [INFO] [pid=76917] [WISE] sequential result: P_max=8, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 10:50:24,715 [INFO] [pid=76917] [WISE] seq cfg 3/48 [optimization] P_max=8 cap=26.5 (eff_sat=26.5, eff_rc2=26.5, sat_count=3)
+2026-02-16 10:50:27,113 [INFO] [pid=76917] [WISE] config done: P_max=8 cap=0.40 best ΣP=2
+2026-02-16 10:50:27,114 [INFO] [pid=76917] [WISE] sequential result: P_max=8, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 10:50:27,114 [INFO] [pid=76917] [WISE] seq cfg 4/48 [optimization] P_max=8 cap=27.1 (eff_sat=27.1, eff_rc2=27.1, sat_count=4)
+2026-02-16 10:50:29,473 [INFO] [pid=76917] [WISE] config done: P_max=8 cap=0.20 best ΣP=2
+2026-02-16 10:50:29,473 [INFO] [pid=76917] [WISE] sequential result: P_max=8, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 10:50:29,473 [INFO] [pid=76917] [WISE] early exit: found 5 SAT results after 5/48 configs
+2026-02-16 10:50:29,486 [INFO] [pid=76917] [WISE] chosen config: P_max=8, cap_factor=1.00, ΣP=2
+2026-02-16 10:50:29,486 [INFO] [pid=76917] [WISE] minimal ΣP found: 2 (P_max=8)
+2026-02-16 10:50:29,488 [INFO] [pid=76917] [WISE] MaxSAT disabled; using SAT model at P*
+2026-02-16 10:50:29,488 [INFO] [pid=76917] [WISE] ΣP per round: [2], Σ_all=2, Σ_tail=2, best_sum_bound=2
+2026-02-16 10:50:29,491 [INFO] [pid=76917] [WISE] launching SAT pool over 48 configs (P_max∈[1, 8])
+2026-02-16 10:50:29,491 [INFO] [pid=76917] [WISE] nested call detected (parent_stop_event set); using sequential mode to avoid process explosion
+2026-02-16 10:50:29,491 [INFO] [pid=76917] [WISE] using sequential fallback (difficulty=2.00, budget=1200s)
+2026-02-16 10:50:29,491 [INFO] [pid=76917] [WISE] seq cfg 0/48 [discovery] P_max=8 cap=20.0 (eff_sat=20.0, eff_rc2=20.0, sat_count=0)
+2026-02-16 10:50:31,945 [INFO] [pid=76917] [WISE] config done: P_max=8 cap=1.00 best ΣP=3
+2026-02-16 10:50:31,945 [INFO] [pid=76917] [WISE] sequential result: P_max=8, sum_usage=3 cap_factor=1.00, status=ok, sat=True
+2026-02-16 10:50:31,945 [INFO] [pid=76917] [WISE] seq cfg 1/48 [optimization] P_max=8 cap=25.5 (eff_sat=25.5, eff_rc2=25.5, sat_count=1)
+2026-02-16 10:50:34,519 [INFO] [pid=76917] [WISE] config done: P_max=8 cap=0.80 best ΣP=3
+2026-02-16 10:50:34,519 [INFO] [pid=76917] [WISE] sequential result: P_max=8, sum_usage=3 cap_factor=0.80, status=ok, sat=True
+2026-02-16 10:50:34,519 [INFO] [pid=76917] [WISE] seq cfg 2/48 [optimization] P_max=8 cap=26.0 (eff_sat=26.0, eff_rc2=26.0, sat_count=2)
+2026-02-16 10:50:36,898 [INFO] [pid=76917] [WISE] config done: P_max=8 cap=0.60 best ΣP=3
+2026-02-16 10:50:36,898 [INFO] [pid=76917] [WISE] sequential result: P_max=8, sum_usage=3 cap_factor=0.60, status=ok, sat=True
+2026-02-16 10:50:36,898 [INFO] [pid=76917] [WISE] seq cfg 3/48 [optimization] P_max=8 cap=26.5 (eff_sat=26.5, eff_rc2=26.5, sat_count=3)
+2026-02-16 10:50:39,328 [INFO] [pid=76917] [WISE] config done: P_max=8 cap=0.40 best ΣP=3
+2026-02-16 10:50:39,328 [INFO] [pid=76917] [WISE] sequential result: P_max=8, sum_usage=3 cap_factor=0.40, status=ok, sat=True
+2026-02-16 10:50:39,328 [INFO] [pid=76917] [WISE] seq cfg 4/48 [optimization] P_max=8 cap=27.0 (eff_sat=27.0, eff_rc2=27.0, sat_count=4)
+2026-02-16 10:50:41,778 [INFO] [pid=76917] [WISE] config done: P_max=8 cap=0.20 best ΣP=3
+2026-02-16 10:50:41,778 [INFO] [pid=76917] [WISE] sequential result: P_max=8, sum_usage=3 cap_factor=0.20, status=ok, sat=True
+2026-02-16 10:50:41,778 [INFO] [pid=76917] [WISE] early exit: found 5 SAT results after 5/48 configs
+2026-02-16 10:50:41,791 [INFO] [pid=76917] [WISE] chosen config: P_max=8, cap_factor=1.00, ΣP=3
+2026-02-16 10:50:41,792 [INFO] [pid=76917] [WISE] minimal ΣP found: 3 (P_max=8)
+2026-02-16 10:50:41,793 [INFO] [pid=76917] [WISE] MaxSAT disabled; using SAT model at P*
+2026-02-16 10:50:41,793 [INFO] [pid=76917] [WISE] ΣP per round: [3], Σ_all=3, Σ_tail=3, best_sum_bound=3
+2026-02-16 10:50:41,796 [INFO] [pid=76917] [WISE] launching SAT pool over 48 configs (P_max∈[1, 8])
+2026-02-16 10:50:41,796 [INFO] [pid=76917] [WISE] nested call detected (parent_stop_event set); using sequential mode to avoid process explosion
+2026-02-16 10:50:41,796 [INFO] [pid=76917] [WISE] using sequential fallback (difficulty=2.00, budget=1200s)
+2026-02-16 10:50:41,796 [INFO] [pid=76917] [WISE] seq cfg 0/48 [discovery] P_max=8 cap=20.0 (eff_sat=20.0, eff_rc2=20.0, sat_count=0)
+2026-02-16 10:50:44,234 [INFO] [pid=76917] [WISE] config done: P_max=8 cap=1.00 best ΣP=4
+2026-02-16 10:50:44,234 [INFO] [pid=76917] [WISE] sequential result: P_max=8, sum_usage=4 cap_factor=1.00, status=ok, sat=True
+2026-02-16 10:50:44,234 [INFO] [pid=76917] [WISE] seq cfg 1/48 [optimization] P_max=8 cap=25.5 (eff_sat=25.5, eff_rc2=25.5, sat_count=1)
+2026-02-16 10:50:46,714 [INFO] [pid=76917] [WISE] config done: P_max=8 cap=0.80 best ΣP=4
+2026-02-16 10:50:46,715 [INFO] [pid=76917] [WISE] sequential result: P_max=8, sum_usage=4 cap_factor=0.80, status=ok, sat=True
+2026-02-16 10:50:46,715 [INFO] [pid=76917] [WISE] seq cfg 2/48 [optimization] P_max=8 cap=26.0 (eff_sat=26.0, eff_rc2=26.0, sat_count=2)
+2026-02-16 10:50:48,952 [INFO] [pid=76917] [WISE] config done: P_max=8 cap=0.60 best ΣP=4
+2026-02-16 10:50:48,952 [INFO] [pid=76917] [WISE] sequential result: P_max=8, sum_usage=4 cap_factor=0.60, status=ok, sat=True
+2026-02-16 10:50:48,952 [INFO] [pid=76917] [WISE] seq cfg 3/48 [optimization] P_max=8 cap=26.5 (eff_sat=26.5, eff_rc2=26.5, sat_count=3)
+2026-02-16 10:50:51,230 [INFO] [pid=76917] [WISE] config done: P_max=8 cap=0.40 best ΣP=4
+2026-02-16 10:50:51,230 [INFO] [pid=76917] [WISE] sequential result: P_max=8, sum_usage=4 cap_factor=0.40, status=ok, sat=True
+2026-02-16 10:50:51,230 [INFO] [pid=76917] [WISE] seq cfg 4/48 [optimization] P_max=8 cap=27.1 (eff_sat=27.1, eff_rc2=27.1, sat_count=4)
+2026-02-16 10:50:53,495 [INFO] [pid=76917] [WISE] config done: P_max=8 cap=0.20 best ΣP=4
+2026-02-16 10:50:53,495 [INFO] [pid=76917] [WISE] sequential result: P_max=8, sum_usage=4 cap_factor=0.20, status=ok, sat=True
+2026-02-16 10:50:53,495 [INFO] [pid=76917] [WISE] early exit: found 5 SAT results after 5/48 configs
+2026-02-16 10:50:53,508 [INFO] [pid=76917] [WISE] chosen config: P_max=8, cap_factor=1.00, ΣP=4
+2026-02-16 10:50:53,508 [INFO] [pid=76917] [WISE] minimal ΣP found: 4 (P_max=8)
+2026-02-16 10:50:53,509 [INFO] [pid=76917] [WISE] MaxSAT disabled; using SAT model at P*
+2026-02-16 10:50:53,510 [INFO] [pid=76917] [WISE] ΣP per round: [4], Σ_all=4, Σ_tail=4, best_sum_bound=4
+2026-02-16 10:50:53,512 [INFO] [pid=76917] [WISE] launching SAT pool over 48 configs (P_max∈[1, 8])
+2026-02-16 10:50:53,512 [INFO] [pid=76917] [WISE] nested call detected (parent_stop_event set); using sequential mode to avoid process explosion
+2026-02-16 10:50:53,512 [INFO] [pid=76917] [WISE] using sequential fallback (difficulty=2.00, budget=1200s)
+2026-02-16 10:50:53,512 [INFO] [pid=76917] [WISE] seq cfg 0/48 [discovery] P_max=8 cap=20.0 (eff_sat=20.0, eff_rc2=20.0, sat_count=0)
+2026-02-16 10:50:55,722 [INFO] [pid=76917] [WISE] config done: P_max=8 cap=1.00 best ΣP=4
+2026-02-16 10:50:55,722 [INFO] [pid=76917] [WISE] sequential result: P_max=8, sum_usage=4 cap_factor=1.00, status=ok, sat=True
+2026-02-16 10:50:55,723 [INFO] [pid=76917] [WISE] seq cfg 1/48 [optimization] P_max=8 cap=25.5 (eff_sat=25.5, eff_rc2=25.5, sat_count=1)
+2026-02-16 10:50:57,913 [INFO] [pid=76917] [WISE] config done: P_max=8 cap=0.80 best ΣP=4
+2026-02-16 10:50:57,913 [INFO] [pid=76917] [WISE] sequential result: P_max=8, sum_usage=4 cap_factor=0.80, status=ok, sat=True
+2026-02-16 10:50:57,913 [INFO] [pid=76917] [WISE] seq cfg 2/48 [optimization] P_max=8 cap=26.0 (eff_sat=26.0, eff_rc2=26.0, sat_count=2)
+2026-02-16 10:51:00,183 [INFO] [pid=76917] [WISE] config done: P_max=8 cap=0.60 best ΣP=4
+2026-02-16 10:51:00,183 [INFO] [pid=76917] [WISE] sequential result: P_max=8, sum_usage=4 cap_factor=0.60, status=ok, sat=True
+2026-02-16 10:51:00,183 [INFO] [pid=76917] [WISE] seq cfg 3/48 [optimization] P_max=8 cap=26.5 (eff_sat=26.5, eff_rc2=26.5, sat_count=3)
+2026-02-16 10:51:02,546 [INFO] [pid=76917] [WISE] config done: P_max=8 cap=0.40 best ΣP=4
+2026-02-16 10:51:02,546 [INFO] [pid=76917] [WISE] sequential result: P_max=8, sum_usage=4 cap_factor=0.40, status=ok, sat=True
+2026-02-16 10:51:02,546 [INFO] [pid=76917] [WISE] seq cfg 4/48 [optimization] P_max=8 cap=27.1 (eff_sat=27.1, eff_rc2=27.1, sat_count=4)
+2026-02-16 10:51:04,717 [INFO] [pid=76917] [WISE] config done: P_max=8 cap=0.20 best ΣP=4
+2026-02-16 10:51:04,718 [INFO] [pid=76917] [WISE] sequential result: P_max=8, sum_usage=4 cap_factor=0.20, status=ok, sat=True
+2026-02-16 10:51:04,718 [INFO] [pid=76917] [WISE] early exit: found 5 SAT results after 5/48 configs
+2026-02-16 10:51:04,731 [INFO] [pid=76917] [WISE] chosen config: P_max=8, cap_factor=1.00, ΣP=4
+2026-02-16 10:51:04,731 [INFO] [pid=76917] [WISE] minimal ΣP found: 4 (P_max=8)
+2026-02-16 10:51:04,732 [INFO] [pid=76917] [WISE] MaxSAT disabled; using SAT model at P*
+2026-02-16 10:51:04,732 [INFO] [pid=76917] [WISE] ΣP per round: [4], Σ_all=4, Σ_tail=4, best_sum_bound=4
+2026-02-16 11:47:27,852 [INFO] [pid=95438] [WISE] launching SAT pool over 48 configs (P_max∈[2, 9])
+2026-02-16 11:47:27,853 [INFO] [pid=95438] [WISE] nested call: inner parallelism enabled (max_inner_workers=5, max_workers=5, configs=48)
+2026-02-16 11:47:27,862 [INFO] [pid=95437] [WISE] launching SAT pool over 48 configs (P_max∈[1, 8])
+2026-02-16 11:47:27,863 [INFO] [pid=95437] [WISE] nested call: inner parallelism enabled (max_inner_workers=5, max_workers=5, configs=48)
+2026-02-16 11:48:17,701 [INFO] [pid=95437] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 11:48:17,701 [INFO] [pid=95437] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.80, status=unsat, sat=False
+2026-02-16 11:48:17,701 [INFO] [pid=95437] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.60, status=unsat, sat=False
+2026-02-16 11:48:17,701 [INFO] [pid=95437] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.40, status=unsat, sat=False
+2026-02-16 11:48:17,701 [INFO] [pid=95437] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.20, status=unsat, sat=False
+2026-02-16 11:48:17,701 [INFO] [pid=95437] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.00, status=unsat, sat=False
+2026-02-16 11:48:17,701 [INFO] [pid=95437] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 11:48:17,701 [INFO] [pid=95437] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.80, status=unsat, sat=False
+2026-02-16 11:48:17,701 [INFO] [pid=95437] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.60, status=unsat, sat=False
+2026-02-16 11:48:17,701 [INFO] [pid=95437] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.40, status=unsat, sat=False
+2026-02-16 11:48:17,701 [INFO] [pid=95437] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.20, status=unsat, sat=False
+2026-02-16 11:48:17,701 [INFO] [pid=95437] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.00, status=unsat, sat=False
+2026-02-16 11:48:17,701 [INFO] [pid=95437] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:48:17,701 [INFO] [pid=95437] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:48:17,702 [INFO] [pid=95437] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:48:17,702 [INFO] [pid=95437] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:48:17,702 [INFO] [pid=95437] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:48:17,702 [INFO] [pid=95437] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:48:17,702 [INFO] [pid=95437] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:48:17,702 [INFO] [pid=95437] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:48:17,702 [INFO] [pid=95437] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:48:17,702 [INFO] [pid=95437] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:48:17,702 [INFO] [pid=95437] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:48:17,702 [INFO] [pid=95437] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:48:17,702 [INFO] [pid=95437] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:48:17,702 [INFO] [pid=95437] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:48:17,702 [INFO] [pid=95437] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:48:17,702 [INFO] [pid=95437] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:48:17,702 [INFO] [pid=95437] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:48:17,702 [INFO] [pid=95437] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:48:17,702 [INFO] [pid=95437] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:48:17,702 [INFO] [pid=95437] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:48:17,702 [INFO] [pid=95437] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:48:17,702 [INFO] [pid=95437] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:48:17,702 [INFO] [pid=95437] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:48:17,702 [INFO] [pid=95437] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:48:17,702 [INFO] [pid=95437] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 11:48:17,702 [INFO] [pid=95437] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.80, status=unsat, sat=False
+2026-02-16 11:48:17,703 [INFO] [pid=95437] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.60, status=unsat, sat=False
+2026-02-16 11:48:17,703 [INFO] [pid=95437] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.40, status=unsat, sat=False
+2026-02-16 11:48:17,703 [INFO] [pid=95437] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.20, status=unsat, sat=False
+2026-02-16 11:48:17,703 [INFO] [pid=95437] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.00, status=unsat, sat=False
+2026-02-16 11:48:17,703 [INFO] [pid=95437] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:48:17,703 [INFO] [pid=95437] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:48:17,703 [INFO] [pid=95437] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:48:17,703 [INFO] [pid=95437] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:48:17,703 [INFO] [pid=95437] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:48:17,703 [INFO] [pid=95437] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:48:18,373 [INFO] [pid=95437] [WISE] chosen config: P_max=4, cap_factor=1.00, ΣP=2
+2026-02-16 11:48:18,373 [INFO] [pid=95437] [WISE] minimal ΣP found: 2 (P_max=4)
+2026-02-16 11:48:18,374 [INFO] [pid=95437] [WISE] MaxSAT disabled; using SAT model at P*
+2026-02-16 11:48:18,375 [INFO] [pid=95437] [WISE] ΣP per round: [2], Σ_all=2, Σ_tail=2, best_sum_bound=2
+2026-02-16 11:48:18,378 [INFO] [pid=95437] [WISE] launching SAT pool over 48 configs (P_max∈[1, 8])
+2026-02-16 11:48:18,378 [INFO] [pid=95437] [WISE] nested call: inner parallelism enabled (max_inner_workers=5, max_workers=5, configs=48)
+2026-02-16 11:48:45,339 [INFO] [pid=95438] [WISE] pool result: P_max=9, sum_usage=5 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:48:45,339 [INFO] [pid=95438] [WISE] pool result: P_max=9, sum_usage=5 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:48:45,339 [INFO] [pid=95438] [WISE] pool result: P_max=9, sum_usage=5 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:48:45,339 [INFO] [pid=95438] [WISE] pool result: P_max=9, sum_usage=5 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:48:45,339 [INFO] [pid=95438] [WISE] pool result: P_max=9, sum_usage=5 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:48:45,340 [INFO] [pid=95438] [WISE] pool result: P_max=9, sum_usage=5 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:48:45,340 [INFO] [pid=95438] [WISE] pool result: P_max=8, sum_usage=5 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:48:45,340 [INFO] [pid=95438] [WISE] pool result: P_max=8, sum_usage=5 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:48:45,340 [INFO] [pid=95438] [WISE] pool result: P_max=8, sum_usage=5 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:48:45,340 [INFO] [pid=95438] [WISE] pool result: P_max=8, sum_usage=5 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:48:45,340 [INFO] [pid=95438] [WISE] pool result: P_max=8, sum_usage=5 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:48:45,340 [INFO] [pid=95438] [WISE] pool result: P_max=8, sum_usage=5 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:48:45,340 [INFO] [pid=95438] [WISE] pool result: P_max=5, sum_usage=5 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:48:45,340 [INFO] [pid=95438] [WISE] pool result: P_max=5, sum_usage=5 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:48:45,340 [INFO] [pid=95438] [WISE] pool result: P_max=5, sum_usage=5 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:48:45,340 [INFO] [pid=95438] [WISE] pool result: P_max=5, sum_usage=5 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:48:45,340 [INFO] [pid=95438] [WISE] pool result: P_max=5, sum_usage=5 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:48:45,340 [INFO] [pid=95438] [WISE] pool result: P_max=5, sum_usage=5 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:48:45,340 [INFO] [pid=95438] [WISE] pool result: P_max=7, sum_usage=5 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:48:45,340 [INFO] [pid=95438] [WISE] pool result: P_max=7, sum_usage=5 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:48:45,340 [INFO] [pid=95438] [WISE] pool result: P_max=7, sum_usage=5 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:48:45,340 [INFO] [pid=95438] [WISE] pool result: P_max=7, sum_usage=5 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:48:45,340 [INFO] [pid=95438] [WISE] pool result: P_max=7, sum_usage=5 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:48:45,340 [INFO] [pid=95438] [WISE] pool result: P_max=7, sum_usage=5 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:48:45,340 [INFO] [pid=95438] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 11:48:45,340 [INFO] [pid=95438] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.80, status=unsat, sat=False
+2026-02-16 11:48:45,340 [INFO] [pid=95438] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.60, status=unsat, sat=False
+2026-02-16 11:48:45,340 [INFO] [pid=95438] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.40, status=unsat, sat=False
+2026-02-16 11:48:45,340 [INFO] [pid=95438] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.20, status=unsat, sat=False
+2026-02-16 11:48:45,340 [INFO] [pid=95438] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.00, status=unsat, sat=False
+2026-02-16 11:48:45,340 [INFO] [pid=95438] [WISE] pool result: P_max=4, sum_usage=5 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:48:45,340 [INFO] [pid=95438] [WISE] pool result: P_max=4, sum_usage=5 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:48:45,341 [INFO] [pid=95438] [WISE] pool result: P_max=4, sum_usage=5 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:48:45,341 [INFO] [pid=95438] [WISE] pool result: P_max=4, sum_usage=5 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:48:45,341 [INFO] [pid=95438] [WISE] pool result: P_max=4, sum_usage=5 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:48:45,341 [INFO] [pid=95438] [WISE] pool result: P_max=4, sum_usage=5 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:48:45,341 [INFO] [pid=95438] [WISE] pool result: P_max=6, sum_usage=5 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:48:45,341 [INFO] [pid=95438] [WISE] pool result: P_max=6, sum_usage=5 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:48:45,341 [INFO] [pid=95438] [WISE] pool result: P_max=6, sum_usage=5 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:48:45,341 [INFO] [pid=95438] [WISE] pool result: P_max=6, sum_usage=5 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:48:45,341 [INFO] [pid=95438] [WISE] pool result: P_max=6, sum_usage=5 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:48:45,341 [INFO] [pid=95438] [WISE] pool result: P_max=6, sum_usage=5 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:48:45,341 [INFO] [pid=95438] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 11:48:45,341 [INFO] [pid=95438] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.80, status=unsat, sat=False
+2026-02-16 11:48:45,341 [INFO] [pid=95438] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.60, status=unsat, sat=False
+2026-02-16 11:48:45,341 [INFO] [pid=95438] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.40, status=unsat, sat=False
+2026-02-16 11:48:45,341 [INFO] [pid=95438] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.20, status=unsat, sat=False
+2026-02-16 11:48:45,341 [INFO] [pid=95438] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.00, status=unsat, sat=False
+2026-02-16 11:48:46,033 [INFO] [pid=95438] [WISE] chosen config: P_max=4, cap_factor=1.00, ΣP=5
+2026-02-16 11:48:46,033 [INFO] [pid=95438] [WISE] minimal ΣP found: 5 (P_max=4)
+2026-02-16 11:48:46,036 [INFO] [pid=95438] [WISE] MaxSAT disabled; using SAT model at P*
+2026-02-16 11:48:46,037 [INFO] [pid=95438] [WISE] ΣP per round: [2, 3], Σ_all=5, Σ_tail=5, best_sum_bound=5
+2026-02-16 11:48:46,041 [INFO] [pid=95438] [WISE] soft BT enabled: weight=100
+2026-02-16 11:48:46,041 [INFO] [pid=95438] [WISE] launching SAT pool over 48 configs (P_max∈[2, 9])
+2026-02-16 11:48:46,041 [INFO] [pid=95438] [WISE] nested call: inner parallelism enabled (max_inner_workers=5, max_workers=5, configs=48)
+2026-02-16 11:49:00,220 [INFO] [pid=95437] [WISE] pool result: P_max=7, sum_usage=3 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:49:00,223 [INFO] [pid=95437] [WISE] pool result: P_max=7, sum_usage=3 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:49:00,223 [INFO] [pid=95437] [WISE] pool result: P_max=7, sum_usage=3 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:49:00,223 [INFO] [pid=95437] [WISE] pool result: P_max=7, sum_usage=3 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:49:00,223 [INFO] [pid=95437] [WISE] pool result: P_max=7, sum_usage=3 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:49:00,223 [INFO] [pid=95437] [WISE] pool result: P_max=7, sum_usage=3 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:49:00,223 [INFO] [pid=95437] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 11:49:00,223 [INFO] [pid=95437] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.80, status=unsat, sat=False
+2026-02-16 11:49:00,223 [INFO] [pid=95437] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.60, status=unsat, sat=False
+2026-02-16 11:49:00,223 [INFO] [pid=95437] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.40, status=unsat, sat=False
+2026-02-16 11:49:00,223 [INFO] [pid=95437] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.20, status=unsat, sat=False
+2026-02-16 11:49:00,223 [INFO] [pid=95437] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.00, status=unsat, sat=False
+2026-02-16 11:49:00,223 [INFO] [pid=95437] [WISE] pool result: P_max=4, sum_usage=3 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:49:00,223 [INFO] [pid=95437] [WISE] pool result: P_max=4, sum_usage=3 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:49:00,223 [INFO] [pid=95437] [WISE] pool result: P_max=4, sum_usage=3 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:49:00,223 [INFO] [pid=95437] [WISE] pool result: P_max=4, sum_usage=3 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:49:00,223 [INFO] [pid=95437] [WISE] pool result: P_max=4, sum_usage=3 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:49:00,223 [INFO] [pid=95437] [WISE] pool result: P_max=4, sum_usage=3 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:49:00,223 [INFO] [pid=95437] [WISE] pool result: P_max=8, sum_usage=3 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:49:00,223 [INFO] [pid=95437] [WISE] pool result: P_max=8, sum_usage=3 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:49:00,223 [INFO] [pid=95437] [WISE] pool result: P_max=8, sum_usage=3 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:49:00,223 [INFO] [pid=95437] [WISE] pool result: P_max=8, sum_usage=3 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:49:00,223 [INFO] [pid=95437] [WISE] pool result: P_max=8, sum_usage=3 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:49:00,223 [INFO] [pid=95437] [WISE] pool result: P_max=8, sum_usage=3 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:49:00,223 [INFO] [pid=95437] [WISE] pool result: P_max=3, sum_usage=3 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:49:00,223 [INFO] [pid=95437] [WISE] pool result: P_max=3, sum_usage=3 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:49:00,223 [INFO] [pid=95437] [WISE] pool result: P_max=3, sum_usage=3 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:49:00,223 [INFO] [pid=95437] [WISE] pool result: P_max=3, sum_usage=3 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:49:00,223 [INFO] [pid=95437] [WISE] pool result: P_max=3, sum_usage=3 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:49:00,224 [INFO] [pid=95437] [WISE] pool result: P_max=3, sum_usage=3 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:49:00,224 [INFO] [pid=95437] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 11:49:00,224 [INFO] [pid=95437] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.80, status=unsat, sat=False
+2026-02-16 11:49:00,224 [INFO] [pid=95437] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.60, status=unsat, sat=False
+2026-02-16 11:49:00,224 [INFO] [pid=95437] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.40, status=unsat, sat=False
+2026-02-16 11:49:00,224 [INFO] [pid=95437] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.20, status=unsat, sat=False
+2026-02-16 11:49:00,224 [INFO] [pid=95437] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.00, status=unsat, sat=False
+2026-02-16 11:49:00,224 [INFO] [pid=95437] [WISE] pool result: P_max=6, sum_usage=3 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:49:00,224 [INFO] [pid=95437] [WISE] pool result: P_max=6, sum_usage=3 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:49:00,224 [INFO] [pid=95437] [WISE] pool result: P_max=6, sum_usage=3 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:49:00,224 [INFO] [pid=95437] [WISE] pool result: P_max=6, sum_usage=3 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:49:00,224 [INFO] [pid=95437] [WISE] pool result: P_max=6, sum_usage=3 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:49:00,224 [INFO] [pid=95437] [WISE] pool result: P_max=6, sum_usage=3 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:49:00,224 [INFO] [pid=95437] [WISE] pool result: P_max=5, sum_usage=3 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:49:00,224 [INFO] [pid=95437] [WISE] pool result: P_max=5, sum_usage=3 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:49:00,224 [INFO] [pid=95437] [WISE] pool result: P_max=5, sum_usage=3 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:49:00,224 [INFO] [pid=95437] [WISE] pool result: P_max=5, sum_usage=3 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:49:00,224 [INFO] [pid=95437] [WISE] pool result: P_max=5, sum_usage=3 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:49:00,224 [INFO] [pid=95437] [WISE] pool result: P_max=5, sum_usage=3 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:49:00,908 [INFO] [pid=95437] [WISE] chosen config: P_max=3, cap_factor=1.00, ΣP=3
+2026-02-16 11:49:00,908 [INFO] [pid=95437] [WISE] minimal ΣP found: 3 (P_max=3)
+2026-02-16 11:49:00,909 [INFO] [pid=95437] [WISE] MaxSAT disabled; using SAT model at P*
+2026-02-16 11:49:00,909 [INFO] [pid=95437] [WISE] ΣP per round: [3], Σ_all=3, Σ_tail=3, best_sum_bound=3
+2026-02-16 11:49:00,912 [INFO] [pid=95437] [WISE] launching SAT pool over 48 configs (P_max∈[1, 8])
+2026-02-16 11:49:00,912 [INFO] [pid=95437] [WISE] nested call: inner parallelism enabled (max_inner_workers=5, max_workers=5, configs=48)
+2026-02-16 11:49:27,311 [INFO] [pid=95438] [WISE] parent_stop_event set; propagating to inner SAT pool.
+2026-02-16 11:49:27,311 [INFO] [pid=95437] [WISE] parent_stop_event set; propagating to inner SAT pool.
+2026-02-16 11:49:27,312 [INFO] [pid=95437] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 11:49:27,312 [INFO] [pid=95437] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.80, status=unsat, sat=False
+2026-02-16 11:49:27,312 [INFO] [pid=95437] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.60, status=unsat, sat=False
+2026-02-16 11:49:27,312 [INFO] [pid=95438] [WISE] pool result: P_max=8, sum_usage=6 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:49:27,312 [INFO] [pid=95437] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.40, status=unsat, sat=False
+2026-02-16 11:49:27,312 [INFO] [pid=95438] [WISE] pool result: P_max=8, sum_usage=6 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:49:27,312 [INFO] [pid=95437] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.20, status=unsat, sat=False
+2026-02-16 11:49:27,312 [INFO] [pid=95438] [WISE] pool result: P_max=8, sum_usage=6 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:49:27,312 [INFO] [pid=95437] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.00, status=unsat, sat=False
+2026-02-16 11:49:27,312 [INFO] [pid=95438] [WISE] pool result: P_max=8, sum_usage=6 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:49:27,312 [INFO] [pid=95437] [WISE] pool result: P_max=7, sum_usage=4 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:49:27,312 [INFO] [pid=95438] [WISE] pool result: P_max=8, sum_usage=6 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:49:27,312 [INFO] [pid=95437] [WISE] pool result: P_max=7, sum_usage=4 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:49:27,312 [INFO] [pid=95438] [WISE] pool result: P_max=8, sum_usage=6 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:49:27,312 [INFO] [pid=95437] [WISE] pool result: P_max=7, sum_usage=4 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:49:27,312 [INFO] [pid=95438] [WISE] pool result: P_max=5, sum_usage=6 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:49:27,312 [INFO] [pid=95437] [WISE] pool result: P_max=7, sum_usage=4 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:49:27,312 [INFO] [pid=95438] [WISE] pool result: P_max=5, sum_usage=6 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:49:27,312 [INFO] [pid=95437] [WISE] pool result: P_max=7, sum_usage=4 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:49:27,312 [INFO] [pid=95438] [WISE] pool result: P_max=5, sum_usage=6 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:49:27,312 [INFO] [pid=95437] [WISE] pool result: P_max=7, sum_usage=4 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:49:27,312 [INFO] [pid=95438] [WISE] pool result: P_max=5, sum_usage=6 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:49:27,312 [INFO] [pid=95437] [WISE] pool result: P_max=4, sum_usage=4 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:49:27,312 [INFO] [pid=95438] [WISE] pool result: P_max=5, sum_usage=6 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:49:27,312 [INFO] [pid=95437] [WISE] pool result: P_max=4, sum_usage=4 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:49:27,312 [INFO] [pid=95438] [WISE] pool result: P_max=5, sum_usage=6 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:49:27,312 [INFO] [pid=95437] [WISE] pool result: P_max=4, sum_usage=4 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:49:27,312 [INFO] [pid=95438] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 11:49:27,312 [INFO] [pid=95437] [WISE] pool result: P_max=4, sum_usage=4 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:49:27,312 [INFO] [pid=95438] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.80, status=unsat, sat=False
+2026-02-16 11:49:27,312 [INFO] [pid=95437] [WISE] pool result: P_max=4, sum_usage=4 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:49:27,312 [INFO] [pid=95438] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.60, status=unsat, sat=False
+2026-02-16 11:49:27,312 [INFO] [pid=95437] [WISE] pool result: P_max=4, sum_usage=4 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:49:27,312 [INFO] [pid=95438] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.40, status=unsat, sat=False
+2026-02-16 11:49:27,312 [INFO] [pid=95437] [WISE] pool result: P_max=6, sum_usage=4 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:49:27,312 [INFO] [pid=95438] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.20, status=unsat, sat=False
+2026-02-16 11:49:27,312 [INFO] [pid=95437] [WISE] pool result: P_max=6, sum_usage=4 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:49:27,312 [INFO] [pid=95438] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.00, status=unsat, sat=False
+2026-02-16 11:49:27,312 [INFO] [pid=95437] [WISE] pool result: P_max=6, sum_usage=4 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:49:27,312 [INFO] [pid=95438] [WISE] pool result: P_max=9, sum_usage=6 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:49:27,312 [INFO] [pid=95437] [WISE] pool result: P_max=6, sum_usage=4 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:49:27,312 [INFO] [pid=95438] [WISE] pool result: P_max=9, sum_usage=6 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:49:27,312 [INFO] [pid=95437] [WISE] pool result: P_max=6, sum_usage=4 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:49:27,312 [INFO] [pid=95438] [WISE] pool result: P_max=9, sum_usage=6 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:49:27,312 [INFO] [pid=95437] [WISE] pool result: P_max=6, sum_usage=4 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:49:27,312 [INFO] [pid=95438] [WISE] pool result: P_max=9, sum_usage=6 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:49:27,312 [INFO] [pid=95438] [WISE] pool result: P_max=9, sum_usage=6 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:49:27,312 [INFO] [pid=95438] [WISE] pool result: P_max=9, sum_usage=6 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:49:27,312 [INFO] [pid=95438] [WISE] pool result: P_max=4, sum_usage=6 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:49:27,312 [INFO] [pid=95437] [WISE] pool result: P_max=5, sum_usage=4 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:49:27,312 [INFO] [pid=95438] [WISE] pool result: P_max=4, sum_usage=6 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:49:27,313 [INFO] [pid=95438] [WISE] pool result: P_max=4, sum_usage=6 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:49:27,313 [INFO] [pid=95438] [WISE] pool result: P_max=4, sum_usage=6 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:49:27,313 [WARNING] [pid=95437] [WISE] config (np.int64(8), 0.0) crashed: 
+2026-02-16 11:49:27,313 [INFO] [pid=95438] [WISE] pool result: P_max=4, sum_usage=6 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:49:27,313 [WARNING] [pid=95437] [WISE] config (np.int64(1), 1.0) crashed: 
+2026-02-16 11:49:27,313 [WARNING] [pid=95437] [WISE] config (np.int64(1), 0.8) crashed: 
+2026-02-16 11:49:27,313 [WARNING] [pid=95437] [WISE] config (np.int64(1), 0.6) crashed: 
+2026-02-16 11:49:27,313 [WARNING] [pid=95437] [WISE] config (np.int64(1), 0.4) crashed: 
+2026-02-16 11:49:27,313 [WARNING] [pid=95437] [WISE] config (np.int64(1), 0.19999999999999996) crashed: 
+2026-02-16 11:49:27,313 [WARNING] [pid=95437] [WISE] config (np.int64(1), 0.0) crashed: 
+2026-02-16 11:49:27,313 [WARNING] [pid=95437] [WISE] config (np.int64(3), 1.0) crashed: 
+2026-02-16 11:49:27,313 [WARNING] [pid=95437] [WISE] config (np.int64(3), 0.8) crashed: 
+2026-02-16 11:49:27,313 [WARNING] [pid=95437] [WISE] config (np.int64(3), 0.6) crashed: 
+2026-02-16 11:49:27,313 [WARNING] [pid=95437] [WISE] config (np.int64(3), 0.4) crashed: 
+2026-02-16 11:49:27,313 [WARNING] [pid=95437] [WISE] config (np.int64(3), 0.19999999999999996) crashed: 
+2026-02-16 11:49:27,313 [WARNING] [pid=95437] [WISE] config (np.int64(3), 0.0) crashed: 
+2026-02-16 11:49:27,313 [INFO] [pid=95438] [WISE] partial result (timeout): P_max=4, sum_usage=6 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:49:27,313 [WARNING] [pid=95438] [WISE] config (np.int64(7), 0.4) crashed: 
+2026-02-16 11:49:27,313 [WARNING] [pid=95438] [WISE] config (np.int64(7), 0.19999999999999996) crashed: 
+2026-02-16 11:49:27,313 [WARNING] [pid=95438] [WISE] config (np.int64(7), 0.0) crashed: 
+2026-02-16 11:49:27,313 [WARNING] [pid=95438] [WISE] config (np.int64(6), 1.0) crashed: 
+2026-02-16 11:49:27,313 [WARNING] [pid=95438] [WISE] config (np.int64(6), 0.8) crashed: 
+2026-02-16 11:49:27,313 [WARNING] [pid=95438] [WISE] config (np.int64(6), 0.6) crashed: 
+2026-02-16 11:49:27,313 [WARNING] [pid=95438] [WISE] config (np.int64(6), 0.4) crashed: 
+2026-02-16 11:49:27,313 [WARNING] [pid=95438] [WISE] config (np.int64(6), 0.19999999999999996) crashed: 
+2026-02-16 11:49:27,313 [WARNING] [pid=95438] [WISE] config (np.int64(6), 0.0) crashed: 
+2026-02-16 11:49:42,386 [INFO] [pid=97510] [WISE] launching SAT pool over 48 configs (P_max∈[1, 8])
+2026-02-16 11:49:42,386 [INFO] [pid=97510] [WISE] nested call: inner parallelism enabled (max_inner_workers=11, max_workers=8, configs=48)
+2026-02-16 11:50:06,976 [INFO] [pid=97510] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:50:06,977 [INFO] [pid=97510] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:50:06,977 [INFO] [pid=97510] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:50:06,977 [INFO] [pid=97510] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:50:06,977 [INFO] [pid=97510] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:50:06,977 [INFO] [pid=97510] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:50:06,978 [INFO] [pid=97510] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 11:50:06,978 [INFO] [pid=97510] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.80, status=unsat, sat=False
+2026-02-16 11:50:06,978 [INFO] [pid=97510] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.60, status=unsat, sat=False
+2026-02-16 11:50:06,978 [INFO] [pid=97510] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.40, status=unsat, sat=False
+2026-02-16 11:50:06,978 [INFO] [pid=97510] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.20, status=unsat, sat=False
+2026-02-16 11:50:06,978 [INFO] [pid=97510] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.00, status=unsat, sat=False
+2026-02-16 11:50:06,978 [INFO] [pid=97510] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:50:06,978 [INFO] [pid=97510] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:50:06,978 [INFO] [pid=97510] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:50:06,978 [INFO] [pid=97510] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:50:06,978 [INFO] [pid=97510] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:50:06,978 [INFO] [pid=97510] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:50:06,978 [INFO] [pid=97510] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 11:50:06,978 [INFO] [pid=97510] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.80, status=unsat, sat=False
+2026-02-16 11:50:06,979 [INFO] [pid=97510] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.60, status=unsat, sat=False
+2026-02-16 11:50:06,979 [INFO] [pid=97510] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.40, status=unsat, sat=False
+2026-02-16 11:50:06,979 [INFO] [pid=97510] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.20, status=unsat, sat=False
+2026-02-16 11:50:06,979 [INFO] [pid=97510] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.00, status=unsat, sat=False
+2026-02-16 11:50:06,979 [INFO] [pid=97510] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:50:06,979 [INFO] [pid=97510] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:50:06,979 [INFO] [pid=97510] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:50:06,979 [INFO] [pid=97510] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:50:06,979 [INFO] [pid=97510] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:50:06,979 [INFO] [pid=97510] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:50:06,979 [INFO] [pid=97510] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:50:06,979 [INFO] [pid=97510] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:50:06,979 [INFO] [pid=97510] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:50:06,979 [INFO] [pid=97510] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:50:06,979 [INFO] [pid=97510] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:50:06,979 [INFO] [pid=97510] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:50:06,979 [INFO] [pid=97510] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:50:06,979 [INFO] [pid=97510] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:50:06,979 [INFO] [pid=97510] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:50:06,980 [INFO] [pid=97510] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:50:06,980 [INFO] [pid=97510] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:50:06,980 [INFO] [pid=97510] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:50:06,980 [INFO] [pid=97510] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 11:50:06,980 [INFO] [pid=97510] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.80, status=unsat, sat=False
+2026-02-16 11:50:06,980 [INFO] [pid=97510] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.60, status=unsat, sat=False
+2026-02-16 11:50:06,980 [INFO] [pid=97510] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.40, status=unsat, sat=False
+2026-02-16 11:50:06,980 [INFO] [pid=97510] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.20, status=unsat, sat=False
+2026-02-16 11:50:06,980 [INFO] [pid=97510] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.00, status=unsat, sat=False
+2026-02-16 11:50:07,734 [INFO] [pid=97510] [WISE] chosen config: P_max=4, cap_factor=1.00, ΣP=2
+2026-02-16 11:50:07,734 [INFO] [pid=97510] [WISE] minimal ΣP found: 2 (P_max=4)
+2026-02-16 11:50:07,735 [INFO] [pid=97510] [WISE] MaxSAT disabled; using SAT model at P*
+2026-02-16 11:50:07,735 [INFO] [pid=97510] [WISE] ΣP per round: [2], Σ_all=2, Σ_tail=2, best_sum_bound=2
+2026-02-16 11:50:07,738 [INFO] [pid=97510] [WISE] launching SAT pool over 48 configs (P_max∈[1, 8])
+2026-02-16 11:50:07,738 [INFO] [pid=97510] [WISE] nested call: inner parallelism enabled (max_inner_workers=11, max_workers=8, configs=48)
+2026-02-16 11:50:28,583 [INFO] [pid=97510] [WISE] pool result: P_max=8, sum_usage=3 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:50:28,583 [INFO] [pid=97510] [WISE] pool result: P_max=8, sum_usage=3 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:50:28,583 [INFO] [pid=97510] [WISE] pool result: P_max=8, sum_usage=3 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:50:28,583 [INFO] [pid=97510] [WISE] pool result: P_max=8, sum_usage=3 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:50:28,583 [INFO] [pid=97510] [WISE] pool result: P_max=8, sum_usage=3 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:50:28,584 [INFO] [pid=97510] [WISE] pool result: P_max=8, sum_usage=3 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:50:28,584 [INFO] [pid=97510] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 11:50:28,584 [INFO] [pid=97510] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.80, status=unsat, sat=False
+2026-02-16 11:50:28,584 [INFO] [pid=97510] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.60, status=unsat, sat=False
+2026-02-16 11:50:28,584 [INFO] [pid=97510] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.40, status=unsat, sat=False
+2026-02-16 11:50:28,584 [INFO] [pid=97510] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.20, status=unsat, sat=False
+2026-02-16 11:50:28,584 [INFO] [pid=97510] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.00, status=unsat, sat=False
+2026-02-16 11:50:28,584 [INFO] [pid=97510] [WISE] pool result: P_max=4, sum_usage=3 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:50:28,584 [INFO] [pid=97510] [WISE] pool result: P_max=4, sum_usage=3 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:50:28,584 [INFO] [pid=97510] [WISE] pool result: P_max=4, sum_usage=3 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:50:28,584 [INFO] [pid=97510] [WISE] pool result: P_max=4, sum_usage=3 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:50:28,584 [INFO] [pid=97510] [WISE] pool result: P_max=4, sum_usage=3 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:50:28,584 [INFO] [pid=97510] [WISE] pool result: P_max=4, sum_usage=3 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:50:28,584 [INFO] [pid=97510] [WISE] pool result: P_max=6, sum_usage=3 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:50:28,584 [INFO] [pid=97510] [WISE] pool result: P_max=6, sum_usage=3 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:50:28,584 [INFO] [pid=97510] [WISE] pool result: P_max=6, sum_usage=3 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:50:28,584 [INFO] [pid=97510] [WISE] pool result: P_max=6, sum_usage=3 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:50:28,584 [INFO] [pid=97510] [WISE] pool result: P_max=6, sum_usage=3 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:50:28,585 [INFO] [pid=97510] [WISE] pool result: P_max=6, sum_usage=3 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:50:28,585 [INFO] [pid=97510] [WISE] pool result: P_max=5, sum_usage=3 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:50:28,585 [INFO] [pid=97510] [WISE] pool result: P_max=5, sum_usage=3 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:50:28,585 [INFO] [pid=97510] [WISE] pool result: P_max=5, sum_usage=3 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:50:28,585 [INFO] [pid=97510] [WISE] pool result: P_max=5, sum_usage=3 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:50:28,585 [INFO] [pid=97510] [WISE] pool result: P_max=5, sum_usage=3 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:50:28,585 [INFO] [pid=97510] [WISE] pool result: P_max=5, sum_usage=3 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:50:28,585 [INFO] [pid=97510] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 11:50:28,585 [INFO] [pid=97510] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.80, status=unsat, sat=False
+2026-02-16 11:50:28,585 [INFO] [pid=97510] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.60, status=unsat, sat=False
+2026-02-16 11:50:28,585 [INFO] [pid=97510] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.40, status=unsat, sat=False
+2026-02-16 11:50:28,585 [INFO] [pid=97510] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.20, status=unsat, sat=False
+2026-02-16 11:50:28,585 [INFO] [pid=97510] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.00, status=unsat, sat=False
+2026-02-16 11:50:28,585 [INFO] [pid=97510] [WISE] pool result: P_max=3, sum_usage=3 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:50:28,585 [INFO] [pid=97510] [WISE] pool result: P_max=3, sum_usage=3 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:50:28,585 [INFO] [pid=97510] [WISE] pool result: P_max=3, sum_usage=3 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:50:28,585 [INFO] [pid=97510] [WISE] pool result: P_max=3, sum_usage=3 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:50:28,585 [INFO] [pid=97510] [WISE] pool result: P_max=3, sum_usage=3 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:50:28,585 [INFO] [pid=97510] [WISE] pool result: P_max=3, sum_usage=3 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:50:28,586 [INFO] [pid=97510] [WISE] pool result: P_max=7, sum_usage=3 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:50:28,586 [INFO] [pid=97510] [WISE] pool result: P_max=7, sum_usage=3 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:50:28,586 [INFO] [pid=97510] [WISE] pool result: P_max=7, sum_usage=3 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:50:28,586 [INFO] [pid=97510] [WISE] pool result: P_max=7, sum_usage=3 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:50:28,586 [INFO] [pid=97510] [WISE] pool result: P_max=7, sum_usage=3 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:50:28,586 [INFO] [pid=97510] [WISE] pool result: P_max=7, sum_usage=3 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:50:29,238 [INFO] [pid=97510] [WISE] chosen config: P_max=3, cap_factor=1.00, ΣP=3
+2026-02-16 11:50:29,238 [INFO] [pid=97510] [WISE] minimal ΣP found: 3 (P_max=3)
+2026-02-16 11:50:29,238 [INFO] [pid=97510] [WISE] MaxSAT disabled; using SAT model at P*
+2026-02-16 11:50:29,239 [INFO] [pid=97510] [WISE] ΣP per round: [3], Σ_all=3, Σ_tail=3, best_sum_bound=3
+2026-02-16 11:50:29,241 [INFO] [pid=97510] [WISE] launching SAT pool over 48 configs (P_max∈[1, 8])
+2026-02-16 11:50:29,242 [INFO] [pid=97510] [WISE] nested call: inner parallelism enabled (max_inner_workers=11, max_workers=8, configs=48)
+2026-02-16 11:50:51,083 [INFO] [pid=97510] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 11:50:51,084 [INFO] [pid=97510] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.80, status=unsat, sat=False
+2026-02-16 11:50:51,084 [INFO] [pid=97510] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.60, status=unsat, sat=False
+2026-02-16 11:50:51,084 [INFO] [pid=97510] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.40, status=unsat, sat=False
+2026-02-16 11:50:51,084 [INFO] [pid=97510] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.20, status=unsat, sat=False
+2026-02-16 11:50:51,084 [INFO] [pid=97510] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.00, status=unsat, sat=False
+2026-02-16 11:50:51,084 [INFO] [pid=97510] [WISE] pool result: P_max=4, sum_usage=4 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:50:51,084 [INFO] [pid=97510] [WISE] pool result: P_max=4, sum_usage=4 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:50:51,084 [INFO] [pid=97510] [WISE] pool result: P_max=4, sum_usage=4 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:50:51,085 [INFO] [pid=97510] [WISE] pool result: P_max=4, sum_usage=4 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:50:51,085 [INFO] [pid=97510] [WISE] pool result: P_max=4, sum_usage=4 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:50:51,085 [INFO] [pid=97510] [WISE] pool result: P_max=4, sum_usage=4 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:50:51,085 [INFO] [pid=97510] [WISE] pool result: P_max=5, sum_usage=4 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:50:51,085 [INFO] [pid=97510] [WISE] pool result: P_max=5, sum_usage=4 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:50:51,085 [INFO] [pid=97510] [WISE] pool result: P_max=5, sum_usage=4 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:50:51,086 [INFO] [pid=97510] [WISE] pool result: P_max=5, sum_usage=4 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:50:51,086 [INFO] [pid=97510] [WISE] pool result: P_max=5, sum_usage=4 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:50:51,086 [INFO] [pid=97510] [WISE] pool result: P_max=5, sum_usage=4 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:50:51,086 [INFO] [pid=97510] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 11:50:51,086 [INFO] [pid=97510] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.80, status=unsat, sat=False
+2026-02-16 11:50:51,086 [INFO] [pid=97510] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.60, status=unsat, sat=False
+2026-02-16 11:50:51,086 [INFO] [pid=97510] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.40, status=unsat, sat=False
+2026-02-16 11:50:51,086 [INFO] [pid=97510] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.20, status=unsat, sat=False
+2026-02-16 11:50:51,087 [INFO] [pid=97510] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.00, status=unsat, sat=False
+2026-02-16 11:50:51,087 [INFO] [pid=97510] [WISE] pool result: P_max=7, sum_usage=4 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:50:51,087 [INFO] [pid=97510] [WISE] pool result: P_max=7, sum_usage=4 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:50:51,087 [INFO] [pid=97510] [WISE] pool result: P_max=7, sum_usage=4 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:50:51,087 [INFO] [pid=97510] [WISE] pool result: P_max=7, sum_usage=4 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:50:51,087 [INFO] [pid=97510] [WISE] pool result: P_max=7, sum_usage=4 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:50:51,087 [INFO] [pid=97510] [WISE] pool result: P_max=7, sum_usage=4 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:50:51,088 [INFO] [pid=97510] [WISE] pool result: P_max=6, sum_usage=4 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:50:51,088 [INFO] [pid=97510] [WISE] pool result: P_max=6, sum_usage=4 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:50:51,088 [INFO] [pid=97510] [WISE] pool result: P_max=6, sum_usage=4 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:50:51,088 [INFO] [pid=97510] [WISE] pool result: P_max=6, sum_usage=4 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:50:51,088 [INFO] [pid=97510] [WISE] pool result: P_max=6, sum_usage=4 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:50:51,088 [INFO] [pid=97510] [WISE] pool result: P_max=6, sum_usage=4 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:50:51,088 [INFO] [pid=97510] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 11:50:51,088 [INFO] [pid=97510] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.80, status=unsat, sat=False
+2026-02-16 11:50:51,088 [INFO] [pid=97510] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.60, status=unsat, sat=False
+2026-02-16 11:50:51,088 [INFO] [pid=97510] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.40, status=unsat, sat=False
+2026-02-16 11:50:51,088 [INFO] [pid=97510] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.20, status=unsat, sat=False
+2026-02-16 11:50:51,088 [INFO] [pid=97510] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.00, status=unsat, sat=False
+2026-02-16 11:50:51,088 [INFO] [pid=97510] [WISE] pool result: P_max=8, sum_usage=4 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:50:51,088 [INFO] [pid=97510] [WISE] pool result: P_max=8, sum_usage=4 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:50:51,089 [INFO] [pid=97510] [WISE] pool result: P_max=8, sum_usage=4 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:50:51,089 [INFO] [pid=97510] [WISE] pool result: P_max=8, sum_usage=4 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:50:51,089 [INFO] [pid=97510] [WISE] pool result: P_max=8, sum_usage=4 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:50:51,089 [INFO] [pid=97510] [WISE] pool result: P_max=8, sum_usage=4 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:50:51,889 [INFO] [pid=97510] [WISE] chosen config: P_max=4, cap_factor=1.00, ΣP=4
+2026-02-16 11:50:51,889 [INFO] [pid=97510] [WISE] minimal ΣP found: 4 (P_max=4)
+2026-02-16 11:50:51,890 [INFO] [pid=97510] [WISE] MaxSAT disabled; using SAT model at P*
+2026-02-16 11:50:51,891 [INFO] [pid=97510] [WISE] ΣP per round: [4], Σ_all=4, Σ_tail=4, best_sum_bound=4
+2026-02-16 11:50:51,894 [INFO] [pid=97510] [WISE] launching SAT pool over 48 configs (P_max∈[1, 8])
+2026-02-16 11:50:51,895 [INFO] [pid=97510] [WISE] nested call: inner parallelism enabled (max_inner_workers=11, max_workers=8, configs=48)
+2026-02-16 11:51:21,410 [INFO] [pid=97510] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:51:21,410 [INFO] [pid=97510] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:51:21,410 [INFO] [pid=97510] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:51:21,410 [INFO] [pid=97510] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:51:21,410 [INFO] [pid=97510] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:51:21,410 [INFO] [pid=97510] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:51:21,410 [INFO] [pid=97510] [WISE] pool result: P_max=2, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:51:21,411 [INFO] [pid=97510] [WISE] pool result: P_max=2, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:51:21,411 [INFO] [pid=97510] [WISE] pool result: P_max=2, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:51:21,411 [INFO] [pid=97510] [WISE] pool result: P_max=2, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:51:21,411 [INFO] [pid=97510] [WISE] pool result: P_max=2, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:51:21,411 [INFO] [pid=97510] [WISE] pool result: P_max=2, sum_usage=2 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:51:21,411 [INFO] [pid=97510] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:51:21,411 [INFO] [pid=97510] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:51:21,411 [INFO] [pid=97510] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:51:21,411 [INFO] [pid=97510] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:51:21,412 [INFO] [pid=97510] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:51:21,412 [INFO] [pid=97510] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:51:21,412 [INFO] [pid=97510] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:51:21,412 [INFO] [pid=97510] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:51:21,412 [INFO] [pid=97510] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:51:21,412 [INFO] [pid=97510] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:51:21,413 [INFO] [pid=97510] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:51:21,413 [INFO] [pid=97510] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:51:21,413 [INFO] [pid=97510] [WISE] pool result: P_max=3, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:51:21,414 [INFO] [pid=97510] [WISE] pool result: P_max=3, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:51:21,415 [INFO] [pid=97510] [WISE] pool result: P_max=3, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:51:21,415 [INFO] [pid=97510] [WISE] pool result: P_max=3, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:51:21,415 [INFO] [pid=97510] [WISE] pool result: P_max=3, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:51:21,415 [INFO] [pid=97510] [WISE] pool result: P_max=3, sum_usage=2 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:51:21,415 [INFO] [pid=97510] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:51:21,416 [INFO] [pid=97510] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:51:21,416 [INFO] [pid=97510] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:51:21,416 [INFO] [pid=97510] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:51:21,416 [INFO] [pid=97510] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:51:21,416 [INFO] [pid=97510] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:51:21,416 [INFO] [pid=97510] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:51:21,416 [INFO] [pid=97510] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:51:21,417 [INFO] [pid=97510] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:51:21,417 [INFO] [pid=97510] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:51:21,417 [INFO] [pid=97510] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:51:21,417 [INFO] [pid=97510] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:51:21,417 [INFO] [pid=97510] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 11:51:21,417 [INFO] [pid=97510] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.80, status=unsat, sat=False
+2026-02-16 11:51:21,417 [INFO] [pid=97510] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.60, status=unsat, sat=False
+2026-02-16 11:51:21,418 [INFO] [pid=97510] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.40, status=unsat, sat=False
+2026-02-16 11:51:21,418 [INFO] [pid=97510] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.20, status=unsat, sat=False
+2026-02-16 11:51:21,418 [INFO] [pid=97510] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.00, status=unsat, sat=False
+2026-02-16 11:51:22,219 [INFO] [pid=97510] [WISE] chosen config: P_max=2, cap_factor=1.00, ΣP=2
+2026-02-16 11:51:22,219 [INFO] [pid=97510] [WISE] minimal ΣP found: 2 (P_max=2)
+2026-02-16 11:51:22,220 [INFO] [pid=97510] [WISE] MaxSAT disabled; using SAT model at P*
+2026-02-16 11:51:22,220 [INFO] [pid=97510] [WISE] ΣP per round: [2], Σ_all=2, Σ_tail=2, best_sum_bound=2
+2026-02-16 11:58:43,018 [INFO] [pid=3473] [WISE] launching SAT pool over 48 configs (P_max∈[1, 8])
+2026-02-16 11:59:00,369 [INFO] [pid=3473] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 11:59:00,369 [INFO] [pid=3473] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.80, status=unsat, sat=False
+2026-02-16 11:59:00,369 [INFO] [pid=3473] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.60, status=unsat, sat=False
+2026-02-16 11:59:00,369 [INFO] [pid=3473] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.40, status=unsat, sat=False
+2026-02-16 11:59:00,370 [INFO] [pid=3473] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.20, status=unsat, sat=False
+2026-02-16 11:59:00,370 [INFO] [pid=3473] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.00, status=unsat, sat=False
+2026-02-16 11:59:00,370 [INFO] [pid=3473] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:59:00,370 [INFO] [pid=3473] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:59:00,370 [INFO] [pid=3473] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:59:00,370 [INFO] [pid=3473] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:59:00,370 [INFO] [pid=3473] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:59:00,370 [INFO] [pid=3473] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:59:00,370 [INFO] [pid=3473] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:59:00,370 [INFO] [pid=3473] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:59:00,370 [INFO] [pid=3473] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:59:00,370 [INFO] [pid=3473] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:59:00,371 [INFO] [pid=3473] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:59:00,371 [INFO] [pid=3473] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:59:00,371 [INFO] [pid=3473] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:59:00,371 [INFO] [pid=3473] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:59:00,371 [INFO] [pid=3473] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:59:00,371 [INFO] [pid=3473] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:59:00,371 [INFO] [pid=3473] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:59:00,371 [INFO] [pid=3473] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:59:00,371 [INFO] [pid=3473] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:59:00,371 [INFO] [pid=3473] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:59:00,371 [INFO] [pid=3473] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:59:00,371 [INFO] [pid=3473] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:59:00,371 [INFO] [pid=3473] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:59:00,372 [INFO] [pid=3473] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:59:00,372 [INFO] [pid=3473] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 11:59:00,372 [INFO] [pid=3473] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.80, status=unsat, sat=False
+2026-02-16 11:59:00,372 [INFO] [pid=3473] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.60, status=unsat, sat=False
+2026-02-16 11:59:00,372 [INFO] [pid=3473] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.40, status=unsat, sat=False
+2026-02-16 11:59:00,372 [INFO] [pid=3473] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.20, status=unsat, sat=False
+2026-02-16 11:59:00,372 [INFO] [pid=3473] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.00, status=unsat, sat=False
+2026-02-16 11:59:00,372 [INFO] [pid=3473] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:59:00,372 [INFO] [pid=3473] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:59:00,372 [INFO] [pid=3473] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:59:00,372 [INFO] [pid=3473] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:59:00,372 [INFO] [pid=3473] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:59:00,372 [INFO] [pid=3473] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:59:00,373 [INFO] [pid=3473] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 11:59:00,373 [INFO] [pid=3473] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.80, status=unsat, sat=False
+2026-02-16 11:59:00,373 [INFO] [pid=3473] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.60, status=unsat, sat=False
+2026-02-16 11:59:00,373 [INFO] [pid=3473] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.40, status=unsat, sat=False
+2026-02-16 11:59:00,373 [INFO] [pid=3473] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.20, status=unsat, sat=False
+2026-02-16 11:59:00,373 [INFO] [pid=3473] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.00, status=unsat, sat=False
+2026-02-16 11:59:01,053 [INFO] [pid=3473] [WISE] chosen config: P_max=4, cap_factor=1.00, ΣP=2
+2026-02-16 11:59:01,053 [INFO] [pid=3473] [WISE] minimal ΣP found: 2 (P_max=4)
+2026-02-16 11:59:01,053 [INFO] [pid=3473] [WISE] MaxSAT disabled; using SAT model at P*
+2026-02-16 11:59:01,054 [INFO] [pid=3473] [WISE] ΣP per round: [2], Σ_all=2, Σ_tail=2, best_sum_bound=2
+2026-02-16 11:59:01,056 [INFO] [pid=3473] [WISE] launching SAT pool over 48 configs (P_max∈[1, 8])
+2026-02-16 11:59:18,551 [INFO] [pid=3473] [WISE] pool result: P_max=7, sum_usage=3 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:59:18,551 [INFO] [pid=3473] [WISE] pool result: P_max=7, sum_usage=3 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:59:18,551 [INFO] [pid=3473] [WISE] pool result: P_max=7, sum_usage=3 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:59:18,551 [INFO] [pid=3473] [WISE] pool result: P_max=7, sum_usage=3 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:59:18,551 [INFO] [pid=3473] [WISE] pool result: P_max=7, sum_usage=3 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:59:18,551 [INFO] [pid=3473] [WISE] pool result: P_max=7, sum_usage=3 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:59:18,551 [INFO] [pid=3473] [WISE] pool result: P_max=6, sum_usage=3 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:59:18,551 [INFO] [pid=3473] [WISE] pool result: P_max=6, sum_usage=3 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:59:18,551 [INFO] [pid=3473] [WISE] pool result: P_max=6, sum_usage=3 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:59:18,551 [INFO] [pid=3473] [WISE] pool result: P_max=6, sum_usage=3 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:59:18,551 [INFO] [pid=3473] [WISE] pool result: P_max=6, sum_usage=3 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:59:18,552 [INFO] [pid=3473] [WISE] pool result: P_max=6, sum_usage=3 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:59:18,552 [INFO] [pid=3473] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 11:59:18,552 [INFO] [pid=3473] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.80, status=unsat, sat=False
+2026-02-16 11:59:18,552 [INFO] [pid=3473] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.60, status=unsat, sat=False
+2026-02-16 11:59:18,552 [INFO] [pid=3473] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.40, status=unsat, sat=False
+2026-02-16 11:59:18,552 [INFO] [pid=3473] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.20, status=unsat, sat=False
+2026-02-16 11:59:18,552 [INFO] [pid=3473] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.00, status=unsat, sat=False
+2026-02-16 11:59:18,552 [INFO] [pid=3473] [WISE] pool result: P_max=3, sum_usage=3 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:59:18,552 [INFO] [pid=3473] [WISE] pool result: P_max=3, sum_usage=3 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:59:18,552 [INFO] [pid=3473] [WISE] pool result: P_max=3, sum_usage=3 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:59:18,552 [INFO] [pid=3473] [WISE] pool result: P_max=3, sum_usage=3 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:59:18,552 [INFO] [pid=3473] [WISE] pool result: P_max=3, sum_usage=3 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:59:18,553 [INFO] [pid=3473] [WISE] pool result: P_max=3, sum_usage=3 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:59:18,553 [INFO] [pid=3473] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 11:59:18,553 [INFO] [pid=3473] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.80, status=unsat, sat=False
+2026-02-16 11:59:18,553 [INFO] [pid=3473] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.60, status=unsat, sat=False
+2026-02-16 11:59:18,553 [INFO] [pid=3473] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.40, status=unsat, sat=False
+2026-02-16 11:59:18,553 [INFO] [pid=3473] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.20, status=unsat, sat=False
+2026-02-16 11:59:18,553 [INFO] [pid=3473] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.00, status=unsat, sat=False
+2026-02-16 11:59:18,553 [INFO] [pid=3473] [WISE] pool result: P_max=5, sum_usage=3 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:59:18,553 [INFO] [pid=3473] [WISE] pool result: P_max=5, sum_usage=3 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:59:18,553 [INFO] [pid=3473] [WISE] pool result: P_max=5, sum_usage=3 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:59:18,554 [INFO] [pid=3473] [WISE] pool result: P_max=5, sum_usage=3 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:59:18,554 [INFO] [pid=3473] [WISE] pool result: P_max=5, sum_usage=3 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:59:18,554 [INFO] [pid=3473] [WISE] pool result: P_max=5, sum_usage=3 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:59:18,554 [INFO] [pid=3473] [WISE] pool result: P_max=4, sum_usage=3 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:59:18,554 [INFO] [pid=3473] [WISE] pool result: P_max=4, sum_usage=3 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:59:18,554 [INFO] [pid=3473] [WISE] pool result: P_max=4, sum_usage=3 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:59:18,554 [INFO] [pid=3473] [WISE] pool result: P_max=4, sum_usage=3 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:59:18,554 [INFO] [pid=3473] [WISE] pool result: P_max=4, sum_usage=3 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:59:18,554 [INFO] [pid=3473] [WISE] pool result: P_max=4, sum_usage=3 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:59:18,554 [INFO] [pid=3473] [WISE] pool result: P_max=8, sum_usage=3 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:59:18,554 [INFO] [pid=3473] [WISE] pool result: P_max=8, sum_usage=3 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:59:18,554 [INFO] [pid=3473] [WISE] pool result: P_max=8, sum_usage=3 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:59:18,554 [INFO] [pid=3473] [WISE] pool result: P_max=8, sum_usage=3 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:59:18,555 [INFO] [pid=3473] [WISE] pool result: P_max=8, sum_usage=3 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:59:18,555 [INFO] [pid=3473] [WISE] pool result: P_max=8, sum_usage=3 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:59:19,200 [INFO] [pid=3473] [WISE] chosen config: P_max=3, cap_factor=1.00, ΣP=3
+2026-02-16 11:59:19,200 [INFO] [pid=3473] [WISE] minimal ΣP found: 3 (P_max=3)
+2026-02-16 11:59:19,201 [INFO] [pid=3473] [WISE] MaxSAT disabled; using SAT model at P*
+2026-02-16 11:59:19,201 [INFO] [pid=3473] [WISE] ΣP per round: [3], Σ_all=3, Σ_tail=3, best_sum_bound=3
+2026-02-16 11:59:19,204 [INFO] [pid=3473] [WISE] launching SAT pool over 48 configs (P_max∈[1, 8])
+2026-02-16 11:59:36,046 [INFO] [pid=3473] [WISE] pool result: P_max=6, sum_usage=4 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:59:36,046 [INFO] [pid=3473] [WISE] pool result: P_max=6, sum_usage=4 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:59:36,046 [INFO] [pid=3473] [WISE] pool result: P_max=6, sum_usage=4 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:59:36,046 [INFO] [pid=3473] [WISE] pool result: P_max=6, sum_usage=4 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:59:36,046 [INFO] [pid=3473] [WISE] pool result: P_max=6, sum_usage=4 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:59:36,046 [INFO] [pid=3473] [WISE] pool result: P_max=6, sum_usage=4 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:59:36,046 [INFO] [pid=3473] [WISE] pool result: P_max=8, sum_usage=4 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:59:36,046 [INFO] [pid=3473] [WISE] pool result: P_max=8, sum_usage=4 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:59:36,046 [INFO] [pid=3473] [WISE] pool result: P_max=8, sum_usage=4 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:59:36,047 [INFO] [pid=3473] [WISE] pool result: P_max=8, sum_usage=4 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:59:36,047 [INFO] [pid=3473] [WISE] pool result: P_max=8, sum_usage=4 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:59:36,047 [INFO] [pid=3473] [WISE] pool result: P_max=8, sum_usage=4 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:59:36,047 [INFO] [pid=3473] [WISE] pool result: P_max=5, sum_usage=4 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:59:36,047 [INFO] [pid=3473] [WISE] pool result: P_max=5, sum_usage=4 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:59:36,047 [INFO] [pid=3473] [WISE] pool result: P_max=5, sum_usage=4 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:59:36,047 [INFO] [pid=3473] [WISE] pool result: P_max=5, sum_usage=4 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:59:36,047 [INFO] [pid=3473] [WISE] pool result: P_max=5, sum_usage=4 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:59:36,047 [INFO] [pid=3473] [WISE] pool result: P_max=5, sum_usage=4 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:59:36,047 [INFO] [pid=3473] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 11:59:36,047 [INFO] [pid=3473] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.80, status=unsat, sat=False
+2026-02-16 11:59:36,047 [INFO] [pid=3473] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.60, status=unsat, sat=False
+2026-02-16 11:59:36,047 [INFO] [pid=3473] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.40, status=unsat, sat=False
+2026-02-16 11:59:36,047 [INFO] [pid=3473] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.20, status=unsat, sat=False
+2026-02-16 11:59:36,048 [INFO] [pid=3473] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.00, status=unsat, sat=False
+2026-02-16 11:59:36,048 [INFO] [pid=3473] [WISE] pool result: P_max=7, sum_usage=4 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:59:36,048 [INFO] [pid=3473] [WISE] pool result: P_max=7, sum_usage=4 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:59:36,048 [INFO] [pid=3473] [WISE] pool result: P_max=7, sum_usage=4 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:59:36,048 [INFO] [pid=3473] [WISE] pool result: P_max=7, sum_usage=4 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:59:36,048 [INFO] [pid=3473] [WISE] pool result: P_max=7, sum_usage=4 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:59:36,048 [INFO] [pid=3473] [WISE] pool result: P_max=7, sum_usage=4 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:59:36,048 [INFO] [pid=3473] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 11:59:36,048 [INFO] [pid=3473] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.80, status=unsat, sat=False
+2026-02-16 11:59:36,048 [INFO] [pid=3473] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.60, status=unsat, sat=False
+2026-02-16 11:59:36,048 [INFO] [pid=3473] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.40, status=unsat, sat=False
+2026-02-16 11:59:36,048 [INFO] [pid=3473] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.20, status=unsat, sat=False
+2026-02-16 11:59:36,048 [INFO] [pid=3473] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.00, status=unsat, sat=False
+2026-02-16 11:59:36,049 [INFO] [pid=3473] [WISE] pool result: P_max=4, sum_usage=4 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:59:36,049 [INFO] [pid=3473] [WISE] pool result: P_max=4, sum_usage=4 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:59:36,049 [INFO] [pid=3473] [WISE] pool result: P_max=4, sum_usage=4 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:59:36,049 [INFO] [pid=3473] [WISE] pool result: P_max=4, sum_usage=4 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:59:36,049 [INFO] [pid=3473] [WISE] pool result: P_max=4, sum_usage=4 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:59:36,049 [INFO] [pid=3473] [WISE] pool result: P_max=4, sum_usage=4 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:59:36,049 [INFO] [pid=3473] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 11:59:36,049 [INFO] [pid=3473] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.80, status=unsat, sat=False
+2026-02-16 11:59:36,049 [INFO] [pid=3473] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.60, status=unsat, sat=False
+2026-02-16 11:59:36,049 [INFO] [pid=3473] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.40, status=unsat, sat=False
+2026-02-16 11:59:36,049 [INFO] [pid=3473] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.20, status=unsat, sat=False
+2026-02-16 11:59:36,049 [INFO] [pid=3473] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.00, status=unsat, sat=False
+2026-02-16 11:59:36,701 [INFO] [pid=3473] [WISE] chosen config: P_max=4, cap_factor=1.00, ΣP=4
+2026-02-16 11:59:36,701 [INFO] [pid=3473] [WISE] minimal ΣP found: 4 (P_max=4)
+2026-02-16 11:59:36,702 [INFO] [pid=3473] [WISE] MaxSAT disabled; using SAT model at P*
+2026-02-16 11:59:36,702 [INFO] [pid=3473] [WISE] ΣP per round: [4], Σ_all=4, Σ_tail=4, best_sum_bound=4
+2026-02-16 11:59:36,705 [INFO] [pid=3473] [WISE] launching SAT pool over 48 configs (P_max∈[1, 8])
+2026-02-16 11:59:53,336 [INFO] [pid=3473] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 11:59:53,336 [INFO] [pid=3473] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.80, status=unsat, sat=False
+2026-02-16 11:59:53,336 [INFO] [pid=3473] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.60, status=unsat, sat=False
+2026-02-16 11:59:53,336 [INFO] [pid=3473] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.40, status=unsat, sat=False
+2026-02-16 11:59:53,336 [INFO] [pid=3473] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.20, status=unsat, sat=False
+2026-02-16 11:59:53,336 [INFO] [pid=3473] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.00, status=unsat, sat=False
+2026-02-16 11:59:53,336 [INFO] [pid=3473] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:59:53,337 [INFO] [pid=3473] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:59:53,337 [INFO] [pid=3473] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:59:53,337 [INFO] [pid=3473] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:59:53,337 [INFO] [pid=3473] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:59:53,337 [INFO] [pid=3473] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:59:53,337 [INFO] [pid=3473] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:59:53,337 [INFO] [pid=3473] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:59:53,337 [INFO] [pid=3473] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:59:53,337 [INFO] [pid=3473] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:59:53,337 [INFO] [pid=3473] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:59:53,337 [INFO] [pid=3473] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:59:53,337 [INFO] [pid=3473] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:59:53,337 [INFO] [pid=3473] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:59:53,338 [INFO] [pid=3473] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:59:53,338 [INFO] [pid=3473] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:59:53,338 [INFO] [pid=3473] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:59:53,338 [INFO] [pid=3473] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:59:53,338 [INFO] [pid=3473] [WISE] pool result: P_max=2, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:59:53,338 [INFO] [pid=3473] [WISE] pool result: P_max=2, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:59:53,338 [INFO] [pid=3473] [WISE] pool result: P_max=2, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:59:53,338 [INFO] [pid=3473] [WISE] pool result: P_max=2, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:59:53,338 [INFO] [pid=3473] [WISE] pool result: P_max=2, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:59:53,338 [INFO] [pid=3473] [WISE] pool result: P_max=2, sum_usage=2 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:59:53,338 [INFO] [pid=3473] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:59:53,338 [INFO] [pid=3473] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:59:53,338 [INFO] [pid=3473] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:59:53,339 [INFO] [pid=3473] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:59:53,339 [INFO] [pid=3473] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:59:53,339 [INFO] [pid=3473] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:59:53,339 [INFO] [pid=3473] [WISE] pool result: P_max=3, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:59:53,339 [INFO] [pid=3473] [WISE] pool result: P_max=3, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:59:53,339 [INFO] [pid=3473] [WISE] pool result: P_max=3, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:59:53,339 [INFO] [pid=3473] [WISE] pool result: P_max=3, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:59:53,339 [INFO] [pid=3473] [WISE] pool result: P_max=3, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:59:53,339 [INFO] [pid=3473] [WISE] pool result: P_max=3, sum_usage=2 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:59:53,339 [INFO] [pid=3473] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 11:59:53,339 [INFO] [pid=3473] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 11:59:53,339 [INFO] [pid=3473] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 11:59:53,339 [INFO] [pid=3473] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 11:59:53,339 [INFO] [pid=3473] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 11:59:53,340 [INFO] [pid=3473] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=0.00, status=ok, sat=True
+2026-02-16 11:59:53,984 [INFO] [pid=3473] [WISE] chosen config: P_max=2, cap_factor=1.00, ΣP=2
+2026-02-16 11:59:53,984 [INFO] [pid=3473] [WISE] minimal ΣP found: 2 (P_max=2)
+2026-02-16 11:59:53,985 [INFO] [pid=3473] [WISE] MaxSAT disabled; using SAT model at P*
+2026-02-16 11:59:53,985 [INFO] [pid=3473] [WISE] ΣP per round: [2], Σ_all=2, Σ_tail=2, best_sum_bound=2
+2026-02-16 12:03:16,690 [INFO] [pid=5859] [WISE] launching SAT pool over 48 configs (P_max∈[1, 8])
+2026-02-16 12:03:32,244 [INFO] [pid=5859] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 12:03:32,244 [INFO] [pid=5859] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 12:03:32,244 [INFO] [pid=5859] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 12:03:32,244 [INFO] [pid=5859] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 12:03:32,244 [INFO] [pid=5859] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 12:03:32,244 [INFO] [pid=5859] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=0.00, status=ok, sat=True
+2026-02-16 12:03:32,244 [INFO] [pid=5859] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 12:03:32,244 [INFO] [pid=5859] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 12:03:32,244 [INFO] [pid=5859] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 12:03:32,244 [INFO] [pid=5859] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 12:03:32,244 [INFO] [pid=5859] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 12:03:32,244 [INFO] [pid=5859] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=0.00, status=ok, sat=True
+2026-02-16 12:03:32,244 [INFO] [pid=5859] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 12:03:32,245 [INFO] [pid=5859] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 12:03:32,245 [INFO] [pid=5859] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 12:03:32,245 [INFO] [pid=5859] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 12:03:32,245 [INFO] [pid=5859] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 12:03:32,245 [INFO] [pid=5859] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=0.00, status=ok, sat=True
+2026-02-16 12:03:32,245 [INFO] [pid=5859] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 12:03:32,245 [INFO] [pid=5859] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.80, status=unsat, sat=False
+2026-02-16 12:03:32,245 [INFO] [pid=5859] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.60, status=unsat, sat=False
+2026-02-16 12:03:32,245 [INFO] [pid=5859] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.40, status=unsat, sat=False
+2026-02-16 12:03:32,245 [INFO] [pid=5859] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.20, status=unsat, sat=False
+2026-02-16 12:03:32,245 [INFO] [pid=5859] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.00, status=unsat, sat=False
+2026-02-16 12:03:32,245 [INFO] [pid=5859] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 12:03:32,245 [INFO] [pid=5859] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 12:03:32,245 [INFO] [pid=5859] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 12:03:32,245 [INFO] [pid=5859] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 12:03:32,245 [INFO] [pid=5859] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 12:03:32,245 [INFO] [pid=5859] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=0.00, status=ok, sat=True
+2026-02-16 12:03:32,245 [INFO] [pid=5859] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 12:03:32,246 [INFO] [pid=5859] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.80, status=unsat, sat=False
+2026-02-16 12:03:32,246 [INFO] [pid=5859] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.60, status=unsat, sat=False
+2026-02-16 12:03:32,246 [INFO] [pid=5859] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.40, status=unsat, sat=False
+2026-02-16 12:03:32,246 [INFO] [pid=5859] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.20, status=unsat, sat=False
+2026-02-16 12:03:32,246 [INFO] [pid=5859] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.00, status=unsat, sat=False
+2026-02-16 12:03:32,246 [INFO] [pid=5859] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 12:03:32,246 [INFO] [pid=5859] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 12:03:32,246 [INFO] [pid=5859] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 12:03:32,246 [INFO] [pid=5859] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 12:03:32,246 [INFO] [pid=5859] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 12:03:32,246 [INFO] [pid=5859] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=0.00, status=ok, sat=True
+2026-02-16 12:03:32,246 [INFO] [pid=5859] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 12:03:32,246 [INFO] [pid=5859] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.80, status=unsat, sat=False
+2026-02-16 12:03:32,246 [INFO] [pid=5859] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.60, status=unsat, sat=False
+2026-02-16 12:03:32,246 [INFO] [pid=5859] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.40, status=unsat, sat=False
+2026-02-16 12:03:32,246 [INFO] [pid=5859] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.20, status=unsat, sat=False
+2026-02-16 12:03:32,246 [INFO] [pid=5859] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.00, status=unsat, sat=False
+2026-02-16 12:03:32,940 [INFO] [pid=5859] [WISE] chosen config: P_max=4, cap_factor=1.00, ΣP=2
+2026-02-16 12:03:32,940 [INFO] [pid=5859] [WISE] minimal ΣP found: 2 (P_max=4)
+2026-02-16 12:03:32,941 [INFO] [pid=5859] [WISE] MaxSAT disabled; using SAT model at P*
+2026-02-16 12:03:32,941 [INFO] [pid=5859] [WISE] ΣP per round: [2], Σ_all=2, Σ_tail=2, best_sum_bound=2
+2026-02-16 12:03:32,944 [INFO] [pid=5859] [WISE] launching SAT pool over 48 configs (P_max∈[1, 8])
+2026-02-16 12:03:47,572 [INFO] [pid=5859] [WISE] pool result: P_max=5, sum_usage=3 cap_factor=1.00, status=ok, sat=True
+2026-02-16 12:03:47,572 [INFO] [pid=5859] [WISE] pool result: P_max=5, sum_usage=3 cap_factor=0.80, status=ok, sat=True
+2026-02-16 12:03:47,572 [INFO] [pid=5859] [WISE] pool result: P_max=5, sum_usage=3 cap_factor=0.60, status=ok, sat=True
+2026-02-16 12:03:47,572 [INFO] [pid=5859] [WISE] pool result: P_max=5, sum_usage=3 cap_factor=0.40, status=ok, sat=True
+2026-02-16 12:03:47,572 [INFO] [pid=5859] [WISE] pool result: P_max=5, sum_usage=3 cap_factor=0.20, status=ok, sat=True
+2026-02-16 12:03:47,573 [INFO] [pid=5859] [WISE] pool result: P_max=5, sum_usage=3 cap_factor=0.00, status=ok, sat=True
+2026-02-16 12:03:47,573 [INFO] [pid=5859] [WISE] pool result: P_max=3, sum_usage=3 cap_factor=1.00, status=ok, sat=True
+2026-02-16 12:03:47,573 [INFO] [pid=5859] [WISE] pool result: P_max=3, sum_usage=3 cap_factor=0.80, status=ok, sat=True
+2026-02-16 12:03:47,573 [INFO] [pid=5859] [WISE] pool result: P_max=3, sum_usage=3 cap_factor=0.60, status=ok, sat=True
+2026-02-16 12:03:47,573 [INFO] [pid=5859] [WISE] pool result: P_max=3, sum_usage=3 cap_factor=0.40, status=ok, sat=True
+2026-02-16 12:03:47,573 [INFO] [pid=5859] [WISE] pool result: P_max=3, sum_usage=3 cap_factor=0.20, status=ok, sat=True
+2026-02-16 12:03:47,573 [INFO] [pid=5859] [WISE] pool result: P_max=3, sum_usage=3 cap_factor=0.00, status=ok, sat=True
+2026-02-16 12:03:47,573 [INFO] [pid=5859] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 12:03:47,573 [INFO] [pid=5859] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.80, status=unsat, sat=False
+2026-02-16 12:03:47,573 [INFO] [pid=5859] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.60, status=unsat, sat=False
+2026-02-16 12:03:47,573 [INFO] [pid=5859] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.40, status=unsat, sat=False
+2026-02-16 12:03:47,573 [INFO] [pid=5859] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.20, status=unsat, sat=False
+2026-02-16 12:03:47,573 [INFO] [pid=5859] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.00, status=unsat, sat=False
+2026-02-16 12:03:47,573 [INFO] [pid=5859] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 12:03:47,573 [INFO] [pid=5859] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.80, status=unsat, sat=False
+2026-02-16 12:03:47,573 [INFO] [pid=5859] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.60, status=unsat, sat=False
+2026-02-16 12:03:47,574 [INFO] [pid=5859] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.40, status=unsat, sat=False
+2026-02-16 12:03:47,574 [INFO] [pid=5859] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.20, status=unsat, sat=False
+2026-02-16 12:03:47,574 [INFO] [pid=5859] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.00, status=unsat, sat=False
+2026-02-16 12:03:47,574 [INFO] [pid=5859] [WISE] pool result: P_max=6, sum_usage=3 cap_factor=1.00, status=ok, sat=True
+2026-02-16 12:03:47,574 [INFO] [pid=5859] [WISE] pool result: P_max=6, sum_usage=3 cap_factor=0.80, status=ok, sat=True
+2026-02-16 12:03:47,574 [INFO] [pid=5859] [WISE] pool result: P_max=6, sum_usage=3 cap_factor=0.60, status=ok, sat=True
+2026-02-16 12:03:47,574 [INFO] [pid=5859] [WISE] pool result: P_max=6, sum_usage=3 cap_factor=0.40, status=ok, sat=True
+2026-02-16 12:03:47,574 [INFO] [pid=5859] [WISE] pool result: P_max=6, sum_usage=3 cap_factor=0.20, status=ok, sat=True
+2026-02-16 12:03:47,574 [INFO] [pid=5859] [WISE] pool result: P_max=6, sum_usage=3 cap_factor=0.00, status=ok, sat=True
+2026-02-16 12:03:47,574 [INFO] [pid=5859] [WISE] pool result: P_max=8, sum_usage=3 cap_factor=1.00, status=ok, sat=True
+2026-02-16 12:03:47,574 [INFO] [pid=5859] [WISE] pool result: P_max=8, sum_usage=3 cap_factor=0.80, status=ok, sat=True
+2026-02-16 12:03:47,574 [INFO] [pid=5859] [WISE] pool result: P_max=8, sum_usage=3 cap_factor=0.60, status=ok, sat=True
+2026-02-16 12:03:47,574 [INFO] [pid=5859] [WISE] pool result: P_max=8, sum_usage=3 cap_factor=0.40, status=ok, sat=True
+2026-02-16 12:03:47,574 [INFO] [pid=5859] [WISE] pool result: P_max=8, sum_usage=3 cap_factor=0.20, status=ok, sat=True
+2026-02-16 12:03:47,574 [INFO] [pid=5859] [WISE] pool result: P_max=8, sum_usage=3 cap_factor=0.00, status=ok, sat=True
+2026-02-16 12:03:47,574 [INFO] [pid=5859] [WISE] pool result: P_max=7, sum_usage=3 cap_factor=1.00, status=ok, sat=True
+2026-02-16 12:03:47,574 [INFO] [pid=5859] [WISE] pool result: P_max=7, sum_usage=3 cap_factor=0.80, status=ok, sat=True
+2026-02-16 12:03:47,575 [INFO] [pid=5859] [WISE] pool result: P_max=7, sum_usage=3 cap_factor=0.60, status=ok, sat=True
+2026-02-16 12:03:47,575 [INFO] [pid=5859] [WISE] pool result: P_max=7, sum_usage=3 cap_factor=0.40, status=ok, sat=True
+2026-02-16 12:03:47,575 [INFO] [pid=5859] [WISE] pool result: P_max=7, sum_usage=3 cap_factor=0.20, status=ok, sat=True
+2026-02-16 12:03:47,575 [INFO] [pid=5859] [WISE] pool result: P_max=7, sum_usage=3 cap_factor=0.00, status=ok, sat=True
+2026-02-16 12:03:47,575 [INFO] [pid=5859] [WISE] pool result: P_max=4, sum_usage=3 cap_factor=1.00, status=ok, sat=True
+2026-02-16 12:03:47,575 [INFO] [pid=5859] [WISE] pool result: P_max=4, sum_usage=3 cap_factor=0.80, status=ok, sat=True
+2026-02-16 12:03:47,575 [INFO] [pid=5859] [WISE] pool result: P_max=4, sum_usage=3 cap_factor=0.60, status=ok, sat=True
+2026-02-16 12:03:47,575 [INFO] [pid=5859] [WISE] pool result: P_max=4, sum_usage=3 cap_factor=0.40, status=ok, sat=True
+2026-02-16 12:03:47,575 [INFO] [pid=5859] [WISE] pool result: P_max=4, sum_usage=3 cap_factor=0.20, status=ok, sat=True
+2026-02-16 12:03:47,575 [INFO] [pid=5859] [WISE] pool result: P_max=4, sum_usage=3 cap_factor=0.00, status=ok, sat=True
+2026-02-16 12:03:48,240 [INFO] [pid=5859] [WISE] chosen config: P_max=3, cap_factor=1.00, ΣP=3
+2026-02-16 12:03:48,240 [INFO] [pid=5859] [WISE] minimal ΣP found: 3 (P_max=3)
+2026-02-16 12:03:48,241 [INFO] [pid=5859] [WISE] MaxSAT disabled; using SAT model at P*
+2026-02-16 12:03:48,241 [INFO] [pid=5859] [WISE] ΣP per round: [3], Σ_all=3, Σ_tail=3, best_sum_bound=3
+2026-02-16 12:03:48,246 [INFO] [pid=5859] [WISE] launching SAT pool over 48 configs (P_max∈[1, 8])
+2026-02-16 12:04:03,127 [INFO] [pid=5859] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 12:04:03,127 [INFO] [pid=5859] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.80, status=unsat, sat=False
+2026-02-16 12:04:03,127 [INFO] [pid=5859] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.60, status=unsat, sat=False
+2026-02-16 12:04:03,128 [INFO] [pid=5859] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.40, status=unsat, sat=False
+2026-02-16 12:04:03,128 [INFO] [pid=5859] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.20, status=unsat, sat=False
+2026-02-16 12:04:03,128 [INFO] [pid=5859] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=0.00, status=unsat, sat=False
+2026-02-16 12:04:03,128 [INFO] [pid=5859] [WISE] pool result: P_max=4, sum_usage=4 cap_factor=1.00, status=ok, sat=True
+2026-02-16 12:04:03,128 [INFO] [pid=5859] [WISE] pool result: P_max=4, sum_usage=4 cap_factor=0.80, status=ok, sat=True
+2026-02-16 12:04:03,128 [INFO] [pid=5859] [WISE] pool result: P_max=4, sum_usage=4 cap_factor=0.60, status=ok, sat=True
+2026-02-16 12:04:03,128 [INFO] [pid=5859] [WISE] pool result: P_max=4, sum_usage=4 cap_factor=0.40, status=ok, sat=True
+2026-02-16 12:04:03,128 [INFO] [pid=5859] [WISE] pool result: P_max=4, sum_usage=4 cap_factor=0.20, status=ok, sat=True
+2026-02-16 12:04:03,128 [INFO] [pid=5859] [WISE] pool result: P_max=4, sum_usage=4 cap_factor=0.00, status=ok, sat=True
+2026-02-16 12:04:03,128 [INFO] [pid=5859] [WISE] pool result: P_max=5, sum_usage=4 cap_factor=1.00, status=ok, sat=True
+2026-02-16 12:04:03,128 [INFO] [pid=5859] [WISE] pool result: P_max=5, sum_usage=4 cap_factor=0.80, status=ok, sat=True
+2026-02-16 12:04:03,128 [INFO] [pid=5859] [WISE] pool result: P_max=5, sum_usage=4 cap_factor=0.60, status=ok, sat=True
+2026-02-16 12:04:03,128 [INFO] [pid=5859] [WISE] pool result: P_max=5, sum_usage=4 cap_factor=0.40, status=ok, sat=True
+2026-02-16 12:04:03,128 [INFO] [pid=5859] [WISE] pool result: P_max=5, sum_usage=4 cap_factor=0.20, status=ok, sat=True
+2026-02-16 12:04:03,128 [INFO] [pid=5859] [WISE] pool result: P_max=5, sum_usage=4 cap_factor=0.00, status=ok, sat=True
+2026-02-16 12:04:03,128 [INFO] [pid=5859] [WISE] pool result: P_max=6, sum_usage=4 cap_factor=1.00, status=ok, sat=True
+2026-02-16 12:04:03,128 [INFO] [pid=5859] [WISE] pool result: P_max=6, sum_usage=4 cap_factor=0.80, status=ok, sat=True
+2026-02-16 12:04:03,129 [INFO] [pid=5859] [WISE] pool result: P_max=6, sum_usage=4 cap_factor=0.60, status=ok, sat=True
+2026-02-16 12:04:03,129 [INFO] [pid=5859] [WISE] pool result: P_max=6, sum_usage=4 cap_factor=0.40, status=ok, sat=True
+2026-02-16 12:04:03,129 [INFO] [pid=5859] [WISE] pool result: P_max=6, sum_usage=4 cap_factor=0.20, status=ok, sat=True
+2026-02-16 12:04:03,129 [INFO] [pid=5859] [WISE] pool result: P_max=6, sum_usage=4 cap_factor=0.00, status=ok, sat=True
+2026-02-16 12:04:03,129 [INFO] [pid=5859] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 12:04:03,129 [INFO] [pid=5859] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.80, status=unsat, sat=False
+2026-02-16 12:04:03,129 [INFO] [pid=5859] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.60, status=unsat, sat=False
+2026-02-16 12:04:03,129 [INFO] [pid=5859] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.40, status=unsat, sat=False
+2026-02-16 12:04:03,129 [INFO] [pid=5859] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.20, status=unsat, sat=False
+2026-02-16 12:04:03,129 [INFO] [pid=5859] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=0.00, status=unsat, sat=False
+2026-02-16 12:04:03,129 [INFO] [pid=5859] [WISE] pool result: P_max=7, sum_usage=4 cap_factor=1.00, status=ok, sat=True
+2026-02-16 12:04:03,129 [INFO] [pid=5859] [WISE] pool result: P_max=7, sum_usage=4 cap_factor=0.80, status=ok, sat=True
+2026-02-16 12:04:03,129 [INFO] [pid=5859] [WISE] pool result: P_max=7, sum_usage=4 cap_factor=0.60, status=ok, sat=True
+2026-02-16 12:04:03,129 [INFO] [pid=5859] [WISE] pool result: P_max=7, sum_usage=4 cap_factor=0.40, status=ok, sat=True
+2026-02-16 12:04:03,129 [INFO] [pid=5859] [WISE] pool result: P_max=7, sum_usage=4 cap_factor=0.20, status=ok, sat=True
+2026-02-16 12:04:03,129 [INFO] [pid=5859] [WISE] pool result: P_max=7, sum_usage=4 cap_factor=0.00, status=ok, sat=True
+2026-02-16 12:04:03,129 [INFO] [pid=5859] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 12:04:03,130 [INFO] [pid=5859] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.80, status=unsat, sat=False
+2026-02-16 12:04:03,130 [INFO] [pid=5859] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.60, status=unsat, sat=False
+2026-02-16 12:04:03,130 [INFO] [pid=5859] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.40, status=unsat, sat=False
+2026-02-16 12:04:03,130 [INFO] [pid=5859] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.20, status=unsat, sat=False
+2026-02-16 12:04:03,130 [INFO] [pid=5859] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.00, status=unsat, sat=False
+2026-02-16 12:04:03,130 [INFO] [pid=5859] [WISE] pool result: P_max=8, sum_usage=4 cap_factor=1.00, status=ok, sat=True
+2026-02-16 12:04:03,130 [INFO] [pid=5859] [WISE] pool result: P_max=8, sum_usage=4 cap_factor=0.80, status=ok, sat=True
+2026-02-16 12:04:03,130 [INFO] [pid=5859] [WISE] pool result: P_max=8, sum_usage=4 cap_factor=0.60, status=ok, sat=True
+2026-02-16 12:04:03,130 [INFO] [pid=5859] [WISE] pool result: P_max=8, sum_usage=4 cap_factor=0.40, status=ok, sat=True
+2026-02-16 12:04:03,130 [INFO] [pid=5859] [WISE] pool result: P_max=8, sum_usage=4 cap_factor=0.20, status=ok, sat=True
+2026-02-16 12:04:03,130 [INFO] [pid=5859] [WISE] pool result: P_max=8, sum_usage=4 cap_factor=0.00, status=ok, sat=True
+2026-02-16 12:04:03,790 [INFO] [pid=5859] [WISE] chosen config: P_max=4, cap_factor=1.00, ΣP=4
+2026-02-16 12:04:03,791 [INFO] [pid=5859] [WISE] minimal ΣP found: 4 (P_max=4)
+2026-02-16 12:04:03,792 [INFO] [pid=5859] [WISE] MaxSAT disabled; using SAT model at P*
+2026-02-16 12:04:03,792 [INFO] [pid=5859] [WISE] ΣP per round: [4], Σ_all=4, Σ_tail=4, best_sum_bound=4
+2026-02-16 12:04:03,796 [INFO] [pid=5859] [WISE] launching SAT pool over 48 configs (P_max∈[1, 8])
+2026-02-16 12:04:24,226 [INFO] [pid=5859] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 12:04:24,226 [INFO] [pid=5859] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 12:04:24,226 [INFO] [pid=5859] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 12:04:24,226 [INFO] [pid=5859] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 12:04:24,226 [INFO] [pid=5859] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 12:04:24,227 [INFO] [pid=5859] [WISE] pool result: P_max=7, sum_usage=2 cap_factor=0.00, status=ok, sat=True
+2026-02-16 12:04:24,227 [INFO] [pid=5859] [WISE] pool result: P_max=3, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 12:04:24,227 [INFO] [pid=5859] [WISE] pool result: P_max=3, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 12:04:24,227 [INFO] [pid=5859] [WISE] pool result: P_max=3, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 12:04:24,227 [INFO] [pid=5859] [WISE] pool result: P_max=3, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 12:04:24,227 [INFO] [pid=5859] [WISE] pool result: P_max=3, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 12:04:24,227 [INFO] [pid=5859] [WISE] pool result: P_max=3, sum_usage=2 cap_factor=0.00, status=ok, sat=True
+2026-02-16 12:04:24,227 [INFO] [pid=5859] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 12:04:24,228 [INFO] [pid=5859] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 12:04:24,228 [INFO] [pid=5859] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 12:04:24,228 [INFO] [pid=5859] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 12:04:24,228 [INFO] [pid=5859] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 12:04:24,228 [INFO] [pid=5859] [WISE] pool result: P_max=6, sum_usage=2 cap_factor=0.00, status=ok, sat=True
+2026-02-16 12:04:24,228 [INFO] [pid=5859] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 12:04:24,228 [INFO] [pid=5859] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.80, status=unsat, sat=False
+2026-02-16 12:04:24,228 [INFO] [pid=5859] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.60, status=unsat, sat=False
+2026-02-16 12:04:24,228 [INFO] [pid=5859] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.40, status=unsat, sat=False
+2026-02-16 12:04:24,228 [INFO] [pid=5859] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.20, status=unsat, sat=False
+2026-02-16 12:04:24,228 [INFO] [pid=5859] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=0.00, status=unsat, sat=False
+2026-02-16 12:04:24,228 [INFO] [pid=5859] [WISE] pool result: P_max=2, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 12:04:24,228 [INFO] [pid=5859] [WISE] pool result: P_max=2, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 12:04:24,228 [INFO] [pid=5859] [WISE] pool result: P_max=2, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 12:04:24,228 [INFO] [pid=5859] [WISE] pool result: P_max=2, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 12:04:24,228 [INFO] [pid=5859] [WISE] pool result: P_max=2, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 12:04:24,228 [INFO] [pid=5859] [WISE] pool result: P_max=2, sum_usage=2 cap_factor=0.00, status=ok, sat=True
+2026-02-16 12:04:24,229 [INFO] [pid=5859] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 12:04:24,229 [INFO] [pid=5859] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 12:04:24,229 [INFO] [pid=5859] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 12:04:24,229 [INFO] [pid=5859] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 12:04:24,229 [INFO] [pid=5859] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 12:04:24,229 [INFO] [pid=5859] [WISE] pool result: P_max=5, sum_usage=2 cap_factor=0.00, status=ok, sat=True
+2026-02-16 12:04:24,229 [INFO] [pid=5859] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 12:04:24,229 [INFO] [pid=5859] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 12:04:24,229 [INFO] [pid=5859] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 12:04:24,229 [INFO] [pid=5859] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 12:04:24,229 [INFO] [pid=5859] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 12:04:24,229 [INFO] [pid=5859] [WISE] pool result: P_max=8, sum_usage=2 cap_factor=0.00, status=ok, sat=True
+2026-02-16 12:04:24,229 [INFO] [pid=5859] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=1.00, status=ok, sat=True
+2026-02-16 12:04:24,229 [INFO] [pid=5859] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=0.80, status=ok, sat=True
+2026-02-16 12:04:24,229 [INFO] [pid=5859] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=0.60, status=ok, sat=True
+2026-02-16 12:04:24,229 [INFO] [pid=5859] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=0.40, status=ok, sat=True
+2026-02-16 12:04:24,229 [INFO] [pid=5859] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=0.20, status=ok, sat=True
+2026-02-16 12:04:24,229 [INFO] [pid=5859] [WISE] pool result: P_max=4, sum_usage=2 cap_factor=0.00, status=ok, sat=True
+2026-02-16 12:04:24,931 [INFO] [pid=5859] [WISE] chosen config: P_max=2, cap_factor=1.00, ΣP=2
+2026-02-16 12:04:24,931 [INFO] [pid=5859] [WISE] minimal ΣP found: 2 (P_max=2)
+2026-02-16 12:04:24,932 [INFO] [pid=5859] [WISE] MaxSAT disabled; using SAT model at P*
+2026-02-16 12:04:24,932 [INFO] [pid=5859] [WISE] ΣP per round: [2], Σ_all=2, Σ_tail=2, best_sum_bound=2
+2026-02-16 12:36:53,476 [INFO] [pid=31666] [WISE] launching SAT pool over 8 configs (P_max∈[1, 8])
+2026-02-16 12:37:14,333 [INFO] [pid=31666] [WISE] pool result: P_max=8, sum_usage=9 cap_factor=1.00, status=ok, sat=True
+2026-02-16 12:37:14,333 [INFO] [pid=31666] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 12:37:14,333 [INFO] [pid=31666] [WISE] pool result: P_max=7, sum_usage=9 cap_factor=1.00, status=ok, sat=True
+2026-02-16 12:37:14,333 [INFO] [pid=31666] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 12:37:14,333 [INFO] [pid=31666] [WISE] pool result: P_max=6, sum_usage=9 cap_factor=1.00, status=ok, sat=True
+2026-02-16 12:37:14,333 [INFO] [pid=31666] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 12:37:14,333 [INFO] [pid=31666] [WISE] pool result: P_max=5, sum_usage=9 cap_factor=1.00, status=ok, sat=True
+2026-02-16 12:37:14,333 [INFO] [pid=31666] [WISE] pool result: P_max=4, sum_usage=9 cap_factor=1.00, status=ok, sat=True
+2026-02-16 12:37:15,036 [INFO] [pid=31666] [WISE] chosen config: P_max=4, cap_factor=1.00, ΣP=9
+2026-02-16 12:37:15,036 [INFO] [pid=31666] [WISE] minimal ΣP found: 9 (P_max=4)
+2026-02-16 12:37:15,047 [INFO] [pid=31666] [WISE] MaxSAT disabled; using SAT model at P*
+2026-02-16 12:37:15,047 [INFO] [pid=31666] [WISE] ΣP per round: [3, 3, 1, 2], Σ_all=9, Σ_tail=9, best_sum_bound=9
+2026-02-16 12:38:17,627 [INFO] [pid=32317] [WISE] launching SAT pool over 8 configs (P_max∈[1, 8])  has_boundary=False  base_pmax=1
+2026-02-16 12:38:38,127 [INFO] [pid=32317] [WISE] pool result: P_max=8, sum_usage=9 cap_factor=1.00, status=ok, sat=True
+2026-02-16 12:38:38,127 [INFO] [pid=32317] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 12:38:38,127 [INFO] [pid=32317] [WISE] pool result: P_max=7, sum_usage=9 cap_factor=1.00, status=ok, sat=True
+2026-02-16 12:38:38,127 [INFO] [pid=32317] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 12:38:38,127 [INFO] [pid=32317] [WISE] pool result: P_max=6, sum_usage=9 cap_factor=1.00, status=ok, sat=True
+2026-02-16 12:38:38,127 [INFO] [pid=32317] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 12:38:38,127 [INFO] [pid=32317] [WISE] pool result: P_max=5, sum_usage=9 cap_factor=1.00, status=ok, sat=True
+2026-02-16 12:38:38,127 [INFO] [pid=32317] [WISE] pool result: P_max=4, sum_usage=9 cap_factor=1.00, status=ok, sat=True
+2026-02-16 12:38:38,846 [INFO] [pid=32317] [WISE] chosen config: P_max=4, cap_factor=1.00, ΣP=9
+2026-02-16 12:38:38,846 [INFO] [pid=32317] [WISE] minimal ΣP found: 9 (P_max=4)
+2026-02-16 12:38:38,860 [INFO] [pid=32317] [WISE] MaxSAT disabled; using SAT model at P*
+2026-02-16 12:38:38,860 [INFO] [pid=32317] [WISE] ΣP per round: [3, 3, 1, 2], Σ_all=9, Σ_tail=9, best_sum_bound=9
+2026-02-16 12:39:54,849 [INFO] [pid=34088] [WISE] launching SAT pool over 8 configs (P_max∈[1, 8])  has_boundary=False  base_pmax=1
+2026-02-16 12:40:14,364 [INFO] [pid=34088] [WISE] pool result: P_max=8, sum_usage=9 cap_factor=1.00, status=ok, sat=True
+2026-02-16 12:40:14,364 [INFO] [pid=34088] [WISE] pool result: P_max=1, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 12:40:14,364 [INFO] [pid=34088] [WISE] pool result: P_max=7, sum_usage=9 cap_factor=1.00, status=ok, sat=True
+2026-02-16 12:40:14,364 [INFO] [pid=34088] [WISE] pool result: P_max=2, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 12:40:14,364 [INFO] [pid=34088] [WISE] pool result: P_max=6, sum_usage=9 cap_factor=1.00, status=ok, sat=True
+2026-02-16 12:40:14,365 [INFO] [pid=34088] [WISE] pool result: P_max=3, sum_usage=1000000000 cap_factor=1.00, status=unsat, sat=False
+2026-02-16 12:40:14,365 [INFO] [pid=34088] [WISE] pool result: P_max=5, sum_usage=9 cap_factor=1.00, status=ok, sat=True
+2026-02-16 12:40:14,365 [INFO] [pid=34088] [WISE] pool result: P_max=4, sum_usage=9 cap_factor=1.00, status=ok, sat=True
+2026-02-16 12:40:15,049 [INFO] [pid=34088] [WISE] chosen config: P_max=4, cap_factor=1.00, ΣP=9
+2026-02-16 12:40:15,050 [INFO] [pid=34088] [WISE] minimal ΣP found: 9 (P_max=4)
+2026-02-16 12:40:15,060 [INFO] [pid=34088] [WISE] MaxSAT disabled; using SAT model at P*
+2026-02-16 12:40:15,060 [INFO] [pid=34088] [WISE] ΣP per round: [3, 3, 1, 2], Σ_all=9, Σ_tail=9, best_sum_bound=9

@@ -1,0 +1,10 @@
+2026-02-14 14:09:50,873 [INFO] [pid=19212] [WISE] launching SAT pool over 48 configs (P_max∈[1, 8])
+2026-02-14 14:09:50,879 [INFO] [pid=19211] [WISE] launching SAT pool over 30 configs (P_max∈[1, 15])
+2026-02-14 14:09:50,986 [INFO] [pid=19218] [WISE] config partial: P_max=1 cap=1.00 returning last status=unsat
+2026-02-14 14:09:50,987 [INFO] [pid=19223] [WISE] config partial: P_max=1 cap=0.60 returning last status=unsat
+2026-02-14 14:09:50,990 [INFO] [pid=19220] [WISE] config partial: P_max=1 cap=0.80 returning last status=unsat
+2026-02-14 14:09:50,991 [INFO] [pid=19222] [WISE] config partial: P_max=1 cap=0.40 returning last status=unsat
+2026-02-14 14:09:51,021 [INFO] [pid=19223] [WISE] config done: P_max=1 cap=0.00 best ΣP=1
+2026-02-14 14:09:51,021 [INFO] [pid=19218] [WISE] config partial: P_max=1 cap=0.20 returning last status=unsat
+2026-02-14 14:09:51,052 [INFO] [pid=19222] [WISE] config partial: P_max=2 cap=0.80 returning last status=unsat
+2026-02-14 14:09:51,069 [INFO] [pid=19220] [WISE] config partial: P_max=2 cap=1.00 returning last status=unsat

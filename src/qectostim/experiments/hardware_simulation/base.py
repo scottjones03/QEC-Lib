@@ -18,6 +18,7 @@ from typing import (
     TYPE_CHECKING,
 )
 
+from qectostim.decoders.base import Decoder
 import stim
 import numpy as np
 
@@ -187,20 +188,14 @@ class HardwareSimulator(Experiment):
         
         # Generate Stim circuit from compilation
         circuit = self._compiled.to_stim()
-        
-        # Apply hardware-specific noise
-        circuit = self.apply_hardware_noise(circuit)
-        
-        # NOTE: noise_model is NOT applied here — the base Experiment class
-        # applies it in _run_correction_path() / _run_detection_path() after
-        # calling to_stim().  Applying it here would cause double application.
-        
+
         return circuit
     
+    @abstractmethod
     def simulate(
         self,
         num_shots: int = 10000,
-        decoder_name: Optional[str] = None,
+        decoder: Optional[Decoder] = None,
     ) -> HardwareSimulationResult:
         """Run hardware simulation with decoding.
         
@@ -208,7 +203,7 @@ class HardwareSimulator(Experiment):
         ----------
         num_shots : int
             Number of shots to simulate.
-        decoder_name : Optional[str]
+        decoder : Optional[Decoder]
             Decoder to use. If None, auto-selects.
             
         Returns
@@ -216,37 +211,7 @@ class HardwareSimulator(Experiment):
         HardwareSimulationResult
             Simulation results.
         """
-        # Ensure circuit is compiled
-        if self._compiled is None:
-            self.compile()
-        
-        # Run decoding through base class
-        decode_result = self.run_decode(shots=num_shots, decoder_name=decoder_name)
-        
-        # Normalise decoder return format
-        logical_error_rate = (
-            decode_result.get('logical_error_rate')
-            or decode_result.get('error_rate', 0.0)
-        )
-        shots = decode_result.get('shots', num_shots)
-        logical_errors = decode_result.get('logical_errors')
-        if logical_errors is not None:
-            num_errors = int(np.sum(logical_errors))
-        else:
-            num_errors = decode_result.get('num_errors', 0)
-        
-        # Build result with hardware metrics
-        return HardwareSimulationResult(
-            logical_error_rate=logical_error_rate,
-            num_shots=shots,
-            num_errors=num_errors,
-            compilation_metrics=self._compiled.compute_metrics(),
-            simulation_metrics={
-                "total_duration_us": self._compiled.total_duration,
-                "circuit_depth": self._compiled.depth,
-            },
-            decoder_used=decode_result.get('decoder', decoder_name) or "auto",
-        )
+
     
     def get_compilation_metrics(self) -> Dict[str, Any]:
         """Get metrics from the last compilation.
@@ -276,15 +241,19 @@ class HardwareSimulator(Experiment):
         """
         return compiled
     
-    def apply_hardware_noise(self, circuit: stim.Circuit) -> stim.Circuit:
-        """Hook for applying hardware-specific noise.
-        
-        Default implementation uses self.hardware_noise if set.
-        Override for custom noise application.
+    @abstractmethod
+    def apply_hardware_noise(self) -> stim.Circuit:
+        """Apply hardware-specific noise to the compiled circuit.
+
+        Subclasses use ``self._compiled`` internally to access the
+        compiled circuit data and build a noisy ``stim.Circuit``.
+
+        Returns
+        -------
+        stim.Circuit
+            Noisy circuit.
         """
-        if self.hardware_noise is not None:
-            return self.hardware_noise.apply(circuit)
-        return circuit
+        ...
     
     def __repr__(self) -> str:
         return (
