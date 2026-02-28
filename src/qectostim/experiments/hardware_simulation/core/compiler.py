@@ -823,6 +823,7 @@ class HardwareCompiler(ABC):
         self,
         circuit: stim.Circuit,
         qec_metadata: Optional["QECMetadata"] = None,
+        extra_native_metadata: Optional[dict] = None,
     ) -> "CompiledCircuit":
         """Run the full compilation pipeline.
         
@@ -837,6 +838,12 @@ class HardwareCompiler(ABC):
             passes can access qubit roles, stabilizer structure, code
             geometry, and block allocations without reverse-engineering
             the circuit.
+        extra_native_metadata : Optional[dict]
+            Additional key-value pairs to inject into the
+            ``NativeCircuit.metadata`` dict before the mapping and
+            routing stages.  Useful for forwarding ``gadget``,
+            ``qubit_allocation``, ``block_sub_grids`` etc. to the
+            routing backend without modifying the core pipeline.
             
         Returns
         -------
@@ -857,9 +864,18 @@ class HardwareCompiler(ABC):
         # Run pipeline stages
         native = self.decompose_to_native(circuit)
 
-        # Attach QEC metadata to native circuit when available
+        # Attach QEC metadata to native circuit when available.
+        # Set both the dataclass attribute AND the metadata dict so
+        # that downstream passes (e.g. TrappedIonCompiler.route()) that
+        # check metadata.get("qec_metadata") can find it.
         if qec_metadata is not None:
             native.qec_metadata = qec_metadata
+            if hasattr(native, 'metadata') and isinstance(native.metadata, dict):
+                native.metadata["qec_metadata"] = qec_metadata
+
+        # Inject extra native metadata (gadget, qubit_allocation, etc.)
+        if extra_native_metadata and hasattr(native, 'metadata') and isinstance(native.metadata, dict):
+            native.metadata.update(extra_native_metadata)
 
         mapped = self.map_qubits(native)
         routed = self.route(mapped)

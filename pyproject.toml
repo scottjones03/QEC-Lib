@@ -14,6 +14,11 @@ dependencies = [
   "pymatching>=2.0.0",  # etc.
 ]
 
+[tool.pytest.ini_options]
+markers = [
+    "slow: marks tests as slow (full compilation, deselect with '-m \"not slow\"')",
+]
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 

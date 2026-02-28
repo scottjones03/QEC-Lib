@@ -1,3 +1,3 @@
 [
-{'lookahead': 4, 'subgrid_width': 4, 'subgrid_height': 3, 'subgrid_increment': 0, 'd': 2, 'm_traps': 2, 'n_traps': 3, 'trap_capacity': 2, 'exec_time': 0.003911, 'comp_time': 19.233623583015287, 'reconfigTime': 0.001896, 'ElapsedTime': 0.003911, 'Operations': 69, 'MeanConcurrency': np.float64(2.1315789473684212), 'QubitOperations': 65, 'LogicalErrorRates': [0.11607], 'PhysicalZErrorRates': [0.0], 'PhysicalXErrorRates': [0.0], 'DACs': 102, 'Electrodes': 300},
+{'lookahead': 4, 'subgrid_width': 4, 'subgrid_height': 3, 'subgrid_increment': 0, 'd': 2, 'm_traps': 2, 'n_traps': 3, 'trap_capacity': 2, 'exec_time': 0.0030709999999999986, 'comp_time': 51.00888479198329, 'reconfigTime': 0.001896, 'ElapsedTime': 0.0030709999999999986, 'Operations': 69, 'MeanConcurrency': np.float64(1.9166666666666667), 'QubitOperations': 65, 'LogicalErrorRates': [0.11641], 'PhysicalZErrorRates': [0.0], 'PhysicalXErrorRates': [0.0], 'DACs': 102, 'Electrodes': 300},
 ]

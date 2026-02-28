@@ -574,6 +574,24 @@ class Crossing:
 
 @dataclass
 class QCCDWiseArch:
-    m: int
-    n: int
-    k: int
+    """WISE grid configuration.
+
+    Parameters
+    ----------
+    m : int or None
+        Number of trap columns.  ``None`` means "auto-compute from
+        gadget metadata" — used when the grid dimensions are
+        determined lazily by :class:`TrappedIonExperiment`.
+    n : int or None
+        Number of trap rows.  Same auto-compute semantics as *m*.
+    k : int
+        Ions per trap (trap capacity).
+    """
+    m: Optional[int] = None
+    n: Optional[int] = None
+    k: int = 2
+
+    @property
+    def is_resolved(self) -> bool:
+        """``True`` when *m* and *n* have been assigned."""
+        return self.m is not None and self.n is not None

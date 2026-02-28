@@ -620,7 +620,155 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         self._emit_shift_coords(circuit)
         self._round_number += 1
         self._skip_first_round = False
-    
+
+    # ------------------------------------------------------------------
+    # Cross-builder interleaved emission helpers
+    # ------------------------------------------------------------------
+    # These are used by MemoryRoundEmitter._emit_parallel_interleaved()
+    # to emit all builders' X+Z CX gates in shared TICK layers.
+
+    def n_interleave_phases(self) -> int:
+        """Number of geometric CX phases available for interleaving.
+
+        Returns 0 if interleaving is not possible for this builder.
+        """
+        if not self._can_interleave():
+            return 0
+        return len(self._x_schedule)
+
+    def emit_ancilla_reset(self, circuit: stim.Circuit,
+                           emit_z_anchors: bool = False,
+                           emit_x_anchors: bool = False) -> None:
+        """Emit ancilla resets for both X and Z types (no TICK).
+
+        Handles ``_stabilizer_swapped`` state transparently.
+        The caller must emit a TICK *after* all builders have reset.
+
+        Parameters
+        ----------
+        emit_z_anchors, emit_x_anchors : bool
+            Store anchor flags for later use by ``emit_ancilla_measure_and_detectors``.
+        """
+        self._emit_z_anchors = emit_z_anchors
+        self._emit_x_anchors = emit_x_anchors
+        self._explicit_anchor_mode = True
+
+        x_anc = self.x_ancillas
+        z_anc = self.z_ancillas
+
+        if self._stabilizer_swapped:
+            # After Hadamard: X ancillas measure Z-type (R), Z measure X-type (RX)
+            if x_anc:
+                circuit.append("R", x_anc)
+            if z_anc:
+                circuit.append("RX", z_anc)
+        else:
+            # Normal: X ancillas → |+⟩ (RX), Z ancillas → |0⟩ (R)
+            if x_anc:
+                circuit.append("RX", x_anc)
+            if z_anc:
+                circuit.append("R", z_anc)
+
+    def emit_cx_for_phase(self, circuit: stim.Circuit, phase_idx: int) -> None:
+        """Emit X+Z CX gates for one geometric phase (no TICK, no reset, no measure).
+
+        The caller manages TICK boundaries between phases and across builders.
+
+        Parameters
+        ----------
+        phase_idx : int
+            Index into the geometric schedule (0-based).
+        """
+        x_anc = self.x_ancillas
+        z_anc = self.z_ancillas
+
+        # X schedule CX gates for this phase
+        if (self._x_schedule is not None
+                and phase_idx < len(self._x_schedule)
+                and x_anc):
+            dx_x, dy_x = self._x_schedule[phase_idx]
+            for s_idx, (sx, sy) in enumerate(self._x_stab_coords):
+                if s_idx >= len(x_anc):
+                    continue
+                anc = x_anc[s_idx]
+                nbr = (float(sx) + dx_x, float(sy) + dy_x)
+                dq = self._lookup_data_qubit(nbr)
+                if dq is not None:
+                    if self._stabilizer_swapped:
+                        # X ancillas now measure Z-type: data controls ancilla
+                        circuit.append("CX", [dq, anc])
+                    else:
+                        # Normal X-type: ancilla controls data
+                        circuit.append("CX", [anc, dq])
+
+        # Z schedule CX gates for this phase
+        if (self._z_schedule is not None
+                and phase_idx < len(self._z_schedule)
+                and z_anc):
+            dx_z, dy_z = self._z_schedule[phase_idx]
+            for s_idx, (sx, sy) in enumerate(self._z_stab_coords):
+                if s_idx >= len(z_anc):
+                    continue
+                anc = z_anc[s_idx]
+                nbr = (float(sx) + dx_z, float(sy) + dy_z)
+                dq = self._lookup_data_qubit(nbr)
+                if dq is not None:
+                    if self._stabilizer_swapped:
+                        # Z ancillas now measure X-type: ancilla controls data
+                        circuit.append("CX", [anc, dq])
+                    else:
+                        # Normal Z-type: data controls ancilla
+                        circuit.append("CX", [dq, anc])
+
+    def emit_ancilla_measure_and_detectors(
+        self, circuit: stim.Circuit, emit_detectors: bool = True,
+    ) -> None:
+        """Emit ancilla measurements and detectors (no TICK before/after).
+
+        The caller must emit a TICK *before* calling this (after the last
+        CX phase) and a TICK *after* all builders have measured.
+        Handles ``_stabilizer_swapped`` transparently.
+        """
+        x_anc = self.x_ancillas
+        z_anc = self.z_ancillas
+
+        if self._stabilizer_swapped:
+            # X ancillas measured Z-type → MR
+            if x_anc:
+                x_meas_start = self.ctx.add_measurement(self._n_x)
+                circuit.append("MR", x_anc)
+            else:
+                x_meas_start = self.ctx.measurement_index
+            # Z ancillas measured X-type → MRX
+            if z_anc:
+                z_meas_start = self.ctx.add_measurement(self._n_z)
+                circuit.append("MRX", z_anc)
+            else:
+                z_meas_start = self.ctx.measurement_index
+        else:
+            # X ancillas → MRX, Z ancillas → MR
+            if x_anc:
+                x_meas_start = self.ctx.add_measurement(self._n_x)
+                circuit.append("MRX", x_anc)
+            else:
+                x_meas_start = self.ctx.measurement_index
+            if z_anc:
+                z_meas_start = self.ctx.add_measurement(self._n_z)
+                circuit.append("MR", z_anc)
+            else:
+                z_meas_start = self.ctx.measurement_index
+
+        # Detectors
+        x_eff = "Z" if self._stabilizer_swapped else "X"
+        z_eff = "X" if self._stabilizer_swapped else "Z"
+        self._emit_detectors_for_type(circuit, "x", x_meas_start, emit_detectors, x_eff)
+        self._emit_detectors_for_type(circuit, "z", z_meas_start, emit_detectors, z_eff)
+
+        # Clear anchor flags
+        self._emit_z_anchors = False
+        self._emit_x_anchors = False
+        self._explicit_anchor_mode = False
+
     def emit_round(
         self,
         circuit: stim.Circuit,

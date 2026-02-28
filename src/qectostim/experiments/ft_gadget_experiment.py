@@ -80,6 +80,7 @@ from qectostim.experiments.detector_tracking import (
 from qectostim.experiments.phase_orchestrator import (
     execute_gadget_phases,
     PhaseExecutionResult,
+    _count_cx_instructions,
 )
 
 
@@ -1650,7 +1651,9 @@ class FaultTolerantGadgetExperiment(Experiment):
         # =====================================================================
         # Phase 3: Pre-gadget memory rounds
         # =====================================================================
+        _cx_before_pre = _count_cx_instructions(circuit)
         self._emit_pre_gadget_memory(circuit, builders)
+        _cx_after_pre = _count_cx_instructions(circuit)
         
         # Save pre-gadget measurement indices for crossing detectors.
         # For hierarchical builders the inner entries are *compensated* with
@@ -1728,9 +1731,35 @@ class FaultTolerantGadgetExperiment(Experiment):
             post_gadget_pre_meas = None
         else:
             post_gadget_pre_meas = pre_gadget_meas
+        _cx_before_post = _count_cx_instructions(circuit)
         self._emit_post_gadget_memory(
             circuit, builders, destroyed_blocks, post_gadget_pre_meas
         )
+        _cx_after_post = _count_cx_instructions(circuit)
+        
+        # -----------------------------------------------------------------
+        # Patch QECMetadata.phases with circuit-counted ms_pair_count
+        # -----------------------------------------------------------------
+        # The metadata was created (from_gadget_experiment) before the
+        # circuit was built, so its ms_pair_count values are formula-based
+        # estimates.  Now that the circuit is fully built, patch them with
+        # exact counts derived from the actual stim circuit.
+        if self._qec_metadata is not None:
+            _ec_pre_cx = _cx_after_pre - _cx_before_pre
+            _ec_post_cx = _cx_after_post - _cx_before_post
+            _gadget_cx_counts = phase_result.phase_cx_counts  # per gadget phase
+
+            # Walk through metadata phases and patch
+            _gadget_phase_idx = 0
+            for p in self._qec_metadata.phases:
+                if p.phase_type == "stabilizer_round_pre":
+                    p.ms_pair_count = _ec_pre_cx
+                elif p.phase_type == "stabilizer_round_post":
+                    p.ms_pair_count = _ec_post_cx
+                elif p.phase_type == "gadget":
+                    if _gadget_phase_idx < len(_gadget_cx_counts):
+                        p.ms_pair_count = _gadget_cx_counts[_gadget_phase_idx]
+                    _gadget_phase_idx += 1
         
         # =====================================================================
         # Phase 6: Final measurement (skip destroyed blocks)

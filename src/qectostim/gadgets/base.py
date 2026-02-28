@@ -1181,6 +1181,87 @@ class Gadget(ABC):
         """
         return set()
     
+    def get_block_names(self) -> List[str]:
+        """
+        Return the ordered list of block names for this gadget.
+
+        Used by the compilation pipeline to identify which blocks exist
+        and, combined with ``get_phase_active_blocks``, which blocks
+        interact in each gadget phase.
+
+        Default: ``["block_0", "block_1", ...]`` up to ``num_blocks``.
+        Override in subclasses that use named blocks.
+
+        Returns
+        -------
+        List[str]
+            Ordered block names.
+        """
+        nb = getattr(self, "num_blocks", 1)
+        if nb == 1:
+            return ["block_0"]
+        return [f"block_{i}" for i in range(nb)]
+
+    def get_phase_active_blocks(self, phase_index: int) -> List[str]:
+        """
+        Return the blocks that are *active* (have 2Q interactions or
+        operations requiring ion routing) during the given gadget phase.
+
+        The compilation pipeline uses this to decide:
+        - Which blocks to merge onto the SAT grid (Level 1 spatial slice).
+        - Which blocks are idle and can be excluded from the SAT solver.
+
+        ``phase_index`` is 0-based and ranges up to ``num_phases - 1``.
+
+        Default: return all block names (conservative — no exclusion).
+        Override in subclasses with known per-phase interaction patterns.
+
+        Parameters
+        ----------
+        phase_index : int
+            0-based index of the gadget phase.
+
+        Returns
+        -------
+        List[str]
+            Block names active in this phase.
+        """
+        return self.get_block_names()
+
+    def get_phase_pairs(
+        self, phase_index: int, alloc: "QubitAllocation",
+    ) -> List[List[Tuple[int, int]]]:
+        """Return MS (2Q-gate) pairs per round for the given gadget phase.
+
+        Each element of the outer list is one parallel MS round.  Each
+        element of the inner list is a ``(ctrl_qubit, tgt_qubit)`` pair
+        expressed in *global* qubit indices from *alloc*.
+
+        Return ``[]`` for phases with **no** two-qubit interactions
+        (preparation, measurement, single-block phases).
+
+        The default implementation raises ``NotImplementedError`` so that
+        the routing layer can detect gadgets that have not yet been
+        updated.  Override in every concrete gadget.
+
+        Parameters
+        ----------
+        phase_index : int
+            0-based gadget phase index.
+        alloc : QubitAllocation
+            The unified qubit allocation for the experiment.
+
+        Returns
+        -------
+        List[List[Tuple[int, int]]]
+            ``[]`` → no MS interactions in this phase.
+            ``[[pairs...]]`` → one MS round.
+            ``[[r0_pairs], [r1_pairs], ...]`` → multi-round phase.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement get_phase_pairs()"
+        )
+
     def is_teleportation_gadget(self) -> bool:
         """
         Return True if this is a teleportation-based gadget.

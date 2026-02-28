@@ -170,6 +170,48 @@ class KnillECGadget(Gadget):
     def reset_phases(self) -> None:
         self._current_phase = 0
 
+    def get_block_names(self) -> List[str]:
+        """data_block, bell_a, bell_b."""
+        return ["data_block", "bell_a", "bell_b"]
+
+    def get_phase_active_blocks(self, phase_index: int) -> List[str]:
+        """Per-phase active blocks for Knill EC.
+
+        Phase 0 (PREPARATION): bell_a, bell_b (prepare Bell state)
+        Phase 1 (GATE):        bell_a, bell_b (CNOT entanglement)
+        Phase 2 (MEASUREMENT): data_block, bell_a (CNOT + measure)
+        """
+        if phase_index in (0, 1):
+            return ["bell_a", "bell_b"]
+        elif phase_index == 2:
+            return ["data_block", "bell_a"]
+        return self.get_block_names()
+
+    def get_phase_pairs(self, phase_index, alloc):
+        """Knill EC phase pairs.
+
+        Phase 0 (prep): no MS pairs.
+        Phase 1 (CNOT bell_a→bell_b): transversal pairs.
+        Phase 2 (CNOT data→bell_a + measure): transversal pairs.
+        """
+        if phase_index == 0:
+            return []  # preparation — no 2Q gates
+        if phase_index == 1:
+            ba = alloc.get_block("bell_a")
+            bb = alloc.get_block("bell_b")
+            a_data = ba.get_data_qubits()
+            b_data = bb.get_data_qubits()
+            n = min(len(a_data), len(b_data))
+            return [[(a_data[i], b_data[i]) for i in range(n)]]
+        if phase_index == 2:
+            db = alloc.get_block("data_block")
+            ba = alloc.get_block("bell_a")
+            d_data = db.get_data_qubits()
+            a_data = ba.get_data_qubits()
+            n = min(len(d_data), len(a_data))
+            return [[(d_data[i], a_data[i]) for i in range(n)]]
+        return []
+
     def is_teleportation_gadget(self) -> bool:
         return True
 

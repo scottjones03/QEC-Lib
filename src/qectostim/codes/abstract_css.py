@@ -30,6 +30,7 @@ since HomologicalCode already inherits from StabilizerCode. This avoids MRO issu
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 import numpy as np
@@ -1382,6 +1383,265 @@ class CSSCode(HomologicalCode):
 
         return True, ""
 
+    # ------------------------------------------------------------------
+    # Lattice-surgery merge-stabilizer API
+    # ------------------------------------------------------------------
+
+    def get_merge_stabilizers(
+        self,
+        merge_type: str,
+        my_edge: str,
+        other_code: "CSSCode",
+        other_edge: str,
+        my_data_global: Dict[int, int],
+        other_data_global: Dict[int, int],
+        seam_qubit_offset: int,
+    ) -> "MergeStabilizerInfo":
+        """Compute seam & grown-boundary stabilizers for a lattice-surgery merge.
+
+        During a merge the two code patches are treated as a single unified
+        patch.  *Seam stabilizers* emerge at lattice positions that were
+        previously truncated at the patches' boundaries.  Existing boundary
+        stabilizers on each patch *grow* (gain extra data-qubit support from
+        the other patch) to keep the stabilizer group commutative.
+
+        **Generic algorithm** — works for *any* CSS code that provides
+        ``hx`` / ``hz`` check matrices and ``get_boundary_qubits()``.
+        Creates weight-2 seam stabilizers pairing corresponding boundary
+        qubits from both patches, and identifies grown (opposite-type)
+        stabilizers that touch the boundary.
+
+        Geometry-aware subclasses (``RotatedSurfaceCode``, ``TriangularColourCode``,
+        etc.) override this with higher-weight plaquette-style seam stabilizers
+        matched to their lattice; which is only an optimisation — the weight-2
+        protocol produced here is always correct.
+
+        Parameters
+        ----------
+        merge_type : ``"ZZ"`` or ``"XX"``
+        my_edge : edge label of *this* block facing the boundary
+            (e.g. ``"bottom"``, ``"right"``)
+        other_code : the code on the other side of the merge boundary
+        other_edge : edge label of the other block facing the boundary
+        my_data_global : ``{local_data_idx: global_qubit_idx}`` for *this* block
+        other_data_global : ``{local_data_idx: global_qubit_idx}`` for the *other* block
+        seam_qubit_offset : starting global qubit index for new seam ancillas
+
+        Returns
+        -------
+        MergeStabilizerInfo
+            Populated with weight-2 seam stabilizers and boundary-touching
+            grown stabilizers.  Returns empty info if boundary qubits
+            cannot be determined.
+        """
+        seam_type = "Z" if merge_type == "ZZ" else "X"
+        grown_type = "X" if merge_type == "ZZ" else "Z"
+
+        # ── boundary qubits (local indices) ──────────────────────────
+        my_boundary = self.get_boundary_qubits(my_edge)
+        other_boundary = other_code.get_boundary_qubits(other_edge)
+
+        if not my_boundary or not other_boundary:
+            return MergeStabilizerInfo(
+                seam_stabs=[], grown_stabs=[],
+                seam_type=seam_type, grown_type=grown_type,
+                num_cx_phases=4,
+            )
+
+        # ── sort by coordinate along the merge edge ──────────────────
+        data_coords = self._metadata.get("data_coords")
+        other_meta = getattr(other_code, "_metadata", {}) or {}
+        other_data_coords = other_meta.get("data_coords")
+
+        horizontal = my_edge in ("bottom", "top")
+
+        def _sort_key(coords, idx, is_horizontal):
+            if coords is not None and idx < len(coords):
+                c = coords[idx]
+                par_dim = 0 if is_horizontal else 1
+                return c[par_dim] if len(c) > par_dim else 0
+            return idx
+
+        my_boundary = sorted(
+            my_boundary,
+            key=lambda i: _sort_key(data_coords, i, horizontal),
+        )
+        other_horizontal = other_edge in ("bottom", "top")
+        other_boundary = sorted(
+            other_boundary,
+            key=lambda i: _sort_key(other_data_coords, i, other_horizontal),
+        )
+
+        # truncate to the shorter side so pairing is 1-to-1
+        L = min(len(my_boundary), len(other_boundary))
+        my_boundary = my_boundary[:L]
+        other_boundary = other_boundary[:L]
+
+        # ── SEAM STABILIZERS (weight-2 pairwise) ─────────────────────
+        seam_stabs: List["SeamStabilizer"] = []
+        for i in range(L):
+            g_anc = seam_qubit_offset + i
+            g_my = my_data_global[my_boundary[i]]
+            g_oth = other_data_global[other_boundary[i]]
+
+            cx_per_phase: List[List[Tuple[int, int]]] = [[] for _ in range(4)]
+            if seam_type == "Z":
+                cx_per_phase[0] = [(g_my, g_anc)]    # CX data→anc
+                cx_per_phase[1] = [(g_oth, g_anc)]   # CX data→anc
+            else:
+                cx_per_phase[0] = [(g_anc, g_my)]    # CX anc→data
+                cx_per_phase[1] = [(g_anc, g_oth)]   # CX anc→data
+
+            if data_coords is not None and my_boundary[i] < len(data_coords):
+                lat_pos = tuple(float(c) for c in data_coords[my_boundary[i]])
+            else:
+                lat_pos = (float(i), 0.0)
+
+            seam_stabs.append(SeamStabilizer(
+                lattice_position=lat_pos,
+                stab_type=seam_type,
+                global_ancilla_idx=g_anc,
+                weight=2,
+                cx_per_phase=cx_per_phase,
+                support_globals=[g_my, g_oth],
+            ))
+
+        # ── GROWN STABILIZERS ────────────────────────────────────────
+        boundary_set = set(my_boundary)
+        boundary_to_pair = {my_boundary[i]: i for i in range(L)}
+        check_matrix = self.hx if grown_type == "X" else self.hz
+
+        grown_stabs: List["GrownStabilizer"] = []
+        if check_matrix is not None and hasattr(check_matrix, "shape"):
+            stab_key = "x_stab_coords" if grown_type == "X" else "z_stab_coords"
+            stab_coords = self._metadata.get(stab_key)
+
+            for stab_idx in range(check_matrix.shape[0]):
+                row = check_matrix[stab_idx]
+                if hasattr(row, "toarray"):
+                    row = np.asarray(row.todense()).ravel()
+                support = set(int(j) for j in np.nonzero(row)[0])
+
+                boundary_overlap = support & boundary_set
+                interior = support - boundary_set
+                if not boundary_overlap or not interior:
+                    continue  # skip stabs fully on / fully off the boundary
+
+                # new data-qubit support from the other patch
+                new_support: List[int] = []
+                for bq in sorted(boundary_overlap):
+                    pair_idx = boundary_to_pair[bq]
+                    g_oth = other_data_global[other_boundary[pair_idx]]
+                    new_support.append(g_oth)
+
+                if not new_support:
+                    continue
+
+                # schedule the extra CX pairs across phases
+                new_cx: List[List[Tuple[int, int]]] = [[] for _ in range(4)]
+                for ph_offset, g_new in enumerate(new_support):
+                    p = ph_offset % 4
+                    if grown_type == "Z":
+                        new_cx[p].append((g_new, -1))   # placeholder ancilla
+                    else:
+                        new_cx[p].append((-1, g_new))    # placeholder ancilla
+
+                if stab_coords is not None and stab_idx < len(stab_coords):
+                    lat_pos = tuple(float(c) for c in stab_coords[stab_idx])
+                else:
+                    lat_pos = (float(stab_idx), -1.0)
+
+                grown_stabs.append(GrownStabilizer(
+                    lattice_position=lat_pos,
+                    stab_type=grown_type,
+                    existing_ancilla_global=-1,  # caller resolves
+                    original_weight=len(support),
+                    new_weight=len(support) + len(new_support),
+                    new_cx_per_phase=new_cx,
+                    belongs_to_block="",          # caller fills
+                    new_support_globals=new_support,
+                ))
+
+        return MergeStabilizerInfo(
+            seam_stabs=seam_stabs,
+            grown_stabs=grown_stabs,
+            seam_type=seam_type,
+            grown_type=grown_type,
+            num_cx_phases=4,
+        )
+
+
+# ── Lattice-surgery merge data structures ────────────────────────────
+
+
+@dataclass
+class SeamStabilizer:
+    """One new stabilizer at a previously-truncated boundary site."""
+
+    lattice_position: Tuple[float, ...]
+    """Even–even lattice coordinate in the *seam* coordinate frame."""
+
+    stab_type: str
+    """``"X"`` or ``"Z"``."""
+
+    global_ancilla_idx: int
+    """Global qubit index assigned to this seam ancilla."""
+
+    weight: int
+    """Number of data-qubit neighbors (2–4 for rotated surface code)."""
+
+    cx_per_phase: List[List[Tuple[int, int]]]
+    """Per-CX-phase list of ``(data_global, anc_global)`` or
+    ``(anc_global, data_global)`` pairs — direction depends on *stab_type*.
+
+    * Z-type → ``CX data→anc``  (control=data, target=anc)
+    * X-type → ``CX anc→data``  (control=anc, target=data)
+
+    Length is *num_cx_phases* (typically 4).  Each inner list has 0 or 1
+    pairs (at most one CX per phase per stabilizer)."""
+
+    support_globals: List[int] = field(default_factory=list)
+    """Global qubit indices of the data qubits in this stabilizer's support,
+    in the same order as the CX phases."""
+
+
+@dataclass
+class GrownStabilizer:
+    """A boundary stabilizer whose weight increases during merge."""
+
+    lattice_position: Tuple[float, ...]
+    stab_type: str
+    """``"X"`` or ``"Z"``."""
+
+    existing_ancilla_global: int
+    """Global qubit index of the *existing* ancilla for this stabilizer
+    (already allocated in one of the two blocks)."""
+
+    original_weight: int
+    new_weight: int
+
+    new_cx_per_phase: List[List[Tuple[int, int]]]
+    """*Additional* CX pairs added during merge — same format as
+    `SeamStabilizer.cx_per_phase`.  The existing CX pairs from the
+    block's EC round remain unchanged."""
+
+    belongs_to_block: str
+    """Name of the block that already owns this stabilizer."""
+
+    new_support_globals: List[int] = field(default_factory=list)
+    """Global qubit indices of the *new* data neighbors from the other block."""
+
+
+@dataclass
+class MergeStabilizerInfo:
+    """Complete description of seam and grown stabilizers for one merge."""
+
+    seam_stabs: List[SeamStabilizer]
+    grown_stabs: List[GrownStabilizer]
+    seam_type: str  # "Z" for ZZ merge, "X" for XX merge
+    grown_type: str  # opposite of seam_type
+    num_cx_phases: int = 4
+
 
 class CSSCodeWithComplex(CSSCode):
     """
@@ -1771,6 +2031,335 @@ class TopologicalCSSCode(CSSCodeWithComplex, TopologicalCode):
         
         boundary_indices = self.get_boundary_qubits(edge, logical_idx)
         return [coords[i] for i in boundary_indices]
+
+    # -------------------------------------------------------------------------
+    # Geometry-aware merge stabilizers for topological CSS codes
+    # -------------------------------------------------------------------------
+
+    def get_merge_stabilizers(
+        self,
+        merge_type: str,
+        my_edge: str,
+        other_code: "CSSCode",
+        other_edge: str,
+        my_data_global: Dict[int, int],
+        other_data_global: Dict[int, int],
+        seam_qubit_offset: int,
+    ) -> "MergeStabilizerInfo":
+        """Geometry-aware merge stabilizers for any 2D topological CSS code.
+
+        Uses the code's check matrices and qubit coordinates to produce
+        **plaquette-weight** seam stabilizers that match the code's native
+        stabilizer geometry, rather than the purely-algebraic weight-2
+        pairs from the ``CSSCode`` base class.
+
+        Algorithm
+        ---------
+        1. Identify boundary qubits on both patches and pair them 1-to-1
+           by sorting along the merge-parallel coordinate.
+        2. For each **seam-type** stabilizer row in the check matrix whose
+           support lies entirely on boundary qubits: combine it with a
+           matching row from the other patch to form a plaquette-weight
+           seam stabilizer.  Assign CX phases by angular ordering around
+           the stabilizer centroid.
+        3. Any boundary qubits not covered by a plaquette seam get weight-2
+           fallback seam stabs (one per uncovered qubit pair).
+        4. For each **grown-type** stabilizer row touching boundary qubits
+           (but with interior support too): compute new data support from
+           the other patch via the boundary pairing.
+        """
+        import math as _math
+
+        seam_type = "Z" if merge_type == "ZZ" else "X"
+        grown_type = "X" if merge_type == "ZZ" else "Z"
+
+        # ── boundary qubits ──────────────────────────────────────────
+        my_boundary = self.get_boundary_qubits(my_edge)
+        other_boundary = other_code.get_boundary_qubits(other_edge)
+
+        if not my_boundary or not other_boundary:
+            return MergeStabilizerInfo(
+                seam_stabs=[], grown_stabs=[],
+                seam_type=seam_type, grown_type=grown_type,
+                num_cx_phases=4,
+            )
+
+        # ── sort by parallel coordinate and pair 1-to-1 ─────────────
+        my_coords = self.qubit_coords()
+        other_qc = (other_code.qubit_coords()
+                     if hasattr(other_code, "qubit_coords") else None)
+        other_meta = getattr(other_code, "_metadata", {}) or {}
+        other_data_coords = other_meta.get("data_coords") or other_qc
+
+        horizontal = my_edge in ("bottom", "top")
+
+        def _sort_key(coords_list, idx, horiz):
+            if coords_list and idx < len(coords_list):
+                c = coords_list[idx]
+                return c[0] if horiz else (c[1] if len(c) > 1 else 0)
+            return idx
+
+        my_boundary = sorted(
+            my_boundary, key=lambda i: _sort_key(my_coords, i, horizontal))
+        other_horizontal = other_edge in ("bottom", "top")
+        other_boundary = sorted(
+            other_boundary,
+            key=lambda i: _sort_key(other_data_coords, i, other_horizontal))
+
+        L = min(len(my_boundary), len(other_boundary))
+        my_boundary = my_boundary[:L]
+        other_boundary = other_boundary[:L]
+
+        boundary_set = set(my_boundary)
+        boundary_to_pair = {my_boundary[i]: i for i in range(L)}
+
+        other_boundary_set = set(other_boundary)
+        other_boundary_to_pair = {other_boundary[i]: i for i in range(L)}
+
+        # ── helper: get check matrix for a type ──────────────────────
+        def _check_matrix(code, stype):
+            return code.hx if stype == "X" else code.hz
+
+        # ── helper: extract dense row ────────────────────────────────
+        def _row_support(mat, idx):
+            row = mat[idx]
+            if hasattr(row, "toarray"):
+                row = np.asarray(row.todense()).ravel()
+            return set(int(j) for j in np.nonzero(row)[0])
+
+        # ── helper: centroid of qubit indices ────────────────────────
+        def _centroid(indices, coords_list):
+            if not coords_list or not indices:
+                return (0.0, 0.0)
+            xs, ys = [], []
+            for i in indices:
+                if i < len(coords_list):
+                    c = coords_list[i]
+                    xs.append(c[0])
+                    ys.append(c[1] if len(c) > 1 else 0.0)
+            if not xs:
+                return (0.0, 0.0)
+            return (sum(xs) / len(xs), sum(ys) / len(ys))
+
+        # ── helper: angle-based CX phase assignment ──────────────────
+        def _assign_phases(support_global_list, coords_list, local_indices,
+                           centroid_xy, num_phases):
+            """Sort data qubits by angle from centroid, distribute into phases."""
+            cx_x, cx_y = centroid_xy
+            angle_items = []
+            for g_idx, l_idx in zip(support_global_list, local_indices):
+                if coords_list and l_idx < len(coords_list):
+                    c = coords_list[l_idx]
+                    dx = c[0] - cx_x
+                    dy = (c[1] if len(c) > 1 else 0.0) - cx_y
+                    angle = _math.atan2(dy, dx)
+                else:
+                    angle = 0.0
+                angle_items.append((angle, g_idx))
+            angle_items.sort()
+            phases = [[] for _ in range(num_phases)]
+            for i, (_, g_data) in enumerate(angle_items):
+                phases[i % num_phases].append(g_data)
+            return phases
+
+        num_phases = 4
+
+        # ── SEAM-TYPE: find boundary-truncated stabilizers ───────────
+        seam_check = _check_matrix(self, seam_type)
+        other_seam_check = _check_matrix(other_code, seam_type)
+
+        # My half-plaquettes: stabs whose entire support ⊆ boundary
+        my_halves = {}  # { frozenset(boundary-qubit-indices) : stab_row_idx }
+        covered_my = set()
+        if seam_check is not None and hasattr(seam_check, "shape"):
+            for si in range(seam_check.shape[0]):
+                supp = _row_support(seam_check, si)
+                if supp and supp <= boundary_set:
+                    my_halves[frozenset(supp)] = si
+                    covered_my |= supp
+
+        # Other half-plaquettes
+        other_halves = {}
+        covered_other = set()
+        if other_seam_check is not None and hasattr(other_seam_check, "shape"):
+            for si in range(other_seam_check.shape[0]):
+                supp = _row_support(other_seam_check, si)
+                if supp and supp <= other_boundary_set:
+                    other_halves[frozenset(supp)] = si
+                    covered_other |= supp
+
+        seam_stabs: List["SeamStabilizer"] = []
+        seam_idx = 0
+
+        # Stab coordinate lookup
+        stab_key = "x_stab_coords" if seam_type == "X" else "z_stab_coords"
+        my_stab_coords = self._metadata.get(stab_key)
+        other_stab_key = stab_key
+        other_stab_coords = other_meta.get(other_stab_key)
+
+        # Match half-plaquettes by boundary pairing
+        used_my_halves = set()
+        used_other_halves = set()
+
+        for my_key, my_si in my_halves.items():
+            # Map my boundary qubits → paired other boundary qubits
+            paired_other_local = set()
+            for bq in my_key:
+                if bq in boundary_to_pair:
+                    pair_idx = boundary_to_pair[bq]
+                    paired_other_local.add(other_boundary[pair_idx])
+            paired_other_key = frozenset(paired_other_local)
+
+            if paired_other_key in other_halves:
+                osi = other_halves[paired_other_key]
+                # Found matching half-plaquette → plaquette-weight seam stab
+                g_anc = seam_qubit_offset + seam_idx
+                seam_idx += 1
+
+                # Collect global data indices from both sides
+                my_globals = [my_data_global[q] for q in sorted(my_key)]
+                my_locals = sorted(my_key)
+                oth_globals = [other_data_global[q] for q in sorted(paired_other_key)]
+                oth_locals = sorted(paired_other_key)
+
+                all_globals = my_globals + oth_globals
+                # For phase assignment, use my coords for my qubits
+                # and other coords for other qubits
+                all_local_for_coords = my_locals + oth_locals
+                # Build combined coord list – my coords then other coords offset
+                combo_coords = []
+                for li in my_locals:
+                    if my_coords and li < len(my_coords):
+                        combo_coords.append(my_coords[li])
+                    else:
+                        combo_coords.append((float(li), 0.0))
+                for li in oth_locals:
+                    if other_data_coords and li < len(other_data_coords):
+                        combo_coords.append(other_data_coords[li])
+                    else:
+                        combo_coords.append((float(li), 0.0))
+
+                cx, cy = (sum(c[0] for c in combo_coords) / len(combo_coords),
+                          sum(c[1] if len(c) > 1 else 0 for c in combo_coords) / len(combo_coords))
+
+                # Assign phases by angle
+                phases_data = _assign_phases(
+                    all_globals, combo_coords, list(range(len(combo_coords))),
+                    (cx, cy), num_phases)
+
+                cx_per_phase: List[List[Tuple[int, int]]] = [[] for _ in range(num_phases)]
+                for ph in range(num_phases):
+                    for g_data in phases_data[ph]:
+                        if seam_type == "Z":
+                            cx_per_phase[ph].append((g_data, g_anc))
+                        else:
+                            cx_per_phase[ph].append((g_anc, g_data))
+
+                weight = len(all_globals)
+                lat_pos = (cx, cy)
+                if my_stab_coords and my_si < len(my_stab_coords):
+                    lat_pos = tuple(float(v) for v in my_stab_coords[my_si])
+
+                seam_stabs.append(SeamStabilizer(
+                    lattice_position=lat_pos,
+                    stab_type=seam_type,
+                    global_ancilla_idx=g_anc,
+                    weight=weight,
+                    cx_per_phase=cx_per_phase,
+                    support_globals=all_globals,
+                ))
+                used_my_halves.add(my_key)
+                used_other_halves.add(paired_other_key)
+
+        # Fallback: weight-2 stabs for boundary qubits NOT covered by
+        # a plaquette-matched seam stabilizer
+        uncovered_my = set(my_boundary) - set().union(
+            *used_my_halves) if used_my_halves else set(my_boundary)
+        for i in range(L):
+            if my_boundary[i] not in uncovered_my:
+                continue
+            g_anc = seam_qubit_offset + seam_idx
+            seam_idx += 1
+            g_my = my_data_global[my_boundary[i]]
+            g_oth = other_data_global[other_boundary[i]]
+
+            cx_per_phase_f: List[List[Tuple[int, int]]] = [[] for _ in range(num_phases)]
+            if seam_type == "Z":
+                cx_per_phase_f[0] = [(g_my, g_anc)]
+                cx_per_phase_f[1] = [(g_oth, g_anc)]
+            else:
+                cx_per_phase_f[0] = [(g_anc, g_my)]
+                cx_per_phase_f[1] = [(g_anc, g_oth)]
+
+            if my_coords and my_boundary[i] < len(my_coords):
+                lat_pos_f = tuple(float(c) for c in my_coords[my_boundary[i]])
+            else:
+                lat_pos_f = (float(i), 0.0)
+
+            seam_stabs.append(SeamStabilizer(
+                lattice_position=lat_pos_f,
+                stab_type=seam_type,
+                global_ancilla_idx=g_anc,
+                weight=2,
+                cx_per_phase=cx_per_phase_f,
+                support_globals=[g_my, g_oth],
+            ))
+
+        # ── GROWN-TYPE stabilizers ───────────────────────────────────
+        grown_check = _check_matrix(self, grown_type)
+        grown_stabs: List["GrownStabilizer"] = []
+        if grown_check is not None and hasattr(grown_check, "shape"):
+            grown_stab_key = "x_stab_coords" if grown_type == "X" else "z_stab_coords"
+            grown_stab_coords = self._metadata.get(grown_stab_key)
+
+            for si in range(grown_check.shape[0]):
+                supp = _row_support(grown_check, si)
+                boundary_overlap = supp & boundary_set
+                interior = supp - boundary_set
+                if not boundary_overlap or not interior:
+                    continue
+
+                new_support: List[int] = []
+                for bq in sorted(boundary_overlap):
+                    if bq in boundary_to_pair:
+                        pair_idx = boundary_to_pair[bq]
+                        g_oth = other_data_global[other_boundary[pair_idx]]
+                        new_support.append(g_oth)
+
+                if not new_support:
+                    continue
+
+                new_cx: List[List[Tuple[int, int]]] = [[] for _ in range(num_phases)]
+                for ph_offset, g_new in enumerate(new_support):
+                    p = ph_offset % num_phases
+                    if grown_type == "Z":
+                        new_cx[p].append((g_new, -1))
+                    else:
+                        new_cx[p].append((-1, g_new))
+
+                if grown_stab_coords and si < len(grown_stab_coords):
+                    lat_pos_g = tuple(float(c) for c in grown_stab_coords[si])
+                else:
+                    lat_pos_g = (float(si), -1.0)
+
+                grown_stabs.append(GrownStabilizer(
+                    lattice_position=lat_pos_g,
+                    stab_type=grown_type,
+                    existing_ancilla_global=-1,
+                    original_weight=len(supp),
+                    new_weight=len(supp) + len(new_support),
+                    new_cx_per_phase=new_cx,
+                    belongs_to_block="",
+                    new_support_globals=new_support,
+                ))
+
+        return MergeStabilizerInfo(
+            seam_stabs=seam_stabs,
+            grown_stabs=grown_stabs,
+            seam_type=seam_type,
+            grown_type=grown_type,
+            num_cx_phases=num_phases,
+        )
 
 
 class TopologicalCSSCode3D(CSSCode, TopologicalCode):

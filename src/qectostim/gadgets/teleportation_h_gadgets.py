@@ -181,6 +181,36 @@ class CZHTeleportGadget(TeleportationGadgetMixin, Gadget):
         self._ancilla_meas_start: Optional[int] = None  # Track for frame corrections
         self._data_meas_start: Optional[int] = None
 
+    def get_block_names(self) -> List[str]:
+        """data_block and ancilla_block."""
+        return ["data_block", "ancilla_block"]
+
+    def get_phase_active_blocks(self, phase_index: int) -> List[str]:
+        """Per-phase active blocks for CZ H-teleportation.
+
+        Phase 0 (PREPARATION): ancilla_block (prepare |+⟩)
+        Phase 1 (GATE):        data_block, ancilla_block (transversal CZ)
+        Phase 2 (MEASUREMENT): data_block (MX)
+        """
+        if phase_index == 0:
+            return ["ancilla_block"]
+        elif phase_index == 1:
+            return ["data_block", "ancilla_block"]
+        elif phase_index == 2:
+            return ["data_block"]
+        return self.get_block_names()
+
+    def get_phase_pairs(self, phase_index, alloc):
+        """CZ teleport: only phase 1 (CZ gate) has MS pairs."""
+        if phase_index != 1:
+            return []  # prep / measurement — no 2Q gates
+        data_blk = alloc.get_block("data_block")
+        anc_blk = alloc.get_block("ancilla_block")
+        d_data = data_blk.get_data_qubits()
+        a_data = anc_blk.get_data_qubits()
+        n = min(len(d_data), len(a_data))
+        return [[(d_data[i], a_data[i]) for i in range(n)]]
+
     def emit_next_phase(
         self,
         circuit: stim.Circuit,
@@ -560,7 +590,37 @@ class CNOTHTeleportGadget(TeleportationGadgetMixin, Gadget):
         self._current_phase = 0
         self._ancilla_meas_start: Optional[int] = None  # Track for frame corrections
         self._data_meas_start: Optional[int] = None
-    
+
+    def get_block_names(self) -> List[str]:
+        """data_block and ancilla_block."""
+        return ["data_block", "ancilla_block"]
+
+    def get_phase_active_blocks(self, phase_index: int) -> List[str]:
+        """Per-phase active blocks for CNOT H-teleportation.
+
+        Phase 0 (PREPARATION): ancilla_block (prepare |0⟩)
+        Phase 1 (GATE):        data_block, ancilla_block (transversal CNOT)
+        Phase 2 (MEASUREMENT): data_block (MX)
+        """
+        if phase_index == 0:
+            return ["ancilla_block"]
+        elif phase_index == 1:
+            return ["data_block", "ancilla_block"]
+        elif phase_index == 2:
+            return ["data_block"]
+        return self.get_block_names()
+
+    def get_phase_pairs(self, phase_index, alloc):
+        """CNOT teleport: only phase 1 (CNOT gate) has MS pairs."""
+        if phase_index != 1:
+            return []  # prep / measurement — no 2Q gates
+        data_blk = alloc.get_block("data_block")
+        anc_blk = alloc.get_block("ancilla_block")
+        d_data = data_blk.get_data_qubits()
+        a_data = anc_blk.get_data_qubits()
+        n = min(len(d_data), len(a_data))
+        return [[(d_data[i], a_data[i]) for i in range(n)]]
+
     def emit_next_phase(
         self,
         circuit: stim.Circuit,

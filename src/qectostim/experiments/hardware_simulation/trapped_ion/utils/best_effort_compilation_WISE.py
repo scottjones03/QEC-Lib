@@ -7,14 +7,17 @@ from .qccd_nodes import QCCDWiseArch
 from .architectures import WISEArchitecture
 from .trapped_ion_compiler import TrappedIonCompiler
 from .experiment import TrappedIonExperiment, NDE_JZ, NDE_LZ, NSE_Z
+from .gadget_routing import compute_gadget_grid_size
 from .noise import TrappedIonNoiseModel
 from qectostim.decoders.pymatching_decoder import PyMatchingDecoder
 import time
 import os
 import signal
+import sys
 import time
 import math
 import atexit
+import threading as _threading
 import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
@@ -28,27 +31,7 @@ def _cleanup_on_exit():
     Atexit handler to clean up any spawned worker processes and managers.
     This is a safety net if the main finally block doesn't complete.
     """
-    import subprocess
-    
-    def _get_child_pids(parent_pid: int) -> set:
-        children = set()
-        try:
-            result = subprocess.run(
-                ["pgrep", "-P", str(parent_pid)],
-                capture_output=True,
-                text=True,
-                timeout=5.0,
-            )
-            if result.returncode == 0:
-                for line in result.stdout.strip().split('\n'):
-                    if line.strip():
-                        try:
-                            children.add(int(line.strip()))
-                        except ValueError:
-                            pass
-        except Exception:
-            pass
-        return children
+    from .process_utils import get_child_pids as _get_child_pids
     
     # Collect all PIDs including children and grandchildren
     all_pids = set(_ACTIVE_WORKER_PIDS)
@@ -244,6 +227,10 @@ def _route_and_simulate(
     progress_queue=None,
     config_id: int = 0,
     progress_slot: SharedProgressSlot | None = None,
+    qec_metadata=None,
+    gadget=None,
+    qubit_allocation=None,
+    block_sub_grids=None,
 ) -> Tuple[float, Dict[str, Any], float, float]:
     """Shared routing and simulation logic for run_single_config and run_single_config_cnot.
 
@@ -324,8 +311,22 @@ def _route_and_simulate(
         compiler.routing_kwargs["toMoveOps"] = toMoveOps
 
     # 4. Compile: decompose → map → route → schedule (single call)
+    #    Forward qec_metadata and extra native metadata so the routing
+    #    backend dispatches to ionRoutingGadgetArch when appropriate.
+    _extra_meta: dict = {}
+    if gadget is not None:
+        _extra_meta["gadget"] = gadget
+    if qubit_allocation is not None:
+        _extra_meta["qubit_allocation"] = qubit_allocation
+    if block_sub_grids is not None:
+        _extra_meta["block_sub_grids"] = block_sub_grids
+
     try:
-        compiled = compiler.compile(ideal)
+        compiled = compiler.compile(
+            ideal,
+            qec_metadata=qec_metadata,
+            extra_native_metadata=_extra_meta or None,
+        )
     finally:
         # Mark slot as done
         if _progress_close is not None:
@@ -616,6 +617,697 @@ def run_single_config(
         # exec_time NaN, but keep compilation time to see failures too
         return np.nan, comp_time, results, np.nan
 
+
+# ---------- gadget config runner ----------
+
+def run_single_gadget_config(
+    gadget,
+    code,
+    *,
+    lookahead: int = 4,
+    subgrid_width: int = 4,
+    subgrid_height: int = 3,
+    subgrid_increment: int = 0,
+    trap_capacity: int = 2,
+    base_pmax_in: int = 1,
+    gate_improvements: Sequence[float] = [1.0],
+    num_shots: int = 100_000,
+    rounds: int = None,
+    basis: str = 'z',
+    stop_event=None,
+    show_progress: bool = True,
+    max_inner_workers: int | None = None,
+    routing_config: "WISERoutingConfig | None" = None,
+    use_ec_cache: bool = True,
+) -> Tuple[float, float, Dict[str, Any], float]:
+    """End-to-end gadget compilation with phase-aware routing.
+
+    Uses :class:`TrappedIonExperiment` with ``gadget=`` to drive the
+    full pipeline: ``build_ideal_circuit()`` → ``compile()`` →
+    ``apply_hardware_noise()`` → decode.  Grid dimensions are computed
+    via :func:`compute_gadget_grid_size` (multi-block aware).
+
+    Parameters
+    ----------
+    gadget : Gadget
+        Gadget object (e.g. ``TransversalCNOTGadget()``).
+    code : Code
+        QEC code (e.g. ``RotatedSurfaceCode(d=3)``).
+    lookahead : int
+        SAT solver lookahead window.
+    subgrid_width, subgrid_height, subgrid_increment : int
+        Patch decomposition parameters.
+    trap_capacity : int
+        Ions per trap (k).
+    base_pmax_in : int
+        Base pass horizon for SAT solver.
+    gate_improvements : Sequence[float]
+        Error scaling factors for noise simulation.
+    num_shots : int
+        Monte Carlo shots for error estimation.
+    rounds : int, optional
+        Number of EC rounds. Defaults to ``code.d``.
+    basis : str
+        Measurement basis (default 'z').
+    stop_event : Event, optional
+        Cancellation signal.
+    show_progress : bool
+        Display progress bar during routing.
+    max_inner_workers : int, optional
+        Max parallel SAT workers.
+    routing_config : WISERoutingConfig, optional
+        Pre-built routing configuration.  When ``None``, one is built
+        from the other parameters with ``cache_ec_rounds=use_ec_cache``.
+    use_ec_cache : bool
+        Cache and replay identical EC stabilizer rounds during
+        phase-aware routing (default ``True``).  Ignored when a
+        pre-built *routing_config* is supplied.
+
+    Returns
+    -------
+    Tuple[float, float, Dict[str, Any], float]
+        ``(exec_time, comp_time, results_dict, reconfig_time)``
+    """
+    t0 = time.perf_counter()
+    d = code.distance
+    num_rounds = rounds if rounds is not None else d
+
+    try:
+        # 1. Build a lightweight TrappedIonExperiment with gadget — this
+        #    auto-creates FaultTolerantGadgetExperiment, populates
+        #    qec_metadata & qubit_allocation in build_ideal_circuit().
+        #    We need the metadata first for grid sizing, so we call
+        #    build_ideal_circuit() before constructing the architecture.
+
+        # Temporary experiment just for metadata extraction
+        _tmp_exp = TrappedIonExperiment(
+            code=code,
+            architecture=WISEArchitecture(
+                wise_config=QCCDWiseArch(m=2, n=2, k=trap_capacity),
+            ),
+            compiler=None,
+            hardware_noise=TrappedIonNoiseModel(),
+            gadget=gadget,
+            rounds=num_rounds,
+            basis=basis,
+        )
+        ideal = _tmp_exp.build_ideal_circuit()
+        qec_meta = _tmp_exp._qec_metadata
+        qubit_allocation = _tmp_exp._qubit_allocation
+
+        # 2. Compute correct grid dimensions (multi-block aware)
+        m_traps, n_traps = compute_gadget_grid_size(
+            qec_meta, qubit_allocation, trap_capacity,
+        )
+
+        # 3. Build production architecture + compiler
+        wise_cfg = QCCDWiseArch(m=m_traps, n=n_traps, k=trap_capacity)
+        arch = WISEArchitecture(wise_config=wise_cfg)
+        compiler = TrappedIonCompiler(
+            arch, is_wise=True, wise_config=wise_cfg,
+            show_progress=show_progress,
+        )
+
+        # 4. Build routing config (with ec_cache support)
+        if routing_config is None:
+            routing_config = WISERoutingConfig.default(
+                lookahead=lookahead,
+                subgridsize=(subgrid_width, subgrid_height, subgrid_increment),
+                base_pmax_in=base_pmax_in,
+                show_progress=show_progress,
+                cache_ec_rounds=use_ec_cache,
+            )
+
+        compiler.routing_kwargs = dict(
+            routing_config=routing_config,
+            stop_event=stop_event,
+            max_inner_workers=max_inner_workers,
+        )
+
+        # 5. Build experiment with the correctly-sized architecture
+        experiment = TrappedIonExperiment(
+            code=code,
+            architecture=arch,
+            compiler=compiler,
+            hardware_noise=TrappedIonNoiseModel(),
+            gadget=gadget,
+            rounds=num_rounds,
+            basis=basis,
+        )
+        # Inject pre-built metadata so compile() forwards it without
+        # re-building the FaultTolerantGadgetExperiment.
+        experiment._qec_metadata = qec_meta
+        experiment._qubit_allocation = qubit_allocation
+
+        # 6. Compile: decompose → map → route → schedule
+        compiled = experiment.compile(ideal)
+
+        t1 = time.perf_counter()
+        comp_time = t1 - t0
+
+        # 7. Extract metrics from CompiledCircuit
+        scheduled = compiled.scheduled
+        exec_time = scheduled.total_duration
+        reconfig_time = scheduled.routed_circuit.metadata.get("reconfig_time", 0.0)
+        all_operations = scheduled.metadata.get("all_operations", [])
+        parallel_ops_map = scheduled.metadata.get("parallel_ops_map", {})
+        native_ops = scheduled.routed_circuit.mapped_circuit.native_circuit.operations
+
+        # 8. Noise + decode loop for each gate_improvement
+        logicalErrors = []
+        physicalZErrors = []
+        physicalXErrors = []
+
+        for gate_improvement in gate_improvements:
+            noise = TrappedIonNoiseModel(error_scaling=gate_improvement)
+            sim_exp = TrappedIonExperiment(
+                code=code,
+                architecture=arch,
+                compiler=compiler,
+                hardware_noise=noise,
+            )
+            sim_exp._compiled = compiled
+            noisy_circuit = sim_exp.apply_hardware_noise()
+
+            dem = noisy_circuit.detector_error_model()
+            decoder = PyMatchingDecoder(dem=dem)
+
+            sampler = noisy_circuit.compile_detector_sampler()
+            detection_events, obs_flips = sampler.sample(
+                num_shots, separate_observables=True,
+            )
+            predictions = decoder.decode_batch(detection_events)
+            num_errors = int(np.sum(np.any(predictions != obs_flips, axis=1)))
+
+            logicalErrors.append(num_errors / num_shots)
+            physicalXErrors.append(getattr(sim_exp, '_last_mean_phys_x', 0.0))
+            physicalZErrors.append(getattr(sim_exp, '_last_mean_phys_z', 0.0))
+
+        # 9. Build results dict
+        num_qubits = ideal.num_qubits
+        nqubitsNeeded = 4 * (np.ceil(num_qubits / 3))
+        Njz = np.ceil(nqubitsNeeded / trap_capacity)
+        Nlz = nqubitsNeeded - Njz
+        Nde = NDE_LZ * Nlz + NDE_JZ * Njz
+        Nse = NSE_Z * (Njz + Nlz)
+
+        results = {
+            "ElapsedTime": exec_time,
+            "Operations": len(all_operations),
+            "MeanConcurrency": (
+                np.mean([len(op.operations) for op in parallel_ops_map.values()])
+                if parallel_ops_map else 0.0
+            ),
+            "QubitOperations": len(native_ops),
+            "LogicalErrorRates": logicalErrors,
+            "PhysicalZErrorRates": physicalZErrors,
+            "PhysicalXErrorRates": physicalXErrors,
+            "DACs": int(min(100, Nde) + np.ceil(Nse / 100)),
+            "Electrodes": int(Nde + Nse),
+            "gadget": type(gadget).__name__,
+            "code": type(code).__name__,
+            "d": d,
+            "num_blocks": len(qec_meta.block_allocations),
+            "num_phases": len(qec_meta.phases),
+            "total_qubits": qec_meta.total_qubits,
+            "block_names": [ba.block_name for ba in qec_meta.block_allocations],
+        }
+
+        return exec_time, comp_time, results, reconfig_time
+
+    except Exception as e:
+        t1 = time.perf_counter()
+        comp_time = t1 - t0
+        logging.getLogger(__name__).warning(
+            "run_single_gadget_config failed for %s d=%d: %s",
+            type(gadget).__name__, d, repr(e),
+        )
+        results = {
+            "ElapsedTime": np.nan,
+            "Operations": np.nan,
+            "MeanConcurrency": np.nan,
+            "QubitOperations": np.nan,
+            "LogicalErrorRates": [np.nan for _ in gate_improvements],
+            "PhysicalZErrorRates": [np.nan for _ in gate_improvements],
+            "PhysicalXErrorRates": [np.nan for _ in gate_improvements],
+            "gadget": type(gadget).__name__,
+            "code": type(code).__name__,
+            "d": d,
+            "error": repr(e),
+        }
+        return np.nan, comp_time, results, np.nan
+
+
+# ---------- gadget helper for outer pool ----------
+
+def _run_single_gadget_config_entry(
+    lookahead: int,
+    subgrid_width: int,
+    subgrid_height: int,
+    subgrid_increment: int,
+    *,
+    gadget,
+    code,
+    trap_capacity: int,
+    base_pmax_in: int,
+    sat_workers_per_config: int,
+    time_budget_s: float | None,
+    stop_event=None,
+    gate_improvements: Sequence[float] = [1.0],
+    num_shots: int = 100_000,
+    show_progress: bool = True,
+    max_inner_workers: int | None = None,
+    config_id: int = 0,
+    progress_slot: "SharedProgressSlot | None" = None,
+    use_ec_cache: bool = True,
+):
+    """Worker wrapper for ``run_single_gadget_config``.
+
+    Builds ``WISERoutingConfig`` from parameters, then delegates to
+    ``run_single_gadget_config``.  This function is the picklable
+    entry-point submitted to ``ProcessPoolExecutor`` by
+    ``search_gadget_configs``.
+    """
+    d = code.distance
+    configure_wise_logging(d=d, k=trap_capacity)
+
+    workers = (
+        sat_workers_per_config
+        if sat_workers_per_config and sat_workers_per_config > 0
+        else 4
+    )
+
+    if time_budget_s is not None and time_budget_s > 0:
+        sat_time = max(time_budget_s / 2.0, 1.0)
+        rc2_time = sat_time
+    else:
+        sat_time = None
+        rc2_time = None
+
+    solver_params = WISESolverParams(
+        max_sat_time=sat_time,
+        max_rc2_time=rc2_time,
+        base_pmax_in=base_pmax_in,
+        sat_workers=workers,
+    )
+
+    routing_config = WISERoutingConfig(
+        timeout_seconds=sat_time,
+        subgridsize=(subgrid_width, subgrid_height, subgrid_increment),
+        lookahead=lookahead,
+        sat_workers=workers,
+        base_pmax_in=base_pmax_in,
+        cache_ec_rounds=use_ec_cache,
+        solver_params=solver_params,
+    )
+
+    exec_time, comp_time, results, reconfigTime = run_single_gadget_config(
+        gadget,
+        code,
+        lookahead=lookahead,
+        subgrid_width=subgrid_width,
+        subgrid_height=subgrid_height,
+        subgrid_increment=subgrid_increment,
+        trap_capacity=trap_capacity,
+        base_pmax_in=base_pmax_in,
+        gate_improvements=gate_improvements,
+        num_shots=num_shots,
+        routing_config=routing_config,
+        stop_event=stop_event,
+        show_progress=show_progress,
+        max_inner_workers=max_inner_workers,
+        use_ec_cache=use_ec_cache,
+    )
+
+    dfrow = {
+        "lookahead": lookahead,
+        "subgrid_width": subgrid_width,
+        "subgrid_height": subgrid_height,
+        "subgrid_increment": subgrid_increment,
+        "d": d,
+        "trap_capacity": trap_capacity,
+        "exec_time": exec_time,
+        "comp_time": comp_time,
+        "reconfigTime": reconfigTime,
+    }
+    for k, v in results.items():
+        dfrow[k] = v
+    return dfrow
+
+
+def search_gadget_configs(
+    configs: list[tuple[int, int, int, int]],
+    *,
+    gadget,
+    code,
+    trap_capacity: int = 2,
+    base_pmax_in: int = 1,
+    barrier_threshold: float = np.inf,
+    time_budget_s: float | None = None,
+    sat_workers_per_config: int = 4,
+    max_total_workers: int | None = None,
+    verbose: bool = False,
+    leaderboard_top_k: int = 5,
+    gate_improvements: Sequence[float] = [1.0],
+    num_shots: int = 100_000,
+    show_progress: bool = True,
+    use_ec_cache: bool = True,
+):
+    """Parallel config search for gadget experiments.
+
+    Mirrors ``search_configs_best_exec_time`` but takes a ``gadget`` +
+    ``code`` instead of raw grid dimensions.  Each config tuple is
+    ``(lookahead, subgrid_width, subgrid_height, subgrid_increment)``.
+
+    Parameters
+    ----------
+    use_ec_cache : bool
+        Cache and replay identical EC stabilizer rounds during
+        phase-aware routing (default ``True``).
+
+    Returns
+    -------
+    Tuple[Optional[Dict], List[Dict]]
+        ``(best_result, all_results)``
+    """
+    if not configs:
+        return None, []
+
+    _reaped = _reap_zombies()
+    if _reaped > 0 and verbose:
+        print(f"[GADGET-SEARCH] Reaped {_reaped} zombie processes.", flush=True)
+
+    d = code.distance
+    total_cpus = mp.cpu_count() or 1
+
+    if max_total_workers is None:
+        max_total_workers = max(1, total_cpus // 2)
+    max_total_workers = max(1, min(max_total_workers, len(configs)))
+    max_total_workers = min(max_total_workers, max(1, total_cpus // 2))
+
+    inner_worker_budget = max(1, total_cpus // max(1, max_total_workers) - 1)
+
+    if verbose:
+        peak_procs = max_total_workers * 2 + 1
+        print(
+            f"[GADGET-SEARCH] Process budget: {max_total_workers} outer workers, "
+            f"peak ~{peak_procs} processes (CPUs={total_cpus}, gadget={type(gadget).__name__}, d={d})",
+            flush=True,
+        )
+
+    start = time.time()
+    all_results: list[dict] = []
+    best_result: dict | None = None
+
+    def _is_better(a: dict, b: dict | None) -> bool:
+        if b is None:
+            return True
+        ea, eb = a["exec_time"], b["exec_time"]
+        if np.isnan(ea):
+            return False
+        if np.isnan(eb):
+            return True
+        if ea < eb:
+            return True
+        if ea > eb:
+            return False
+        return a["comp_time"] < b["comp_time"]
+
+    def _print_leaderboard():
+        if not verbose or not all_results:
+            return
+        valid = [r for r in all_results if not np.isnan(r["exec_time"])]
+        if not valid:
+            return
+        valid_sorted = sorted(valid, key=lambda r: (r["exec_time"], r["comp_time"]))
+        top = valid_sorted[: max(1, leaderboard_top_k)]
+        print(f"[GADGET-SEARCH] Top configs (by exec_time) for {type(gadget).__name__} d={d}:")
+        for r in top:
+            print(
+                f"  la={r['lookahead']}, w={r['subgrid_width']}, "
+                f"h={r['subgrid_height']}, inc={r['subgrid_increment']}: "
+                f"exec={r['exec_time']:.3f}, comp={r['comp_time']:.1f}s"
+            )
+        print(flush=True)
+
+    extra_kw = dict(
+        gadget=gadget,
+        code=code,
+        trap_capacity=trap_capacity,
+        base_pmax_in=base_pmax_in,
+        sat_workers_per_config=sat_workers_per_config,
+        time_budget_s=time_budget_s,
+        num_shots=num_shots,
+        gate_improvements=gate_improvements,
+        show_progress=show_progress and not _in_notebook(),
+        max_inner_workers=inner_worker_budget,
+        use_ec_cache=use_ec_cache,
+    )
+
+    ctx = mp.get_context("spawn")
+    # On macOS, spawn-context Manager() deadlocks (same as SAT solver fix).
+    # Use threading.Event() instead — ProcessPoolExecutor workers inherit
+    # it via fork-exec on spawn, but we only need cooperative stop anyway.
+    _avoid_manager = _in_notebook() or sys.platform == "darwin"
+    if _avoid_manager:
+        manager = None
+        stop_event = _threading.Event()
+    else:
+        manager = ctx.Manager()
+        _ACTIVE_MANAGERS.add(manager)
+        stop_event = manager.Event()
+    extra_kw["stop_event"] = stop_event
+
+    # Progress display
+    _outer_bar = None
+    _outer_bar_close = lambda: None
+    _progress_state = None
+    _progress_widget = None
+    _progress_poller = None
+
+    config_labels = [f"la={c[0]}, ({c[1]},{c[2]},{c[3]})" for c in configs]
+
+    use_progress_widget = show_progress and _in_notebook() and manager is not None
+    if use_progress_widget:
+        _progress_state = SharedProgressState.create(max_total_workers, manager)
+        _progress_widget = ProgressTableWidget(
+            shared_state=_progress_state,
+            config_labels=config_labels,
+            outer_desc=f"Gadget configs ({type(gadget).__name__}, d={d}, k={trap_capacity})",
+        )
+        try:
+            from IPython.display import display
+            display(_progress_widget.container)
+        except Exception:
+            pass
+        _progress_poller = ProgressPoller(_progress_widget, poll_interval=0.15)
+        _progress_poller.start()
+
+        def _outer_bar_close():
+            if _progress_poller is not None:
+                _progress_poller.stop()
+            if _progress_widget is not None:
+                _progress_widget.close()
+
+    elif show_progress and len(configs) > 1:
+        try:
+            from tqdm.auto import tqdm as _tqdm
+            _outer_bar = _tqdm(
+                total=len(configs),
+                desc=f"Gadget configs ({type(gadget).__name__}, d={d}, k={trap_capacity})",
+                unit="cfg",
+                position=0,
+            )
+
+            def _outer_bar_close():
+                if _outer_bar is not None:
+                    _outer_bar.close()
+        except ImportError:
+            pass
+
+    executor = ProcessPoolExecutor(max_workers=max_total_workers, mp_context=ctx)
+    future_to_cfg: dict = {}
+    future_to_slot: dict = {}
+    available_slots: list = list(range(max_total_workers)) if _progress_state else []
+    completed_count = 0
+
+    try:
+        for idx, cfg in enumerate(configs):
+            cfg_extra = dict(extra_kw)
+            cfg_extra["config_id"] = idx
+
+            assigned_slot = None
+            if _progress_state and available_slots:
+                slot_idx = available_slots.pop(0)
+                assigned_slot = _progress_state.slots[slot_idx]
+                assigned_slot.reset(config_id=idx)
+                cfg_extra["progress_slot"] = assigned_slot
+
+            fut = executor.submit(
+                _run_single_gadget_config_entry,
+                lookahead=cfg[0],
+                subgrid_width=cfg[1],
+                subgrid_height=cfg[2],
+                subgrid_increment=cfg[3],
+                **cfg_extra,
+            )
+            future_to_cfg[fut] = cfg
+            if assigned_slot is not None:
+                future_to_slot[fut] = (slot_idx, assigned_slot)
+
+        pending = set(future_to_cfg.keys())
+        timed_out = False
+
+        while pending:
+            try:
+                procs = getattr(executor, "_processes", None)
+                if procs:
+                    _ACTIVE_WORKER_PIDS.update(procs.keys())
+            except Exception:
+                pass
+
+            if time_budget_s is not None and (time.time() - start) >= time_budget_s:
+                timed_out = True
+                stop_event.set()
+                if verbose:
+                    print(
+                        "[GADGET-SEARCH] Global time budget reached; stopping.",
+                        flush=True,
+                    )
+                break
+
+            done, pending = concurrent.futures.wait(
+                pending,
+                timeout=1.0,
+                return_when=concurrent.futures.FIRST_COMPLETED,
+            )
+
+            if not done:
+                continue
+
+            for fut in done:
+                cfg = future_to_cfg[fut]
+
+                if fut in future_to_slot:
+                    slot_idx, slot = future_to_slot.pop(fut)
+                    available_slots.append(slot_idx)
+
+                try:
+                    res = fut.result()
+                except Exception as e:
+                    if verbose:
+                        print(
+                            f"[GADGET-SEARCH] Worker crashed for cfg={cfg}: {e}",
+                            flush=True,
+                        )
+                    res = {
+                        "lookahead": cfg[0],
+                        "subgrid_width": cfg[1],
+                        "subgrid_height": cfg[2],
+                        "subgrid_increment": cfg[3],
+                        "d": d,
+                        "trap_capacity": trap_capacity,
+                        "exec_time": float("nan"),
+                        "comp_time": 0.0,
+                        "reconfigTime": float("nan"),
+                        "error": repr(e),
+                        "ElapsedTime": np.nan,
+                        "Operations": np.nan,
+                        "MeanConcurrency": np.nan,
+                        "QubitOperations": np.nan,
+                        "LogicalErrorRates": [np.nan for _ in gate_improvements],
+                        "PhysicalZErrorRates": [np.nan for _ in gate_improvements],
+                        "PhysicalXErrorRates": [np.nan for _ in gate_improvements],
+                    }
+
+                all_results.append(res)
+                completed_count += 1
+
+                if _is_better(res, best_result):
+                    best_result = res
+                    if verbose:
+                        print("[GADGET-SEARCH] New best config found.", flush=True)
+                        _print_leaderboard()
+
+                if _progress_widget is not None:
+                    _progress_widget.update_completed(completed_count)
+                elif _outer_bar is not None:
+                    et = res.get("exec_time", float("nan"))
+                    label = f"exec={et:.4f}" if not np.isnan(et) else "failed"
+                    _outer_bar.set_postfix_str(label)
+                    _outer_bar.update(1)
+
+    except KeyboardInterrupt:
+        if verbose:
+            print("[GADGET-SEARCH] Interrupted; cancelling remaining configs.", flush=True)
+        timed_out = True
+        stop_event.set()
+    finally:
+        for f in future_to_cfg:
+            if not f.done():
+                f.cancel()
+
+        from .process_utils import get_child_pids as _get_child_pids
+
+        all_pids_to_kill = set()
+        try:
+            procs = getattr(executor, "_processes", None)
+            if procs:
+                for pid in list(procs.keys()):
+                    all_pids_to_kill.add(pid)
+                    children = _get_child_pids(pid)
+                    all_pids_to_kill.update(children)
+                    for child_pid in children:
+                        all_pids_to_kill.update(_get_child_pids(child_pid))
+        except Exception:
+            pass
+
+        for pid in all_pids_to_kill:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except (OSError, ProcessLookupError):
+                pass
+        time.sleep(0.5)
+        for pid in all_pids_to_kill:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (OSError, ProcessLookupError):
+                pass
+
+        if verbose and all_pids_to_kill:
+            print(
+                f"[GADGET-SEARCH] Killed {len(all_pids_to_kill)} processes.",
+                flush=True,
+            )
+
+        try:
+            executor.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
+
+        if manager is not None:
+            try:
+                manager.shutdown()
+            except Exception:
+                pass
+            _ACTIVE_MANAGERS.discard(manager)
+
+        _reap_zombies()
+        _ACTIVE_WORKER_PIDS.clear()
+        _outer_bar_close()
+
+    if verbose:
+        elapsed = time.time() - start
+        print(
+            f"[GADGET-SEARCH] Finished in {elapsed:.1f}s; "
+            f"{len(all_results)} configs completed.",
+            flush=True,
+        )
+        _print_leaderboard()
+
+    return best_result, all_results
+
+
 # ---------- helper for outer pool ----------
 
 def _run_single_config_entry(
@@ -842,7 +1534,9 @@ def search_configs_best_exec_time(
     # When in a notebook, use the ipywidgets progress table to show per-worker
     # progress (even with just 1 outer worker). In terminal mode, fall back
     # to tqdm bars. The widget tracks inner SAT progress via shared memory.
-    use_progress_widget = show_progress and _in_notebook()
+    # Note: widget requires Manager proxy dicts — disabled when _avoid_manager.
+    _avoid_manager = _in_notebook() or sys.platform == "darwin"
+    use_progress_widget = show_progress and _in_notebook() and not _avoid_manager
     worker_show_progress = show_progress and not use_progress_widget
 
     extra_kw = dict(
@@ -865,14 +1559,16 @@ def search_configs_best_exec_time(
     # Create Manager FIRST - needed for both stop_event and progress state
     # ─────────────────────────────────────────────────────────────────────────
     ctx = mp.get_context("spawn")
-    # Use a Manager to create proxy objects that can be pickled across
-    # spawn-context workers.  A bare ctx.Event() uses POSIX semaphores
-    # that are NOT picklable on macOS spawn, causing RuntimeError.
-    # One Manager process is lightweight; the earlier problem was 4
-    # nested Managers (now eliminated by Fix A).
-    manager = ctx.Manager()
-    _ACTIVE_MANAGERS.add(manager)
-    stop_event = manager.Event()
+    # On macOS, spawn-context Manager() deadlocks (same as SAT solver fix).
+    # Use threading.Event() instead when on macOS or in a notebook.
+    _avoid_manager = _in_notebook() or sys.platform == "darwin"
+    if _avoid_manager:
+        manager = None
+        stop_event = _threading.Event()
+    else:
+        manager = ctx.Manager()
+        _ACTIVE_MANAGERS.add(manager)
+        stop_event = manager.Event()
     extra_kw["stop_event"] = stop_event
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -1067,27 +1763,8 @@ def search_configs_best_exec_time(
             if not f.done():
                 f.cancel()
 
-        # Helper to get child PIDs of a process
-        def _get_child_pids(parent_pid: int) -> set:
-            children = set()
-            try:
-                import subprocess
-                result = subprocess.run(
-                    ["pgrep", "-P", str(parent_pid)],
-                    capture_output=True,
-                    text=True,
-                    timeout=5.0,
-                )
-                if result.returncode == 0:
-                    for line in result.stdout.strip().split('\n'):
-                        if line.strip():
-                            try:
-                                children.add(int(line.strip()))
-                            except ValueError:
-                                pass
-            except Exception:
-                pass
-            return children
+        # H10: Use shared utility
+        from .process_utils import get_child_pids as _get_child_pids
 
         # Collect all PIDs to kill (workers + their children + grandchildren)
         all_pids_to_kill = set()

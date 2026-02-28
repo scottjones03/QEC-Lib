@@ -301,6 +301,28 @@ def _extract_per_ion_gate_kind(op: Any) -> Dict[int, str]:
     return result
 
 
+def _extract_ms_pairs(op: Any) -> List[Tuple[int, int]]:
+    """Return MS gate ion pairs from an operation tree.
+
+    For ``ParallelOperation``, recurses into sub-ops and collects every
+    leaf MS gate as a ``(ion_a, ion_b)`` pair.  This allows the display
+    to draw connecting beams per pair even when multiple MS gates fire
+    simultaneously.
+    """
+    pairs: List[Tuple[int, int]] = []
+    cls = type(op).__name__
+    if cls == "ParallelOperation":
+        for sub in getattr(op, "operations", []):
+            pairs.extend(_extract_ms_pairs(sub))
+    else:
+        gk = _gate_kind_single(op)
+        if gk == "ms":
+            ions = sorted(_extract_ions_from_leaf(op))
+            if len(ions) == 2:
+                pairs.append((ions[0], ions[1]))
+    return pairs
+
+
 # =============================================================================
 # Custom QCCD grid drawing  (replaces arch.display() / networkx)
 # =============================================================================
@@ -495,6 +517,7 @@ def _draw_ions_full(
     ion_idx_remap: Optional[Dict[int, int]] = None,
     physical_to_logical: Optional[Dict[int, int]] = None,
     per_ion_gate_kind: Optional[Dict[int, str]] = None,
+    ms_pairs: Optional[List[Tuple[int, int]]] = None,
 ) -> None:
     """Draw all ions at their current positions with role colours and lasers.
 
@@ -565,7 +588,7 @@ def _draw_ions_full(
             else:
                 label_str = f"{role_ch}(I{idx})"
             ax.text(ix, iy - ion_r - 0.15, label_str,
-                    fontsize=10, ha="center", va="top",
+                    fontsize=ION_BELOW_FONT, ha="center", va="top",
                     fontweight="bold", color="#333", zorder=11,
                     path_effects=STROKE_THIN)
 
@@ -624,8 +647,21 @@ def _draw_ions_full(
                               edgecolor="none", zorder=7)
                 ax.add_patch(halo)
 
-            if len(group_ions) == 2:
-                (_, (x1, y1)), (_, (x2, y2)) = group_ions
+            # Bug 2 fix: draw connecting beams per MS pair instead of
+            # only when there are exactly 2 MS ions in the batch.
+            _drawn_pairs: List[Tuple[int, int]] = []
+            if ms_pairs:
+                # Use explicit pair info from the operation tree
+                for ia, ib in ms_pairs:
+                    if ia in positions and ib in positions:
+                        _drawn_pairs.append((ia, ib))
+            elif len(group_ions) == 2:
+                # Fallback: only 2 MS ions → they form the pair
+                _drawn_pairs.append((group_ions[0][0], group_ions[1][0]))
+
+            for ia, ib in _drawn_pairs:
+                x1, y1 = positions[ia]
+                x2, y2 = positions[ib]
                 ax.plot([x1, x2], [y1, y2],
                         color=beam_color, linewidth=5.0, alpha=0.70,
                         solid_capstyle="round", zorder=8)

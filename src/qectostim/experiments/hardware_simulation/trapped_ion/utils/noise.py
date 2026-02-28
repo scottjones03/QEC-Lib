@@ -258,6 +258,16 @@ class TrappedIonNoiseModel(HardwareNoiseModel):
             # Fallback: identity search (original behaviour)
             return ions.index(ion_obj)
 
+        def _take_ops(stim_idx: int, count: int):
+            """Pop up to ``count`` queued qubit operations for ``stim_idx``."""
+            queue = operationsForIons.get(stim_idx)
+            if not queue:
+                return []
+            take = min(count, len(queue))
+            taken = queue[:take]
+            del queue[:take]
+            return taken
+
         meanPhysicalZError = 0.0
         meanPhysicalXError = 0.0
         numZGates = 0
@@ -280,38 +290,19 @@ class TrappedIonNoiseModel(HardwareNoiseModel):
 
             # --- Pop matching operations per instruction type ---
             if instr[0] == "M" or instr[0] == "R":
-                ops = operationsForIons[idx][:1]
-                operationsForIons[idx].pop(0)
+                ops = _take_ops(idx, 1)
             elif instr[0] == "H":
-                ops = operationsForIons[idx][:2]
-                operationsForIons[idx].pop(0)
-                operationsForIons[idx].pop(0)
+                ops = _take_ops(idx, 2)
             elif instr.startswith("CNOT"):
                 idx2 = int(instr.split(" ")[2])
-                ops = (
-                    operationsForIons[idx][:4]
-                    + operationsForIons[idx2][:1]
-                )
-                operationsForIons[idx].pop(0)
-                operationsForIons[idx].pop(0)
-                operationsForIons[idx].pop(0)
-                operationsForIons[idx2].pop(0)
-                operationsForIons[idx2].pop(0)
+                ops_q1 = _take_ops(idx, 3)
+                ops_q2 = _take_ops(idx2, 2)
+                ops = ops_q1 + ops_q2[:1]
             elif instr.startswith("CZ"):
                 idx2 = int(instr.split(" ")[2])
-                ops = (
-                    operationsForIons[idx][:4]
-                    + operationsForIons[idx2][:2]
-                    + operationsForIons[idx2][3:5]
-                )
-                operationsForIons[idx].pop(0)
-                operationsForIons[idx].pop(0)
-                operationsForIons[idx].pop(0)
-                operationsForIons[idx2].pop(0)
-                operationsForIons[idx2].pop(0)
-                operationsForIons[idx2].pop(0)
-                operationsForIons[idx2].pop(0)
-                operationsForIons[idx2].pop(0)
+                ops_q1 = _take_ops(idx, 3)
+                ops_q2 = _take_ops(idx2, 5)
+                ops = ops_q1 + ops_q2[:2] + ops_q2[3:5]
             else:
                 ops = []
 

@@ -309,6 +309,258 @@ def make_shared_progress_callback(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Single-Config Notebook Widget Progress (for compile_gadget_for_animation etc.)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def make_notebook_widget_progress_callback(
+    title: str = "WISE Routing",
+) -> Tuple[Any, "Callable[[Any], None]", "Callable[[], None]"]:
+    """Create an ipywidgets-based 3-bar progress callback for notebook use.
+
+    Returns a triple ``(container, callback, close)``:
+
+    - **container**: an ``ipywidgets.VBox`` to ``display()`` in the cell.
+    - **callback**: a :pyclass:`RoutingProgress` callback that updates the
+      bars directly (no multiprocessing needed).
+    - **close**: marks all bars as complete.
+
+    The three bars mirror the :class:`ProgressTableWidget` colour scheme:
+      - **Route** (blue ``#3498db``): MS rounds
+      - **Patch** (orange ``#e67e22``): patches within tiling cycle
+      - **SAT** (green ``#2ecc71``): SAT configs within patch
+    """
+    # Import here to avoid circular dependency
+    from ..compiler.routing_config import (
+        _INNER_STAGES,
+        _PATCH_STAGES,
+        STAGE_ROUTING,
+        STAGE_COMPLETE,
+    )
+    _ROUTE_STAGES = frozenset({STAGE_ROUTING, STAGE_COMPLETE})
+
+    import ipywidgets as widgets
+
+    # ── Header ────────────────────────────────────────────────────
+    header = widgets.HTML(
+        value=f"<b style='font-size: 13px;'>{title}</b>",
+        layout=widgets.Layout(margin='0 0 4px 0'),
+    )
+
+    # ── Route bar (blue) ──────────────────────────────────────────
+    route_bar = widgets.IntProgress(
+        value=0, min=0, max=1,
+        bar_style='',
+        style={'bar_color': '#3498db'},
+        layout=widgets.Layout(width='65%'),
+    )
+    route_label = widgets.HTML(
+        value="<span style='color:#3498db; font-size:11px;'>MS Rounds: 0/1</span>",
+        layout=widgets.Layout(width='160px', min_width='140px'),
+    )
+    route_row = widgets.HBox([
+        widgets.HTML(
+            "<b style='width:80px; display:inline-block; font-size:12px;'>Route</b>",
+            layout=widgets.Layout(width='80px'),
+        ),
+        route_bar,
+        route_label,
+    ], layout=widgets.Layout(align_items='center'))
+
+    # ── Patch bar (orange) ────────────────────────────────────────
+    patch_bar = widgets.IntProgress(
+        value=0, min=0, max=1,
+        bar_style='',
+        style={'bar_color': '#e67e22'},
+        layout=widgets.Layout(width='65%'),
+    )
+    patch_label = widgets.HTML(
+        value="<span style='color:#e67e22; font-size:11px;'>Patches: 0/1</span>",
+        layout=widgets.Layout(width='160px', min_width='140px'),
+    )
+    patch_row = widgets.HBox([
+        widgets.HTML(
+            "<b style='width:80px; display:inline-block; font-size:12px;'>Patch</b>",
+            layout=widgets.Layout(width='80px'),
+        ),
+        patch_bar,
+        patch_label,
+    ], layout=widgets.Layout(align_items='center'))
+
+    # ── SAT bar (green) ──────────────────────────────────────────
+    sat_bar = widgets.IntProgress(
+        value=0, min=0, max=1,
+        bar_style='',
+        style={'bar_color': '#2ecc71'},
+        layout=widgets.Layout(width='65%'),
+    )
+    sat_label = widgets.HTML(
+        value="<span style='color:#2ecc71; font-size:11px;'>SAT: 0/1</span>",
+        layout=widgets.Layout(width='160px', min_width='140px'),
+    )
+    sat_row = widgets.HBox([
+        widgets.HTML(
+            "<b style='width:80px; display:inline-block; font-size:12px;'>SAT</b>",
+            layout=widgets.Layout(width='80px'),
+        ),
+        sat_bar,
+        sat_label,
+    ], layout=widgets.Layout(align_items='center'))
+
+    # ── Container ─────────────────────────────────────────────────
+    container = widgets.VBox(
+        [header, route_row, patch_row, sat_row],
+        layout=widgets.Layout(
+            border='1px solid #ddd',
+            padding='8px',
+            margin='4px 0',
+            width='100%',
+        ),
+    )
+
+    # ── Callback ──────────────────────────────────────────────────
+    # Hierarchical reset model:
+    #   Route (outermost):  shows completed MS rounds — only moves forward.
+    #   Patch (middle):     shows patches in current tiling cycle — resets
+    #                       each time a new MS round starts.
+    #   SAT (innermost):    shows configs in current SAT solve — resets
+    #                       each time a new patch starts solving.
+    #
+    # THROTTLING: to avoid overwhelming the IOPub channel with widget
+    # comm messages (which causes "IOStream.flush timed out" and hangs),
+    # we accumulate state changes internally and only push to widgets
+    # at most once every _FLUSH_INTERVAL seconds.
+    import time as _time_mod
+
+    _route_hwm = 0
+    _FLUSH_INTERVAL = 0.25          # seconds between widget pushes
+    _last_push: float = 0.0         # monotonic ts of last widget push
+
+    # Shadow state — updated on every callback, pushed to widgets on flush
+    _s_route_val = 0
+    _s_route_max = 1
+    _s_route_text = f"<span style='color:#3498db; font-size:11px;'>MS Rounds: 0/1</span>"
+    _s_patch_val = 0
+    _s_patch_max = 1
+    _s_patch_style = ''
+    _s_patch_text = "<span style='color:#e67e22; font-size:11px;'>Patches: 0/1</span>"
+    _s_sat_val = 0
+    _s_sat_max = 1
+    _s_sat_style = ''
+    _s_sat_text = "<span style='color:#2ecc71; font-size:11px;'>SAT: 0/1</span>"
+
+    def _push_to_widgets(force: bool = False) -> None:
+        """Push accumulated shadow state → widgets (throttled)."""
+        nonlocal _last_push
+        now = _time_mod.monotonic()
+        if not force and (now - _last_push) < _FLUSH_INTERVAL:
+            return
+        _last_push = now
+        # Batch all widget mutations together, then one brief yield
+        route_bar.max = _s_route_max
+        route_bar.value = _s_route_val
+        route_label.value = _s_route_text
+        patch_bar.max = _s_patch_max
+        patch_bar.value = _s_patch_val
+        patch_bar.bar_style = _s_patch_style
+        patch_label.value = _s_patch_text
+        sat_bar.max = _s_sat_max
+        sat_bar.value = _s_sat_val
+        sat_bar.bar_style = _s_sat_style
+        sat_label.value = _s_sat_text
+
+    def _callback(p) -> None:
+        nonlocal _route_hwm
+        nonlocal _s_route_val, _s_route_max, _s_route_text
+        nonlocal _s_patch_val, _s_patch_max, _s_patch_style, _s_patch_text
+        nonlocal _s_sat_val, _s_sat_max, _s_sat_style, _s_sat_text
+        stage = p.stage
+        force_push = False
+        if stage in _ROUTE_STAGES:
+            total = max(p.total, 1)
+            cur = min(p.current, total)
+            # Only allow forward progress (HWM blocks per-block re-emissions)
+            if total > _s_route_max or cur >= _route_hwm:
+                old_route = _s_route_val
+                _route_hwm = cur
+                _s_route_max = total
+                _s_route_val = cur
+                _s_route_text = (
+                    f"<span style='color:#3498db; font-size:11px;'>"
+                    f"MS Rounds: {cur}/{total}</span>"
+                )
+                # Only reset sub-bars when Route truly advances
+                if cur > old_route:
+                    _s_patch_val = 0
+                    _s_patch_max = 1
+                    _s_patch_style = ''
+                    _s_patch_text = (
+                        "<span style='color:#e67e22; font-size:11px;'>"
+                        "Patches: 0/?</span>"
+                    )
+                    _s_sat_val = 0
+                    _s_sat_max = 1
+                    _s_sat_style = ''
+                    _s_sat_text = (
+                        "<span style='color:#2ecc71; font-size:11px;'>"
+                        "SAT: waiting</span>"
+                    )
+                    force_push = True  # Route advance → always push
+
+        elif stage in _PATCH_STAGES:
+            total = max(p.total, 1)
+            cur = min(p.current, total)
+            _s_patch_max = total
+            _s_patch_val = cur
+            _s_patch_style = 'success' if cur >= total else ''
+            _s_patch_text = (
+                f"<span style='color:#e67e22; font-size:11px;'>"
+                f"Patches: {cur}/{total}</span>"
+            )
+            # New patch started → reset SAT bar
+            if cur == 0 or (cur > 0 and _s_sat_val >= _s_sat_max > 1):
+                _s_sat_val = 0
+                _s_sat_max = 1
+                _s_sat_style = ''
+                _s_sat_text = (
+                    "<span style='color:#2ecc71; font-size:11px;'>"
+                    "SAT: waiting</span>"
+                )
+
+        elif stage in _INNER_STAGES:
+            total = max(p.total, 1)
+            cur = min(p.current, total)
+            _s_sat_max = total
+            _s_sat_val = cur
+            _s_sat_style = 'success' if cur >= total else ''
+            _s_sat_text = (
+                f"<span style='color:#2ecc71; font-size:11px;'>"
+                f"SAT: {cur}/{total}</span>"
+            )
+
+        _push_to_widgets(force=force_push)
+
+    # ── Close ─────────────────────────────────────────────────────
+    def _close() -> None:
+        nonlocal _s_route_val, _s_patch_val, _s_sat_val
+        nonlocal _s_patch_style, _s_sat_style
+        _s_route_val = _s_route_max
+        _s_patch_val = _s_patch_max
+        _s_sat_val = _s_sat_max
+        _s_patch_style = 'success'
+        _s_sat_style = 'success'
+        _push_to_widgets(force=True)
+        route_bar.bar_style = 'success'
+        patch_bar.bar_style = 'success'
+        sat_bar.bar_style = 'success'
+        header.value = (
+            f"<b style='font-size: 13px; color: #27ae60;'>"
+            f"✓ {title} — complete</b>"
+        )
+
+    return container, _callback, _close
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # ipywidgets Progress Table (Notebook Mode)
 # ═══════════════════════════════════════════════════════════════════════════════
 

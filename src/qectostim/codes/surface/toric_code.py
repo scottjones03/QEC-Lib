@@ -472,6 +472,10 @@ class ToricCode33(TopologicalCSSCode):
         
         return [''.join(lx1), ''.join(lx2)], [''.join(lz1), ''.join(lz2)]
 
+    def has_physical_boundaries(self) -> bool:
+        """Toric codes have periodic boundaries — no open edges for surgery."""
+        return False
+
     def qubit_coords(self) -> List[Coord2D]:
         """Return 2D coordinates for data qubits."""
         return list(self.metadata["data_coords"])

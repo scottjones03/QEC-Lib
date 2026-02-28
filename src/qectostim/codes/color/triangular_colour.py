@@ -112,7 +112,13 @@ from typing import Dict, Any, List, Optional, Tuple
 import numpy as np
 import math
 
-from qectostim.codes.abstract_css import TopologicalCSSCode, Coord2D
+from qectostim.codes.abstract_css import (
+    TopologicalCSSCode,
+    Coord2D,
+    MergeStabilizerInfo,
+    SeamStabilizer,
+    GrownStabilizer,
+)
 from qectostim.codes.complexes.css_complex import CSSChainComplex3
 from qectostim.codes.utils import validate_css_code
 
@@ -536,6 +542,204 @@ class TriangularColourCode(TopologicalCSSCode):
                     if self._stab_colors[i] == self._stab_colors[j]:
                         raise ValueError(f"Adjacent faces {i},{j} have same color")
         return True
+
+    # ------------------------------------------------------------------
+    # Lattice-surgery merge-stabilizer computation
+    # ------------------------------------------------------------------
+
+    def get_merge_stabilizers(
+        self,
+        merge_type: str,
+        my_edge: str,
+        other_code: "TriangularColourCode",
+        other_edge: str,
+        my_data_global: Dict[int, int],
+        other_data_global: Dict[int, int],
+        seam_qubit_offset: int,
+    ) -> MergeStabilizerInfo:
+        """Compute seam and grown-boundary stabilizers for colour-code merge.
+
+        Colour-code lattice surgery (Kesselring et al. 2018, Thomsen et al.
+        2022) is more complex than surface-code surgery due to the
+        3-colourable face structure.  The merge connects two triangular
+        patches along a shared boundary, creating new face operators
+        (seam stabilisers) that span both patches.
+
+        Because the code is **self-dual** (``Hx = Hz``), every seam
+        stabiliser acts as both an X-type and Z-type check.  The
+        *merge_type* parameter therefore selects the Pauli basis for
+        the ancilla preparation/measurement (``R/M`` for ZZ, ``RX/MX``
+        for XX) rather than the stabiliser type.
+
+        The merge boundary is the **top** edge (row 0) for ``my_edge="top"``
+        or the **bottom** edge for ``my_edge="bottom"``.
+
+        CX schedule: 6-phase hexagonal schedule matching the bulk EC.
+
+        Parameters
+        ----------
+        merge_type : ``\"ZZ\"`` or ``\"XX\"``
+        my_edge : ``\"bottom\" | \"top\"``  (triangular patches have 3 edges;
+            left/right map to the two diagonal edges)
+        other_code : colour code on the other side of the merge
+        other_edge : edge of *other_code* facing the boundary
+        my_data_global : ``{local_data_idx: global_qubit_idx}`` for this block
+        other_data_global : ``{local_data_idx: global_qubit_idx}`` for other block
+        seam_qubit_offset : starting global qubit index for seam ancillas
+        """
+        d = self._distance
+
+        seam_stab_type = "Z" if merge_type == "ZZ" else "X"
+        grown_stab_type = "X" if merge_type == "ZZ" else "Z"
+
+        my_coords = list(self.metadata["data_coords"])
+        my_coord_to_local = {(round(c[0], 4), round(c[1], 4)): i
+                             for i, c in enumerate(my_coords)}
+
+        other_coords = list(other_code.metadata["data_coords"])
+        other_coord_to_local = {(round(c[0], 4), round(c[1], 4)): i
+                                for i, c in enumerate(other_coords)}
+
+        # Identify boundary qubits from each patch.
+        # "top" boundary = row 0 (y ≈ 0) for both patches.
+        # "bottom" boundary = last row (max y).
+        my_y_vals = sorted(set(round(c[1], 4) for c in my_coords))
+        oth_y_vals = sorted(set(round(c[1], 4) for c in other_coords))
+
+        if my_edge == "top":
+            my_bnd_y = my_y_vals[0]  # smallest y
+        elif my_edge == "bottom":
+            my_bnd_y = my_y_vals[-1]  # largest y
+        else:
+            # For left/right diagonal edges, pick the nearest y extremum
+            my_bnd_y = my_y_vals[0] if my_edge == "left" else my_y_vals[-1]
+
+        if other_edge == "top":
+            oth_bnd_y = oth_y_vals[0]
+        elif other_edge == "bottom":
+            oth_bnd_y = oth_y_vals[-1]
+        else:
+            oth_bnd_y = oth_y_vals[0] if other_edge == "left" else oth_y_vals[-1]
+
+        # Collect boundary qubits (sorted by x)
+        my_bnd_qubits = sorted(
+            [i for i, c in enumerate(my_coords)
+             if abs(round(c[1], 4) - my_bnd_y) < 0.01],
+            key=lambda i: my_coords[i][0]
+        )
+        oth_bnd_qubits = sorted(
+            [i for i, c in enumerate(other_coords)
+             if abs(round(c[1], 4) - oth_bnd_y) < 0.01],
+            key=lambda i: other_coords[i][0]
+        )
+
+        seam_stabs: List[SeamStabilizer] = []
+        grown_stabs: List[GrownStabilizer] = []
+        seam_idx = 0
+
+        # Create seam stabilisers: pairs of adjacent boundary qubits
+        # from each patch form weight-4 face operators spanning both patches.
+        n_pairs = min(len(my_bnd_qubits) - 1, len(oth_bnd_qubits) - 1)
+        for p in range(n_pairs):
+            g_anc = seam_qubit_offset + seam_idx
+            seam_idx += 1
+
+            my_q1_local = my_bnd_qubits[p]
+            my_q2_local = my_bnd_qubits[p + 1]
+            oth_q1_local = oth_bnd_qubits[p]
+            oth_q2_local = oth_bnd_qubits[p + 1]
+
+            my_q1 = my_data_global[my_q1_local]
+            my_q2 = my_data_global[my_q2_local]
+            oth_q1 = other_data_global[oth_q1_local]
+            oth_q2 = other_data_global[oth_q2_local]
+
+            support = [my_q1, my_q2, oth_q1, oth_q2]
+
+            # 6-phase CX schedule (colour-code hexagonal).
+            # Distribute 4 CX across first 4 of 6 phases.
+            if seam_stab_type == "Z":
+                cx_phases: List[List[Tuple[int, int]]] = [
+                    [(my_q1, g_anc)],
+                    [(my_q2, g_anc)],
+                    [(oth_q1, g_anc)],
+                    [(oth_q2, g_anc)],
+                    [],
+                    [],
+                ]
+            else:
+                cx_phases = [
+                    [(g_anc, my_q1)],
+                    [(g_anc, my_q2)],
+                    [(g_anc, oth_q1)],
+                    [(g_anc, oth_q2)],
+                    [],
+                    [],
+                ]
+
+            seam_stabs.append(SeamStabilizer(
+                lattice_position=(
+                    (my_coords[my_q1_local][0] + other_coords[oth_q1_local][0]) / 2.0,
+                    (my_bnd_y + oth_bnd_y) / 2.0,
+                ),
+                stab_type=seam_stab_type,
+                global_ancilla_idx=g_anc,
+                weight=4,
+                cx_per_phase=cx_phases,
+                support_globals=support,
+            ))
+
+        # Grown stabs: boundary faces that touch the merge boundary gain
+        # new data-qubit support from the other patch.
+        my_bnd_set = set(my_bnd_qubits)
+        for face_idx, face in enumerate(self._faces):
+            face_set = set(face)
+            bnd_overlap = face_set & my_bnd_set
+            if len(bnd_overlap) < 2:
+                continue  # Face doesn't touch boundary edge
+
+            # This face touches the boundary — it gains data from the
+            # other patch.  Match boundary qubits by x-position.
+            new_cx: List[List[Tuple[int, int]]] = [[] for _ in range(6)]
+            new_support: List[int] = []
+
+            for my_local in sorted(bnd_overlap):
+                my_x = round(my_coords[my_local][0], 4)
+                # Find matching other-patch qubit by x-coord
+                for oth_local in oth_bnd_qubits:
+                    oth_x = round(other_coords[oth_local][0], 4)
+                    if abs(my_x - oth_x) < 0.01:
+                        g_data = other_data_global[oth_local]
+                        new_support.append(g_data)
+                        phase = len(new_support) % 6
+                        if grown_stab_type == "Z":
+                            new_cx[phase].append((g_data, -1))
+                        else:
+                            new_cx[phase].append((-1, g_data))
+                        break
+
+            if new_support:
+                stab_coord = self.metadata.get("x_stab_coords", [(0.0, 0.0)] * len(self._faces))
+                sc = stab_coord[face_idx] if face_idx < len(stab_coord) else (0.0, 0.0)
+
+                grown_stabs.append(GrownStabilizer(
+                    lattice_position=(float(sc[0]), float(sc[1])),
+                    stab_type=grown_stab_type,
+                    existing_ancilla_global=-1,
+                    original_weight=len(face),
+                    new_weight=len(face) + len(new_support),
+                    new_cx_per_phase=new_cx,
+                    belongs_to_block="",
+                    new_support_globals=new_support,
+                ))
+
+        return MergeStabilizerInfo(
+            seam_stabs=seam_stabs,
+            grown_stabs=grown_stabs,
+            seam_type=seam_stab_type,
+            grown_type=grown_stab_type,
+            num_cx_phases=6,
+        )
 
 
 # Pre-built instances

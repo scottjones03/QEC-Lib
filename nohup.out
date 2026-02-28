@@ -1,0 +1,1 @@
+/tmp/run_diag.sh: line 3: 81165 Terminated: 15          PYTHONPATH=src ./my_venv/bin/python _diag_notebook_flow.py > /tmp/diag_nb_out.log 2> /tmp/diag_nb_err.log

@@ -388,6 +388,220 @@ def run_simulation(
 # =====================================================================
 # main
 # =====================================================================
+# Gadget Animation Support
+# =====================================================================
+
+
+def compile_gadget_for_animation(
+    ideal_gadget_circuit: stim.Circuit,
+    *,
+    qec_metadata: Any = None,
+    gadget: Any = None,
+    qubit_allocation: Any = None,
+    trap_capacity: int = 2,
+    lookahead: int = 2,
+    subgridsize: Tuple[int, int, int] = (4, 3, 0),
+    base_pmax_in: int = 1,
+    max_inner_workers: int | None = None,
+    show_progress: bool = False,
+) -> Tuple[Any, TrappedIonCompiler, Any, List[Any], Dict[int, str], Dict[int, int], Dict[int, int]]:
+    """Compile a gadget circuit through the full WISE pipeline for animation.
+
+    This bridges :func:`route_full_experiment` (analytics-only, layout arrays)
+    and :func:`animate_transport` (needs architecture + operation objects).
+
+    It builds a correctly-sized WISE architecture, runs the compiler
+    pipeline manually (decompose → map → route → schedule), and injects
+    ``qec_metadata``, ``gadget``, and ``qubit_allocation`` into the
+    ``NativeCircuit`` metadata so that ``TrappedIonCompiler.route()``
+    can dispatch to ``ionRoutingGadgetArch`` for phase-aware routing.
+
+    Parameters
+    ----------
+    ideal_gadget_circuit : stim.Circuit
+        Ideal circuit from ``FaultTolerantGadgetExperiment.to_stim()``.
+    qec_metadata : QECMetadata, optional
+        Phase/block information from ``ft_experiment.qec_metadata``.
+        **Required** for phase-aware gadget routing.
+    gadget : Gadget, optional
+        Gadget object (e.g. ``TransversalCNOTGadget()``).
+    qubit_allocation : QubitAllocation, optional
+        Unified allocation from ``ft_experiment._unified_allocation``.
+    trap_capacity : int
+        Ions per trap (k).
+    lookahead : int
+        SAT solver lookahead window.
+    subgridsize : tuple
+        ``(width, height, increment)`` for patch decomposition.
+    base_pmax_in : int
+        Base pass horizon for SAT solver.
+    max_inner_workers : int | None
+        Max parallel SAT workers per patch (None = all cores, 1 = serial).
+    show_progress : bool
+        Display tqdm progress bars during routing.
+
+    Returns
+    -------
+    arch : WISEArchitecture
+        The architecture instance (needed by ``animate_transport``).
+    compiler : TrappedIonCompiler
+        The compiler (has ``ion_mapping`` for ``build_viz_mappings``).
+    compiled : CompiledCircuit
+        Full compilation result.
+    batches : list
+        ``compiled.scheduled.batches`` — operation objects for animation.
+    ion_roles : dict
+        ``{ion_idx: role}`` for viz coloring.
+    physical_to_logical : dict
+        ``{ion_idx: stim_qubit_idx}``.
+    ion_idx_remap : dict
+        ``{ion_idx: dense_index}``.
+    """
+    from ..compiler.routing_config import WISERoutingConfig
+    from qectostim.experiments.hardware_simulation.core.pipeline import (
+        CompiledCircuit,
+    )
+    from ..utils.gadget_routing import partition_grid_for_blocks
+
+    # ------------------------------------------------------------------
+    # Grid sizing: per-block sub-grids if metadata available, else global
+    # ------------------------------------------------------------------
+    _use_per_block = (
+        qec_metadata is not None
+        and qubit_allocation is not None
+        and hasattr(qec_metadata, 'block_allocations')
+        and len(qec_metadata.block_allocations) >= 2
+    )
+
+    if qec_metadata is not None and qubit_allocation is None:
+        import warnings
+        warnings.warn(
+            "compile_gadget_for_animation: qec_metadata provided but "
+            "qubit_allocation is None — falling back to global mapping "
+            "which will mangle block ions together. Pass qubit_allocation "
+            "for correct per-block spatial partitioning.",
+            stacklevel=2,
+        )
+
+    if _use_per_block:
+        # §3.1.1: allocate disjoint sub-grid regions per block
+        sub_grids = partition_grid_for_blocks(
+            qec_metadata, qubit_allocation, k=trap_capacity,
+        )
+        max_r = max(sg.grid_region[2] for sg in sub_grids.values())
+        max_c = max(sg.grid_region[3] for sg in sub_grids.values())
+        n_traps = max_r   # rows
+        m_traps = max_c   # trap columns
+    else:
+        sub_grids = None
+        # Fallback: global grid sizing (same formula as _route_and_simulate)
+        num_qubits = ideal_gadget_circuit.num_qubits
+        nqubits_needed = 4 * (np.ceil(num_qubits / 3))
+        n_traps = int(np.ceil(np.sqrt(nqubits_needed)))
+        m_traps = int(np.ceil(n_traps / trap_capacity))
+
+    # Build architecture + compiler
+    wise_cfg = QCCDWiseArch(m=m_traps, n=n_traps, k=trap_capacity)
+    arch = WISEArchitecture(
+        wise_config=wise_cfg,
+        add_spectators=True,
+        compact_clustering=True,
+    )
+    compiler = TrappedIonCompiler(
+        arch, is_wise=True, wise_config=wise_cfg,
+        show_progress=False,  # We handle progress display ourselves below
+    )
+
+    # ── Progress: prefer ipywidgets in notebooks, tqdm elsewhere ──
+    _progress_close_fn = None
+    if show_progress:
+        try:
+            from ..utils.progress_table import (
+                make_notebook_widget_progress_callback,
+                _in_notebook,
+            )
+            if _in_notebook():
+                from IPython.display import display as _ipy_display
+                _widget_container, _widget_cb, _progress_close_fn = (
+                    make_notebook_widget_progress_callback("WISE Routing")
+                )
+                _ipy_display(_widget_container)
+                _user_cb = _widget_cb
+            else:
+                raise ImportError("not in notebook")
+        except Exception:
+            # Fallback: tqdm text bars
+            from ..compiler.routing_config import make_triple_tqdm_progress_callback
+            _user_cb, _progress_close_fn = make_triple_tqdm_progress_callback(
+                round_desc="MS Rounds",
+                patch_desc="Patches",
+                sat_desc="SAT Configs",
+            )
+    else:
+        _user_cb = None
+
+    compiler.routing_kwargs = dict(
+        routing_config=WISERoutingConfig.default(
+            lookahead=lookahead,
+            subgridsize=subgridsize,
+            base_pmax_in=base_pmax_in,
+            show_progress=False,  # Disable internal tqdm — we set our own
+        ),
+        max_inner_workers=max_inner_workers,
+    )
+
+    # Inject our widget/tqdm callback into the routing config
+    if _user_cb is not None:
+        rc = compiler.routing_kwargs["routing_config"]
+        rc.progress_callback = _user_cb
+        rc._progress_close = _progress_close_fn
+
+    # Run compiler pipeline MANUALLY so we can inject gadget metadata
+    # into the NativeCircuit's metadata dict before route() reads it.
+    native = compiler.decompose_to_native(ideal_gadget_circuit)
+
+    # Inject gadget metadata so route() dispatches to ionRoutingGadgetArch
+    if qec_metadata is not None:
+        native.qec_metadata = qec_metadata
+        native.metadata["qec_metadata"] = qec_metadata
+    if gadget is not None:
+        native.metadata["gadget"] = gadget
+    if qubit_allocation is not None:
+        native.metadata["qubit_allocation"] = qubit_allocation
+
+    # ------------------------------------------------------------------
+    # Qubit-to-ion mapping: per-block or global
+    # ------------------------------------------------------------------
+    # Delegate to the compiler's map_qubits(), which handles both the
+    # per-block (_map_qubits_per_block) and global paths.  The injected
+    # metadata (qec_metadata, qubit_allocation) will trigger the
+    # per-block path automatically when multiple blocks are present.
+    mapped = compiler.map_qubits(native)
+
+    try:
+        routed = compiler.route(mapped)
+    finally:
+        # Close progress display even if routing raises
+        if _progress_close_fn is not None:
+            try:
+                _progress_close_fn()
+            except Exception:
+                pass
+
+    scheduled = compiler.schedule(routed)
+
+    compiled = CompiledCircuit(
+        scheduled=scheduled,
+        mapping=routed.final_mapping or mapped.mapping,
+        original_circuit=ideal_gadget_circuit,
+    )
+    compiled.compute_metrics()
+
+    # Extract animation artifacts
+    batches = compiled.scheduled.batches
+    ion_roles, physical_to_logical, ion_idx_remap = build_viz_mappings(compiler)
+
+    return arch, compiler, compiled, batches, ion_roles, physical_to_logical, ion_idx_remap
 
 
 def main(argv: Optional[List[str]] = None) -> None:

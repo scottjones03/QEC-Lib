@@ -144,7 +144,24 @@ class TransversalCNOTGadget(Gadget):
     def reset_phases(self) -> None:
         """Reset phase counter for new circuit generation."""
         self._current_phase = 0
-    
+
+    def get_block_names(self) -> List[str]:
+        """block_0 = control, block_1 = target."""
+        return ["block_0", "block_1"]
+
+    def get_phase_active_blocks(self, phase_index: int) -> List[str]:
+        """Phase 0: both blocks interact (transversal CNOT)."""
+        return ["block_0", "block_1"]
+
+    def get_phase_pairs(self, phase_index, alloc):
+        """Phase 0: transversal CNOT — pair ctrl_data[i] ↔ tgt_data[i]."""
+        ctrl = alloc.get_block("block_0")
+        tgt = alloc.get_block("block_1")
+        ctrl_data = ctrl.get_data_qubits()
+        tgt_data = tgt.get_data_qubits()
+        n = min(len(ctrl_data), len(tgt_data))
+        return [[(ctrl_data[i], tgt_data[i]) for i in range(n)]]
+
     def is_teleportation_gadget(self) -> bool:
         """Not a teleportation gadget - both blocks survive."""
         return False

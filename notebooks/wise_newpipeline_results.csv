@@ -1,2 +1,2 @@
 lookahead,subgrid_width,subgrid_height,subgrid_increment,d,m_traps,n_traps,trap_capacity,exec_time,comp_time,reconfigTime,ElapsedTime,Operations,MeanConcurrency,QubitOperations,LogicalErrorRates,PhysicalZErrorRates,PhysicalXErrorRates,DACs,Electrodes
-4,4,3,0,2,2,3,2,0.003911,19.233623583015287,0.001896,0.003911,69,2.1315789473684212,65,[0.11607],[0.0],[0.0],102,300
+4,4,3,0,2,2,3,2,0.0030709999999999986,51.00888479198329,0.001896,0.0030709999999999986,69,1.9166666666666667,65,[0.11641],[0.0],[0.0],102,300

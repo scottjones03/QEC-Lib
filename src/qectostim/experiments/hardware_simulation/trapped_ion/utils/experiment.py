@@ -55,9 +55,12 @@ from .physics import CalibrationConstants, DEFAULT_CALIBRATION
 from ..compiler.qccd_parallelisation import paralleliseOperationsWithBarriers
 from ..compiler.qccd_ion_routing import ionRouting
 from ..compiler.qccd_WISE_ion_route import ionRoutingWISEArch
+from ..compiler.routing_config import WISERoutingConfig
 from qectostim.experiments.ft_gadget_experiment import (
     FaultTolerantGadgetExperiment,
 )
+
+logger = logging.getLogger(__name__)
 
 class TrappedIonExperiment(HardwareSimulator):
     """QEC experiment on trapped-ion QCCD hardware.
@@ -134,15 +137,15 @@ class TrappedIonExperiment(HardwareSimulator):
     ----------
     code : Code
         Quantum error correction code.
-    architecture : QCCDArch
-        QCCD architecture (or subclass).
-    compiler : optional
-        Compiler instance (created automatically if ``None``).
-    hardware_noise : optional
+    architecture : QCCDArch, optional
+        QCCD architecture (or subclass).  For gadget experiments on
+        WISE grids this can be omitted — the correct grid dimensions
+        are computed automatically from the gadget metadata.
+    compiler : TrappedIonCompiler, optional
+        Compiler instance.  Created automatically when ``None``.
+    hardware_noise : TrappedIonNoiseModel, optional
         Hardware noise model.  A default :class:`TrappedIonNoiseModel`
         is created if ``None``.
-    calibration : optional
-        Calibration constants.
     rounds : int
         Number of stabiliser measurement rounds.
     basis : str
@@ -152,20 +155,39 @@ class TrappedIonExperiment(HardwareSimulator):
         via :class:`FaultTolerantGadgetExperiment`.
     error_scaling : float
         Scale factor for all error probabilities.
+    trap_capacity : int
+        Ions per trap (``k`` for :class:`QCCDWiseArch`).
+        Only used when *architecture* is ``None``.
+    add_spectators : bool
+        Whether to add spectator ions.  Only used when
+        *architecture* is ``None``.
+    compact_clustering : bool
+        Compact clustering flag.  Only used when
+        *architecture* is ``None``.
+    routing_config : WISERoutingConfig, optional
+        Routing configuration forwarded to the compiler.  Only used
+        when *compiler* is ``None``.
     """
 
     def __init__(
         self,
         code,
-        architecture: QCCDArch,
-        compiler: TrappedIonCompiler,
-        hardware_noise: TrappedIonNoiseModel,
+        architecture: QCCDArch = None,
+        compiler: TrappedIonCompiler = None,
+        hardware_noise: TrappedIonNoiseModel = None,
         rounds: int = 1,
         basis: str = "z",
         gadget=None,
         error_scaling: float = 1.0,
+        # WISE auto-config (used when architecture is None)
+        trap_capacity: int = 2,
+        add_spectators: bool = True,
+        compact_clustering: bool = True,
+        routing_config: Optional["WISERoutingConfig"] = None,
         **kwargs,
     ):
+        if hardware_noise is None:
+            hardware_noise = TrappedIonNoiseModel()
 
         super().__init__(
             code=code,
@@ -179,6 +201,18 @@ class TrappedIonExperiment(HardwareSimulator):
         self.gadget = gadget
         self.error_scaling = error_scaling
 
+        # WISE auto-config params
+        self._trap_capacity = trap_capacity
+        self._add_spectators = add_spectators
+        self._compact_clustering = compact_clustering
+        self._routing_config = routing_config
+
+        # Gadget metadata — populated by build_ideal_circuit() when
+        # self.gadget is set, or can be injected externally.
+        self._qec_metadata = None
+        self._qubit_allocation = None
+        self._ft_experiment = None
+
         # Cached state from the noise model walk
         self._last_mean_phys_x: float = 0.0
         self._last_mean_phys_z: float = 0.0
@@ -189,6 +223,11 @@ class TrappedIonExperiment(HardwareSimulator):
 
         If ``self.gadget`` is set, generates a fault-tolerant gadget
         experiment circuit; otherwise a standard CSS memory circuit.
+
+        When a gadget is used, ``self._qec_metadata`` and
+        ``self._qubit_allocation`` are populated automatically so that
+        the downstream compile pipeline can dispatch to phase-aware
+        gadget routing.
         """
         if self.gadget is not None:
             ft = FaultTolerantGadgetExperiment(
@@ -198,7 +237,12 @@ class TrappedIonExperiment(HardwareSimulator):
                 num_rounds_before=self.rounds,
                 num_rounds_after=self.rounds,
             )
-            return ft.to_stim()
+            circ = ft.to_stim()
+            # Save metadata for the compile pipeline
+            self._qec_metadata = ft.qec_metadata
+            self._qubit_allocation = ft._unified_allocation
+            self._ft_experiment = ft
+            return circ
 
         mem = CSSMemoryExperiment(
             code=self.code,
@@ -208,7 +252,146 @@ class TrappedIonExperiment(HardwareSimulator):
         )
         return mem.to_stim()
 
+    # ------------------------------------------------------------------
+    # Auto-configuration helpers
+    # ------------------------------------------------------------------
+
+    def _ensure_architecture(self) -> None:
+        """Lazily build WISE architecture + compiler from gadget metadata.
+
+        Called automatically by :meth:`compile` when ``architecture``
+        was not provided at construction time.  Requires
+        ``_qec_metadata`` and ``_qubit_allocation`` to have been
+        populated (which :meth:`build_ideal_circuit` does).
+        """
+        if self.architecture is not None:
+            # Already set — check if WISEArchitecture needs resolution
+            from .architectures import WISEArchitecture as _WISEArch
+            if (
+                isinstance(self.architecture, _WISEArch)
+                and not self.architecture.wise_config.is_resolved
+                and self._qec_metadata is not None
+            ):
+                self._resolve_wise_grid()
+            return
+
+        if self._qec_metadata is None or self._qubit_allocation is None:
+            raise RuntimeError(
+                "Cannot auto-build architecture: gadget metadata not yet "
+                "available.  Call build_ideal_circuit() first or pass an "
+                "explicit architecture."
+            )
+
+        self._resolve_wise_grid()
+
+    def _resolve_wise_grid(self) -> None:
+        """Compute grid dims from gadget metadata and (re-)build arch + compiler."""
+        from .gadget_routing import compute_gadget_grid_size
+        from .architectures import WISEArchitecture as _WISEArch
+
+        k = self._trap_capacity
+        m, n = compute_gadget_grid_size(
+            self._qec_metadata, self._qubit_allocation, k,
+        )
+        logger.info("Auto-computed WISE grid: m=%d, n=%d, k=%d", m, n, k)
+
+        wise_cfg = QCCDWiseArch(m=m, n=n, k=k)
+        self.architecture = _WISEArch(
+            wise_config=wise_cfg,
+            add_spectators=self._add_spectators,
+            compact_clustering=self._compact_clustering,
+        )
+
+        # (Re-)create compiler for the new architecture
+        self._compiler = TrappedIonCompiler(
+            self.architecture,
+            is_wise=True,
+            wise_config=wise_cfg,
+        )
+        if self._routing_config is not None:
+            self._compiler.routing_kwargs = dict(
+                routing_config=self._routing_config,
+            )
+
+    # ------------------------------------------------------------------
+    # Compilation
+    # ------------------------------------------------------------------
+
+    def compile(self, circuit=None):
+        """Compile a circuit to hardware.
+
+        Overrides the base :meth:`HardwareSimulator.compile` to
+        forward gadget metadata (``qec_metadata``, ``gadget``,
+        ``qubit_allocation``) through the compilation pipeline so that
+        :meth:`TrappedIonCompiler.map_qubits` and
+        :meth:`TrappedIonCompiler.route` can dispatch to per-block
+        topology building and phase-aware gadget routing automatically.
+
+        When no *architecture* was provided at construction time and
+        a *gadget* is set, the correct WISE grid dimensions are
+        computed automatically from the gadget metadata before
+        compiling.
+
+        Parameters
+        ----------
+        circuit : stim.Circuit, optional
+            Circuit to compile.  If ``None``, calls
+            ``build_ideal_circuit()``.
+
+        Returns
+        -------
+        CompiledCircuit
+            Fully compiled circuit.
+        """
+        if circuit is None:
+            circuit = self.build_ideal_circuit()
+
+        # Ensure architecture is resolved (may auto-build for gadgets)
+        self._ensure_architecture()
+
+        # Apply pre-compile hook
+        circuit = self.pre_compile(circuit)
+
+        # Build extra metadata dict for gadget experiments
+        _qec_meta = self._qec_metadata
+        extra_meta = None
+        if _qec_meta is not None:
+            extra_meta = {}
+            if self.gadget is not None:
+                extra_meta["gadget"] = self.gadget
+            if self._qubit_allocation is not None:
+                extra_meta["qubit_allocation"] = self._qubit_allocation
+
+        self._compiled = self.compiler.compile(
+            circuit,
+            qec_metadata=_qec_meta,
+            extra_native_metadata=extra_meta,
+        )
+
+        # Apply post-compile hook
+        self._compiled = self.post_compile(self._compiled)
+
+        return self._compiled
+
     def _create_default_compiler(self) -> TrappedIonCompiler:
+        """Create the default compiler for the current architecture.
+
+        Auto-detects WISE mode when architecture is a
+        :class:`WISEArchitecture`.
+        """
+        from .architectures import WISEArchitecture as _WISEArch
+
+        if isinstance(self.architecture, _WISEArch):
+            compiler = TrappedIonCompiler(
+                self.architecture,
+                is_wise=True,
+                wise_config=self.architecture.wise_config,
+            )
+            if self._routing_config is not None:
+                compiler.routing_kwargs = dict(
+                    routing_config=self._routing_config,
+                )
+            return compiler
         return TrappedIonCompiler(self.architecture)
 
     def apply_hardware_noise(self) -> stim.Circuit:
@@ -261,8 +444,7 @@ class TrappedIonExperiment(HardwareSimulator):
         HardwareSimulationResult
             Simulation results.
         """
-        circuit = self.build_ideal_circuit()
-        self._compiled = self.compiler.compile(circuit)
+        self.compile()  # build_ideal_circuit + auto-arch + compile
         noisy_circuit = self.apply_hardware_noise()
 
         # Sample

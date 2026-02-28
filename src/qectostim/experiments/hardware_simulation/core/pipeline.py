@@ -7,8 +7,10 @@ from logical circuits to hardware-executable sequences.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import (
+
     Dict,
     List,
     Optional,
@@ -20,6 +22,8 @@ from typing import (
 )
 
 import stim
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from qectostim.experiments.hardware_simulation.core.operations import PhysicalOperation
@@ -105,6 +109,8 @@ class PhaseInfo:
     round_signature: Optional[Tuple] = None
     identical_to_phase: Optional[int] = None
     active_blocks: Optional[List[str]] = None
+    cx_per_round: int = 0
+    ms_pair_count: int = 0
 
 
 def _build_round_signature(
@@ -117,16 +123,26 @@ def _build_round_signature(
     ``block_cache`` key format used by ``ionRoutingWISEArch``:
     ``((sorted pairs layer 0), (sorted pairs layer 1), ...)``.
 
+    X and Z layers are interleaved (merged by phase index) so that the
+    signature has ``max(len(x_layers), len(z_layers))`` entries rather
+    than ``len(x_layers) + len(z_layers)``.
+
     Returns ``None`` when no CNOT schedule is available.
     """
-    layers: List[List[Tuple[int, int]]] = []
-    if x_stab.cnot_schedule:
-        layers.extend(x_stab.cnot_schedule)
-    if z_stab.cnot_schedule:
-        layers.extend(z_stab.cnot_schedule)
-    if not layers:
+    x_layers = x_stab.cnot_schedule or []
+    z_layers = z_stab.cnot_schedule or []
+    n = max(len(x_layers), len(z_layers))
+    if n == 0:
         return None
-    return tuple(tuple(sorted(layer)) for layer in layers)
+    merged: List[Tuple] = []
+    for i in range(n):
+        pairs: List[Tuple[int, int]] = []
+        if i < len(x_layers):
+            pairs.extend(x_layers[i])
+        if i < len(z_layers):
+            pairs.extend(z_layers[i])
+        merged.append(tuple(sorted(pairs)))
+    return tuple(merged)
 
 
 @dataclass
@@ -194,8 +210,10 @@ class QECMetadata:
     logical_z_support: List[List[int]] = field(default_factory=list)
     block_allocations: List[BlockInfo] = field(default_factory=list)
     phases: List[PhaseInfo] = field(default_factory=list)
+    per_block_stabilizers: Dict[str, StabilizerInfo] = field(default_factory=dict)
     round_signature: Optional[Tuple] = None
     ion_return_invariant: bool = False
+    cx_per_ec_round: Optional[int] = None
     extra: Dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -220,6 +238,20 @@ class QECMetadata:
         if self.z_stabilizers and self.z_stabilizers.cnot_schedule:
             result["z"] = self.z_stabilizers.cnot_schedule
         return result if result else None
+
+    @property
+    def is_gadget(self) -> bool:
+        """True when this metadata describes a multi-block gadget experiment.
+
+        Detection heuristic: the experiment has ``phases`` with at least
+        one phase whose type is ``"gadget"``, indicating a transversal
+        gate or other cross-block interaction that requires phase-aware
+        routing.
+        """
+        return any(
+            getattr(p, 'phase_type', '') == 'gadget'
+            for p in self.phases
+        )
 
     # ------------------------------------------------------------------
     # Factory methods
@@ -311,7 +343,19 @@ class QECMetadata:
         # after each round when the round signature is well-defined.
         iri = sig is not None
 
+        # --- cx_per_ec_round: number of CNOT schedule *layers* per round ---
+        # Each layer maps to one stim CX instruction (which may carry
+        # multiple target pairs) and one parallelPairs routing round.
+        _cx = 0
+        if x_info.cnot_schedule:
+            _cx += len(x_info.cnot_schedule)
+        if z_info.cnot_schedule:
+            _cx += len(z_info.cnot_schedule)
+        _cx_per_ec = _cx if _cx > 0 else None
+
         # --- Phase decomposition ---
+        _stab_ms_count = (_cx * max(0, rounds - 1)) if _cx else 0
+        _final_ms_count = _cx if _cx else 0
         phases: List[PhaseInfo] = [
             PhaseInfo(phase_type="init", num_rounds=0),
             PhaseInfo(
@@ -319,6 +363,8 @@ class QECMetadata:
                 num_rounds=max(0, rounds - 1),
                 is_repeated=True,
                 round_signature=sig,
+                cx_per_round=_cx,
+                ms_pair_count=_stab_ms_count,
             ),
             PhaseInfo(
                 phase_type="final_round",
@@ -326,6 +372,8 @@ class QECMetadata:
                 is_repeated=False,
                 round_signature=sig,
                 identical_to_phase=1,
+                cx_per_round=_cx,
+                ms_pair_count=_final_ms_count,
             ),
             PhaseInfo(phase_type="measure", num_rounds=0),
         ]
@@ -350,6 +398,7 @@ class QECMetadata:
             phases=phases,
             round_signature=sig,
             ion_return_invariant=iri,
+            cx_per_ec_round=_cx_per_ec,
         )
 
     @classmethod
@@ -386,39 +435,75 @@ class QECMetadata:
         anc_idx = frozenset(q for q, r in roles.items() if r in ("X", "Z", "MX", "MZ"))
         prep_idx = frozenset(q for q, r in roles.items() if r == "P")
 
-        # Use first code/builder for stabilizer info (primary block)
+        # Use first code/builder for top-level stabilizer info (primary block)
         code = codes[0] if codes else None
         builder = builders[0] if builders else None
 
         hx = getattr(code, "hx", None) if code else None
         hz = getattr(code, "hz", None) if code else None
 
-        def _build_stab_info(matrix, ancillas, stab_type: str) -> StabilizerInfo:
+        def _build_stab_info_for_builder(
+            c, b, stab_type: str
+        ) -> StabilizerInfo:
+            """Build StabilizerInfo for one code/builder pair."""
+            matrix = getattr(c, "hx" if stab_type == "x" else "hz", None) if c else None
             supports: List[List[int]] = []
             if matrix is not None and hasattr(matrix, "shape") and matrix.size > 0:
                 for row_idx in range(matrix.shape[0]):
                     row = matrix[row_idx]
                     supp = [
-                        builder.data_offset + int(c)
-                        for c in range(len(row))
-                        if row[c]
+                        b.data_offset + int(col)
+                        for col in range(len(row))
+                        if row[col]
                     ]
                     supports.append(supp)
             cnot_sched = None
-            if builder and hasattr(builder, "get_cnot_layers"):
-                cnot_sched = builder.get_cnot_layers(stab_type)
+            if b and hasattr(b, "get_cnot_layers"):
+                cnot_sched = b.get_cnot_layers(stab_type)
+            ancs = list(b.x_ancillas if stab_type == "x" else b.z_ancillas) if b else []
             return StabilizerInfo(
                 supports=supports,
-                ancillas=list(ancillas) if ancillas else [],
+                ancillas=ancs,
                 cnot_schedule=cnot_sched,
             )
 
-        x_info = _build_stab_info(
-            hx, builder.x_ancillas if builder else [], "x"
-        )
-        z_info = _build_stab_info(
-            hz, builder.z_ancillas if builder else [], "z"
-        )
+        # Primary block stabilizer info (for backwards-compat top-level fields)
+        x_info = _build_stab_info_for_builder(code, builder, "x")
+        z_info = _build_stab_info_for_builder(code, builder, "z")
+
+        # --- Per-block stabilizer info ---
+        per_block_stabs: Dict[str, StabilizerInfo] = {}
+        block_round_sigs: Dict[str, Optional[Tuple]] = {}
+        for i, b in enumerate(builders):
+            c = codes[i] if i < len(codes) else codes[0]
+            block_name = getattr(b, "block_name", f"block_{i}")
+            x_stab = _build_stab_info_for_builder(c, b, "x")
+            z_stab = _build_stab_info_for_builder(c, b, "z")
+            # Interleave X and Z CNOT layers so that both stabiliser
+            # types share each geometric phase.  This is the key change
+            # that allows the trapped-ion compiler to emit parallel MS
+            # gates for X and Z stabilisers within the same routing step.
+            #
+            # Before: [x0, x1, x2, x3, z0, z1, z2, z3]  → 8 layers
+            # After:  [x0+z0, x1+z1, x2+z2, x3+z3]      → 4 layers
+            x_layers = x_stab.cnot_schedule or []
+            z_layers = z_stab.cnot_schedule or []
+            n_xl, n_zl = len(x_layers), len(z_layers)
+            n_combined = max(n_xl, n_zl)
+            combined_layers: List[List[Tuple[int, int]]] = []
+            for li in range(n_combined):
+                merged: List[Tuple[int, int]] = []
+                if li < n_xl:
+                    merged.extend(x_layers[li])
+                if li < n_zl:
+                    merged.extend(z_layers[li])
+                combined_layers.append(merged)
+            per_block_stabs[block_name] = StabilizerInfo(
+                supports=x_stab.supports + z_stab.supports,
+                ancillas=x_stab.ancillas + z_stab.ancillas,
+                cnot_schedule=combined_layers if combined_layers else None,
+            )
+            block_round_sigs[block_name] = _build_round_signature(x_stab, z_stab)
 
         # --- Block allocations ---
         blocks: List[BlockInfo] = []
@@ -433,7 +518,7 @@ class QECMetadata:
         # --- Logical operators ---
         logical_x: List[List[int]] = []
         logical_z: List[List[int]] = []
-        if code:
+        if code and builder:
             lx = getattr(code, "lx", None)
             lz = getattr(code, "lz", None)
             if lx is not None and hasattr(lx, "shape"):
@@ -447,14 +532,52 @@ class QECMetadata:
                         [builder.data_offset + int(c) for c in range(len(row)) if row[c]]
                     )
 
-        # --- Round signature ---
+        # --- Round signature (primary block) ---
         sig = _build_round_signature(x_info, z_info)
 
         # --- Gadget experiments are NOT ion-return-invariant ---
         iri = False
 
-        # --- Phase decomposition ---
+        # --- cx_per_ec_round: CNOT schedule *layers* per interleaved round ---
+        # After interleaving, one EC round has max(len(x_sched), len(z_sched))
+        # layers (not the sum) because X and Z CX gates share geometric
+        # phases.  Each layer = one stim CX instruction = one routing round.
+        _cx_x = len(x_info.cnot_schedule) if x_info.cnot_schedule else 0
+        _cx_z = len(z_info.cnot_schedule) if z_info.cnot_schedule else 0
+        _cx = max(_cx_x, _cx_z)
+        _cx_per_ec = _cx if _cx > 0 else None
+
+        # --- Phase decomposition (multi-phase aware) ---
+        # Get block names and per-phase active blocks from gadget
+        all_block_names: List[str] = []
+        if hasattr(gadget, "get_block_names"):
+            all_block_names = gadget.get_block_names()
+        else:
+            all_block_names = [
+                getattr(b, "block_name", f"block_{i}")
+                for i, b in enumerate(builders)
+            ]
+
+        n_gadget_phases = getattr(gadget, "num_phases", 1)
+
         total_rounds = rounds_before + rounds_after
+
+        _ec_pre_ms = (_cx * rounds_before) if _cx else 0
+        _ec_post_ms = (_cx * rounds_after) if _cx else 0
+
+        # Consult the gadget for blocks that should be skipped in
+        # pre/post-gadget EC rounds.  For CSS Surgery (flat codes) ALL
+        # blocks are skipped because EC is handled internally during
+        # merge phases; for TransversalCNOT no blocks are skipped.
+        _skipped_pre: set = set()
+        _skipped_post: set = set()
+        if hasattr(gadget, "get_blocks_to_skip_pre_rounds"):
+            _skipped_pre = gadget.get_blocks_to_skip_pre_rounds()
+        if hasattr(gadget, "get_blocks_to_skip_post_rounds"):
+            _skipped_post = gadget.get_blocks_to_skip_post_rounds()
+        pre_active = [b for b in all_block_names if b not in _skipped_pre]
+        post_active = [b for b in all_block_names if b not in _skipped_post]
+
         phases: List[PhaseInfo] = [
             PhaseInfo(phase_type="init", num_rounds=0),
             PhaseInfo(
@@ -462,17 +585,57 @@ class QECMetadata:
                 num_rounds=rounds_before,
                 is_repeated=rounds_before > 1,
                 round_signature=sig,
+                active_blocks=pre_active,
+                cx_per_round=_cx,
+                ms_pair_count=_ec_pre_ms,
             ),
-            PhaseInfo(phase_type="gadget", num_rounds=0),
+        ]
+
+        # Emit one PhaseInfo per gadget phase with active_blocks
+        # and per-phase ms_pair_count (if the gadget exposes
+        # get_phase_pairs).  Accurate per-phase counts prevent the
+        # compiler from falling back to even distribution of gadget
+        # MS rounds, which is incorrect for multi-phase gadgets like
+        # CSS Surgery where only merge phases have entangling gates.
+        _has_gpp = (
+            hasattr(gadget, "get_phase_pairs")
+            and callable(getattr(gadget, "get_phase_pairs", None))
+        )
+        for gp_idx in range(n_gadget_phases):
+            active: List[str] = all_block_names  # fallback
+            if hasattr(gadget, "get_phase_active_blocks"):
+                active = gadget.get_phase_active_blocks(gp_idx)
+            _gp_ms_count = 0
+            if _has_gpp:
+                try:
+                    _gp_pairs = gadget.get_phase_pairs(gp_idx, allocation)
+                    # Count rounds that contain at least one pair
+                    _gp_ms_count = sum(1 for rp in _gp_pairs if rp)
+                except Exception as exc:
+                    logger.warning(
+                        "Could not count phase %d pairs from gadget: %s",
+                        gp_idx, exc,
+                    )
+            phases.append(PhaseInfo(
+                phase_type="gadget",
+                num_rounds=_gp_ms_count,
+                active_blocks=active,
+                ms_pair_count=_gp_ms_count,
+            ))
+
+        phases.extend([
             PhaseInfo(
                 phase_type="stabilizer_round_post",
                 num_rounds=rounds_after,
                 is_repeated=rounds_after > 1,
                 round_signature=sig,
                 identical_to_phase=1,
+                active_blocks=post_active,
+                cx_per_round=_cx,
+                ms_pair_count=_ec_post_ms,
             ),
             PhaseInfo(phase_type="measure", num_rounds=0),
-        ]
+        ])
 
         total_qubits = sum(b.total_qubits for b in builders) if builders else 0
 
@@ -495,8 +658,11 @@ class QECMetadata:
             logical_z_support=logical_z,
             block_allocations=blocks,
             phases=phases,
+            per_block_stabilizers=per_block_stabs,
             round_signature=sig,
             ion_return_invariant=iri,
+            cx_per_ec_round=_cx_per_ec,
+            extra={"block_round_signatures": block_round_sigs},
         )
 
 

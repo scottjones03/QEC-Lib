@@ -160,6 +160,7 @@ class QubitAllocation:
     """
     blocks: Dict[str, BlockAllocation] = field(default_factory=dict)
     bridge_ancillas: List[Tuple[int, CoordND, str]] = field(default_factory=list)
+    bridge_connected_blocks: Dict[int, List[str]] = field(default_factory=dict)
     _total_qubits: int = 0
     
     @classmethod
@@ -635,8 +636,16 @@ class GadgetLayout:
             raise ValueError(f"Reference block '{reference_block}' does not exist")
 
         ref_block = self.blocks[reference_block]
+        # Use ALL qubit coordinates (data + ancillas) for the bounding
+        # box so that ancilla qubits outside the data range don't cause
+        # blocks to overlap visually.
         ref_coords = []
-        for gidx in ref_block.data_qubit_range:
+        _all_ref_indices = (
+            list(ref_block.data_qubit_range)
+            + list(ref_block.x_ancilla_range)
+            + list(ref_block.z_ancilla_range)
+        )
+        for gidx in _all_ref_indices:
             if gidx in self.qubit_map.global_coords:
                 ref_coords.append(self.qubit_map.global_coords[gidx])
 
@@ -644,7 +653,7 @@ class GadgetLayout:
             # Fall back to standard auto-offset
             return self.add_block(name, code, auto_offset=True)
 
-        # Get bounding box of reference block
+        # Get bounding box of reference block (including ancillas)
         ref_min, ref_max = get_bounding_box(ref_coords)
 
         # Get new block's local coordinates and bounding box
@@ -653,9 +662,17 @@ class GadgetLayout:
         if not data_coords:
             return self.add_block(name, code, auto_offset=True)
 
-        # Pad to current dim
-        data_coords_padded = [pad_coord_to_dim(c, self.dim) for c in data_coords]
-        new_min, new_max = get_bounding_box(data_coords_padded)
+        # Pad ALL qubit types to current dim for full bounding box
+        all_new_coords = []
+        for c in data_coords:
+            all_new_coords.append(pad_coord_to_dim(c, self.dim))
+        for c in x_stab_coords:
+            all_new_coords.append(pad_coord_to_dim(c, self.dim))
+        for c in z_stab_coords:
+            all_new_coords.append(pad_coord_to_dim(c, self.dim))
+        if not all_new_coords:
+            all_new_coords = [pad_coord_to_dim(c, self.dim) for c in data_coords]
+        new_min, new_max = get_bounding_box(all_new_coords)
 
         # Compute offset based on edge alignment
         offset = [0.0] * self.dim
@@ -779,6 +796,7 @@ class GadgetLayout:
         edge_b: str,
         purpose: str,
         logical_idx: int = 0,
+        max_bridges: Optional[int] = None,
     ) -> List[int]:
         """
         Add bridge ancillas along the shared boundary between two adjacent blocks.
@@ -801,6 +819,12 @@ class GadgetLayout:
             Purpose of these bridges (e.g., "zz_merge", "xx_merge").
         logical_idx : int
             Which logical qubit's boundary to use (default 0).
+        max_bridges : int, optional
+            Maximum number of bridge ancillas to create.  When the number
+            of boundary data qubits exceeds the number of relevant
+            stabilizers (e.g. d=2 ZZ merge: 2 boundary qubits but only
+            1 Z-stabilizer), pass the stabilizer count here to avoid
+            allocating unused bridge ions.
             
         Returns
         -------
@@ -834,8 +858,12 @@ class GadgetLayout:
         bridge_indices = []
         
         # Create bridges at midpoints between corresponding boundary qubits
-        # If boundaries have different sizes, use the smaller set
+        # If boundaries have different sizes, use the smaller set.
+        # Also cap at max_bridges (stabilizer count) to avoid creating
+        # bridge ions that will never participate in any CX pair.
         n_bridges = min(len(coords_a_global), len(coords_b_global))
+        if max_bridges is not None:
+            n_bridges = min(n_bridges, max_bridges)
         
         if n_bridges == 0:
             # Fallback: create a single bridge at the midpoint between block centroids
@@ -858,16 +886,78 @@ class GadgetLayout:
         for i in range(n_bridges):
             ca = coords_a_global[i]
             cb = coords_b_global[i]
-            # Midpoint between the two boundary qubits
-            midpoint = tuple((ca[j] + cb[j]) / 2 for j in range(self.dim))
+            # Place bridge at the midpoint between the two boundary qubits
+            # it connects.  This gives the bridge a coordinate that is
+            # geometrically between block_a and block_b, matching the
+            # standard lattice surgery picture.
+            coord = tuple((ca[j] + cb[j]) / 2.0 for j in range(self.dim))
             
             idx = self.add_bridge_ancilla(
                 purpose=f"{purpose}_{i}",
-                coord=midpoint,
-                connected_blocks=[block_a, block_b]
+                coord=coord,
+                connected_blocks=[block_b, block_a]
             )
             bridge_indices.append(idx)
         
+        return bridge_indices
+
+    def add_seam_stabilizers(
+        self,
+        merge_info: "MergeStabilizerInfo",
+        block_a: str,
+        block_b: str,
+        purpose: str,
+    ) -> List[int]:
+        """Add bridge ancillas at correct lattice positions for seam stabilizers.
+
+        Uses the precomputed ``MergeStabilizerInfo`` (from ``get_merge_stabilizers()``)
+        to place seam ancilla qubits at the even–even lattice positions between the
+        two blocks, rather than at midpoints between boundary data qubits.
+
+        The global qubit indices assigned here will match the ones already recorded
+        inside the ``SeamStabilizer.global_ancilla_idx`` fields **provided** that
+        ``merge_info`` was computed with ``seam_qubit_offset = self._next_global_idx``
+        at call time.
+
+        Parameters
+        ----------
+        merge_info : MergeStabilizerInfo
+            Seam stabilizer information computed by the code's
+            ``get_merge_stabilizers()`` method.
+        block_a, block_b : str
+            The two blocks being merged.
+        purpose : str
+            Purpose prefix for the bridge ancillas (e.g. ``"zz_merge"``).
+
+        Returns
+        -------
+        List[int]
+            Global indices of the newly created seam ancilla qubits.
+        """
+        alloc_a = self.blocks.get(block_a)
+        alloc_b = self.blocks.get(block_b)
+        if alloc_a is None or alloc_b is None:
+            return []
+
+        offset_a = pad_coord_to_dim(alloc_a.offset, self.dim)
+
+        bridge_indices: List[int] = []
+        for i, seam_stab in enumerate(merge_info.seam_stabs):
+            # Place the seam ancilla at its lattice position, offset by
+            # block_a's global offset (the seam position is in block_a's
+            # local coordinate frame).
+            lpos = seam_stab.lattice_position
+            coord = tuple(
+                lpos[j] + offset_a[j] if j < len(lpos) else offset_a[j]
+                for j in range(self.dim)
+            )
+            idx = self.add_bridge_ancilla(
+                purpose=f"{purpose}_{i}",
+                coord=coord,
+                connected_blocks=[block_a, block_b],
+            )
+            bridge_indices.append(idx)
+
         return bridge_indices
 
     def get_boundary_qubit_pairs(
@@ -1034,8 +1124,15 @@ class GadgetLayout:
             alloc.bridge_ancillas.append(
                 (bridge.global_idx, bridge.coord, bridge.purpose)
             )
+            if bridge.connected_blocks:
+                alloc.bridge_connected_blocks[bridge.global_idx] = list(
+                    bridge.connected_blocks
+                )
         
-        alloc._total_qubits = self.total_qubits
+        # _total_qubits must be block-only count (excluding bridges) because
+        # QubitAllocation.total_qubits adds len(bridge_ancillas) on top.
+        # _next_global_idx already includes bridges, so subtract them.
+        alloc._total_qubits = self._next_global_idx - len(self.bridge_ancillas)
         
         return alloc
     

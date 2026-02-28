@@ -508,6 +508,12 @@ class ColourCode488(TopologicalCSSCode):
         self._hz = hz.astype(np.uint8)
         self._d = actual_distance
 
+    # ── Boundary API ───────────────────────────────────────────────
+
+    def has_physical_boundaries(self) -> bool:
+        """4.8.8 colour code on a torus — no open edges for surgery."""
+        return False
+
     # ── Properties ─────────────────────────────────────────────────
 
     @property

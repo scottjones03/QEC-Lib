@@ -42,7 +42,7 @@ import numpy as np
 import stim
 
 from qectostim.codes.abstract_code import Code
-from qectostim.codes.abstract_css import CSSCode
+from qectostim.codes.abstract_css import CSSCode, MergeStabilizerInfo
 from qectostim.gadgets.base import (
     Gadget,
     GadgetMetadata,
@@ -63,6 +63,7 @@ from qectostim.gadgets.base import (
     BoundaryDetectorConfig,
 )
 from qectostim.gadgets.layout import (
+    BlockInfo,
     GadgetLayout,
     QubitAllocation,
     BlockAllocation,
@@ -104,7 +105,13 @@ class CSSSurgeryCNOTGadget(Gadget):
         self._current_phase: int = 0
         self._builders: Optional[List["CSSStabilizerRoundBuilder"]] = None
         
-        # Bridge measurement tracking
+        # Merge stabilizer info (seam + grown stabs for each merge)
+        self._zz_merge_info: Optional[MergeStabilizerInfo] = None
+        self._xx_merge_info: Optional[MergeStabilizerInfo] = None
+        self._zz_seam_ancillas: List[int] = []
+        self._xx_seam_ancillas: List[int] = []
+        
+        # Bridge measurement tracking (seam stab measurements per round)
         self._zz_bridge_meas: List[List[int]] = []
         self._xx_bridge_meas: List[List[int]] = []
         self._zz_split_meas: List[int] = []
@@ -148,7 +155,151 @@ class CSSSurgeryCNOTGadget(Gadget):
         self._xx_bridge_meas.clear()
         self._zz_split_meas.clear()
         self._xx_split_meas.clear()
+        self._zz_seam_ancillas.clear()
+        self._xx_seam_ancillas.clear()
         self._anc_meas_indices.clear()
+
+    def get_block_names(self) -> List[str]:
+        """block_0 = control, block_1 = ancilla, block_2 = target."""
+        return ["block_0", "block_1", "block_2"]
+
+    def get_phase_active_blocks(self, phase_index: int) -> List[str]:
+        """Per-phase active blocks for CSS Surgery CNOT.
+
+        Merge phases (0, 2) return ALL blocks because interleaved EC
+        is emitted on every block during the merge loop — the routing
+        layer must cover the full grid so every block's ions can be
+        shuffled.
+
+        Phase 0 (ZZ merge):  all blocks (bridge on block_0 ↔ block_1, EC on all)
+        Phase 1 (ZZ split):  block_0, block_1
+        Phase 2 (XX merge):  all blocks (bridge on block_1 ↔ block_2, EC on all)
+        Phase 3 (XX split):  block_1, block_2
+        Phase 4 (Anc MX):    block_1
+        """
+        if phase_index in (0, 2):
+            # Merge phases emit interleaved EC on ALL blocks.
+            return self.get_block_names()
+        elif phase_index == 1:
+            return ["block_0", "block_1"]
+        elif phase_index == 3:
+            return ["block_1", "block_2"]
+        elif phase_index == 4:
+            return ["block_1"]
+        return self.get_block_names()
+
+    def get_phase_pairs(self, phase_index, alloc):
+        """CSS Surgery phase pairs for hardware routing.
+
+        During merge phases, the seam stabilizer CX gates must be routed
+        alongside the EC CX gates.  Each merge round produces 4 CX-phase
+        layers (one per geometric CX phase), where each layer contains all
+        seam+grown CX pairs for that phase.  The EC CX pairs are handled
+        by the block builders and routed separately; only the cross-block
+        seam/grown pairs appear here.
+
+        Phase 0 (ZZ merge): ``d`` rounds × 4 CX phases.
+        Phase 1 (ZZ split): no MS pairs.
+        Phase 2 (XX merge): ``d`` rounds × 4 CX phases.
+        Phase 3 (XX split): no MS pairs.
+        Phase 4 (Anc MX):   no MS pairs.
+        """
+        if phase_index in (1, 3, 4):
+            return []
+
+        code = self._code
+        if code is None:
+            return []
+        d = self.merge_rounds if self.merge_rounds is not None else (code.d or 3)
+
+        merge_info = (
+            self._zz_merge_info if phase_index == 0
+            else self._xx_merge_info
+        )
+        if merge_info is None or not merge_info.seam_stabs:
+            return []
+
+        n_phases = merge_info.num_cx_phases
+        layers: List[List[Tuple[int, int]]] = []
+
+        for _rnd in range(d):
+            for ph in range(n_phases):
+                phase_pairs: List[Tuple[int, int]] = []
+                for seam_stab in merge_info.seam_stabs:
+                    for pair in seam_stab.cx_per_phase[ph]:
+                        phase_pairs.append(pair)
+                # Grown stab cross-block CX pairs for this phase
+                for grown_stab in merge_info.grown_stabs:
+                    if grown_stab.existing_ancilla_global >= 0:
+                        for pair in grown_stab.new_cx_per_phase[ph]:
+                            phase_pairs.append(pair)
+                if phase_pairs:
+                    layers.append(phase_pairs)
+        return layers
+
+    # ------------------------------------------------------------------
+    # Grown-stabilizer ancilla resolution
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _resolve_grown_stabs(
+        merge_info: MergeStabilizerInfo,
+        code: CSSCode,
+        block_info: "BlockInfo",
+        block_name: str,
+    ) -> None:
+        """Resolve placeholder indices in grown stabilizers.
+
+        Each :class:`GrownStabilizer` produced by
+        ``code.get_merge_stabilizers()`` has ``existing_ancilla_global = -1``
+        and ``belongs_to_block = ""`` because the code doesn't know the
+        global allocation.  This method matches each grown stab's
+        ``lattice_position`` against the code's stabilizer coordinate
+        list and fills in the actual global ancilla index from the
+        block's allocation ranges.
+
+        Once resolved, ``grown.new_cx_per_phase`` entries also have their
+        ``-1`` placeholders replaced with the resolved ancilla global.
+        """
+        if not merge_info.grown_stabs:
+            return
+
+        grown_type = merge_info.grown_type  # "X" or "Z"
+        if grown_type == "X":
+            stab_coords = code.get_x_stabilizer_coords()
+            anc_range = block_info.x_ancilla_range
+        else:
+            stab_coords = code.get_z_stabilizer_coords()
+            anc_range = block_info.z_ancilla_range
+
+        if stab_coords is None:
+            return  # Code doesn't provide coords — can't resolve
+
+        # Build a lookup: (rounded coord) → local index
+        coord_to_local: dict = {}
+        for local_idx, c in enumerate(stab_coords):
+            key = (round(c[0]), round(c[1])) if len(c) >= 2 else (round(c[0]),)
+            coord_to_local[key] = local_idx
+
+        for gs in merge_info.grown_stabs:
+            lp = gs.lattice_position
+            key = (round(lp[0]), round(lp[1])) if len(lp) >= 2 else (round(lp[0]),)
+            local_idx = coord_to_local.get(key, -1)
+            if local_idx < 0:
+                continue  # No match found
+
+            g_anc = anc_range.start + local_idx
+            gs.existing_ancilla_global = g_anc
+            gs.belongs_to_block = block_name
+
+            # Replace -1 placeholders in new_cx_per_phase
+            for ph in range(len(gs.new_cx_per_phase)):
+                gs.new_cx_per_phase[ph] = [
+                    (g_anc, pair[1]) if pair[0] == -1 else
+                    (pair[0], g_anc) if pair[1] == -1 else
+                    pair
+                    for pair in gs.new_cx_per_phase[ph]
+                ]
 
     def is_teleportation_gadget(self) -> bool:
         return False
@@ -170,7 +321,7 @@ class CSSSurgeryCNOTGadget(Gadget):
 
     @staticmethod
     def _emit_ec_round(builder, circuit, **kwargs):
-        """Emit an EC round during merge phases.
+        """Emit an EC round during merge phases (single-builder fallback).
 
         For hierarchical builders, uses inner-only rounds to avoid
         intermediate outer CX operations.  These outer operations would
@@ -189,6 +340,232 @@ class CSSSurgeryCNOTGadget(Gadget):
         else:
             # Flat: full round with anchor control.
             builder.emit_round(circuit, **kwargs)
+
+    @staticmethod
+    def _emit_parallel_ec_round(
+        builders,
+        circuit: "stim.Circuit",
+        per_builder_kwargs: dict,
+    ) -> None:
+        """Emit one EC round with all builders sharing the same TICK layers.
+
+        This produces the same structure as
+        ``MemoryRoundEmitter._emit_parallel_interleaved``:
+
+        1. Reset all ancillas (all builders) → TICK
+        2. For each geometric CX phase:
+              all builders emit their X+Z CX gates → TICK
+        3. Measure all ancillas + emit detectors (all builders) → TICK
+
+        This achieves cross-block CX parallelism: gates from block_0,
+        block_1 and block_2 land in the *same* TICK layers instead of
+        being serialised into separate per-builder TICK groups.
+
+        Parameters
+        ----------
+        builders : list
+            CSSStabilizerRoundBuilder instances (one per block).
+        circuit : stim.Circuit
+            Target circuit to append instructions to.
+        per_builder_kwargs : dict
+            Maps ``builder.block_name`` → dict of keyword arguments that
+            would have been passed to ``_emit_ec_round``.  Recognised
+            keys: ``emit_detectors``, ``emit_z_anchors``,
+            ``emit_x_anchors``, ``explicit_anchor_mode``.
+        """
+        # Decide whether we can use the phase-decomposed path for
+        # ALL builders.  If any builder is hierarchical or doesn't
+        # support interleaving, fall back to sequential emission.
+        all_flat_interleave = all(
+            not hasattr(b, 'emit_inner_only_round')
+            and hasattr(b, 'emit_cx_for_phase')
+            and hasattr(b, 'n_interleave_phases')
+            and b.n_interleave_phases() > 0
+            for b in builders
+        )
+        if not all_flat_interleave:
+            # Fallback: sequential per-builder
+            for b in builders:
+                kw = per_builder_kwargs.get(b.block_name, {})
+                CSSSurgeryCNOTGadget._emit_ec_round(b, circuit, **kw)
+            return
+
+        # Determine the maximum number of CX phases across builders
+        n_phases = max(b.n_interleave_phases() for b in builders)
+
+        # --- 1. Reset ancillas for all builders ---
+        for b in builders:
+            kw = per_builder_kwargs.get(b.block_name, {})
+            b.emit_ancilla_reset(
+                circuit,
+                emit_z_anchors=kw.get('emit_z_anchors', False),
+                emit_x_anchors=kw.get('emit_x_anchors', False),
+            )
+        circuit.append("TICK")
+
+        # --- 2. Interleaved CX phases ---
+        for phase_idx in range(n_phases):
+            if phase_idx > 0:
+                circuit.append("TICK")
+            for b in builders:
+                if phase_idx < b.n_interleave_phases():
+                    b.emit_cx_for_phase(circuit, phase_idx)
+
+        circuit.append("TICK")
+
+        # --- 3. Measure ancillas + detectors ---
+        for b in builders:
+            kw = per_builder_kwargs.get(b.block_name, {})
+            b.emit_ancilla_measure_and_detectors(
+                circuit,
+                emit_detectors=kw.get('emit_detectors', True),
+            )
+
+        # Final TICK separating this round from the next
+        circuit.append("TICK")
+
+    # ------------------------------------------------------------------
+    # Joint merge round — used by ZZ and XX merge phases
+    # ------------------------------------------------------------------
+
+    def _emit_joint_merge_round(
+        self,
+        builders,
+        circuit: "stim.Circuit",
+        per_builder_kwargs: dict,
+        seam_ancillas: list,
+        seam_cx_per_phase: "List[List[Tuple[int,int]]]",
+        grown_cx_per_phase: "List[List[Tuple[int,int]]]",
+        seam_reset_op: str,
+        seam_measure_op: str,
+        ctx: "DetectorContext",
+        rnd: int,
+        prev_seam_meas: "list | None",
+        seam_meas_list: list,
+        det_coord_offset: float = 0.0,
+    ) -> None:
+        """Emit one JOINT merge round: EC + seam stabs in the SAME tick window.
+
+        Proper Horsman/Fowler lattice surgery requires all stabilisers of the
+        joint patch (internal EC stabilisers AND new seam stabilisers) to be
+        measured in a single round using a unified 4-phase CX schedule.
+
+        Structure per round (no extra TICK phases for seam CX):
+
+        1. Reset EC ancillas (all builders) + seam ancillas → TICK
+        2. CX Phase 0: all EC CX (builders) + seam CX (phase 0) + grown CX (phase 0) → TICK
+        3. CX Phase 1: ~same~ → TICK
+        4. CX Phase 2: ~same~ → TICK
+        5. CX Phase 3: ~same~ → TICK
+        6. Measure EC ancillas (builders) + seam ancillas → detectors → TICK
+        """
+        n_seam = len(seam_ancillas)
+
+        # Check interleaving capability
+        all_flat_interleave = all(
+            not hasattr(b, 'emit_inner_only_round')
+            and hasattr(b, 'emit_cx_for_phase')
+            and hasattr(b, 'n_interleave_phases')
+            and b.n_interleave_phases() > 0
+            for b in builders
+        )
+
+        if not all_flat_interleave:
+            # Fallback: sequential per-builder + separate seam
+            # Reset seam
+            if n_seam > 0:
+                circuit.append(seam_reset_op, seam_ancillas)
+                circuit.append("TICK")
+            # Seam CX (separate ticks as fallback)
+            for ph in range(len(seam_cx_per_phase)):
+                cx_flat = [q for pair in seam_cx_per_phase[ph] for q in pair]
+                gcx_flat = [q for pair in grown_cx_per_phase[ph] for q in pair]
+                all_cx = cx_flat + gcx_flat
+                if all_cx:
+                    circuit.append("CNOT", all_cx)
+                    circuit.append("TICK")
+            # Measure seam
+            if n_seam > 0:
+                meas_start = ctx.add_measurement(n_seam)
+                circuit.append(seam_measure_op, seam_ancillas)
+                seam_meas_list.append(list(range(meas_start, meas_start + n_seam)))
+                circuit.append("TICK")
+                if rnd >= 1 and prev_seam_meas is not None:
+                    curr_meas = seam_meas_list[-1]
+                    for s_idx in range(n_seam):
+                        curr = curr_meas[s_idx] - ctx.measurement_index
+                        prev = prev_seam_meas[s_idx] - ctx.measurement_index
+                        coord = (s_idx + 0.5, -0.5, rnd + det_coord_offset)
+                        circuit.append("DETECTOR",
+                                       [stim.target_rec(curr), stim.target_rec(prev)],
+                                       coord)
+            # EC sequentially
+            for b in builders:
+                kw = per_builder_kwargs.get(b.block_name, {})
+                CSSSurgeryCNOTGadget._emit_ec_round(b, circuit, **kw)
+            return
+
+        n_phases = max(b.n_interleave_phases() for b in builders)
+
+        # --- 1. Reset EC ancillas + seam ancillas ---
+        for b in builders:
+            kw = per_builder_kwargs.get(b.block_name, {})
+            b.emit_ancilla_reset(
+                circuit,
+                emit_z_anchors=kw.get('emit_z_anchors', False),
+                emit_x_anchors=kw.get('emit_x_anchors', False),
+            )
+        if n_seam > 0:
+            circuit.append(seam_reset_op, seam_ancillas)
+        circuit.append("TICK")
+
+        # --- 2. Interleaved CX phases: EC + seam + grown, all in same TICK ---
+        for phase_idx in range(n_phases):
+            if phase_idx > 0:
+                circuit.append("TICK")
+            # EC CX from all builders
+            for b in builders:
+                if phase_idx < b.n_interleave_phases():
+                    b.emit_cx_for_phase(circuit, phase_idx)
+            # Seam stabilizer CX for this phase
+            if phase_idx < len(seam_cx_per_phase):
+                cx_flat = [q for pair in seam_cx_per_phase[phase_idx] for q in pair]
+                if cx_flat:
+                    circuit.append("CNOT", cx_flat)
+            # Grown stabilizer additional CX for this phase
+            if phase_idx < len(grown_cx_per_phase):
+                gcx_flat = [q for pair in grown_cx_per_phase[phase_idx] for q in pair]
+                if gcx_flat:
+                    circuit.append("CNOT", gcx_flat)
+
+        circuit.append("TICK")
+
+        # --- 3. Measure seam ancillas FIRST (so record indices are known) ---
+        if n_seam > 0:
+            meas_start = ctx.add_measurement(n_seam)
+            circuit.append(seam_measure_op, seam_ancillas)
+            seam_meas_list.append(list(range(meas_start, meas_start + n_seam)))
+
+        # --- 4. Measure EC ancillas + emit detectors ---
+        for b in builders:
+            kw = per_builder_kwargs.get(b.block_name, {})
+            b.emit_ancilla_measure_and_detectors(
+                circuit,
+                emit_detectors=kw.get('emit_detectors', True),
+            )
+
+        circuit.append("TICK")
+
+        # --- 5. Seam temporal detectors (round >= 1) ---
+        if rnd >= 1 and prev_seam_meas is not None and n_seam > 0:
+            curr_meas = seam_meas_list[-1]
+            for s_idx in range(n_seam):
+                curr = curr_meas[s_idx] - ctx.measurement_index
+                prev = prev_seam_meas[s_idx] - ctx.measurement_index
+                coord = (s_idx + 0.5, -0.5, rnd + det_coord_offset)
+                circuit.append("DETECTOR",
+                               [stim.target_rec(curr), stim.target_rec(prev)],
+                               coord)
 
     # ------------------------------------------------------------------
     # emit_next_phase
@@ -241,158 +618,104 @@ class CSSSurgeryCNOTGadget(Gadget):
         tgt: BlockAllocation,
     ) -> PhaseResult:
         """
-        ZZ merge: d rounds of bridge Z-parity + interleaved EC on all blocks.
+        ZZ merge: d rounds of joint stabiliser measurement using seam Z-stabs.
         
-        Couples control (block_0) and ancilla (block_1) to measure Z_ctrl ⊗ Z_anc.
+        Proper Horsman/Fowler lattice surgery: the seam Z-stabilisers are
+        weight-2/4 plaquettes at even–even lattice positions between block_0
+        (control) and block_1 (ancilla).  Their CX gates are integrated into
+        the same 4-phase schedule as the internal EC stabilisers.
         
-        All stabilizers (X and Z) are preserved during ZZ merge because CSS
-        stabilizer weights are even, ensuring X dressing from CNOT(data→bridge)
-        cancels at the stabilizer level. Full EC (BOTH types) with detectors.
-        
-        Each round:
-            1. R(bridge_zz)
-            2. CX(ctrl_data[support] -> bridge)  [ctrl is CONTROL]
-            3. CX(anc_data[support] -> bridge)   [anc is CONTROL]
-            4. M(bridge_zz)
-            5. EC round on all 3 blocks (BOTH X+Z, full detectors)
-        
-        Bridge temporal detectors for round >= 1.
-        Block anchors based on prep state (round 0 only).
+        The product of all seam Z-stab eigenvalues = Z_L_ctrl ⊗ Z_L_anc.
         """
         code = self._code
         d = self.merge_rounds if self.merge_rounds is not None else (code.d or 3)
-        bridge_zz = [
+
+        # Seam ancillas were allocated during compute_layout()
+        seam_zz = [
             gi for gi, _, purpose in alloc.bridge_ancillas
             if purpose.startswith("zz_merge")
         ]
-        n_z = len(bridge_zz)
+        self._zz_seam_ancillas = seam_zz
+        n_seam = len(seam_zz)
+        if n_seam == 0:
+            return PhaseResult(
+                phase_type=PhaseType.GATE, is_final=False,
+                needs_stabilizer_rounds=0,
+            )
 
-        # Z-stabiliser supports from code.hz
-        # Use min(n_z, hz.shape[0]) to handle boundary-based layouts
-        n_stab = min(n_z, code.hz.shape[0])
-        z_supports = []
-        for s_idx in range(n_stab):
-            z_supports.append(list(np.where(code.hz[s_idx])[0]))
-        # If we have more bridges than stabilisers, use single-qubit supports
-        # (boundary layout case)
-        while len(z_supports) < n_z:
-            z_supports.append([])  # Will be handled by boundary pairs below
+        # Use precomputed merge info from compute_layout (required)
+        merge_info = self._zz_merge_info
+        if merge_info is None or not merge_info.seam_stabs:
+            raise RuntimeError(
+                "ZZ merge info not available — compute_layout() must be called "
+                "first with a code that implements get_merge_stabilizers()."
+            )
 
-        ctrl_data = ctrl.get_data_qubits()
-        anc_data = anc.get_data_qubits()
+        # Build per-phase CX lists from seam stabs
+        n_phases = merge_info.num_cx_phases
+        seam_cx_per_phase = [[] for _ in range(n_phases)]
+        for seam_stab in merge_info.seam_stabs:
+            for ph in range(n_phases):
+                if ph < len(seam_stab.cx_per_phase):
+                    seam_cx_per_phase[ph].extend(seam_stab.cx_per_phase[ph])
 
-        # Get prep config for anchor decisions
+        # Grown stab extra CX: boundary stabs whose weight increases
+        # during merge gain additional data neighbors from the other block.
+        grown_cx_per_phase = [[] for _ in range(n_phases)]
+        for gs in merge_info.grown_stabs:
+            if gs.existing_ancilla_global >= 0:
+                for ph in range(n_phases):
+                    if ph < len(gs.new_cx_per_phase):
+                        grown_cx_per_phase[ph].extend(gs.new_cx_per_phase[ph])
+
         prep = self.get_preparation_config()
-        
         self._zz_bridge_meas.clear()
 
         for rnd in range(d):
-            # --- Bridge ZZ measurement ---
-            circuit.append("R", bridge_zz)
-            circuit.append("TICK")
-
-            # CX ctrl_data[support] -> bridge (ctrl is CONTROL)
-            for b_idx in range(n_z):
-                if b_idx < len(z_supports) and z_supports[b_idx]:
-                    for local_idx in z_supports[b_idx]:
-                        circuit.append("CNOT", [ctrl_data[local_idx], bridge_zz[b_idx]])
-            circuit.append("TICK")
-
-            # CX anc_data[support] -> bridge (anc is CONTROL)
-            # ZZ merge couples control and ancilla to measure Z_ctrl ⊗ Z_anc
-            for b_idx in range(n_z):
-                if b_idx < len(z_supports) and z_supports[b_idx]:
-                    for local_idx in z_supports[b_idx]:
-                        circuit.append("CNOT", [anc_data[local_idx], bridge_zz[b_idx]])
-            circuit.append("TICK")
-
-            # Measure bridge
-            meas_start = ctx.add_measurement(n_z)
-            circuit.append("M", bridge_zz)
-            self._zz_bridge_meas.append(list(range(meas_start, meas_start + n_z)))
-            circuit.append("TICK")
-
-            # Bridge temporal detectors (round >= 1)
-            if rnd >= 1:
-                for b_idx in range(n_z):
-                    curr = self._zz_bridge_meas[rnd][b_idx] - ctx.measurement_index
-                    prev = self._zz_bridge_meas[rnd - 1][b_idx] - ctx.measurement_index
-                    # Add coordinate for DEM visualization (bridge between block_0 and block_1)
-                    coord = (b_idx + 0.5, -0.5, rnd)  # Offset to distinguish from block ancillas
-                    circuit.append("DETECTOR", [stim.target_rec(curr), stim.target_rec(prev)], coord)
-
-            # --- Interleaved EC on all blocks ---
+            per_builder_kw: dict = {}
             for builder in self._builders:
                 block_name = builder.block_name
                 block_prep = prep.blocks.get(block_name)
-                
-                if block_name == "block_1":
-                    # Ancilla (|+⟩ prep): CNOT(anc_data→bridge) with data as CONTROL.
-                    # Individual qubit X is dressed: X_d → X_d ⊗ X_bridge, BUT
-                    # at the STABILIZER level, all X stabilizers have EVEN overlap
-                    # with Z-bridge supports (CSS weight parity), so X_stab is
-                    # actually PRESERVED. Z is also stable (CNOT control preserves Z).
-                    # |+⟩ prep: X anchors OK (R0), Z random → no Z anchor but
-                    # Z temporals from R1+.
-                    if rnd == 0:
-                        # R0: X anchors (|+⟩ prep), Z baseline (no anchor)
-                        self._emit_ec_round(
-                            builder, circuit,
+
+                if rnd == 0:
+                    if block_name == "block_1":
+                        per_builder_kw[block_name] = dict(
                             emit_detectors=True,
-                            emit_x_anchors=True,   # X deterministic from |+⟩
-                            emit_z_anchors=False,   # Z random from |+⟩
+                            emit_x_anchors=True,
+                            emit_z_anchors=False,
                             explicit_anchor_mode=True,
                         )
                     else:
-                        # R1+: BOTH temporals (X preserved by even overlap,
-                        # Z stable round-to-round)
-                        self._emit_ec_round(
-                            builder, circuit,
-                            emit_detectors=True,
-                        )
-                elif block_name == "block_0":
-                    # Ctrl block: CNOT(ctrl_data→bridge) with data as CONTROL.
-                    # Individual X dressed but X STABILIZERS preserved (even overlap).
-                    # Z unaffected. Anchors depend on prep state.
-                    z_det = block_prep.z_deterministic if block_prep else False
-                    x_det = block_prep.x_deterministic if block_prep else False
-                    if rnd == 0:
-                        self._emit_ec_round(
-                            builder, circuit,
-                            emit_detectors=True,
-                            emit_z_anchors=z_det,
-                            emit_x_anchors=x_det,  # X stabs preserved by even overlap
-                            explicit_anchor_mode=True,
-                        )
-                    else:
-                        # R1+: BOTH temporal detectors (X and Z both stable)
-                        self._emit_ec_round(
-                            builder, circuit,
-                            emit_detectors=True,
-                        )
-                else:
-                    # block_2: Not involved in ZZ merge, both X and Z are valid
-                    if rnd == 0:
                         z_det = block_prep.z_deterministic if block_prep else False
                         x_det = block_prep.x_deterministic if block_prep else False
-                        self._emit_ec_round(
-                            builder, circuit,
+                        per_builder_kw[block_name] = dict(
                             emit_detectors=True,
                             emit_z_anchors=z_det,
                             emit_x_anchors=x_det,
                             explicit_anchor_mode=True,
                         )
-                    else:
-                        # Subsequent rounds: temporal detectors
-                        self._emit_ec_round(builder, circuit, emit_detectors=True)
+                else:
+                    per_builder_kw[block_name] = dict(emit_detectors=True)
 
-        # ZZ merge done. EC already interleaved, so no additional rounds needed.
-        # NOTE: Do NOT set stabilizer_transform here - let get_stabilizer_transform()
-        # apply the final transform after all phases complete.
+            prev_meas = self._zz_bridge_meas[rnd - 1] if rnd >= 1 else None
+            self._emit_joint_merge_round(
+                self._builders, circuit, per_builder_kw,
+                seam_ancillas=seam_zz,
+                seam_cx_per_phase=seam_cx_per_phase,
+                grown_cx_per_phase=grown_cx_per_phase,
+                seam_reset_op="R",
+                seam_measure_op="M",
+                ctx=ctx,
+                rnd=rnd,
+                prev_seam_meas=prev_meas,
+                seam_meas_list=self._zz_bridge_meas,
+                det_coord_offset=0.0,
+            )
+
         return PhaseResult(
             phase_type=PhaseType.GATE,
             is_final=False,
-            needs_stabilizer_rounds=0,  # EC already emitted
+            needs_stabilizer_rounds=0,
         )
 
     # ------------------------------------------------------------------
@@ -451,104 +774,73 @@ class CSSSurgeryCNOTGadget(Gadget):
         tgt: BlockAllocation,
     ) -> PhaseResult:
         """
-        XX merge: d rounds of bridge X-parity + interleaved EC.
+        XX merge: d rounds of joint stabiliser measurement using seam X-stabs.
         
-        All stabilizers (X and Z) are preserved during XX merge because CSS
-        stabilizer weights are even, ensuring dressing from CNOT(bridge→data)
-        cancels at the stabilizer level. Full EC (BOTH types) on all blocks.
+        Proper Horsman/Fowler lattice surgery: seam X-stabilisers are
+        weight-2/4 plaquettes at even–even lattice positions between block_1
+        (ancilla) and block_2 (target).  Their CX gates are integrated into
+        the same 4-phase schedule as the internal EC stabilisers.
         
-        Each round:
-            1. RX(bridge_xx)               [prepare |+>]
-            2. CX(bridge -> anc_data)      [bridge is CONTROL]
-            3. CX(bridge -> tgt_data)      [bridge is CONTROL]
-            4. MX(bridge_xx)               [X-basis measurement]
-            5. EC: all blocks BOTH (X + Z) with full detectors
+        The product of all seam X-stab eigenvalues = X_L_anc ⊗ X_L_tgt.
         """
         code = self._code
         d = self.merge_rounds if self.merge_rounds is not None else (code.d or 3)
-        # The ZZ merge phase preserved ALL stabilizers (both X and Z) because
-        # the CSS weight parity ensures all stabilizer-bridge overlaps are EVEN.
-        # After ZZ split (destructive M on bridge qubits, which doesn't touch
-        # data), both X and Z eigenvalues on data are unchanged. So temporal
-        # detectors from XX merge R0 vs ZZ merge R[last] are valid for BOTH types.
-        # This gives us cross-phase temporal detectors "for free".
 
-        bridge_xx = [
+        seam_xx = [
             gi for gi, _, purpose in alloc.bridge_ancillas
             if purpose.startswith("xx_merge")
         ]
-        n_x = len(bridge_xx)
+        self._xx_seam_ancillas = seam_xx
+        n_seam = len(seam_xx)
+        if n_seam == 0:
+            return PhaseResult(
+                phase_type=PhaseType.GATE, is_final=False,
+                needs_stabilizer_rounds=0,
+            )
 
-        # X-stabiliser supports from code.hx
-        n_stab = min(n_x, code.hx.shape[0])
-        x_supports = []
-        for s_idx in range(n_stab):
-            x_supports.append(list(np.where(code.hx[s_idx])[0]))
-        while len(x_supports) < n_x:
-            x_supports.append([])
+        merge_info = self._xx_merge_info
+        if merge_info is None or not merge_info.seam_stabs:
+            raise RuntimeError(
+                "XX merge info not available — compute_layout() must be called "
+                "first with a code that implements get_merge_stabilizers()."
+            )
 
-        anc_data = anc.get_data_qubits()
-        tgt_data = tgt.get_data_qubits()
+        n_phases = merge_info.num_cx_phases
+        seam_cx_per_phase = [[] for _ in range(n_phases)]
+        for seam_stab in merge_info.seam_stabs:
+            for ph in range(n_phases):
+                if ph < len(seam_stab.cx_per_phase):
+                    seam_cx_per_phase[ph].extend(seam_stab.cx_per_phase[ph])
+
+        # Grown stab extra CX for XX merge
+        grown_cx_per_phase = [[] for _ in range(n_phases)]
+        for gs in merge_info.grown_stabs:
+            if gs.existing_ancilla_global >= 0:
+                for ph in range(n_phases):
+                    if ph < len(gs.new_cx_per_phase):
+                        grown_cx_per_phase[ph].extend(gs.new_cx_per_phase[ph])
 
         self._xx_bridge_meas.clear()
 
         for rnd in range(d):
-            # --- Bridge XX measurement ---
-            circuit.append("RX", bridge_xx)
-            circuit.append("TICK")
-
-            # CX bridge -> anc_data (bridge is CONTROL)
-            for b_idx in range(n_x):
-                if b_idx < len(x_supports) and x_supports[b_idx]:
-                    for local_idx in x_supports[b_idx]:
-                        circuit.append("CNOT", [bridge_xx[b_idx], anc_data[local_idx]])
-            circuit.append("TICK")
-
-            # CX bridge -> tgt_data (bridge is CONTROL)
-            for b_idx in range(n_x):
-                if b_idx < len(x_supports) and x_supports[b_idx]:
-                    for local_idx in x_supports[b_idx]:
-                        circuit.append("CNOT", [bridge_xx[b_idx], tgt_data[local_idx]])
-            circuit.append("TICK")
-
-            # Measure bridge in X basis
-            meas_start = ctx.add_measurement(n_x)
-            circuit.append("MX", bridge_xx)
-            self._xx_bridge_meas.append(list(range(meas_start, meas_start + n_x)))
-            circuit.append("TICK")
-
-            # XX bridge temporal detectors (round >= 1).
-            # The bridge measures X_anc ⊗ X_tgt parity. Individual X values
-            # may be random (from ZZ merge corruption), but the PARITY is
-            # stable round-to-round because nothing flips X on data between
-            # XX merge rounds. So consecutive bridge MX outcomes match.
-            if rnd >= 1:
-                for b_idx in range(n_x):
-                    curr = self._xx_bridge_meas[rnd][b_idx] - ctx.measurement_index
-                    prev = self._xx_bridge_meas[rnd - 1][b_idx] - ctx.measurement_index
-                    coord = (b_idx + 0.5, -0.5, rnd + 100)  # Offset to distinguish from ZZ bridge
-                    circuit.append("DETECTOR", [stim.target_rec(curr), stim.target_rec(prev)], coord)
-
-            # --- Interleaved EC ---
-            # XX bridge CNOT is CNOT(bridge→data) with bridge as CONTROL.
-            # Individual qubit Z is dressed: Z_d → Z_d ⊗ Z_bridge, BUT at the
-            # STABILIZER level, all Z stabilizers have EVEN overlap with X-bridge
-            # supports (CSS weight parity), so Z_stab is PRESERVED.
-            # X_data → X_data (unchanged by CNOT on target).
-            # Both X and Z stabilizers are stable → emit BOTH with full detectors.
+            per_builder_kw: dict = {}
             for builder in self._builders:
-                block_name = builder.block_name
-                if block_name == "block_0":
-                    # Ctrl: not coupled to XX bridge, full EC
-                    self._emit_ec_round(builder, circuit, emit_detectors=True)
-                else:
-                    # Anc, Tgt: BOTH X and Z are preserved by even overlap.
-                    # No history reset needed — temporals trace back to ZZ merge
-                    # last round, which is valid (data unchanged by ZZ split).
-                    self._emit_ec_round(
-                        builder, circuit,
-                        emit_detectors=True,  # Full temporal detectors
-                    )
+                per_builder_kw[builder.block_name] = dict(emit_detectors=True)
+
+            prev_meas = self._xx_bridge_meas[rnd - 1] if rnd >= 1 else None
+            self._emit_joint_merge_round(
+                self._builders, circuit, per_builder_kw,
+                seam_ancillas=seam_xx,
+                seam_cx_per_phase=seam_cx_per_phase,
+                grown_cx_per_phase=grown_cx_per_phase,
+                seam_reset_op="RX",
+                seam_measure_op="MX",
+                ctx=ctx,
+                rnd=rnd,
+                prev_seam_meas=prev_meas,
+                seam_meas_list=self._xx_bridge_meas,
+                det_coord_offset=100.0,
+            )
 
         return PhaseResult(
             phase_type=PhaseType.GATE,
@@ -861,55 +1153,23 @@ class CSSSurgeryCNOTGadget(Gadget):
 
     def _get_xx_logical_bridge_meas(self) -> List[int]:
         """
-        Get XX split measurements whose X-stabilizer has odd overlap with X_L.
+        Get XX split measurements for the observable correction.
         
-        For each XX bridge stabilizer s, if |supp(s) ∩ X_L| is odd, then the
-        bridge measurement carries logical X parity and must be included in the
-        observable correction for X_tgt_out.
-
-        Uses the far-edge X̄ representative (rightmost column) so that the
-        observable avoids the merge boundary.
+        In proper lattice surgery, the product of ALL seam X-stab
+        eigenvalues gives X_L_anc ⊗ X_L_tgt.  Therefore the XOR of ALL
+        seam X-stab split measurements is the correction for X_tgt_out.
         """
-        if self._code is None or not self._xx_split_meas:
-            return []
-        import numpy as np
-        hx = self._code.hx
-        x_logical = set(self._get_far_x_logical_support())
-        n_bridges = len(self._xx_split_meas)
-        result = []
-        for s_idx in range(min(n_bridges, hx.shape[0])):
-            stab_support = set(np.where(hx[s_idx])[0])
-            if len(stab_support & x_logical) % 2 == 1:
-                result.append(self._xx_split_meas[s_idx])
-        return result
+        return list(self._xx_split_meas)
 
     def _get_zz_logical_bridge_meas(self) -> List[int]:
         """
-        Get ZZ split measurements whose Z-stabilizer has odd overlap with Z_L.
+        Get ZZ split measurements for the observable correction.
         
-        For each ZZ bridge stabilizer s, if |supp(s) ∩ Z_L| is odd, then the
-        bridge measurement carries logical Z parity and must be included in the
-        observable correction for Z_tgt_out.
-        
-        At all tested distances (d=3,5,7), no Z-stabilizer has odd overlap
-        with Z_L (the boundary stabilizer with odd overlap is the (d+1)th
-        stabilizer which is NOT bridged), so this always returns [].
-        
-        We include it for conceptual completeness: the uniform derivation
-        of the observable should reference s_zz_log even when it's empty.
+        In proper lattice surgery, the product of ALL seam Z-stab
+        eigenvalues gives Z_L_ctrl ⊗ Z_L_anc.  Therefore the XOR of ALL
+        seam Z-stab split measurements is the correction for Z_tgt_out.
         """
-        if self._code is None or not self._zz_split_meas:
-            return []
-        import numpy as np
-        hz = self._code.hz
-        z_logical = set(self._code.get_logical_z_support(0))
-        n_bridges = len(self._zz_split_meas)
-        result = []
-        for s_idx in range(min(n_bridges, hz.shape[0])):
-            stab_support = set(np.where(hz[s_idx])[0])
-            if len(stab_support & z_logical) % 2 == 1:
-                result.append(self._zz_split_meas[s_idx])
-        return result
+        return list(self._zz_split_meas)
 
     # ------------------------------------------------------------------
     # Destroyed/surviving blocks
@@ -922,19 +1182,22 @@ class CSSSurgeryCNOTGadget(Gadget):
         return {"block_1"}
 
     def get_blocks_to_skip_pre_rounds(self) -> Set[str]:
-        """Skip pre-gadget EC rounds.
+        """Blocks to skip during pre-gadget EC rounds.
 
-        Flat codes: skip all blocks — the gadget handles EC during merge
-        phases via builder.emit_round() calls, which produce temporal
-        detectors bridging the pre → post boundary.
+        CSS Surgery requires d rounds of EC on ALL blocks for state
+        preparation (establishing stabilizer eigenvalues) before the
+        first merge phase begins.
 
-        Hierarchical codes: skip only block_1 (ancilla).  Block_0/block_2
-        need pre-gadget rounds to establish measurement baselines for
-        crossing detectors.
+        - block_0 (control): prepared in |0⟩, needs Z-basis EC to
+          establish Z-stabilizer eigenvalues.
+        - block_1 (ancilla): prepared in |+⟩, needs X-basis EC.
+        - block_2 (target): prepared in |0⟩, needs Z-basis EC.
+
+        All blocks participate in pre-gadget rounds.  The anchor
+        detectors emitted during round 0 use the prep config from
+        get_preparation_config().
         """
-        if self._code is not None and self._code.d is None:
-            return {"block_1"}
-        return {"block_0", "block_1", "block_2"}
+        return set()  # all blocks get pre-gadget EC
 
     def get_blocks_to_skip_post_rounds(self) -> Set[str]:
         return {"block_1"}
@@ -1016,7 +1279,7 @@ class CSSSurgeryCNOTGadget(Gadget):
         self._code = ctrl_code
         layout = GadgetLayout(target_dim=2)
         
-        surgery_gap = 1.0
+        surgery_gap = 2.0
         layout.add_block("block_0", ctrl_code, offset=(0.0, 0.0))
 
         has_boundaries = (
@@ -1025,22 +1288,87 @@ class CSSSurgeryCNOTGadget(Gadget):
         )
 
         if has_boundaries:
+            # L-shaped layout following rotated surface code boundary
+            # conventions (§Horsman et al. 2012, Litinski 2019):
+            #
+            #   [block_0 control]
+            #   [block_1 ancilla] [block_2 target]
+            #
+            # Boundary types (rotated surface code):
+            #   left/right  → smooth (X-type)
+            #   top/bottom  → rough  (Z-type)
+            #
+            # ZZ merge (rough↔rough): block_0 bottom ↔ block_1 top
+            # XX merge (smooth↔smooth): block_1 right ↔ block_2 left
+            #
+            # block_1 below block_0 (ZZ merge boundary)
             layout.add_block_adjacent("block_1", anc_code, reference_block="block_0",
-                                      my_edge="left", their_edge="right", gap=surgery_gap)
-            layout.add_block_adjacent("block_2", tgt_code, reference_block="block_1",
                                       my_edge="top", their_edge="bottom", gap=surgery_gap)
-            layout.add_boundary_bridges("block_0", "block_1", "right", "left", "zz_merge", 0)
-            layout.add_boundary_bridges("block_1", "block_2", "bottom", "top", "xx_merge", 0)
+            # block_2 to the RIGHT of block_1 (XX merge boundary)
+            layout.add_block_adjacent("block_2", tgt_code, reference_block="block_1",
+                                      my_edge="left", their_edge="right", gap=surgery_gap)
+
+            # ---- Seam stabiliser allocation (proper lattice surgery) ----
+            # Build local→global data maps for each block.
+            blk0 = layout.blocks["block_0"]
+            blk1 = layout.blocks["block_1"]
+            blk2 = layout.blocks["block_2"]
+
+            ctrl_data_map = {
+                i: blk0.data_qubit_range.start + i
+                for i in range(len(blk0.data_qubit_range))
+            }
+            anc_data_map = {
+                i: blk1.data_qubit_range.start + i
+                for i in range(len(blk1.data_qubit_range))
+            }
+            tgt_data_map = {
+                i: blk2.data_qubit_range.start + i
+                for i in range(len(blk2.data_qubit_range))
+            }
+
+            # ZZ merge: seam between block_0 bottom and block_1 top.
+            # Seam Z-stabilisers are weight-2/4 plaquettes at even–even
+            # lattice positions along the shared rough boundary.
+            zz_seam_offset = layout._next_global_idx
+            zz_info = ctrl_code.get_merge_stabilizers(
+                "ZZ", "bottom", anc_code, "top",
+                ctrl_data_map, anc_data_map, zz_seam_offset,
+            )
+            if not zz_info.seam_stabs:
+                raise ValueError(
+                    f"{type(ctrl_code).__name__}.get_merge_stabilizers('ZZ', ...) "
+                    "returned empty seam stabilizers. Lattice surgery requires "
+                    "the code to produce proper seam plaquettes for the ZZ merge."
+                )
+            layout.add_seam_stabilizers(zz_info, "block_0", "block_1",
+                                        "zz_merge")
+            self._resolve_grown_stabs(zz_info, ctrl_code, blk0, "block_0")
+            self._zz_merge_info = zz_info
+
+            # XX merge: seam between block_1 right and block_2 left.
+            xx_seam_offset = layout._next_global_idx
+            xx_info = anc_code.get_merge_stabilizers(
+                "XX", "right", tgt_code, "left",
+                anc_data_map, tgt_data_map, xx_seam_offset,
+            )
+            if not xx_info.seam_stabs:
+                raise ValueError(
+                    f"{type(anc_code).__name__}.get_merge_stabilizers('XX', ...) "
+                    "returned empty seam stabilizers. Lattice surgery requires "
+                    "the code to produce proper seam plaquettes for the XX merge."
+                )
+            layout.add_seam_stabilizers(xx_info, "block_1", "block_2",
+                                        "xx_merge")
+            self._resolve_grown_stabs(xx_info, anc_code, blk1, "block_1")
+            self._xx_merge_info = xx_info
         else:
-            margin = max(3.0, (ctrl_code.d or 3) * 1.5)
-            layout.add_block("block_1", anc_code, auto_offset=True, margin=margin)
-            layout.add_block("block_2", tgt_code, auto_offset=True, margin=margin)
-            n_z = ctrl_code.hz.shape[0] if ctrl_code.hz is not None else 0
-            for s in range(n_z):
-                layout.add_bridge_ancilla(purpose=f"zz_merge_{s}", connected_blocks=["block_0", "block_1"])
-            n_x = ctrl_code.hx.shape[0] if ctrl_code.hx is not None else 0
-            for s in range(n_x):
-                layout.add_bridge_ancilla(purpose=f"xx_merge_{s}", connected_blocks=["block_1", "block_2"])
+            raise NotImplementedError(
+                f"{type(ctrl_code).__name__} does not support lattice surgery: "
+                "the code must have physical boundaries (has_physical_boundaries()) "
+                "and implement get_merge_stabilizers(). Currently supported: "
+                "RotatedSurfaceCode."
+            )
 
         return layout
 

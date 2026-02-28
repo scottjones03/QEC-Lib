@@ -584,39 +584,37 @@ class QCCDCircuit(stim.Circuit):
         numZGates = 0
         numXGates = 0
         circuitString = ''
+
+        def _take_ops(stim_idx: int, count: int):
+            queue = operationsForIons.get(stim_idx)
+            if not queue:
+                return []
+            take = min(count, len(queue))
+            taken = queue[:take]
+            del queue[:take]
+            return taken
+
         for i in stimInstructions:
             if i.startswith("BARRIER"):
                 continue
             idx = int(i.split(" ")[1]) if ( i[0] in ("M", "H", "R") or i.startswith("CNOT") or i.startswith("CZ")) else -1
             doNoiseAfter = False if i[0]=="M" else True
             if i[0] == "M" or i[0] == "R":
-                ops = operationsForIons[idx][:1]
-                operationsForIons[idx].pop(0)
+                ops = _take_ops(idx, 1)
             elif i[0] == "H":
-                ops = operationsForIons[idx][:2]
-                operationsForIons[idx].pop(0)
-                operationsForIons[idx].pop(0)
+                ops = _take_ops(idx, 2)
             elif i.startswith("CNOT"):
                 idx2 = int(i.split(" ")[2])
                 # Do not duplicate the two qubit gate
-                ops = operationsForIons[idx][:4] + operationsForIons[idx2][:1]
-                operationsForIons[idx].pop(0)
-                operationsForIons[idx].pop(0)
-                operationsForIons[idx].pop(0)
-                operationsForIons[idx2].pop(0)
-                operationsForIons[idx2].pop(0)
+                ops_q1 = _take_ops(idx, 3)
+                ops_q2 = _take_ops(idx2, 2)
+                ops = ops_q1 + ops_q2[:1]
             elif i.startswith("CZ"):
                 idx2 = int(i.split(" ")[2])
                 # Do not duplicate the two qubit gate
-                ops = operationsForIons[idx][:4] + operationsForIons[idx2][:2]+operationsForIons[idx2][3:5]
-                operationsForIons[idx].pop(0)
-                operationsForIons[idx].pop(0)
-                operationsForIons[idx].pop(0)
-                operationsForIons[idx2].pop(0)
-                operationsForIons[idx2].pop(0)
-                operationsForIons[idx2].pop(0)
-                operationsForIons[idx2].pop(0)
-                operationsForIons[idx2].pop(0)
+                ops_q1 = _take_ops(idx, 3)
+                ops_q2 = _take_ops(idx2, 5)
+                ops = ops_q1 + ops_q2[:2] + ops_q2[3:5]
             else:
                 ops = []
 

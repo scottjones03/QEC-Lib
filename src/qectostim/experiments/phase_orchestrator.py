@@ -52,6 +52,29 @@ if TYPE_CHECKING:
     from qectostim.gadgets.layout import QubitAllocation
 
 
+def _count_cx_instructions(circuit: stim.Circuit) -> int:
+    """Count CX/CNOT/CZ *instruction objects* in a stim circuit.
+
+    Stim merges adjacent same-type CX gates into a single instruction
+    with multiple target pairs (e.g. ``CX 0 1 2 3`` = one instruction,
+    two pairs).  This function counts **instructions**, not pairs.
+
+    In the trapped-ion compiler each stim CX instruction maps 1:1 to a
+    ``toMoveOps``/``parallelPairs`` entry, so this count equals
+    ``len(parallelPairs)`` — the number of routing rounds the hardware
+    compiler will produce.
+
+    Handles ``REPEAT`` blocks recursively.
+    """
+    n = 0
+    for inst in circuit:
+        if isinstance(inst, stim.CircuitRepeatBlock):
+            n += inst.repeat_count * _count_cx_instructions(inst.body_copy())
+        elif inst.name in ("CX", "CZ", "XCZ", "ZCX", "ZCZ"):
+            n += 1
+    return n
+
+
 @dataclass
 class PhaseExecutionResult:
     """
@@ -89,6 +112,7 @@ class PhaseExecutionResult:
     crossing_handled: bool = False
     pauli_frame: Optional[Dict[str, Any]] = None
     destroyed_block_meas_starts: Dict[str, int] = field(default_factory=dict)
+    phase_cx_counts: List[int] = field(default_factory=list)
 
     def to_chain_state(self) -> GadgetChainState:
         """
@@ -227,6 +251,11 @@ class PhaseOrchestrator:
         # Track prep measurement start for hybrid decoding
         prep_meas_start = None
         
+        # CX counting: track CX instructions emitted per gadget phase
+        # (includes inter-phase rounds) so metadata ms_pair_count is
+        # always accurate -- no formula-based prediction required.
+        _cx_running = _count_cx_instructions(circuit)
+        
         # Execute all phases
         for phase_idx in range(self.gadget.num_phases):
             phase_result = self.gadget.emit_next_phase(circuit, unified_alloc, self.ctx)
@@ -357,6 +386,12 @@ class PhaseOrchestrator:
                                     builder, last_meas
                                 )
                                 pre_gadget_meas[builder.block_name] = last_meas
+            
+            # Record CX instructions emitted during this gadget phase
+            # (includes emit_next_phase + inter-phase rounds).
+            _cx_now = _count_cx_instructions(circuit)
+            result.phase_cx_counts.append(_cx_now - _cx_running)
+            _cx_running = _cx_now
             
             # Store final result
             if phase_result.is_final:

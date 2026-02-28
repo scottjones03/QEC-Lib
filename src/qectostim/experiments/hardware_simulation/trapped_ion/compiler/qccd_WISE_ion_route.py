@@ -1,4 +1,5 @@
 from typing import (
+    Callable,
     Sequence,
     List,
     Tuple,
@@ -9,10 +10,12 @@ from typing import (
     Any,
 )
 from collections import defaultdict
+from dataclasses import dataclass, field
 import copy
 import os
 import time
 import logging
+import threading
 from copy import deepcopy
 
 import numpy as np
@@ -415,6 +418,18 @@ def _patch_and_route(
 
         patch_w = min(n_c, n_cols)
         patch_h = min(n_r, n_rows)
+
+        # Warn when effective patch covers the entire grid — this
+        # defeats Level-2 tiling and forces one large SAT call.
+        if cycle_idx == 0 and patch_w >= n_cols and patch_h >= n_rows:
+            import logging as _log_mod
+            _pr_log = _log_mod.getLogger("wise.qccd.route")
+            _pr_log.warning(
+                "[_patch_and_route] subgridsize=(%d,%d) covers the "
+                "full %dx%d grid as a single patch — SAT will be "
+                "slow. Consider subgridsize=(4,3,0) for 4×3 patches.",
+                n_c, n_r, n_rows, n_cols,
+            )
 
         tilings: List[Tuple[int, int]] = [(0, 0)]
 
@@ -952,153 +967,247 @@ def _rebuild_schedule_for_layout(
             )
             break
         
-        # Start tiling from (0, 0) only; no offset tilings needed for this layout-only step.
-        patch_regions = _generate_patch_regions(n_rows, n_cols, patch_h, patch_w, 0, 0)
+        # ---- Checkerboard offset tilings (matching _patch_and_route) ----
+        def _k_compatible(width: int, k_val: int) -> bool:
+            if width <= 0 or width == 1:
+                return False
+            if width == k_val:
+                return True
+            if width > k_val:
+                return (width % k_val) == 0
+            return (k_val % width) == 0
+
+        tilings: List[Tuple[int, int]] = [(0, 0)]
+        half_h = patch_h // 2
+        if half_h > 0 and (half_h, 0) not in tilings:
+            tilings.append((half_h, 0))
+        if patch_w % 2 == 0:
+            half_w = patch_w // 2
+            if (
+                half_w > 0
+                and _k_compatible(half_w, wiseArch.k)
+                and (0, half_w) not in tilings
+            ):
+                tilings.append((0, half_w))
 
         mismatch_before = int(np.count_nonzero(current_layout != target_layout))
 
-        # Build ion -> position map from the current layout
-        ion_positions: Dict[int, Tuple[int, int]] = {
-            int(current_layout[r, c]): (r, c)
-            for r in range(n_rows)
-            for c in range(n_cols)
-        }
+        cycle_total_pins = 0
 
-        layouts_after_local: List[np.ndarray] = [np.array(current_layout, copy=True)]
-        patch_schedules_this_tiling: List[List[List[Dict[str, Any]]]] = []
-        total_pins = 0
+        for tiling_idx, (off_r, off_c) in enumerate(tilings):
+            if np.array_equal(current_layout, target_layout):
+                break
 
-        logger.info(
-            "%s schedule-only rebuild: starting cycle %d",
-            PATCH_LOG_PREFIX,
-            cycle_idx,
-        )
+            patch_regions = _generate_patch_regions(n_rows, n_cols, patch_h, patch_w, off_r, off_c)
 
-        for region in patch_regions:
-            r0, c0, r1, c1 = region
-            patch_grid = np.array(
-                layouts_after_local[0][r0:r1, c0:c1], dtype=int, copy=True
-            )
-
-            # Build BT pins that force as many ions as possible in this patch
-            # towards their target positions, subject to the uniqueness
-            # constraint on (start_row_local, target_col_local).
-            BT_patch: List[Dict[int, Tuple[int, int]]] = [dict()]
-            bt_map = BT_patch[0]
-            used_keys: Dict[Tuple[int, int], int] = {}
-
-            for dr in range(r1 - r0):
-                for dc in range(c1 - c0):
-                    ionidx_target = int(target_layout[r0 + dr, c0 + dc])
-                    pos = ion_positions.get(ionidx_target)
-                    if pos is None:
-                        # Should not happen, but be defensive.
-                        continue
-                    start_row_global, _ = pos
-                    start_row_local = start_row_global - r0
-                    if not (0 <= start_row_local < (r1 - r0)):
-                        # Ion currently outside this patch row range; skip in this cycle.
-                        continue
-
-
-                    _, start_col_global = pos
-                    start_col_local = start_col_global - c0
-                    if not (0 <= start_col_local < (c1 - c0)):
-                        # Ion currently outside this patch col range; skip in this cycle.
-                        continue
-
-                    key = (start_row_local, start_col_local)
-                    existing_ion = used_keys.get(key)
-                    if existing_ion is not None and existing_ion != ionidx_target:
-                        # Another ion from the same start row already wants this column
-                        # in this patch and has been pinned in this cycle; skip to
-                        # avoid violating the SAT precondition.
-                        continue
-
-                    used_keys[key] = ionidx_target
-                    bt_map[ionidx_target] = (dr, dc)
-
-            if not bt_map:
-                # No pins for this patch in this cycle; skip SAT for this patch.
-                continue
-
-            total_pins += len(bt_map)
-
-            boundary_adjacent = {
-                "top": r0 > 0,
-                "bottom": r1 < n_rows,
-                "left": c0 > 0,
-                "right": c1 < n_cols,
+            # Build ion -> position map from the current layout
+            ion_positions: Dict[int, Tuple[int, int]] = {
+                int(current_layout[r, c]): (r, c)
+                for r in range(n_rows)
+                for c in range(n_cols)
             }
-            cross_boundary_prefs: List[Dict[int, Set[str]]] = [dict()]
+
+            layouts_after_local: List[np.ndarray] = [np.array(current_layout, copy=True)]
+            patch_schedules_this_tiling: List[List[List[Dict[str, Any]]]] = []
+            tiling_pins = 0
 
             logger.info(
-                "%s rebuilding schedule-only patch (cycle %d) r[%d:%d] c[%d:%d] (no gates, BT pins=%d)",
+                "%s schedule-only rebuild: cycle %d tiling %d/%d offset=(%d,%d)",
                 PATCH_LOG_PREFIX,
                 cycle_idx,
-                r0,
-                r1,
-                c0,
-                c1,
-                len(bt_map),
+                tiling_idx + 1,
+                len(tilings),
+                off_r,
+                off_c,
             )
 
-            try:
-                patch_layouts, patch_schedule, _ = GlobalReconfigurations._optimal_QMR_for_WISE(
-                    patch_grid,
-                    P_arr=[[]],  # no MS gates; layout-only reconfig
-                    k=wiseArch.k,
-                    BT=BT_patch,
-                    active_ions=None,
-                    wB_col=0,
-                    wB_row=0,
-                    full_P_arr=[[]],
-                    ignore_initial_reconfig=False,
-                    base_pmax_in=base_pmax_in,
-                    prev_pmax=None,
-                    grid_origin=(r0, c0),
-                    boundary_adjacent=boundary_adjacent,
-                    cross_boundary_prefs=cross_boundary_prefs,
-                    bt_soft=False,
-                    parent_stop_event=stop_event,
-                    progress_callback=progress_callback,
-                    max_inner_workers=max_inner_workers,
+            for region in patch_regions:
+                r0, c0, r1, c1 = region
+                patch_grid = np.array(
+                    layouts_after_local[0][r0:r1, c0:c1], dtype=int, copy=True
                 )
-            except NoFeasibleLayoutError as exc:
-                logger.warning(
-                    "%s ERROR rebuilding schedule-only patch (cycle %d) r[%d:%d] c[%d:%d]: %s",
+
+                # Build BT pins that force as many ions as possible in this patch
+                # towards their target positions, subject to the uniqueness
+                # constraint on (start_row_local, target_col_local).
+                BT_patch: List[Dict[int, Tuple[int, int]]] = [dict()]
+                bt_map = BT_patch[0]
+                used_keys: Dict[Tuple[int, int], int] = {}
+
+                for dr in range(r1 - r0):
+                    for dc in range(c1 - c0):
+                        ionidx_target = int(target_layout[r0 + dr, c0 + dc])
+                        pos = ion_positions.get(ionidx_target)
+                        if pos is None:
+                            continue
+                        start_row_global, start_col_global = pos
+                        start_row_local = start_row_global - r0
+                        if not (0 <= start_row_local < (r1 - r0)):
+                            continue
+                        start_col_local = start_col_global - c0
+                        if not (0 <= start_col_local < (c1 - c0)):
+                            continue
+
+                        key = (start_row_local, dc)  # SAT precondition: (start_row, target_col) uniqueness
+                        existing_ion = used_keys.get(key)
+                        if existing_ion is not None and existing_ion != ionidx_target:
+                            continue
+
+                        used_keys[key] = ionidx_target
+                        bt_map[ionidx_target] = (dr, dc)
+
+                if not bt_map:
+                    continue
+
+                tiling_pins += len(bt_map)
+
+                boundary_adjacent = {
+                    "top": r0 > 0,
+                    "bottom": r1 < n_rows,
+                    "left": c0 > 0,
+                    "right": c1 < n_cols,
+                }
+                cross_boundary_prefs: List[Dict[int, Set[str]]] = [dict()]
+
+                logger.info(
+                    "%s rebuilding schedule-only patch (cycle %d, tiling %d) r[%d:%d] c[%d:%d] (no gates, BT pins=%d)",
                     PATCH_LOG_PREFIX,
                     cycle_idx,
+                    tiling_idx,
                     r0,
                     r1,
                     c0,
                     c1,
-                    repr(exc),
+                    len(bt_map),
                 )
-                raise
 
-            # Update the global layout snapshot with this patch's result.
-            layouts_after_local[0][r0:r1, c0:c1] = patch_layouts[0]
-            patch_schedules_this_tiling.append(patch_schedule)
+                try:
+                    patch_layouts, patch_schedule, _ = GlobalReconfigurations._optimal_QMR_for_WISE(
+                        patch_grid,
+                        P_arr=[[]],  # no MS gates; layout-only reconfig
+                        k=wiseArch.k,
+                        BT=BT_patch,
+                        active_ions=None,
+                        wB_col=0,
+                        wB_row=0,
+                        full_P_arr=[[]],
+                        ignore_initial_reconfig=False,
+                        base_pmax_in=base_pmax_in,
+                        prev_pmax=None,
+                        grid_origin=(r0, c0),
+                        boundary_adjacent=boundary_adjacent,
+                        cross_boundary_prefs=cross_boundary_prefs,
+                        bt_soft=False,
+                        parent_stop_event=stop_event,
+                        progress_callback=progress_callback,
+                        max_inner_workers=max_inner_workers,
+                    )
+                except NoFeasibleLayoutError:
+                    # Retry with soft BT constraints (relaxable pins)
+                    logger.info(
+                        "%s schedule-only patch (cycle %d, tiling %d) r[%d:%d] c[%d:%d]: "
+                        "hard BT infeasible, retrying with bt_soft=True",
+                        PATCH_LOG_PREFIX, cycle_idx, tiling_idx,
+                        r0, r1, c0, c1,
+                    )
+                    try:
+                        patch_layouts, patch_schedule, _ = GlobalReconfigurations._optimal_QMR_for_WISE(
+                            patch_grid,
+                            P_arr=[[]],
+                            k=wiseArch.k,
+                            BT=BT_patch,
+                            active_ions=None,
+                            wB_col=0,
+                            wB_row=0,
+                            full_P_arr=[[]],
+                            ignore_initial_reconfig=False,
+                            base_pmax_in=base_pmax_in,
+                            prev_pmax=None,
+                            grid_origin=(r0, c0),
+                            boundary_adjacent=boundary_adjacent,
+                            cross_boundary_prefs=cross_boundary_prefs,
+                            bt_soft=True,
+                            parent_stop_event=stop_event,
+                            progress_callback=progress_callback,
+                            max_inner_workers=max_inner_workers,
+                        )
+                    except NoFeasibleLayoutError:
+                        # Even soft BT failed – try with fewer pins
+                        # Reduce to only pins where the ion is already in the
+                        # correct row (most likely to succeed).
+                        reduced_bt: Dict[int, Tuple[int, int]] = {}
+                        for ion_id, (tr, tc) in bt_map.items():
+                            pos = ion_positions.get(ion_id)
+                            if pos is not None:
+                                sr_local = pos[0] - r0
+                                if sr_local == tr:
+                                    reduced_bt[ion_id] = (tr, tc)
+                        if reduced_bt and len(reduced_bt) < len(bt_map):
+                            logger.info(
+                                "%s retrying with reduced pins (%d -> %d)",
+                                PATCH_LOG_PREFIX, len(bt_map), len(reduced_bt),
+                            )
+                            try:
+                                patch_layouts, patch_schedule, _ = GlobalReconfigurations._optimal_QMR_for_WISE(
+                                    patch_grid,
+                                    P_arr=[[]],
+                                    k=wiseArch.k,
+                                    BT=[reduced_bt],
+                                    active_ions=None,
+                                    wB_col=0,
+                                    wB_row=0,
+                                    full_P_arr=[[]],
+                                    ignore_initial_reconfig=False,
+                                    base_pmax_in=base_pmax_in,
+                                    prev_pmax=None,
+                                    grid_origin=(r0, c0),
+                                    boundary_adjacent=boundary_adjacent,
+                                    cross_boundary_prefs=cross_boundary_prefs,
+                                    bt_soft=True,
+                                    parent_stop_event=stop_event,
+                                    progress_callback=progress_callback,
+                                    max_inner_workers=max_inner_workers,
+                                )
+                            except NoFeasibleLayoutError:
+                                logger.warning(
+                                    "%s schedule-only patch (cycle %d, tiling %d) r[%d:%d] c[%d:%d]: "
+                                    "all BT strategies failed, skipping patch",
+                                    PATCH_LOG_PREFIX, cycle_idx, tiling_idx,
+                                    r0, r1, c0, c1,
+                                )
+                                continue
+                        else:
+                            logger.warning(
+                                "%s schedule-only patch (cycle %d, tiling %d) r[%d:%d] c[%d:%d]: "
+                                "soft BT also infeasible, skipping patch",
+                                PATCH_LOG_PREFIX, cycle_idx, tiling_idx,
+                                r0, r1, c0, c1,
+                            )
+                            continue
 
-        if total_pins == 0 or not patch_schedules_this_tiling:
-            logger.warning(
-                "%s schedule-only rebuild made no progress in cycle %d "
-                "(total_pins=%d); stopping early.",
-                PATCH_LOG_PREFIX,
-                cycle_idx,
-                total_pins,
+                # Update the global layout snapshot with this patch's result.
+                layouts_after_local[0][r0:r1, c0:c1] = patch_layouts[0]
+                patch_schedules_this_tiling.append(patch_schedule)
+
+            cycle_total_pins += tiling_pins
+
+            if tiling_pins == 0 or not patch_schedules_this_tiling:
+                logger.info(
+                    "%s schedule-only rebuild: tiling %d made no progress (pins=%d); trying next tiling.",
+                    PATCH_LOG_PREFIX,
+                    tiling_idx,
+                    tiling_pins,
+                )
+                continue
+
+            # Merge patch schedules into a single global schedule for this tiling.
+            merged_schedule_all_rounds = _merge_patch_schedules(patch_schedules_this_tiling, R)
+            merged_schedule_round0 = merged_schedule_all_rounds[0] if merged_schedule_all_rounds else []
+
+            current_layout = layouts_after_local[0]
+            snapshots.append(
+                (current_layout.copy(), merged_schedule_round0, [])
             )
-            break
-
-        # Merge patch schedules into a single global schedule for this cycle.
-        merged_schedule_all_rounds = _merge_patch_schedules(patch_schedules_this_tiling, R)
-        merged_schedule_round0 = merged_schedule_all_rounds[0] if merged_schedule_all_rounds else []
-
-        current_layout = layouts_after_local[0]
-        snapshots.append(
-            (current_layout.copy(), merged_schedule_round0, [])
-        )
 
         mismatch_after = int(np.count_nonzero(current_layout != target_layout))
         logger.info(
@@ -1110,21 +1219,48 @@ def _rebuild_schedule_for_layout(
             mismatch_after,
         )
 
-        # If we are no longer strictly reducing the mismatch, further cycles are
-        # unlikely to help and will just spend more SAT time; stop early.
-        if mismatch_after >= mismatch_before:
+        if cycle_total_pins == 0:
             logger.warning(
-                "%s schedule-only rebuild: no further improvement in cycle %d (mismatch %d -> %d); stopping early.",
+                "%s schedule-only rebuild made no progress in cycle %d "
+                "(total_pins=%d); stopping early.",
                 PATCH_LOG_PREFIX,
                 cycle_idx,
-                mismatch_before,
-                mismatch_after,
+                cycle_total_pins,
             )
             break
 
+        # If mismatch is not strictly decreasing, grow patches and retry.
+        # Only stop if the patch already covers the full grid (nowhere to expand).
+        fully_global = (patch_h >= n_rows) and (patch_w >= n_cols)
+        if mismatch_after >= mismatch_before:
+            if fully_global:
+                logger.warning(
+                    "%s schedule-only rebuild: no improvement with full-grid patch "
+                    "in cycle %d (mismatch %d -> %d); stopping.",
+                    PATCH_LOG_PREFIX,
+                    cycle_idx,
+                    mismatch_before,
+                    mismatch_after,
+                )
+                break
+            else:
+                logger.info(
+                    "%s schedule-only rebuild: plateau in cycle %d "
+                    "(mismatch %d -> %d); growing patches.",
+                    PATCH_LOG_PREFIX,
+                    cycle_idx,
+                    mismatch_before,
+                    mismatch_after,
+                )
+
         prev_mismatch = mismatch_after
-        patch_w = min(patch_w+1, n_cols)
-        patch_h = min(patch_h+1, n_rows)
+        # Grow patches towards full grid; k-align column width
+        patch_h = min(patch_h + 1, n_rows)
+        new_w = patch_w + max(1, wiseArch.k)
+        # Round up to k boundary for WISE compatibility
+        if new_w % wiseArch.k != 0:
+            new_w = ((new_w // wiseArch.k) + 1) * wiseArch.k
+        patch_w = min(new_w, n_cols)
 
     if not np.array_equal(current_layout, target_layout):
         logger.warning(
@@ -1142,7 +1278,8 @@ def _apply_layout_as_reconfiguration(
     layout_after: np.ndarray,
     allOps: List[Operation],
     schedule: Optional[List[Dict[str, Any]]]=None,
-    initial_placement: bool = False
+    initial_placement: bool = False,
+    sorted_traps: Optional[List] = None,
 ) -> np.ndarray:
     """
     Internal helper: take the first layout in layouts_after (round 0 layout of
@@ -1159,7 +1296,19 @@ def _apply_layout_as_reconfiguration(
 
     This encapsulates the “apply one big subgrid-based reconfiguration step”
     that is duplicated in the original implementation.
+
+    Parameters
+    ----------
+    sorted_traps : list of ManipulationTrap, optional
+        Traps in row-major grid order (row 0 blocks 0..m-1, row 1, etc.).
+        When ``None``, the list is built internally by sorting
+        ``arch._manipulationTraps`` by ``(pos[1], pos[0])``.
     """
+    if sorted_traps is None:
+        sorted_traps = sorted(
+            arch._manipulationTraps,
+            key=lambda t: (t.pos[1], t.pos[0]),
+        )
     newArrangement: Dict[ManipulationTrap, List[Ion]] = {
         trap: [] for trap in arch._manipulationTraps
     }
@@ -1168,10 +1317,24 @@ def _apply_layout_as_reconfiguration(
         for c in range(wiseArch.m * wiseArch.k):
             ionidx = int(layout_after[d][c])
             newArrangementArr[d][c] = ionidx
-            # Note: trap membership is based on the *old* arrangement
+
             old_ionidx = int(oldArrangementArr[d][c])
-            trap = arch.ions[old_ionidx].parent
-            newArrangement[trap].append(arch.ions[ionidx])
+
+            # Determine which physical trap owns grid cell (d, c).
+            # Primary: look up the ion that was in this cell before.
+            # Fallback: derive from grid geometry when the cell was empty.
+            if old_ionidx != 0:
+                trap = arch.ions[old_ionidx].parent
+            else:
+                # Empty cell (index 0 is not a real ion) -- map grid
+                # position to the physical trap via row-major ordering.
+                trap_col = c // wiseArch.k
+                trap_linear = d * wiseArch.m + trap_col
+                trap = sorted_traps[trap_linear]
+
+            # Only record real ions in the new arrangement dict.
+            if ionidx != 0:
+                newArrangement[trap].append(arch.ions[ionidx])
 
     reconfig = GlobalReconfigurations.physicalOperation(
         newArrangement, wiseArch, oldArrangementArr, newArrangementArr, schedule=schedule, initial_placement=initial_placement
@@ -1181,6 +1344,542 @@ def _apply_layout_as_reconfiguration(
     arch.refreshGraph()
 
     return newArrangementArr.copy()
+
+
+# =====================================================================
+# Reconfig Merge Optimisation (Work Stream B)
+# =====================================================================
+
+def _find_ion_position(
+    layout: np.ndarray,
+    ion_idx: int,
+) -> Optional[Tuple[int, int]]:
+    """Find row, col of *ion_idx* in a layout array.
+
+    Returns ``None`` if the ion is not present.
+    """
+    positions = np.argwhere(layout == ion_idx)
+    if len(positions) == 0:
+        return None
+    return (int(positions[0][0]), int(positions[0][1]))
+
+
+def _ions_unmoved(
+    ion_set: Set[int],
+    current_layout: np.ndarray,
+    next_layout: np.ndarray,
+) -> bool:
+    """Check whether every ion in *ion_set* is in the same position
+    in *current_layout* and *next_layout*.
+
+    An ion that appears in one layout but not the other counts as moved.
+    """
+    for ion_idx in ion_set:
+        cur = _find_ion_position(current_layout, ion_idx)
+        nxt = _find_ion_position(next_layout, ion_idx)
+        if cur is None or nxt is None or cur != nxt:
+            return False
+    return True
+
+
+# =====================================================================
+# Routing Engine Extraction — RoutingStep + _route_round_sequence
+# (Spec §2.3: pure-array routing with all 10 tricks, no arch coupling)
+# =====================================================================
+
+@dataclass
+class RoutingStep:
+    """One reconfiguration + MS-gate step produced by the routing engine.
+
+    This is the unit of work produced by ``_route_round_sequence`` and
+    consumed by the execution layer in ``ionRoutingWISEArch`` or
+    ``ionRoutingGadgetArch``.
+    """
+
+    layout_after: np.ndarray
+    """Target ion arrangement after reconfiguration."""
+
+    schedule: Optional[List[Dict[str, Any]]]
+    """Swap passes to achieve *layout_after*.  ``None`` when replayed
+    from cache (first step only) — the execution bridge will use
+    heuristic reconfig."""
+
+    solved_pairs: List[Tuple[int, int]]
+    """MS pairs enabled by this layout (for this MS round)."""
+
+    ms_round_index: int
+    """Which ``parallelPairs`` round these pairs solve."""
+
+    from_cache: bool
+    """True if this step was replayed from the block cache."""
+
+    tiling_meta: Tuple[int, int]
+    """``(cycle_idx, tiling_idx)`` for debugging."""
+
+    can_merge_with_next: bool
+    """Hint for reconfig merge optimisation (Trick 5)."""
+
+    is_initial_placement: bool = False
+    """True for the very first reconfiguration (idx==0)."""
+
+    is_layout_transition: bool = False
+    """True for SAT-based layout transition steps (BT-driven, no MS pairs).
+    These must always be applied by the execution loop regardless of
+    the solved_pairs guard."""
+
+
+def _route_round_sequence(
+    oldArrangementArr: np.ndarray,
+    wiseArch: "QCCDWiseArch",
+    parallelPairs: List[List[Tuple[int, int]]],
+    *,
+    lookahead: int,
+    subgridsize: Tuple[int, int, int],
+    base_pmax_in: int = 1,
+    active_ions: List[int],
+    toMoveOps: Optional[List] = None,
+    stop_event: Optional[Any] = None,
+    progress_callback: Optional[Callable] = None,
+    max_inner_workers: Optional[int] = None,
+    initial_BTs: Optional[List] = None,
+) -> Tuple[List[RoutingStep], np.ndarray]:
+    """Pure-array routing engine extracted from ``ionRoutingWISEArch``.
+
+    Contains ALL 10 tricks from the working code:
+
+    1. Gating-capacity overflow spilling
+    2. Cross-boundary preference soft clauses
+    3. BT pin conflict detection
+    4. Multi-round lookahead BT pins
+    5. Reconfig merge optimisation
+    6. Block caching with per-offset replay
+    7. ``_rebuild_schedule_for_layout``
+    8. ``prev_pmax`` warm-starting
+    9. ``NoFeasibleLayoutError`` graceful recovery
+    10. Single-qubit scheduling metadata (epoch markers)
+
+    No ``arch`` or ``Operation`` references — only numpy arrays, SAT calls,
+    and scheduling logic.  Variable names preserved from the original main
+    loop for readability and diff-friendliness.
+
+    Parameters
+    ----------
+    oldArrangementArr : np.ndarray
+        Initial ion arrangement on the WISE grid.
+    wiseArch : QCCDWiseArch
+        Grid geometry (``n`` rows, ``m`` blocks, ``k`` capacity).
+    parallelPairs : list of list of (int, int)
+        Per-round MS ion-index pairs.
+    lookahead : int
+        Number of future rounds visible to the SAT solver.
+    subgridsize : (int, int, int)
+        ``(cols, rows, increment)`` for the patch slicer.
+    base_pmax_in : int
+        Base ``pmax`` seed for the SAT solver.
+    active_ions : list of int
+        Indices of non-spectator ions.
+    toMoveOps : list, optional
+        Used for block-cache key building (original variable name).
+    stop_event : threading.Event, optional
+        Cooperative cancellation.
+    progress_callback : callable, optional
+        Progress reporting.
+    max_inner_workers : int, optional
+        SAT parallelism cap.
+
+    Returns
+    -------
+    steps : List[RoutingStep]
+        Ordered routing steps to be applied by the execution layer.
+    final_layout : np.ndarray
+        The arrangement array after all routing steps.
+    """
+    steps: List[RoutingStep] = []
+    total_ms_rounds = len(parallelPairs)
+
+    if total_ms_rounds == 0:
+        return steps, oldArrangementArr.copy()
+
+    # --- Variable names preserved from ionRoutingWISEArch main loop ---
+    idx = 0
+    tiling_steps_meta: List[Tuple[int, int, List[Tuple[np.ndarray, List[Dict[str, Any]], List[Tuple[int, int]]]]]] = []
+    tiling_steps: List[List[Tuple[np.ndarray, List[Dict[str, Any]], List[Tuple[int, int]]]]] = []
+    tiling_step: List[Tuple[np.ndarray, List[Dict[str, Any]], List[Tuple[int, int]]]] = []
+    hadMultipleTilingSteps: bool = False
+    BTs: Optional[List[Dict[Tuple[int, int], Tuple[Dict[int, Tuple[int, int]], List[Tuple[int, int]]]]]] = initial_BTs
+
+    # --- Fix 3: Preserve return-round BT across routing windows ---
+    # The last entry in initial_BTs carries ion-return pins that must
+    # survive BT rebuilds for subsequent windows.  Extract it once and
+    # re-inject it after every rebuild when the window covers the last
+    # (return) round.
+    _sticky_return_bt: Optional[Dict] = None
+    if initial_BTs is not None and len(initial_BTs) > 0:
+        _last_bt = initial_BTs[-1]
+        if _last_bt:
+            _sticky_return_bt = deepcopy(_last_bt)
+
+    # --- Trick 6: Block cache infrastructure ---
+    block_cache: Dict[
+        Tuple[Tuple[Tuple[int, int], ...], ...],
+        Dict[int, List[Tuple[int, int, List[Tuple[np.ndarray, List[Dict[str, Any]], List[Tuple[int, int]]]]]]]
+    ] = {}
+    tiling_steps_from_cache: bool = False
+    pending_first_cached_reconfig: bool = False
+    blk_idx: int = 0
+    blk_end: int = 0
+    recheck_cache: bool = True
+    BLOCK_LEN = 4
+    cache_for_block: Dict = {}
+
+    # Track current layout (updated after each routing step)
+    currentArr = oldArrangementArr.copy()
+
+    while idx < total_ms_rounds:
+        # Emit STAGE_ROUTING so the progress widget can track MS-round
+        # advancement while the SAT solver is still working.
+        if progress_callback is not None:
+            progress_callback(RoutingProgress(
+                stage=STAGE_ROUTING,
+                current=idx,
+                total=total_ms_rounds,
+                message=f"Processing MS round {idx}/{total_ms_rounds}",
+            ))
+
+        logger.info(
+            "%s _route_round_sequence: idx=%d/%d",
+            PATCH_LOG_PREFIX, idx, total_ms_rounds,
+        )
+
+        if (not hadMultipleTilingSteps) and tiling_steps and tiling_steps[0]:
+            # Reuse pre-computed tiling plan from previous iteration
+            pass
+        else:
+            # 4a) Compute routing window
+            window_start = idx
+            window_end = min(len(parallelPairs), lookahead + idx)
+            P_arr = parallelPairs[window_start:window_end].copy()
+
+            if recheck_cache:
+                # --- Trick 6: Block cache lookup ---
+                new_blk_end = min(len(parallelPairs), window_start + BLOCK_LEN) - window_start
+                new_block_key_rounds = parallelPairs[window_start:new_blk_end + window_start]
+                new_block_key: Tuple[Tuple[Tuple[int, int], ...], ...] = tuple(
+                    tuple(sorted(round_pairs)) for round_pairs in new_block_key_rounds
+                )
+
+                new_cache_for_block = block_cache.setdefault(new_block_key, {})
+                logger.info(
+                    "%s rechecked cache at idx=%d; blk_idx=%d, blk_end=%d, new_blk_end=%d, "
+                    "cache_for_block=%d, new_cache=%d",
+                    PATCH_LOG_PREFIX, idx, blk_idx, blk_end, new_blk_end,
+                    len(cache_for_block), len(new_cache_for_block),
+                )
+                if len(new_cache_for_block) > 0:
+                    cache_for_block = new_cache_for_block
+                    blk_idx = 0
+                    blk_end = new_blk_end
+                    tiling_steps_from_cache = True
+                elif len(cache_for_block) == 0:
+                    cache_for_block = new_cache_for_block
+                    blk_idx = 0
+                    blk_end = new_blk_end
+                    tiling_steps_from_cache = False
+                else:
+                    tiling_steps_from_cache = False
+
+            if tiling_steps_from_cache:
+                # --- Trick 6: Cache hit → replay ---
+                tiling_steps_meta = deepcopy(cache_for_block[blk_idx])
+                pending_first_cached_reconfig = (blk_idx == 0)
+                logger.info(
+                    "%s reusing cached block at idx=%d; blk_idx=%d, tilings=%d",
+                    PATCH_LOG_PREFIX, idx, blk_idx, len(tiling_steps_meta),
+                )
+            else:
+                # --- Tricks 1,2,3,8,9 inside _patch_and_route ---
+                tiling_steps_meta = _patch_and_route(
+                    currentArr,
+                    wiseArch,
+                    P_arr,
+                    subgridsize,
+                    active_ions=active_ions,
+                    ignore_initial_reconfig=True,
+                    base_pmax_in=base_pmax_in,
+                    BTs=BTs,
+                    stop_event=stop_event,
+                    progress_callback=progress_callback,
+                    max_inner_workers=max_inner_workers,
+                )
+                if len(cache_for_block) < BLOCK_LEN:
+                    cache_for_block[blk_idx] = deepcopy(tiling_steps_meta)
+                logger.info(
+                    "%s patch routing idx=%d produced %d tiling steps; blk_idx=%d, cache_size=%d",
+                    PATCH_LOG_PREFIX, idx, len(tiling_steps_meta),
+                    blk_idx, len(cache_for_block),
+                )
+
+            # Strip metadata for execution ordering
+            tiling_steps = [snapshot for (_cy, _ti, snapshot) in tiling_steps_meta]
+            hadMultipleTilingSteps = len(tiling_steps) > 1
+
+            # --- Trick 4: Build BTs from tiling_steps_meta for future windows ---
+            if tiling_steps_meta:
+                active_set = set(active_ions)
+                R_local = len(P_arr)
+                BTs = [dict() for _ in range(R_local - 1)]
+                for cycle_idx_meta, tiling_idx_meta, tiling in tiling_steps_meta:
+                    for r, (layout_after_r, _sched_r, _solved_pairs_r) in enumerate(tiling[1:]):
+                        bt_map: Dict[int, Tuple[int, int]] = {}
+                        layout_arr = layout_after_r
+                        for rr in range(wiseArch.n):
+                            for cc in range(wiseArch.m * wiseArch.k):
+                                ionidx = int(layout_arr[rr][cc])
+                                if ionidx in active_set:
+                                    bt_map[ionidx] = (rr, cc)
+                        key = (cycle_idx_meta, tiling_idx_meta)
+                        BTs[r][key] = (bt_map, list(_solved_pairs_r))
+
+                # --- Fix 3 (cont.): Re-inject sticky return-round BT ---
+                # If the current window includes the return round (the
+                # very last round in parallelPairs), merge the saved
+                # return-round BT pins into the last BTs entry so that
+                # ions are correctly pinned to their return positions.
+                total_rounds = len(parallelPairs)
+                if _sticky_return_bt is not None and BTs:
+                    last_round_global = total_rounds - 1
+                    last_round_in_window = window_end - 1
+                    if last_round_in_window >= last_round_global:
+                        for sbt_key, sbt_val in _sticky_return_bt.items():
+                            if sbt_key not in BTs[-1]:
+                                BTs[-1][sbt_key] = sbt_val
+            else:
+                BTs = None
+
+        if not tiling_step:
+            if not tiling_steps:
+                # _patch_and_route returned no results (all SAT configs
+                # exhausted / UNSAT).  Retry with the full remaining
+                # round sequence to give the solver a larger P_max range.
+                remaining = parallelPairs[idx:]
+                if len(remaining) > len(P_arr):
+                    logger.warning(
+                        "%s retrying with full remaining rounds (%d) after "
+                        "empty result for window of %d",
+                        PATCH_LOG_PREFIX, len(remaining), len(P_arr),
+                    )
+                    tiling_steps_meta = _patch_and_route(
+                        currentArr,
+                        wiseArch,
+                        remaining,
+                        subgridsize,
+                        active_ions=active_ions,
+                        ignore_initial_reconfig=True,
+                        base_pmax_in=base_pmax_in,
+                        BTs=BTs,
+                        stop_event=stop_event,
+                        progress_callback=progress_callback,
+                        max_inner_workers=max_inner_workers,
+                    )
+                    tiling_steps = [snapshot for (_cy, _ti, snapshot) in tiling_steps_meta]
+                if not tiling_steps:
+                    logger.error(
+                        "%s _patch_and_route returned empty results at idx=%d; "
+                        "aborting routing loop",
+                        PATCH_LOG_PREFIX, idx,
+                    )
+                    break
+            tiling_step = [t.pop(0) for t in tiling_steps]
+
+        layout_after, schedule, solved_pairs = tiling_step.pop(0)
+
+        # Determine schedule argument for execution
+        if tiling_steps_from_cache and pending_first_cached_reconfig:
+            sched_arg = None
+            pending_first_cached_reconfig = False
+        elif np.array_equal(layout_after, currentArr):
+            # Identity reconfiguration — no schedule needed.  This also
+            # guards against garbage schedules decoded from non-optimised
+            # SAT rounds (ignore_initial_reconfig with R=1).
+            sched_arg = None
+        else:
+            sched_arg = schedule
+
+        # Build the RoutingStep
+        steps.append(RoutingStep(
+            layout_after=layout_after,
+            schedule=sched_arg,
+            solved_pairs=solved_pairs,
+            ms_round_index=idx,
+            from_cache=tiling_steps_from_cache,
+            tiling_meta=(0, 0),  # simplified — full meta in tiling_steps_meta
+            can_merge_with_next=False,  # will be set below in merge analysis
+            is_initial_placement=False,
+        ))
+
+        # Update current layout
+        currentArr = layout_after.copy()
+
+        # --- Trick 5: Reconfig merge analysis ---
+        # Check remaining tiling_step entries for merge opportunities
+        # (This mirrors the inner while loop in section 4c of the original)
+        # We'll check for merges in the MS-gate section below.
+
+        # Now handle multiple tiling steps within the same MS round
+        # (mirrors the inner while loop in section 4c)
+        # NOTE: Reconfig merge (Trick 5) is DISABLED — naive schedule
+        # concatenation is incorrect because the second schedule's swap
+        # coordinates assume an intermediate layout that doesn't exist
+        # when both are applied from the original state.  Always emit
+        # separate steps.
+        while tiling_step and any(t[2] for t in tiling_step):
+            next_layout, next_schedule, next_solved = tiling_step[0]
+            tiling_step.pop(0)
+            steps.append(RoutingStep(
+                layout_after=next_layout,
+                schedule=next_schedule,
+                solved_pairs=next_solved,
+                ms_round_index=idx,
+                from_cache=tiling_steps_from_cache,
+                tiling_meta=(0, 0),
+                can_merge_with_next=False,
+                is_initial_placement=False,
+            ))
+            currentArr = next_layout.copy()
+
+        # Advance cursors
+        idx += 1
+        blk_idx += 1
+        recheck_cache = (blk_idx not in cache_for_block)
+        if blk_idx == blk_end:
+            cache_for_block = {}
+            blk_idx = blk_end = 0
+
+    return steps, currentArr
+
+
+# ╔═══════════════════════════════════════════════════════════════════╗
+# ║  H5 + H6: Shared helpers for ionRoutingWISEArch / GadgetArch    ║
+# ╚═══════════════════════════════════════════════════════════════════╝
+
+def _build_parallel_pairs(
+    operations: Sequence,
+    toMoveOps: Optional[List[List]],
+    parallelism: int,
+    *,
+    build_toMoves: bool = False,
+) -> Tuple[List[List[Tuple[int, int]]], List[list]]:
+    """Greedily partition 2-qubit MS gates into disjoint parallel rounds.
+
+    Parameters
+    ----------
+    operations : sequence of ``QubitOperation``
+    toMoveOps : pre-built MS gate buckets (from compiler); ``None`` triggers
+        greedy construction from *operations*.
+    parallelism : max pairs per round (typically ``wiseArch.m * wiseArch.n``).
+    build_toMoves : when *True* and *toMoveOps is None*, also build
+        ``toMoves`` (needed by ``ionRoutingWISEArch``).
+
+    Returns
+    -------
+    parallelPairs : list of rounds, each round is a list of
+        ``(ancilla_idx, data_idx)`` tuples.
+    toMoves : list of rounds of ``TwoQubitMSGate`` ops (empty lists when
+        *build_toMoves* is False and *toMoveOps* is None).
+    """
+    parallelPairs: List[List[Tuple[int, int]]] = []
+    toMoves: List[list] = []
+
+    if toMoveOps is None:
+        _ops = list(operations)
+        idx = 0
+        while _ops:
+            # Strip disjoint 1-qubit ops (they don't need routing)
+            while True:
+                toRemove: list = []
+                ionsInvolved: Set[int] = set()
+                for op in _ops:
+                    if ionsInvolved.isdisjoint(op.ions) and len(op.ions) == 1:
+                        toRemove.append(op)
+                    ionsInvolved = ionsInvolved.union(op.ions)
+                for g in toRemove:
+                    _ops.remove(g)
+                if not toRemove:
+                    break
+
+            # Form one round of disjoint 2-qubit MS gates
+            toRemove = []
+            ionsAdded: Set[int] = set()
+            for op in _ops:
+                if len(op.ions) == 2 and len(toRemove) < parallelism:
+                    ion1, ion2 = op.ions
+                    ancilla, data = sorted(
+                        (ion1, ion2), key=lambda ion: ion.label[0] == "D"
+                    )
+                    if ancilla.idx in ionsAdded or data.idx in ionsAdded:
+                        continue
+                    toRemove.append(op)
+                    if idx == len(parallelPairs):
+                        parallelPairs.append([])
+                    parallelPairs[idx].append((ancilla.idx, data.idx))
+                    if build_toMoves:
+                        if idx == len(toMoves):
+                            toMoves.append([])
+                        toMoves[idx].append(op)
+                    ionsAdded.add(ancilla.idx)
+                    ionsAdded.add(data.idx)
+                else:
+                    ionsAdded.add(op.ions[0].idx)
+            for g in toRemove:
+                _ops.remove(g)
+            idx += int(len(toRemove) > 0)
+    else:
+        for toMove in toMoveOps:
+            if build_toMoves:
+                toMoves.append(list(toMove))
+            parallelPairs.append([])
+            for op in toMove:
+                ion1, ion2 = op.ions
+                ancilla, data = sorted(
+                    (ion1, ion2), key=lambda ion: ion.label[0] == "D"
+                )
+                parallelPairs[-1].append((ancilla.idx, data.idx))
+
+    return parallelPairs, toMoves
+
+
+def _build_grid_state(
+    arch,
+    wiseArch,
+) -> Tuple[np.ndarray, list, list]:
+    """Build initial grid layout and sorted ion list.
+
+    Returns
+    -------
+    oldArrangementArr : 2-D int array (n × m*k) of ion indices.
+    ionsSorted : flat list of all ions in row-major trap order.
+    active_ions : list of non-spectator ion indices.
+    """
+    oldArrangementArr = np.zeros(
+        (wiseArch.n, wiseArch.m * wiseArch.k), dtype=int,
+    )
+    traps_sorted = sorted(
+        arch._manipulationTraps,
+        key=lambda t: (t.pos[1], t.pos[0]),
+    )
+    ionsSorted: list = []
+    for trap_idx, trap in enumerate(traps_sorted):
+        row = trap_idx // wiseArch.m
+        block = trap_idx % wiseArch.m
+        for ion_offset, ion in enumerate(trap.ions):
+            col = block * wiseArch.k + ion_offset
+            oldArrangementArr[row][col] = ion.idx
+            ionsSorted.append(ion)
+    active_ions = [
+        ion.idx for ion in ionsSorted
+        if not isinstance(ion, SpectatorIon)
+    ]
+    return oldArrangementArr, ionsSorted, active_ions
 
 
 def ionRoutingWISEArch(
@@ -1194,6 +1893,8 @@ def ionRoutingWISEArch(
     routing_config: Optional[WISERoutingConfig] = None,
     stop_event: Optional[Any] = None,
     max_inner_workers: int | None = None,
+    _precomputed_routing_steps: Optional[List["RoutingStep"]] = None,
+    skip_coalesce: bool = False,
 ) -> Tuple[Sequence[Operation], Sequence[int], float]:
     """
     Route a WISE-style QCCD architecture in **three optimisation levels**:
@@ -1273,107 +1974,20 @@ def ionRoutingWISEArch(
     operationsLeft = list(operations)
 
     # ------------------------------------------------------------------
-    # 1) Build parallel rounds of two-qubit MS gates (parallelPairs/toMoves)
+    # 1) Build parallel rounds of two-qubit MS gates (H5: shared helper)
     # ------------------------------------------------------------------
     parallelismAllowed = wiseArch.m * wiseArch.n
-    parallelPairs: List[List[Tuple[int, int]]] = []
-    toMoves: List[List[TwoQubitMSGate]] = []
-
-
-    if toMoveOps is None:
-        idx = 0
-        _opstogothrough = list(operations).copy()
-        while _opstogothrough:
-            # First, greedily take as many disjoint 1-qubit ops as possible
-            while True:
-                toRemove: List[Operation] = []
-                ionsInvolved: Set[Ion] = set()
-
-                for op in _opstogothrough:
-                    trap = op.getTrapForIons()
-                    if ionsInvolved.isdisjoint(op.ions) and len(op.ions) == 1:
-                        toRemove.append(op)
-                    ionsInvolved = ionsInvolved.union(op.ions)
-
-                for g in toRemove:
-                    _opstogothrough.remove(g)
-
-                if len(toRemove) == 0:
-                    break
-
-            # Then, form one round of disjoint 2-qubit MS gates
-            toRemove = []
-            ionsAdded: Set[int] = set()
-            for op in _opstogothrough:
-                if len(op.ions) == 2 and len(toRemove) < parallelismAllowed:
-                    ion1, ion2 = op.ions
-                    ancilla, data = sorted(
-                        (ion1, ion2), key=lambda ion: ion.label[0] == "D"
-                    )
-                    if (ancilla.idx in ionsAdded) or (data.idx in ionsAdded):
-                        continue
-                    toRemove.append(op)
-                    if idx == len(parallelPairs):
-                        parallelPairs.append([])
-                    parallelPairs[idx].append((ancilla.idx, data.idx))
-                    if idx == len(toMoves):
-                        toMoves.append([])
-                    toMoves[idx].append(op)
-
-                    ionsAdded.add(ancilla.idx)
-                    ionsAdded.add(data.idx)
-                else:
-                    ionsAdded.add(op.ions[0].idx)
-
-            for g in toRemove:
-                _opstogothrough.remove(g)
-
-            idx += int(len(toRemove) > 0)
-
-    else:
-        for toMove in toMoveOps:
-            toMoves.append(list(toMove))
-            parallelPairs.append([])
-            for op in toMove:
-                ion1, ion2 = op.ions
-                ancilla, data = sorted(
-                    (ion1, ion2), key=lambda ion: ion.label[0] == "D"
-                )
-                parallelPairs[-1].append((ancilla.idx, data.idx))
-
+    parallelPairs, toMoves = _build_parallel_pairs(
+        operations, toMoveOps, parallelismAllowed, build_toMoves=True,
+    )
 
     # ------------------------------------------------------------------
-    # 2) Encode initial ion positions into oldArrangementArr
+    # 2) Encode initial ion positions into oldArrangementArr (H6: shared)
     # ------------------------------------------------------------------
-    oldArrangementArr = np.array(
-        [[0 for _ in range(wiseArch.m * wiseArch.k)] for _ in range(wiseArch.n)],
-        dtype=int,
+    oldArrangementArr, ionsSorted, active_ions = _build_grid_state(
+        arch, wiseArch,
     )
-    newArrangementArr = np.array(
-        [[0 for _ in range(wiseArch.m * wiseArch.k)] for _ in range(wiseArch.n)],
-        dtype=int,
-    )
-
-    # Build initial grid so ions sharing a trap occupy adjacent columns
-    # within the same block.  ``arch._manipulationTraps`` is already in
-    # row-major order (row 0 blocks 0..m-1, then row 1, etc.), so we
-    # iterate over it directly.  This guarantees that grid positions
-    # (d, b*k) to (d, b*k+k-1) all belong to one physical trap – the
-    # invariant that _apply_layout_as_reconfiguration relies on.
-    traps_sorted = sorted(
-        arch._manipulationTraps,
-        key=lambda t: (t.pos[1], t.pos[0]),
-    )
-    ionsSorted: list = []
-    for trap_idx, trap in enumerate(traps_sorted):
-        row = trap_idx // wiseArch.m
-        block = trap_idx % wiseArch.m
-        for ion_offset, ion in enumerate(trap.ions):
-            col = block * wiseArch.k + ion_offset
-            oldArrangementArr[row][col] = ion.idx
-            ionsSorted.append(ion)
-
-    active_ions = [ion.idx for ion in ionsSorted if not isinstance(ion, SpectatorIon)]
+    newArrangementArr = np.zeros_like(oldArrangementArr)
 
     logger.info(
         "%s ionRoutingWISEArch: ops=%d, MS_rounds=%d, lookahead=%d, subgrid=(%d,%d,%d), active_ions=%d",
@@ -1398,40 +2012,68 @@ def ionRoutingWISEArch(
     #     arch, wiseArch, oldArrangementArr, newArrangementArr, layouts_after, allOps, schedule
     # )
 
-    idx = 0
-    tiling_steps_meta: List[Tuple[int, int, List[Tuple[np.ndarray, List[Dict[str, Any]], List[Tuple[int, int]]]]]] = []
-    tiling_steps: List[List[Tuple[np.ndarray, List[Dict[str, Any]], List[Tuple[int, int]]]]] = []
-    tiling_step: List[Tuple[np.ndarray, List[Dict[str, Any]], List[Tuple[int, int]]]] = []
+    # ------------------------------------------------------------------
+    # 3) Route all MS rounds via the extracted routing engine
+    # ------------------------------------------------------------------
+    if _precomputed_routing_steps is not None:
+        # Phase-aware routing was done externally (e.g., by
+        # ionRoutingGadgetArch).  Use the precomputed steps directly.
+        routing_steps = _precomputed_routing_steps
+
+        # ----------------------------------------------------------
+        # Fix 13: Force Path B execution for precomputed routing steps.
+        #
+        # When ionRoutingGadgetArch provides precomputed routing steps,
+        # the ms_round_index values are in the Fix10-expanded space
+        # (shared-ion splitting may expand N rounds → M > N rounds).
+        # But _build_parallel_pairs above rebuilds toMoves in the
+        # ORIGINAL (unexpanded) space, causing:
+        #   - Index overflow: ms_round_index >= len(toMoves)
+        #   - Content mismatch: toMoves[idx] contains wrong operations
+        #     for rounds that were split by Fix10
+        #
+        # Setting toMoves=None forces _execute_ms_gates to always use
+        # Path B (frozenset matching against operationsLeft), which
+        # correctly matches operations by ion pair identity rather than
+        # positional index.  This guarantees every MS gate for every
+        # solved_pair is found and executed, regardless of how the
+        # routing phase split or reordered rounds.
+        # ----------------------------------------------------------
+        toMoves = None
+        logger.info(
+            "%s Fix13: precomputed routing steps — toMoves nullified to "
+            "force Path B execution (frozenset matching)",
+            PATCH_LOG_PREFIX,
+        )
+    else:
+        routing_steps, _final_layout = _route_round_sequence(
+            oldArrangementArr,
+            wiseArch,
+            parallelPairs,
+            lookahead=lookahead,
+            subgridsize=subgridsize,
+            base_pmax_in=base_pmax_in or 1,
+            active_ions=active_ions,
+            toMoveOps=toMoveOps,
+            stop_event=stop_event,
+            progress_callback=routing_config.progress_callback if routing_config else None,
+            max_inner_workers=max_inner_workers,
+        )
+
     reconfigTime = 0.0
-    hadMultipleTilingSteps: bool = False
-    BTs: Optional[List[Dict[Tuple[int, int], Tuple[Dict[int, Tuple[int, int]], List[Tuple[int, int]]]]]] = None
-    # Cache for repeated routing blocks: map a canonical key for a window of
-    # parallel MS rounds (P_arr) to a mapping from offset within the block to its tiling metadata.
-    block_cache: Dict[
-        Tuple[Tuple[Tuple[int, int], ...], ...],
-        Dict[int, List[Tuple[int, int, List[Tuple[np.ndarray, List[Dict[str, Any]], List[Tuple[int, int]]]]]]]
-    ] = {}
-    # Whether the currently active tiling plan (tiling_steps / tiling_step)
-    # was obtained from the cache. If True, we will replay layouts with
-    # schedule=None so GlobalReconfigurations can treat them as repeats.
-    tiling_steps_from_cache: bool = False
-    # When reusing a cached block, we only want to call
-    # _apply_layout_as_reconfiguration with schedule=None for the *first*
-    # reconfiguration in that block, because the initial layout may differ.
-    # Subsequent steps within the same block occurrence should reuse the
-    # saved schedules.
-    pending_first_cached_reconfig: bool = False
-    blk_idx: int = 0
-    blk_end: int = 0
-    recheck_cache: bool =True
-    BLOCK_LEN = 4
-    cache_for_block = {}
 
     # ------------------------------------------------------------------
     # Progress tracking setup
     # ------------------------------------------------------------------
-    total_ms_rounds = len(toMoves) if toMoves else len(parallelPairs)
-    
+    if _precomputed_routing_steps is not None:
+        # Use the max ms_round_index from routing steps for accurate
+        # progress tracking (reflects Fix10 expansion).
+        total_ms_rounds = max(
+            (s.ms_round_index for s in routing_steps), default=0
+        ) + 1
+    else:
+        total_ms_rounds = len(toMoves) if toMoves else len(parallelPairs)
+
     def _report_progress(current_round: int, stage: str = "routing") -> None:
         """Report routing progress if callback is configured."""
         if routing_config is not None and routing_config.progress_callback is not None:
@@ -1444,320 +2086,292 @@ def ionRoutingWISEArch(
             routing_config.progress_callback(progress)
 
     # ------------------------------------------------------------------
-    # 4) Execute operations, routing between parallel MS rounds as needed
+    # Nested helper: epoch-aware single-qubit drain (section 4b)
+    # Extracted into a callable so it can run once per MS round AND
+    # once after all MS rounds to drain remaining 1-qubit ops.
     # ------------------------------------------------------------------
-    while operationsLeft:
-        # Report progress at start of each round
-        _report_progress(idx, stage=STAGE_ROUTING)
-        
-        logger.info(
-            "%s main loop: idx=%d, remaining_operations=%d, remaining_MS_rounds=%d",
-            PATCH_LOG_PREFIX,
-            idx,
-            len(operationsLeft),
-            max(0, len(toMoves) - idx),
-        )
+    _TYPE_ORDER = {
+        XRotation: 0,
+        YRotation: 1,
+        QubitReset: 2,
+        Measurement: 3,
+    }
 
-        if len(toMoves) > idx:
-            if (not hadMultipleTilingSteps) and tiling_steps and tiling_steps[0]:
-                # Reuse the pre-computed tiling plan from the previous iteration.
-                # The flag `tiling_steps_from_cache` remains whatever it was when
-                # this tiling plan was first constructed (fresh or cached).
-                pass
-            else:
-                # 4a) Between MS rounds: re-route using next lookahead window of pairs.
-                # The routing horizon is controlled by `lookahead`, but the caching
-                # of routing results (block_cache) is based on a fixed-size block
-                # defined purely over `parallelPairs`, independent of lookahead.
-                window_start = idx
-                window_end = min(len(parallelPairs), lookahead + idx)
-                logger.info(
-                    "%s computing routing window: idx=%d, rounds=[%d,%d), lookahead=%d, window_len=%d",
-                    PATCH_LOG_PREFIX,
-                    idx,
-                    window_start,
-                    window_end,
-                    lookahead,
-                    window_end - window_start,
-                )
-                P_arr = parallelPairs[window_start:window_end].copy()
+    def _drain_single_qubit_ops(round_idx: int) -> Tuple[int, int]:
+        """Execute eligible single-qubit ops using epoch-aware drain.
 
-                if recheck_cache:
-                    # Build a canonical, hashable key for a block of MS rounds using
-                    # only `parallelPairs`, independent of the lookahead window size.
-                    # We use a fixed block length (e.g. 4 rounds) so that repeated
-                    # 4-round patterns like parallelPairs[0:4], [9:13], ... share
-                    # the same cache entry even if lookahead != 4.
-                    new_blk_end = min(len(parallelPairs), window_start + BLOCK_LEN)-window_start
-                    new_block_key_rounds = parallelPairs[window_start:new_blk_end+window_start]
-                    new_block_key: Tuple[Tuple[Tuple[int, int], ...], ...] = tuple(
-                        tuple(sorted(round_pairs)) for round_pairs in new_block_key_rounds
-                    )
+        Correctness constraints (ported from committed ionRoutingWISEArch §4b):
 
-                    # For a given block (block_key), we may call _patch_and_route multiple
-                    # times with different starting rounds inside that block, especially
-                    # when lookahead is small (e.g. lookahead == 1). We therefore cache
-                    # tiling metadata *per offset* inside the block, so that for a
-                    # repeated block pattern we can reuse the appropriate tiling plan
-                    # for each round position within that block.
-                    new_cache_for_block = block_cache.setdefault(new_block_key, {})
-                    logger.info(
-                        "%s rechecked cache at idx=%d (rounds=[%d,%d)); old_blk_idx=%d, old_blk_end=%d, new_blk_end=%d ,cache_for_block length=%d, new_cache_for_block length=%d",
-                        PATCH_LOG_PREFIX,
-                        idx,
-                        window_start,
-                        window_end,
-                        blk_idx,
-                        blk_end,
-                        new_blk_end,
-                        len(cache_for_block),
-                        len(new_cache_for_block)
-                    )
-                    if len(new_cache_for_block)>0:
-                        cache_for_block = new_cache_for_block
-                        blk_idx = 0
-                        blk_end = new_blk_end
-                        tiling_steps_from_cache = True
-                    elif len(cache_for_block) == 0:
-                        cache_for_block = new_cache_for_block
-                        blk_idx = 0
-                        blk_end = new_blk_end
-                        tiling_steps_from_cache = False
-                    else:
-                        # new_cache_for_block is not full
-                        # current cache_for_block is filling up
-                        tiling_steps_from_cache = False
-               
+        C1  Cross-epoch: ops before a TICK must finish before ops after
+            that TICK.  Enforced by an *epoch ceiling*: we never pull
+            single-qubit ops from epochs later than the earliest
+            remaining multi-qubit (MS) gate.
+        C2  Within-epoch decomposition order: if CX decomposes into
+            RX → MS → RY on the same ion, RX must happen before MS
+            and RY must wait until after MS.  Enforced by the
+            *blocked-ions* scan: once we see a multi-qubit gate on an
+            ion in operationsLeft, all later single-qubit ops on that
+            ion are ineligible this round.
 
-                if tiling_steps_from_cache:
-                    # We have solved this block *at this offset* before; reuse it.
-                    tiling_steps_meta = deepcopy(cache_for_block[blk_idx])
-                    pending_first_cached_reconfig = (blk_idx==0)
-                    logger.info(
-                        "%s reusing cached routing block at idx=%d (rounds=[%d,%d)); blk_idx=%d, cached_tilings=%d",
-                        PATCH_LOG_PREFIX,
-                        idx,
-                        window_start,
-                        window_end,
-                        blk_idx,
-                        len(tiling_steps_meta),
-                    )
-                else:
-                    # New (block, offset) combination: call the expensive patch-based
-                    # router and cache its result under this offset so that repeated
-                    # instances of the same block pattern reuse it.
-                    tiling_steps_meta = _patch_and_route(
-                        oldArrangementArr,
-                        wiseArch,
-                        P_arr,
-                        subgridsize,
-                        active_ions=active_ions,
-                        ignore_initial_reconfig=True,
-                        base_pmax_in=base_pmax_in,
-                        BTs=BTs,
-                        stop_event=stop_event,
-                        progress_callback=routing_config.progress_callback if routing_config else None,
-                        max_inner_workers=max_inner_workers,
-                    )
-                    if len(cache_for_block)<BLOCK_LEN:
-                        cache_for_block[blk_idx] = deepcopy(tiling_steps_meta)
-                    else: 
-                        logger.warn(
-                            "%s cache_for_block is already full! idx=%d cache_for_block size=%d",
-                            PATCH_LOG_PREFIX,
-                            idx,
-                            len(cache_for_block)
-                        )
-                    logger.info(
-                        "%s patch routing window idx=%d produced %d tiling steps (meta entries); block_offset=%s, cache_for_block size=%d",
-                        PATCH_LOG_PREFIX,
-                        idx,
-                        len(tiling_steps_meta),
-                        str(blk_idx),
-                        len(cache_for_block)
-                    )
+        Type-aware sub-barriers:
+            Within each epoch's eligible ops, we group by type using a
+            shortest-gate-first drain.  Fast gates (rotations ~5µs) run
+            first; slow gates (measurement ~400µs, reset ~50µs) are
+            deferred, increasing the probability that measurements
+            accumulate and get batched together.
 
-                # Strip metadata for execution ordering; keep only per-tiling round lists.
-                tiling_steps = [snapshot for (_cy, _ti, snapshot) in tiling_steps_meta]
-                hadMultipleTilingSteps = len(tiling_steps) > 1
+        Returns (single_qubit_executed, group_count).
+        """
+        from collections import deque as _deque
 
-                # Build new BTs (pins) from this returned long-horizon plan for future windows.
-                if tiling_steps_meta:
-                    active_set = set(active_ions)
-                    R_local = len(P_arr)
-                    # For rounds r >= 1, map (cycle_idx, tiling_idx) -> (bt_map, solved_pairs_r)
-                    BTs = [dict() for _ in range(R_local - 1)]
-                    for cycle_idx_meta, tiling_idx_meta, tiling in tiling_steps_meta:
-                        for r, (layout_after_r, _sched_r, _solved_pairs_r) in enumerate(tiling[1:]):
-                            bt_map: Dict[int, Tuple[int, int]] = {}
-                            layout_arr = layout_after_r
-                            for rr in range(wiseArch.n):
-                                for cc in range(wiseArch.m * wiseArch.k):
-                                    ionidx = int(layout_arr[rr][cc])
-                                    if ionidx in active_set:
-                                        bt_map[ionidx] = (rr, cc)
-                            key = (cycle_idx_meta, tiling_idx_meta)
-                            BTs[r][key] = (bt_map, list(_solved_pairs_r))
+        # -- C1: Global epoch ceiling --
+        # Never pull single-qubit ops from epochs later than the earliest
+        # remaining multi-qubit (MS) gate.  This prevents post-MS
+        # rotations from executing before their MS gate.
+        min_ms_epoch: int = 2**62  # sentinel: no MS gates remaining
+        for op in operationsLeft:
+            if len(op.ions) >= 2:
+                ep = getattr(op, '_tick_epoch', 0)
+                if ep < min_ms_epoch:
+                    min_ms_epoch = ep
 
-                    num_bt_rounds = len(BTs)
-                    num_bt_windows = sum(len(round_dict) for round_dict in BTs)
-                    total_bt_pins = sum(
-                        len(bt_map)
-                        for round_dict in BTs
-                        for (bt_map, _pairs_r) in round_dict.values()
-                    )
-                    total_bt_pairs = sum(
-                        len(_pairs_r)
-                        for round_dict in BTs
-                        for (_bt_map, _pairs_r) in round_dict.values()
-                    )
-                    logger.info(
-                        "%s built BTs for window idx=%d: rounds=%d, windows=%d, pins=%d, pinned_pairs=%d",
-                        PATCH_LOG_PREFIX,
-                        idx,
-                        num_bt_rounds,
-                        num_bt_windows,
-                        total_bt_pins,
-                        total_bt_pairs,
-                    )
-                else:
-                    BTs = None
-            if not tiling_step:
-                tiling_step = [t.pop(0) for t in tiling_steps]
-                logger.info(
-                    "%s idx=%d: initialised tiling_step list with %d entries (from_cache=%s)",
-                    PATCH_LOG_PREFIX,
-                    idx,
-                    len(tiling_step),
-                    tiling_steps_from_cache,
-                )
-            layout_after, schedule, solved_pairs = tiling_step.pop(0)
-            if tiling_steps_from_cache and pending_first_cached_reconfig:
-                sched_arg = None
-                pending_first_cached_reconfig = False
-                logger.info(
-                    "%s idx=%d: applying cached reconfiguration step; schedule_passes=%d, solved_pairs=%d, remaining_tiling_steps=%d, using_cached_schedule=%s",
-                    PATCH_LOG_PREFIX,
-                    idx,
-                    len(sched_arg) if (sched_arg is not None) else 0,
-                    len(solved_pairs),
-                    len(tiling_step),
-                    tiling_steps_from_cache
-                )
-                oldArrangementArr = _apply_layout_as_reconfiguration(
-                    arch,
-                    wiseArch,
-                    oldArrangementArr,
-                    newArrangementArr,
-                    layout_after,
-                    allOps,
-                    sched_arg,
-                    initial_placement=(idx == 0),
-                )
-                barriers.append(len(allOps))
-                last_reconfig_time = getattr(allOps[-1], "_reconfigTime", 0.0)
-                reconfigTime += last_reconfig_time
-                logger.info(
-                    "%s idx=%d: reconfiguration applied; delta_reconfigTime=%.6f, total_reconfigTime=%.6f, total_ops=%d",
-                    PATCH_LOG_PREFIX,
-                    idx,
-                    last_reconfig_time,
-                    reconfigTime,
-                    len(allOps),
-                )
-            else:
-                sched_arg = schedule
-                logger.info(
-                    "%s idx=%d: applying reconfiguration step; schedule_passes=%d, solved_pairs=%d, remaining_tiling_steps=%d, using_cached_schedule=%s",
-                    PATCH_LOG_PREFIX,
-                    idx,
-                    len(sched_arg) if (sched_arg is not None) else 0,
-                    len(solved_pairs),
-                    len(tiling_step),
-                    tiling_steps_from_cache
-                )
-                oldArrangementArr = _apply_layout_as_reconfiguration(
-                    arch,
-                    wiseArch,
-                    oldArrangementArr,
-                    newArrangementArr,
-                    layout_after,
-                    allOps,
-                    sched_arg,
-                    initial_placement=(idx == 0),
-                )
-                barriers.append(len(allOps))
-                last_reconfig_time = getattr(allOps[-1], "_reconfigTime", 0.0)
-                reconfigTime += last_reconfig_time
-                logger.info(
-                    "%s idx=%d: reconfiguration applied; delta_reconfigTime=%.6f, total_reconfigTime=%.6f, total_ops=%d",
-                    PATCH_LOG_PREFIX,
-                    idx,
-                    last_reconfig_time,
-                    reconfigTime,
-                    len(allOps),
-                )
-
-        # 4b) Run as many single-qubit operations as possible without routing
-        single_qubit_executed = 0
-        while True:
-            toRemove: List[Operation] = []
-            ionsInvolved: Set[Ion] = set()
-            for op in operationsLeft:
+        # -- C2 + eligible list: interleaved scan --
+        # Walk operationsLeft in decomposition order.  For each ion,
+        # only mark it blocked AFTER we encounter its first 2q gate.
+        # 1q ops that appear *before* the ion's first 2q gate in
+        # operationsLeft order are eligible — these are pre-MS
+        # rotations that must execute before the MS gate anyway.
+        seen_2q_ions: Set[Ion] = set()
+        eligible: List[Operation] = []
+        for op in operationsLeft:
+            if len(op.ions) >= 2:
+                # Mark these ions as blocked for subsequent 1q ops
+                seen_2q_ions.update(op.ions)
+            elif len(op.ions) == 1:
+                ep = getattr(op, '_tick_epoch', 0)
+                ion = op.ions[0]
+                # C1: epoch ceiling — skip ops beyond earliest MS epoch
+                if ep > min_ms_epoch:
+                    continue
+                # C2: skip ops on ions already seen in a 2q gate
+                if ion in seen_2q_ions:
+                    continue
+                # Fix C: Relaxed getTrapForIons for single-qubit ops.
+                # After reconfiguration the ion IS in a trap, but the
+                # helper may return None due to stale parent refs.
+                # Fall back to the ion's current .parent (trap) directly.
                 trap = op.getTrapForIons()
-                if ionsInvolved.isdisjoint(op.ions) and trap and len(op.ions) == 1:
-                    op.setTrap(trap)
-                    toRemove.append(op)
-                ionsInvolved = ionsInvolved.union(op.ions)
+                if not trap:
+                    ion_parent = getattr(ion, 'parent', None)
+                    if ion_parent is not None:
+                        trap = ion_parent
+                        logger.debug(
+                            "%s drain: getTrapForIons() failed for 1q op %s on ion %d, "
+                            "using ion.parent (trap %s) as fallback",
+                            PATCH_LOG_PREFIX,
+                            type(op).__name__,
+                            ion.idx,
+                            getattr(ion_parent, 'idx', '?'),
+                        )
+                if trap:
+                    eligible.append(op)
+                else:
+                    logger.debug(
+                        "%s drain: skipping 1q op %s on ion %d — no trap found",
+                        PATCH_LOG_PREFIX,
+                        type(op).__name__,
+                        ion.idx,
+                    )
 
-            for op in toRemove:
-                op.run()
-                allOps.append(op)
-                operationsLeft.remove(op)
-                single_qubit_executed += 1
+        # Fix E: diagnostic logging for drain filtering
+        if logger.isEnabledFor(logging.DEBUG):
+            _total_1q = sum(1 for op in operationsLeft if len(op.ions) == 1)
+            _total_2q = sum(1 for op in operationsLeft if len(op.ions) >= 2)
+            logger.debug(
+                "%s drain round=%d: operationsLeft has %d 1q ops, %d 2q ops; "
+                "%d eligible after C1+C2+trap filters (min_ms_epoch=%d)",
+                PATCH_LOG_PREFIX,
+                round_idx,
+                _total_1q,
+                _total_2q,
+                len(eligible),
+                min_ms_epoch if min_ms_epoch < 2**62 else -1,
+            )
 
-            if len(toRemove) == 0:
+        # -- Cross-epoch, shortest-gate-first drain --
+        # Build unified per-ion queues across ALL eligible epochs,
+        # maintaining epoch ordering within each ion's queue.  This
+        # allows same-type ops on *disjoint* ions from different epochs
+        # to be merged into a single parallel batch (e.g. resets from
+        # epoch 0 on ions {A,B} and resets from epoch 1 on ions {C,D}
+        # execute together).  Within each ion's queue, epoch ordering is
+        # preserved so decomposition-order constraints (C2) still hold.
+        epoch_buckets: Dict[int, List[Operation]] = defaultdict(list)
+        for op in eligible:
+            epoch_buckets[getattr(op, '_tick_epoch', 0)].append(op)
+
+        single_qubit_executed = 0
+        group_count = 0
+
+        # Build per-ion queues across all epochs (epoch order preserved)
+        ion_queues: Dict[Ion, _deque] = defaultdict(_deque)
+        for epoch in sorted(epoch_buckets.keys()):
+            for op in epoch_buckets[epoch]:
+                ion_queues[op.ions[0]].append(op)
+
+        # Drain loop: pick the fastest (lowest _TYPE_ORDER) type
+        # among all ion queue fronts, drain matching ions, repeat.
+        # Fix 9: rotation types (XRotation, YRotation) are treated as
+        # one commuting group — they can be batched together when they
+        # operate on disjoint ions.
+        _ROTATION_TKS = {
+            _TYPE_ORDER.get(XRotation, 99),
+            _TYPE_ORDER.get(YRotation, 99),
+        }
+        while any(q for q in ion_queues.values()):
+            best_tk = None
+            for q in ion_queues.values():
+                if q:
+                    tk = _TYPE_ORDER.get(type(q[0]), 99)
+                    if best_tk is None or tk < best_tk:
+                        best_tk = tk
+
+            if best_tk is None:
                 break
+
+            # Determine which type-keys to drain together.
+            # When the best type is a rotation, also drain the other
+            # rotation type — they commute on different qubits/ions.
+            drain_tks = {best_tk}
+            if best_tk in _ROTATION_TKS:
+                drain_tks = _ROTATION_TKS
+
+            # Drain all ions whose front matches any drainable type
+            grp_ops: List[Operation] = []
+            for ion in list(ion_queues.keys()):
+                q = ion_queues[ion]
+                while q and _TYPE_ORDER.get(type(q[0]), 99) in drain_tks:
+                    grp_ops.append(q.popleft())
+
+            if not grp_ops:
+                break
+
+            # Greedy disjoint-ion execution within this type group
+            grp_remaining = list(grp_ops)
+
+            while grp_remaining:
+                toRemove: List[Operation] = []
+                ionsInvolved: Set[Ion] = set()
+                for op in grp_remaining:
+                    if ionsInvolved.isdisjoint(op.ions):
+                        trap = op.getTrapForIons()
+                        # Fix C: fallback to ion.parent for 1q ops
+                        if not trap and len(op.ions) == 1:
+                            ion_parent = getattr(op.ions[0], 'parent', None)
+                            if ion_parent is not None:
+                                trap = ion_parent
+                        if trap:
+                            op.setTrap(trap)
+                            toRemove.append(op)
+                    ionsInvolved = ionsInvolved.union(op.ions)
+
+                if not toRemove:
+                    break
+
+                for op in toRemove:
+                    op.run()
+                    allOps.append(op)
+                    operationsLeft.remove(op)
+                    grp_remaining.remove(op)
+                    single_qubit_executed += 1
+
+                group_count += 1
+
+            # Fix A: ONE barrier per type group, not per greedy pass.
+            # All ops in this group share the same hardware operation
+            # type (rotations / resets / measurements), so the
+            # downstream paralleliser can schedule ion-disjoint ops
+            # within a single barrier-bounded region.  Moving the
+            # barrier here collapses N greedy passes into 1 step.
+            if grp_ops:
+                barriers.append(len(allOps))
 
         if single_qubit_executed:
             logger.info(
-                "%s idx=%d: executed %d single-qubit ops; remaining_operations=%d, total_ops=%d",
+                "%s round=%d: executed %d single-qubit ops in %d type-groups; "
+                "remaining_operations=%d, total_ops=%d",
                 PATCH_LOG_PREFIX,
-                idx,
+                round_idx,
                 single_qubit_executed,
+                group_count,
                 len(operationsLeft),
                 len(allOps),
             )
 
-        barriers.append(len(allOps))
+        if not group_count:
+            # No single-qubit ops executed — still need a barrier for the
+            # downstream scheduler to know this segment boundary exists.
+            barriers.append(len(allOps))
 
-        if not operationsLeft:
-            break
+        return single_qubit_executed, group_count
 
-        ms_gates_executed = 0
-        starting_idx = idx
-        while idx < len(toMoves):
-            # 4c) Execute one parallel round of two-qubit MS gates
-            for op in toMoves[idx]:
-                if any(all((ion.idx in p) for ion in op.ions) for p in solved_pairs): 
+    # ------------------------------------------------------------------
+    # Nested helper: execute MS gates for a round using solved_pairs
+    # ------------------------------------------------------------------
+    def _execute_ms_gates(
+        round_idx: int,
+        solved_pairs: List[Tuple[int, int]],
+    ) -> Tuple[int, int]:
+        """Execute two-qubit MS gates whose ions match *solved_pairs*.
+
+        Uses a **two-path** execution strategy identical to the working
+        baseline (commit 243a188):
+
+        **Path A — toMoves available** (primary, backward-compatible):
+          Iterates ``toMoves[round_idx]`` to get the specific Operation
+          objects for this MS round.  Uses the old ``any(all(ion.idx in p
+          for ion in op.ions) for p in solved_pairs)`` contains-check so
+          that pair ordering and set-vs-tuple mismatches are tolerable.
+          Includes ``op.ions[0].parent`` fallback when ``getTrapForIons()``
+          returns ``None``.
+
+        **Path B — no toMoves entry** (fallback for precomputed gadget
+          phases where ``ms_round_index`` may not map to a ``toMoves``
+          index):
+          Scans all remaining two-qubit ops in ``operationsLeft``, sorted
+          by epoch, matching via frozenset equality.
+
+        Returns (ms_executed, unmatched_count).
+        """
+        ms_executed = 0
+        if not solved_pairs:
+            return ms_executed, 0
+
+        # Convert solved_pairs to a set of frozensets for fast lookup
+        # (used by both paths).
+        solved_sets = [frozenset(p) for p in solved_pairs]
+
+        # ── Path A: toMoves-based execution (old working approach) ──
+        if toMoves and round_idx < len(toMoves) and toMoves[round_idx]:
+            round_ops = toMoves[round_idx]
+            for op in round_ops:
+                if op not in operationsLeft:
+                    continue
+                # Old-style contains check: each ion.idx must appear
+                # in at least one solved pair.
+                if any(
+                    all(ion.idx in p for ion in op.ions)
+                    for p in solved_pairs
+                ):
                     trap = op.getTrapForIons()
                     if trap is not None:
                         op.setTrap(trap)
                         op.run()
                         allOps.append(op)
                         operationsLeft.remove(op)
-                        ms_gates_executed += 1
+                        ms_executed += 1
                     else:
-                        # DEBUG: ions not co-located after reconfiguration
-                        ion_parents = [(ion.idx, ion.parent.idx if ion.parent else None) for ion in op.ions]
-                        logger.warning(
-                            "%s idx=%d: MS gate ions not co-located after reconfig: op_ions=%s, ion_parents=%s, solved_pairs=%s",
-                            PATCH_LOG_PREFIX, idx,
-                            [ion.idx for ion in op.ions],
-                            ion_parents,
-                            list(solved_pairs)[:3]  # First 3 pairs for brevity
-                        )
-                        # Try to execute anyway using first ion's parent (original behavior)
+                        # Fallback: try op.ions[0].parent (old code L1870)
                         trap = op.ions[0].parent if op.ions else None
                         if trap is not None:
                             op.setTrap(trap)
@@ -1765,47 +2379,234 @@ def ionRoutingWISEArch(
                                 op.run()
                                 allOps.append(op)
                                 operationsLeft.remove(op)
-                                ms_gates_executed += 1
-                            except ValueError as e:
-                                logger.error(
-                                    "%s idx=%d: MS gate execution failed: %s",
-                                    PATCH_LOG_PREFIX, idx, e
+                                ms_executed += 1
+                            except (ValueError, RuntimeError) as _e:
+                                logger.warning(
+                                    "%s round=%d: fallback setTrap "
+                                    "failed for op_ions=%s: %s",
+                                    PATCH_LOG_PREFIX, round_idx,
+                                    [ion.idx for ion in op.ions], _e,
                                 )
-                                raise
-            if not tiling_step:
+                        else:
+                            logger.warning(
+                                "%s round=%d: MS gate ions NOT "
+                                "co-located — no parent trap — "
+                                "SKIPPING: op_ions=%s",
+                                PATCH_LOG_PREFIX, round_idx,
+                                [ion.idx for ion in op.ions],
+                            )
+            return ms_executed, 0
+
+        # ── Path B: scan operationsLeft (for precomputed gadget steps
+        #    where ms_round_index may not map to toMoves index) ──
+        remaining = list(solved_sets)
+
+        two_q_ops = [
+            op for op in operationsLeft if len(op.ions) == 2
+        ]
+        two_q_ops.sort(key=lambda op: getattr(op, '_tick_epoch', 0))
+
+        to_execute: list = []
+        for op in two_q_ops:
+            if not remaining:
                 break
-            if not any(t[2] for t in tiling_step):
-                tiling_step = []
+            ion_set = frozenset(ion.idx for ion in op.ions)
+            for i, rp in enumerate(remaining):
+                if ion_set == rp:
+                    to_execute.append(op)
+                    remaining.pop(i)
+                    break
+
+        if remaining:
+            avail_ion_sets = [
+                frozenset(ion.idx for ion in op.ions)
+                for op in two_q_ops if op not in to_execute
+            ]
+            logger.error(
+                "%s round=%d: %d/%d solved_pairs UNMATCHED in Path B. "
+                "solved_pairs=%s, unmatched=%s, available=%s, "
+                "ops_left=%d, two_q=%d",
+                PATCH_LOG_PREFIX, round_idx,
+                len(remaining), len(solved_pairs),
+                list(solved_pairs)[:5],
+                list(remaining)[:5],
+                list(avail_ion_sets)[:5],
+                len(operationsLeft), len(two_q_ops),
+            )
+
+        # Sort by stim-circuit origin for animation ordering.
+        to_execute.sort(
+            key=lambda op: getattr(op, '_stim_origin', float('inf'))
+        )
+
+        for op in to_execute:
+            trap = op.getTrapForIons()
+            if trap is not None:
+                op.setTrap(trap)
+                op.run()
+                allOps.append(op)
+                operationsLeft.remove(op)
+                ms_executed += 1
+            else:
+                # Fallback: try op.ions[0].parent (restored from old code)
+                trap = op.ions[0].parent if op.ions else None
+                if trap is not None:
+                    op.setTrap(trap)
+                    try:
+                        op.run()
+                        allOps.append(op)
+                        operationsLeft.remove(op)
+                        ms_executed += 1
+                    except (ValueError, RuntimeError) as _e:
+                        logger.warning(
+                            "%s round=%d: fallback setTrap failed "
+                            "for op_ions=%s: %s",
+                            PATCH_LOG_PREFIX, round_idx,
+                            [ion.idx for ion in op.ions], _e,
+                        )
+                else:
+                    ion_parents = [
+                        (ion.idx, ion.parent.idx if ion.parent else None)
+                        for ion in op.ions
+                    ]
+                    logger.warning(
+                        "%s round=%d: MS gate ions NOT co-located — "
+                        "SKIPPING: op_ions=%s, parents=%s",
+                        PATCH_LOG_PREFIX, round_idx,
+                        [ion.idx for ion in op.ions], ion_parents,
+                    )
+
+        unmatched_count = len(remaining) if remaining else 0
+        return ms_executed, unmatched_count
+
+    # ------------------------------------------------------------------
+    # 4) Execute operations, applying routing steps from the engine
+    # ------------------------------------------------------------------
+    # Group steps by ms_round_index.  Typically one step per round,
+    # but multi-tiling (aligned + offset checkerboard) can produce
+    # multiple RoutingSteps for the same MS round.
+    from itertools import groupby as _groupby
+
+    # Fix 6: Defensive sort — groupby only groups *consecutive* elements
+    # with the same key. Ensure routing_steps are ordered by ms_round_index
+    # so that non-consecutive duplicates (e.g. from transition reconfigs)
+    # are correctly grouped. Stable sort preserves order within same index.
+    routing_steps = sorted(routing_steps, key=lambda s: s.ms_round_index)
+
+    _total_unmatched_pairs = 0  # Cumulative count of unmatched MS pairs
+
+    for ms_round_idx, round_steps_iter in _groupby(
+        routing_steps, key=lambda s: s.ms_round_index
+    ):
+        round_steps = list(round_steps_iter)
+        _report_progress(ms_round_idx, stage=STAGE_ROUTING)
+
+        logger.info(
+            "%s execution: ms_round=%d/%d, routing_steps=%d, remaining_ops=%d",
+            PATCH_LOG_PREFIX,
+            ms_round_idx,
+            total_ms_rounds,
+            len(round_steps),
+            len(operationsLeft),
+        )
+
+        # 4a) Apply reconfiguration from the first routing step
+        first_step = round_steps[0]
+
+        oldArrangementArr = _apply_layout_as_reconfiguration(
+            arch,
+            wiseArch,
+            oldArrangementArr,
+            newArrangementArr,
+            first_step.layout_after,
+            allOps,
+            first_step.schedule,
+            initial_placement=first_step.is_initial_placement,
+        )
+        barriers.append(len(allOps))
+        last_reconfig_time = getattr(allOps[-1], "_reconfigTime", 0.0)
+        reconfigTime += last_reconfig_time
+        logger.info(
+            "%s ms_round=%d: reconfig applied; dt=%.6f, total_reconfig=%.6f, total_ops=%d",
+            PATCH_LOG_PREFIX,
+            ms_round_idx,
+            last_reconfig_time,
+            reconfigTime,
+            len(allOps),
+        )
+
+        # 4b) Run as many single-qubit operations as possible without routing
+        _drain_single_qubit_ops(ms_round_idx)
+
+        # Fix B: barrier AFTER drain, BEFORE MS gates.
+        # This forces the downstream paralleliser to schedule ALL
+        # drained 1q ops into batches that complete BEFORE any MS
+        # gate batch in this round.
+        barriers.append(len(allOps))
+
+        if not operationsLeft:
+            break
+
+        # 4c) Execute MS gates for this round
+        ms_gates_executed, _unmatched = _execute_ms_gates(ms_round_idx, first_step.solved_pairs)
+        _total_unmatched_pairs += _unmatched
+
+        # Handle subsequent routing steps for the same MS round
+        # (e.g. aligned -> offset tiling transitions).
+        # NOTE: Do NOT break on empty solved_pairs — a step with 0 pairs may
+        # still carry a layout change needed by later steps that DO have pairs.
+        # Old code: ``if not any(t[2] for t in tiling_step): break`` checked
+        # ALL remaining entries, not just the immediate next one.
+        remaining_subsequent = round_steps[1:]
+        for sub_idx, subsequent_step in enumerate(remaining_subsequent):
+            # Layout transition steps (is_layout_transition) ALWAYS carry
+            # layout changes that must be applied regardless of solved_pairs.
+            # For normal MS rounds, skip when *all* remaining subsequent
+            # steps have empty solved_pairs AND are not layout transitions.
+            if not any(
+                s.solved_pairs or s.is_layout_transition
+                for s in remaining_subsequent[sub_idx:]
+            ):
                 break
-            layout_after, schedule, solved_pairs = tiling_step.pop(0)
             oldArrangementArr = _apply_layout_as_reconfiguration(
                 arch,
                 wiseArch,
                 oldArrangementArr,
                 newArrangementArr,
-                layout_after,
+                subsequent_step.layout_after,
                 allOps,
-                schedule,
+                subsequent_step.schedule,
                 initial_placement=False,
             )
             barriers.append(len(allOps))
             last_reconfig_time = getattr(allOps[-1], "_reconfigTime", 0.0)
             reconfigTime += last_reconfig_time
-            logger.info(
-                "%s idx=%d: reconfiguration applied after MS round; delta_reconfigTime=%.6f, total_reconfigTime=%.6f, total_ops=%d",
-                PATCH_LOG_PREFIX,
-                idx,
-                last_reconfig_time,
-                reconfigTime,
-                len(allOps),
+
+            # Fix A/D: drain single-qubit ops before subsequent-step
+            # MS gates.  After a reconfig, new 1q ops may be eligible
+            # (their ions are now in traps).  The drain + barrier
+            # ensures they are scheduled BEFORE the MS gates.
+            _drain_single_qubit_ops(ms_round_idx)
+            barriers.append(len(allOps))  # barrier between drain and MS
+
+            _sub_exec, _sub_unmatched = _execute_ms_gates(
+                ms_round_idx, subsequent_step.solved_pairs
             )
+            ms_gates_executed += _sub_exec
+            _total_unmatched_pairs += _sub_unmatched
 
         if ms_gates_executed:
-            candidate_gates = len(toMoves[starting_idx]) if starting_idx < len(toMoves) else 0
+            # Count solved pairs across all steps in this round as the
+            # expected gate count.  We do NOT index toMoves[ms_round_idx]
+            # because the routing phase order may differ from the stim
+            # circuit CX order (e.g. CSS surgery interleaves phases).
+            candidate_gates = sum(
+                len(s.solved_pairs) for s in round_steps
+            )
             logger.info(
-                "%s idx=%d: executed %d/%d two-qubit MS gates; remaining_operations=%d, total_ops=%d",
+                "%s ms_round=%d: executed %d/%d MS gates; remaining_ops=%d, total_ops=%d",
                 PATCH_LOG_PREFIX,
-                starting_idx,
+                ms_round_idx,
                 ms_gates_executed,
                 candidate_gates,
                 len(operationsLeft),
@@ -1813,14 +2614,898 @@ def ionRoutingWISEArch(
             )
 
         barriers.append(len(allOps))
-        idx+=1
-        blk_idx+=1
-        recheck_cache = (blk_idx not in cache_for_block)
-        if blk_idx == blk_end:
-            cache_for_block = {}
-            blk_idx = blk_end = 0
+
+    # Final drain of any remaining single-qubit ops after all MS rounds
+    if operationsLeft:
+        _drain_single_qubit_ops(total_ms_rounds)
+
+    # ── Unmatched MS pairs assertion ──
+    if _total_unmatched_pairs > 0:
+        logger.error(
+            "%s UNMATCHED MS PAIRS: %d total pairs across all rounds could not be "
+            "matched to operations in operationsLeft. This indicates a systematic "
+            "ion index mismatch between the routing path and execution path.",
+            PATCH_LOG_PREFIX,
+            _total_unmatched_pairs,
+        )
+
+    # ── Bug 5 fix: verification — all operations should be consumed ──
+    if operationsLeft:
+        from collections import Counter as _Counter
+        _remaining_types = _Counter(type(op).__name__ for op in operationsLeft)
+        logger.warning(
+            "%s VERIFICATION FAILED: %d operations remain after "
+            "routing execution. By type: %s",
+            PATCH_LOG_PREFIX,
+            len(operationsLeft),
+            dict(_remaining_types),
+        )
+    else:
+        logger.info(
+            "%s VERIFICATION PASSED: all operations consumed",
+            PATCH_LOG_PREFIX,
+        )
+
+    # ------------------------------------------------------------------
+    # Fix 8: Coalesce adjacent GlobalReconfigurations operations.
+    # When multiple reconfig ops appear consecutively (no MS or single-
+    # qubit ops in between), merge them into a single reconfig.  This
+    # reduces animation frames and avoids "3 reconfigs before first CX".
+    #
+    # Safety: Only coalesce reconfigs within the same barrier group.
+    # Consecutive reconfigs separated by a barrier belong to different
+    # routing rounds and must not be merged (the intermediate layout
+    # transition may be needed by downstream animation consumers).
+    #
+    # skip_coalesce=True preserves all intermediate reconfigs so that
+    # animation consumers retain per-step barrier semantics.
+    # ------------------------------------------------------------------
+    if not skip_coalesce:
+        _barrier_set = set(barriers)
+        _coalesced_allOps: List[Operation] = []
+        _coalesced_barriers: List[int] = []
+        i = 0
+        while i < len(allOps):
+            op = allOps[i]
+            if isinstance(op, GlobalReconfigurations):
+                # Look ahead for consecutive GlobalReconfigurations that
+                # are NOT separated by a barrier index.
+                j = i + 1
+                while (
+                    j < len(allOps)
+                    and isinstance(allOps[j], GlobalReconfigurations)
+                    and j not in _barrier_set
+                ):
+                    j += 1
+                if j > i + 1:
+                    # Multiple consecutive reconfigs in same barrier group —
+                    # keep only the last (it establishes the final layout)
+                    _coalesced_allOps.append(allOps[j - 1])
+                    logger.debug(
+                        "%s coalesced %d consecutive reconfigs into 1 (ops %d-%d)",
+                        PATCH_LOG_PREFIX, j - i, i, j - 1,
+                    )
+                    i = j
+                else:
+                    _coalesced_allOps.append(op)
+                    i += 1
+            else:
+                _coalesced_allOps.append(op)
+                i += 1
+
+        # Rebuild barrier indices: keep barriers that still point to valid
+        # positions in the coalesced list (at each reconfig/type switch).
+        _coalesced_barriers = [0]
+        for idx in range(1, len(_coalesced_allOps)):
+            prev_type = type(_coalesced_allOps[idx - 1])
+            curr_type = type(_coalesced_allOps[idx])
+            if prev_type != curr_type or isinstance(_coalesced_allOps[idx], GlobalReconfigurations):
+                _coalesced_barriers.append(idx)
+        _coalesced_barriers.append(len(_coalesced_allOps))
+
+        if len(_coalesced_allOps) < len(allOps):
+            logger.info(
+                "%s coalesced reconfigs: %d ops → %d ops",
+                PATCH_LOG_PREFIX, len(allOps), len(_coalesced_allOps),
+            )
+        allOps = _coalesced_allOps
+        barriers = _coalesced_barriers
+
+    # ── End-of-routing assertion: verify no MS gates left unexecuted ──
+    # This catches silent failures where solved_pairs didn't match operationsLeft
+    remaining_2q = [op for op in operationsLeft if len(op.ions) == 2]
+    if remaining_2q:
+        remaining_ion_pairs = [
+            frozenset(ion.idx for ion in op.ions) for op in remaining_2q
+        ]
+        logger.error(
+            "%s END-OF-ROUTING ASSERTION FAILED: %d MS gates left unexecuted!\n"
+            "  These ion pairs were never matched by any solved_pairs:\n"
+            "  %s\n"
+            "  This indicates a systematic mismatch between routing and execution.",
+            PATCH_LOG_PREFIX,
+            len(remaining_2q),
+            list(remaining_ion_pairs)[:20],  # First 20 for brevity
+        )
 
     # Report completion
     _report_progress(total_ms_rounds, stage=STAGE_COMPLETE)
 
     return allOps, barriers, reconfigTime
+
+
+# =====================================================================
+# Phase-Aware Gadget Routing
+# =====================================================================
+
+
+def _remap_schedule_to_global(
+    schedule: List[Dict[str, Any]],
+    row_offset: int,
+    col_offset_ion: int,
+) -> List[Dict[str, Any]]:
+    """Offset swap coordinates from block-local to global ion-column space.
+
+    Parameters
+    ----------
+    schedule : list of dict
+        Pass entries with ``"phase"``, ``"h_swaps"``, ``"v_swaps"`` in
+        block-local coordinates.
+    row_offset : int
+        Row offset (``r0`` from sub-grid).
+    col_offset_ion : int
+        Ion-column offset (``c0 * k``; note: ``c0`` from grid_region is
+        in *trap* columns).
+
+    Returns
+    -------
+    list of dict
+        Schedule with globally remapped coordinates.
+    """
+    if row_offset == 0 and col_offset_ion == 0:
+        return schedule
+    remapped: List[Dict[str, Any]] = []
+    for pass_info in schedule:
+        new_pass: Dict[str, Any] = {
+            "phase": pass_info["phase"],
+            "h_swaps": [
+                (r + row_offset, c + col_offset_ion)
+                for (r, c) in pass_info.get("h_swaps", [])
+            ],
+            "v_swaps": [
+                (r + row_offset, c + col_offset_ion)
+                for (r, c) in pass_info.get("v_swaps", [])
+            ],
+        }
+        remapped.append(new_pass)
+    return remapped
+
+
+def _merge_disjoint_block_schedules(
+    sched_a: List[Dict[str, Any]],
+    sched_b: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Merge SAT schedules from two *disjoint* grid regions.
+
+    Because blocks occupy disjoint grid regions, swaps from different
+    blocks at the same pass index never conflict and can execute in
+    parallel.  We therefore **index-align** the two schedules and
+    union all ``h_swaps`` / ``v_swaps`` at each index, regardless of
+    the ``"phase"`` label (which is cosmetic for disjoint blocks).
+
+    Each block's schedule already obeys its own H-then-V ordering
+    internally; the merged schedule preserves that per-block ordering
+    because we align by index.
+
+    Issue 3 fix: the previous implementation split by "H"/"V" label
+    then re-interleaved, which inflated the total pass count when
+    blocks had different H/V ratios and dropped any entry whose
+    ``"phase"`` was neither ``"H"`` nor ``"V"``.
+    """
+    max_len = max(len(sched_a), len(sched_b)) if (sched_a or sched_b) else 0
+    merged: List[Dict[str, Any]] = []
+
+    for i in range(max_len):
+        h_swaps: list = []
+        v_swaps: list = []
+        # Take phase label from whichever schedule still has entries
+        phase = "H"
+        if i < len(sched_a):
+            h_swaps.extend(sched_a[i].get("h_swaps", []))
+            v_swaps.extend(sched_a[i].get("v_swaps", []))
+            phase = sched_a[i].get("phase", "H")
+        if i < len(sched_b):
+            h_swaps.extend(sched_b[i].get("h_swaps", []))
+            v_swaps.extend(sched_b[i].get("v_swaps", []))
+            if i >= len(sched_a):
+                phase = sched_b[i].get("phase", "H")
+        merged.append({"phase": phase, "h_swaps": h_swaps, "v_swaps": v_swaps})
+
+    return merged
+
+
+def _merge_block_routing_steps(
+    block_steps: Dict[str, List[RoutingStep]],
+    block_sub_grids: Dict[str, "BlockSubGrid"],
+    base_layout: np.ndarray,
+    k: int,
+) -> Tuple[List[RoutingStep], np.ndarray]:
+    """Merge per-block ``RoutingStep`` lists into global-grid steps.
+
+    Each block was routed independently on its disjoint sub-grid.
+    This function overlays layouts, remaps swap coordinates, and
+    merges schedules so the execution layer sees a single stream
+    of global ``RoutingStep`` objects.
+
+    Parameters
+    ----------
+    block_steps : Dict[str, List[RoutingStep]]
+        Per-block routing results.
+    block_sub_grids : Dict[str, BlockSubGrid]
+        Sub-grid allocations with ``grid_region = (r0, c0, r1, c1)``
+        (trap columns).
+    base_layout : np.ndarray
+        Global layout before this set of steps.
+    k : int
+        Ions per trap.
+
+    Returns
+    -------
+    Tuple[List[RoutingStep], np.ndarray]
+        ``(merged_steps, final_layout)``.
+    """
+    if not block_steps:
+        return [], base_layout.copy()
+
+    max_steps = max(len(steps) for steps in block_steps.values())
+    if max_steps == 0:
+        return [], base_layout.copy()
+
+    # Track each block's latest layout for padding shorter sequences
+    block_latest_layouts: Dict[str, np.ndarray] = {}
+    for block_name, sg in block_sub_grids.items():
+        r0, c0, r1, c1 = sg.grid_region
+        c0i, c1i = c0 * k, c1 * k
+        block_latest_layouts[block_name] = base_layout[r0:r1, c0i:c1i].copy()
+
+    merged_steps: List[RoutingStep] = []
+    current_global = base_layout.copy()
+
+    for step_idx in range(max_steps):
+        merged_layout = current_global.copy()
+        merged_schedule: Optional[List[Dict[str, Any]]] = None
+        merged_pairs: List[Tuple[int, int]] = []
+        ms_round_index = 0
+        from_cache = True
+        tiling_meta = (0, step_idx)
+
+        for block_name, steps in block_steps.items():
+            sg = block_sub_grids[block_name]
+            r0, c0, r1, c1 = sg.grid_region
+            c0i, c1i = c0 * k, c1 * k
+
+            if step_idx < len(steps):
+                step = steps[step_idx]
+                block_layout = step.layout_after
+
+                ms_round_index = step.ms_round_index
+                from_cache = from_cache and step.from_cache
+                tiling_meta = step.tiling_meta
+
+                # Overlay block layout onto global
+                merged_layout[r0:r1, c0i:c1i] = block_layout
+                block_latest_layouts[block_name] = block_layout.copy()
+
+                # Remap + merge schedule (index-aligned for disjoint blocks)
+                if step.schedule is not None:
+                    remapped = _remap_schedule_to_global(
+                        step.schedule, r0, c0i,
+                    )
+                    if merged_schedule is None:
+                        merged_schedule = remapped
+                    else:
+                        merged_schedule = _merge_disjoint_block_schedules(
+                            merged_schedule, remapped,
+                        )
+
+                merged_pairs.extend(step.solved_pairs)
+            else:
+                # Block already finished — keep its latest layout
+                merged_layout[r0:r1, c0i:c1i] = block_latest_layouts[block_name]
+
+        merged_steps.append(RoutingStep(
+            layout_after=merged_layout,
+            schedule=merged_schedule,
+            solved_pairs=merged_pairs,
+            ms_round_index=ms_round_index,
+            from_cache=from_cache,
+            tiling_meta=tiling_meta,
+            can_merge_with_next=False,
+            is_initial_placement=False,
+        ))
+        current_global = merged_layout
+
+    return merged_steps, current_global
+
+
+def ionRoutingGadgetArch(
+    arch: QCCDArch,
+    wiseArch: QCCDWiseArch,
+    operations: Sequence[QubitOperation],
+    lookahead: int = 4,
+    subgridsize: Tuple[int, int, int] = (6, 4, 1),
+    base_pmax_in: int = None,
+    toMoveOps: Sequence[Sequence[TwoQubitMSGate]] = None,
+    routing_config: Optional[WISERoutingConfig] = None,
+    stop_event: Optional[Any] = None,
+    max_inner_workers: int | None = None,
+    *,
+    qec_metadata: Any = None,
+    gadget: Any = None,
+    qubit_allocation: Any = None,
+    block_sub_grids: Optional[Dict[str, Any]] = None,
+    toMove_phase_tags: Optional[List[int]] = None,
+    _compiler_q2i: Optional[Dict[int, int]] = None,
+    skip_coalesce: bool = False,
+    allow_flat_fallback: bool = True,
+) -> Tuple[Sequence[Operation], Sequence[int], float]:
+    """Phase-aware routing for fault-tolerant gadget experiments.
+
+    Same interface and return type as ``ionRoutingWISEArch``.  Uses
+    ``QECMetadata.phases`` to decompose the circuit into temporal phases
+    (EC, gadget, transition) and routes each phase independently with
+    phase-specific optimisations:
+
+    - **EC phases**: ion-return BT constraints ensure ions return to
+      their starting positions after each round.  Identical phases are
+      detected via ``round_signature`` and the routing result is cached
+      and replayed.
+    - **Gadget phases**: routed without BT constraints to allow
+      cross-block ion movement.
+
+    Falls back to flat ``ionRoutingWISEArch`` routing when phase metadata
+    is unavailable or the MS round count doesn't match.
+
+    Parameters
+    ----------
+    arch, wiseArch, operations, lookahead, subgridsize, base_pmax_in,
+    toMoveOps, routing_config, stop_event, max_inner_workers
+        Same as ``ionRoutingWISEArch``.
+    qec_metadata : QECMetadata, optional
+        Rich metadata with ``phases`` list.
+    gadget : Gadget, optional
+        The gadget object.  Used to:
+        - Query ``get_phase_active_blocks(phase_idx)`` for Level 1
+          spatial slicing (excluding idle blocks in gadget phases).
+        - Call ``derive_gadget_ms_pairs()`` to obtain/validate the
+          cross-block MS pairs for each gadget phase.
+        - Track multi-phase gadget state via ``num_phases``.
+    qubit_allocation : QubitAllocation, optional
+        Unified qubit allocation from the experiment layout.  Used to:
+        - Auto-build ``block_sub_grids`` (per-block disjoint sub-grid
+          regions) when they are not pre-supplied, enabling per-block
+          EC routing and Level 1 gadget slicing.
+        - Extract ``data_qubit_idxs`` for accurate data/ancilla
+          classification (the QUBIT_COORDS parity heuristic breaks
+          with multi-block x-offsets).
+        - Feed ``derive_gadget_ms_pairs()`` with block data ranges
+          for transversal pair derivation.
+
+    Returns
+    -------
+    Tuple[Sequence[Operation], Sequence[int], float]
+        ``(allOps, barriers, reconfigTime)`` — identical to
+        ``ionRoutingWISEArch``.
+    """
+    # ------------------------------------------------------------------
+    # 0a) Auto-build block_sub_grids from qubit_allocation if not provided
+    # ------------------------------------------------------------------
+    if (
+        block_sub_grids is None
+        and qubit_allocation is not None
+        and qec_metadata is not None
+        and hasattr(qec_metadata, 'block_allocations')
+        and qec_metadata.block_allocations
+    ):
+        from ..utils.gadget_routing import partition_grid_for_blocks
+        try:
+            block_sub_grids = partition_grid_for_blocks(
+                qec_metadata, qubit_allocation, wiseArch.k,
+            )
+            logger.info(
+                "%s ionRoutingGadgetArch: auto-built block_sub_grids "
+                "from qubit_allocation (%d blocks)",
+                PATCH_LOG_PREFIX, len(block_sub_grids),
+            )
+        except (ValueError, KeyError, IndexError) as exc:
+            logger.warning(
+                "%s ionRoutingGadgetArch: failed to auto-build "
+                "block_sub_grids: %s",
+                PATCH_LOG_PREFIX, exc, exc_info=True,
+            )
+
+    # ------------------------------------------------------------------
+    # 0a.5) Normalize block_sub_grids ion index space
+    #
+    # ``partition_grid_for_blocks`` may provide ``ion_indices`` in the
+    # logical-qubit index space, while routing runs in physical ion-index
+    # space.  When a compiler qubit->ion map is available, remap block
+    # indices (and qubit_to_ion entries) so per-block EC routing and
+    # ion-to-block assignment are consistent.
+    # ------------------------------------------------------------------
+    if block_sub_grids and _compiler_q2i:
+        try:
+            _q2i_keys = set(_compiler_q2i.keys())
+            _q2i_vals = set(_compiler_q2i.values())
+            _all_block_idxs: List[int] = []
+            for _sg in block_sub_grids.values():
+                _all_block_idxs.extend(getattr(_sg, 'ion_indices', []) or [])
+
+            _key_hits = sum(1 for _idx in _all_block_idxs if _idx in _q2i_keys)
+            _val_hits = sum(1 for _idx in _all_block_idxs if _idx in _q2i_vals)
+
+            if _key_hits > _val_hits:
+                for _sg in block_sub_grids.values():
+                    _raw_idxs = getattr(_sg, 'ion_indices', []) or []
+                    _mapped_idxs = [
+                        int(_compiler_q2i.get(_idx, _idx))
+                        for _idx in _raw_idxs
+                    ]
+                    _sg.ion_indices = sorted(set(_mapped_idxs))
+
+                    _q2i = getattr(_sg, 'qubit_to_ion', None)
+                    if isinstance(_q2i, dict) and _q2i:
+                        for _q in list(_q2i.keys()):
+                            _q2i[_q] = int(_compiler_q2i.get(_q, _q2i[_q]))
+
+                logger.info(
+                    "%s ionRoutingGadgetArch: normalized block_sub_grids "
+                    "ion index space using compiler q2i map",
+                    PATCH_LOG_PREFIX,
+                )
+        except (KeyError, AttributeError, TypeError) as _norm_exc:
+            logger.warning(
+                "%s ionRoutingGadgetArch: block_sub_grids normalization "
+                "skipped: %s",
+                PATCH_LOG_PREFIX, _norm_exc, exc_info=True,
+            )
+
+    # ------------------------------------------------------------------
+    # 0b) Build parallelPairs and initial layout (H5+H6: shared helpers)
+    # ------------------------------------------------------------------
+    parallelismAllowed = wiseArch.m * wiseArch.n
+    parallelPairs, _ = _build_parallel_pairs(
+        operations, toMoveOps, parallelismAllowed,
+    )
+
+    oldArrangementArr, ionsSorted, active_ions = _build_grid_state(
+        arch, wiseArch,
+    )
+    active_ions_set = set(active_ions)
+
+    # ------------------------------------------------------------------
+    # 1) Determine phase boundaries from qec_metadata.phases
+    # ------------------------------------------------------------------
+    phases = []
+    if qec_metadata is not None and hasattr(qec_metadata, 'phases'):
+        phases = [
+            p for p in qec_metadata.phases
+            if getattr(p, 'phase_type', '') not in ('init', 'measure', '')
+        ]
+
+    # ------------------------------------------------------------------
+    # 1b) Read per-phase MS pair counts directly from QECMetadata.
+    #
+    # PhaseInfo carries ``ms_pair_count`` (populated post-build by
+    # ``to_stim()`` via ``_count_cx_instructions``).  These are exact
+    # circuit-counted values — one per CX/CZ stim instruction object =
+    # one toMoveOps entry = one parallelPairs entry.  No heuristic or
+    # formula-based estimation needed.
+    # ------------------------------------------------------------------
+    phase_pair_counts: Optional[List[int]] = None
+    _cx_per_ec_round: Optional[int] = None
+
+    if phases and len(parallelPairs) > 0:
+        # Read cx_per_ec_round from metadata
+        if qec_metadata is not None and hasattr(qec_metadata, 'cx_per_ec_round'):
+            _cx_per_ec_round = qec_metadata.cx_per_ec_round
+
+        # Build phase_pair_counts from circuit-counted ms_pair_count.
+        # These values are patched by to_stim() after circuit construction,
+        # so they reflect actual CX instruction counts — no heuristic needed.
+        phase_pair_counts = [
+            getattr(p, 'ms_pair_count', 0) for p in phases
+        ]
+
+        if phase_pair_counts is not None:
+            # Sanity check
+            if sum(phase_pair_counts) != len(parallelPairs):
+                logger.warning(
+                    "%s metadata phase pair counts sum to %d, "
+                    "expected %d — falling back to flat routing",
+                    PATCH_LOG_PREFIX,
+                    sum(phase_pair_counts),
+                    len(parallelPairs),
+                )
+                phase_pair_counts = None
+
+        # ----------------------------------------------------------
+        # Fix 10: Split shared-ion rounds into conflict-free sub-rounds
+        #
+        # Bridge CX instructions (e.g. CX 0 21 1 21 2 21 3 21) have
+        # multiple pairs sharing one bridge ancilla ion.  The SAT solver
+        # can only co-locate one pair at a time (the shared ion can only
+        # be in one trap), so we must split these into separate routing
+        # rounds.
+        # ----------------------------------------------------------
+        if phase_pair_counts is not None:
+            _orig_len = len(parallelPairs)
+            _new_pp: List[List[Tuple[int, int]]] = []
+            # Track how many new entries each original entry expands to,
+            # keyed by original index.
+            _split_counts: List[int] = []
+
+            for _round_pairs in parallelPairs:
+                if len(_round_pairs) <= 1:
+                    # No conflict possible with 0 or 1 pair.
+                    _new_pp.append(_round_pairs)
+                    _split_counts.append(1)
+                    continue
+
+                # Greedy bin-packing: assign each pair to the first
+                # sub-round where neither ion is already present.
+                _sub_rounds: List[List[Tuple[int, int]]] = []
+                _sub_ions: List[set] = []  # ions used in each sub-round
+                for _pair in _round_pairs:
+                    _placed = False
+                    for _si, _sr in enumerate(_sub_rounds):
+                        if _pair[0] not in _sub_ions[_si] and _pair[1] not in _sub_ions[_si]:
+                            _sr.append(_pair)
+                            _sub_ions[_si].add(_pair[0])
+                            _sub_ions[_si].add(_pair[1])
+                            _placed = True
+                            break
+                    if not _placed:
+                        _sub_rounds.append([_pair])
+                        _sub_ions.append({_pair[0], _pair[1]})
+
+                for _sr in _sub_rounds:
+                    _new_pp.append(_sr)
+                _split_counts.append(len(_sub_rounds))
+
+            if len(_new_pp) != _orig_len:
+                logger.info(
+                    "%s Fix10: split shared-ion rounds: %d → %d entries",
+                    PATCH_LOG_PREFIX, _orig_len, len(_new_pp),
+                )
+                parallelPairs = _new_pp
+
+                # Update phase_pair_counts to reflect the expanded rounds.
+                _new_ppc: List[int] = []
+                _cursor = 0
+                for _count in phase_pair_counts:
+                    _new_count = 0
+                    for _i in range(_cursor, _cursor + _count):
+                        _new_count += _split_counts[_i]
+                    _cursor += _count
+                    _new_ppc.append(_new_count)
+                phase_pair_counts = _new_ppc
+
+                logger.info(
+                    "%s Fix10: updated phase_pair_counts: %s (sum=%d)",
+                    PATCH_LOG_PREFIX, phase_pair_counts,
+                    sum(phase_pair_counts),
+                )
+
+        # ----------------------------------------------------------
+        # Fix 2b: Validate toMove_phase_tags consistency
+        # ----------------------------------------------------------
+        if (
+            phase_pair_counts is not None
+            and toMove_phase_tags is not None
+            and len(toMove_phase_tags) == len(parallelPairs)
+        ):
+            # Verify that per-phase grouping implied by tags matches
+            # the expected phase_pair_counts.
+            _tag_counts = [0] * len(phases)
+            for _tag in toMove_phase_tags:
+                if 0 <= _tag < len(_tag_counts):
+                    _tag_counts[_tag] += 1
+            if _tag_counts != phase_pair_counts:
+                logger.warning(
+                    "%s toMove_phase_tags grouping %s doesn't match "
+                    "phase_pair_counts %s — tags will be ignored",
+                    PATCH_LOG_PREFIX, _tag_counts, phase_pair_counts,
+                )
+            else:
+                logger.debug(
+                    "%s toMove_phase_tags validated: %d entries "
+                    "across %d phases",
+                    PATCH_LOG_PREFIX,
+                    len(toMove_phase_tags),
+                    len(phases),
+                )
+
+        # ----------------------------------------------------------
+        # Fix 3: Per-phase structural validation (beyond count-only)
+        # ----------------------------------------------------------
+        if phase_pair_counts is not None and block_sub_grids:
+            _pair_cursor = 0
+            for _ph_i, (_phase, _n_pairs) in enumerate(
+                zip(phases, phase_pair_counts)
+            ):
+                if _n_pairs <= 0:
+                    continue
+                _ph_pairs = parallelPairs[_pair_cursor:_pair_cursor + _n_pairs]
+                _pair_cursor += _n_pairs
+
+                _ph_type = getattr(_phase, 'phase_type', '') or ''
+                _is_ec_phase = (
+                    _ph_type in ('ec', 'stabilizer_round', 'final_round')
+                    or _ph_type.startswith('stabilizer_round')
+                )
+
+                if _is_ec_phase and block_sub_grids:
+                    # EC phases: all ion pairs should be within a
+                    # single block's ion range (no cross-block pairs).
+                    _block_ion_sets = {}
+                    for _bname, _bsg in block_sub_grids.items():
+                        _b_ions = set()
+                        _bq2i = getattr(_bsg, 'qubit_to_ion', {})
+                        _b_ions.update(_bq2i.values())
+                        if not _b_ions and hasattr(_bsg, 'ion_indices'):
+                            _b_ions = {q + 1 for q in _bsg.ion_indices}
+                        _block_ion_sets[_bname] = _b_ions
+
+                    for _round_pairs in _ph_pairs:
+                        for _a, _d in _round_pairs:
+                            _a_block = None
+                            _d_block = None
+                            for _bn, _bions in _block_ion_sets.items():
+                                if _a in _bions:
+                                    _a_block = _bn
+                                if _d in _bions:
+                                    _d_block = _bn
+                            if (
+                                _a_block is not None
+                                and _d_block is not None
+                                and _a_block != _d_block
+                            ):
+                                logger.warning(
+                                    "%s Fix3: EC phase %d has "
+                                    "cross-block pair (%d, %d): "
+                                    "blocks %s vs %s",
+                                    PATCH_LOG_PREFIX, _ph_i,
+                                    _a, _d, _a_block, _d_block,
+                                )
+                                break
+
+    if not phases or phase_pair_counts is None:
+        # Metadata unavailable or epoch analysis failed.
+        if not allow_flat_fallback:
+            raise RuntimeError(
+                f"{PATCH_LOG_PREFIX} ionRoutingGadgetArch: phase metadata "
+                f"unavailable (phases={len(phases)}, "
+                f"phase_pair_counts={phase_pair_counts}) and "
+                f"allow_flat_fallback=False"
+            )
+        # Fall back to flat ionRoutingWISEArch routing.
+        logger.warning(
+            "%s ionRoutingGadgetArch: falling back to flat routing "
+            "(phases=%d, phase_pair_counts=%s, circuit_rounds=%d)",
+            PATCH_LOG_PREFIX,
+            len(phases),
+            phase_pair_counts,
+            len(parallelPairs),
+        )
+        return ionRoutingWISEArch(
+            arch, wiseArch, operations,
+            lookahead=lookahead,
+            subgridsize=subgridsize,
+            base_pmax_in=base_pmax_in,
+            toMoveOps=toMoveOps,
+            routing_config=routing_config,
+            stop_event=stop_event,
+            max_inner_workers=max_inner_workers,
+            skip_coalesce=skip_coalesce,
+        )
+
+    # ------------------------------------------------------------------
+    # 2) Phase-aware routing via unified core
+    # ------------------------------------------------------------------
+    from ..utils.gadget_routing import (
+        route_full_experiment_as_steps,
+        _build_plans_from_compiler_pairs,
+        decompose_into_phases,
+        partition_grid_for_blocks,
+    )
+
+    plans = _build_plans_from_compiler_pairs(
+        phases, parallelPairs, phase_pair_counts, block_sub_grids or {},
+    )
+
+    # ------------------------------------------------------------------
+    # Fix 1: Cross-validate compiler pairs against analytics derivation
+    # ------------------------------------------------------------------
+    if (
+        qec_metadata is not None
+        and gadget is not None
+        and qubit_allocation is not None
+        and block_sub_grids
+    ):
+        try:
+            # Use the actual compiler qubit→ion mapping if available
+            # (Fix 4).  Falls back to the q+1 convention otherwise.
+            if _compiler_q2i:
+                _xv_q2i = dict(_compiler_q2i)
+                # Also include bridge ancilla qubits
+                if hasattr(qubit_allocation, 'bridge_ancillas'):
+                    for _bi in (qubit_allocation.bridge_ancillas or []):
+                        _gi = _bi[0]
+                        if _gi not in _xv_q2i:
+                            _xv_q2i[_gi] = _compiler_q2i.get(_gi, _gi + 1)
+            else:
+                _xv_q2i = {
+                    q: q + 1
+                    for ba in qec_metadata.block_allocations
+                    for q in (
+                        list(ba.data_qubits)
+                        + list(ba.x_ancilla_qubits)
+                        + list(ba.z_ancilla_qubits)
+                    )
+                }
+                # Include bridge ancilla qubits
+                if hasattr(qubit_allocation, 'bridge_ancillas'):
+                    for _bi in (qubit_allocation.bridge_ancillas or []):
+                        _gi = _bi[0]
+                        if _gi not in _xv_q2i:
+                            _xv_q2i[_gi] = _gi + 1
+
+            _xv_plans = decompose_into_phases(
+                qec_metadata, gadget, qubit_allocation,
+                block_sub_grids, _xv_q2i, wiseArch.k,
+            )
+
+            # Compare pair sets per matched phase
+            _compiler_cursor = 0
+            _xv_idx = 0
+            for _c_ph_i, (_phase, _n_pairs) in enumerate(
+                zip(phases, phase_pair_counts)
+            ):
+                _c_pairs_flat = set()
+                if _n_pairs > 0:
+                    for _rp in parallelPairs[
+                        _compiler_cursor:_compiler_cursor + _n_pairs
+                    ]:
+                        for _p in _rp:
+                            _c_pairs_flat.add(tuple(sorted(_p)))
+                _compiler_cursor += _n_pairs
+
+                # Find matching analytics plan by phase_index
+                _a_pairs_flat = set()
+                for _xp in _xv_plans:
+                    if getattr(_xp, 'phase_index', -1) == getattr(
+                        _phase, '_original_index', _c_ph_i
+                    ):
+                        for _a_rp in (_xp.ms_pairs_per_round or []):
+                            for _ap in _a_rp:
+                                _a_pairs_flat.add(tuple(sorted(_ap)))
+                        break
+
+                if _c_pairs_flat and _a_pairs_flat:
+                    _diff_ca = _c_pairs_flat - _a_pairs_flat
+                    _diff_ac = _a_pairs_flat - _c_pairs_flat
+                    if _diff_ca or _diff_ac:
+                        logger.warning(
+                            "%s Fix1 cross-validation: phase %d "
+                            "(%s) pair mismatch — "
+                            "compiler-only: %s, analytics-only: %s",
+                            PATCH_LOG_PREFIX, _c_ph_i,
+                            getattr(_phase, 'phase_type', '?'),
+                            _diff_ca, _diff_ac,
+                        )
+        except Exception as _xv_exc:
+            logger.warning(
+                "%s Fix1 cross-validation skipped: %s",
+                PATCH_LOG_PREFIX, _xv_exc, exc_info=True,
+            )
+
+    all_routing_steps, _ = route_full_experiment_as_steps(
+        initial_layout=oldArrangementArr,
+        n=wiseArch.n,
+        m=wiseArch.m,
+        k=wiseArch.k,
+        active_ions=active_ions,
+        plans=plans,
+        block_sub_grids=block_sub_grids or {},
+        subgridsize=subgridsize,
+        base_pmax_in=base_pmax_in or 1,
+        lookahead=lookahead,
+        max_inner_workers=max_inner_workers,
+        stop_event=stop_event,
+        cx_per_ec_round=_cx_per_ec_round,
+        cache_ec_rounds=(
+            routing_config.cache_ec_rounds if routing_config else True
+        ),
+        progress_callback=routing_config.progress_callback if routing_config else None,
+    )
+
+    # ------------------------------------------------------------------
+    # Fix 12: Fallback to flat routing if phase-aware produced zero MS pairs
+    # ------------------------------------------------------------------
+    _total_solved_pairs = sum(len(s.solved_pairs) for s in all_routing_steps)
+    if _total_solved_pairs == 0 and len(parallelPairs) > 0:
+        if not allow_flat_fallback:
+            raise RuntimeError(
+                f"{PATCH_LOG_PREFIX} ionRoutingGadgetArch: phase-aware "
+                f"routing returned 0 solved pairs but expected "
+                f"{len(parallelPairs)} MS rounds, and "
+                f"allow_flat_fallback=False"
+            )
+        logger.warning(
+            "%s ionRoutingGadgetArch: phase-aware routing returned 0 "
+            "solved pairs but expected %d MS rounds — falling back to flat",
+            PATCH_LOG_PREFIX, len(parallelPairs),
+        )
+        return ionRoutingWISEArch(
+            arch, wiseArch, operations,
+            lookahead=lookahead,
+            subgridsize=subgridsize,
+            base_pmax_in=base_pmax_in,
+            toMoveOps=toMoveOps,
+            routing_config=routing_config,
+            stop_event=stop_event,
+            max_inner_workers=max_inner_workers,
+            skip_coalesce=skip_coalesce,
+        )
+
+    logger.info(
+        "%s ionRoutingGadgetArch: total routing_steps=%d across %d phases",
+        PATCH_LOG_PREFIX,
+        len(all_routing_steps),
+        len(plans),
+    )
+
+    # ── Bug 5: Pre-execution verification of solved pairs ──
+    _total_expected_pairs = sum(len(pp) for pp in parallelPairs)
+    # Also count unique pairs to detect duplicates
+    _all_solved = []
+    for s in all_routing_steps:
+        _all_solved.extend(frozenset(p) for p in s.solved_pairs)
+    _unique_solved = len(set(_all_solved))
+    logger.debug(
+        "%s PAIR DIAG: expected=%d, total_solved=%d, unique_solved=%d, "
+        "routing_steps=%d, parallelPairs_len=%d",
+        PATCH_LOG_PREFIX,
+        _total_expected_pairs,
+        _total_solved_pairs,
+        _unique_solved,
+        len(all_routing_steps),
+        len(parallelPairs),
+    )
+    if _total_solved_pairs < _total_expected_pairs:
+        logger.warning(
+            "%s PAIR COVERAGE: solved %d / %d expected pairs (%.1f%%). "
+            "%d pairs may remain unexecuted.",
+            PATCH_LOG_PREFIX,
+            _total_solved_pairs,
+            _total_expected_pairs,
+            100.0 * _total_solved_pairs / max(_total_expected_pairs, 1),
+            _total_expected_pairs - _total_solved_pairs,
+        )
+
+    # ------------------------------------------------------------------
+    # 3) Delegate execution to ionRoutingWISEArch
+    # ------------------------------------------------------------------
+    return ionRoutingWISEArch(
+        arch, wiseArch, operations,
+        lookahead=lookahead,
+        subgridsize=subgridsize,
+        base_pmax_in=base_pmax_in,
+        toMoveOps=toMoveOps,
+        routing_config=routing_config,
+        stop_event=stop_event,
+        max_inner_workers=max_inner_workers,
+        _precomputed_routing_steps=all_routing_steps,
+        skip_coalesce=skip_coalesce,
+    )

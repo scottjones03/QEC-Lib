@@ -227,6 +227,12 @@ class WISERoutingConfig:
         Use block-aware patch boundaries.
     base_pmax_in : Optional[int]
         Base pmax value for SAT solver (None for auto).
+    cache_ec_rounds : bool
+        When ``True`` (default), identical EC stabilizer rounds are
+        detected via ``round_signature`` hashing and the SAT-solved
+        routing schedule is replayed instead of re-solved.  Set to
+        ``False`` to force every EC phase to be SAT-routed from
+        scratch (useful for benchmarking or debugging).
     progress_callback : Optional[ProgressCallback]
         Callback function for progress updates.
     solver_params : Optional[WISESolverParams]
@@ -245,6 +251,7 @@ class WISERoutingConfig:
     debug_mode: bool = False
     block_aware_patching: bool = True
     base_pmax_in: Optional[int] = None
+    cache_ec_rounds: bool = True
     progress_callback: Optional[ProgressCallback] = None
     solver_params: Optional[WISESolverParams] = None
 
@@ -258,6 +265,7 @@ class WISERoutingConfig:
         sat_workers: Optional[int] = None,
         timeout_seconds: Optional[float] = None,
         show_progress: bool = True,
+        cache_ec_rounds: bool = True,
     ) -> "WISERoutingConfig":
         """Create a routing config with production defaults.
 
@@ -280,6 +288,10 @@ class WISERoutingConfig:
             Per-config SAT timeout.  ``None`` for auto.
         show_progress : bool
             Attach a tqdm progress bar callback.
+        cache_ec_rounds : bool
+            Cache and replay identical EC stabilizer rounds.
+            ``True`` by default for performance; set ``False`` to
+            force fresh SAT routing on every EC phase.
 
         Returns
         -------
@@ -312,6 +324,7 @@ class WISERoutingConfig:
             lookahead=lookahead,
             sat_workers=sat_workers,
             base_pmax_in=base_pmax_in,
+            cache_ec_rounds=cache_ec_rounds,
             solver_params=solver_params,
             progress_callback=progress_cb,
         )

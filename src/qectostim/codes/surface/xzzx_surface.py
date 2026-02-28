@@ -114,7 +114,13 @@ from typing import Dict, Any, List, Optional, Tuple, Set
 
 import numpy as np
 
-from qectostim.codes.abstract_css import TopologicalCSSCode, Coord2D
+from qectostim.codes.abstract_css import (
+    TopologicalCSSCode,
+    Coord2D,
+    MergeStabilizerInfo,
+    SeamStabilizer,
+    GrownStabilizer,
+)
 from qectostim.codes.abstract_code import PauliString, FTGadgetCodeConfig, ScheduleMode
 from qectostim.codes.complexes.css_complex import CSSChainComplex3
 from qectostim.codes.utils import validate_css_code
@@ -442,6 +448,235 @@ class XZZXSurfaceCode(TopologicalCSSCode):
             first_round_x_detectors=True,
             first_round_z_detectors=True,
             enable_metachecks=False,
+        )
+
+
+    # ------------------------------------------------------------------
+    # Lattice-surgery merge-stabilizer computation
+    # ------------------------------------------------------------------
+
+    def get_merge_stabilizers(
+        self,
+        merge_type: str,
+        my_edge: str,
+        other_code: "XZZXSurfaceCode",
+        other_edge: str,
+        my_data_global: Dict[int, int],
+        other_data_global: Dict[int, int],
+        seam_qubit_offset: int,
+    ) -> MergeStabilizerInfo:
+        """Compute seam and grown-boundary stabilizers for a lattice-surgery merge.
+
+        The XZZX CSS variant uses the **same rotated-lattice geometry** as
+        :class:`RotatedSurfaceCode` — data qubits at odd-odd coordinates,
+        ancillas at even-even, same boundary types (smooth left/right,
+        rough top/bottom), same 4-phase diagonal CX schedule.  The only
+        difference is the Pauli labelling on the CX legs (XZZX vs XXXX/ZZZZ),
+        but the CSS variant presented here is structurally identical.
+
+        Therefore the merge-stabilizer algorithm is identical to
+        :meth:`RotatedSurfaceCode.get_merge_stabilizers`.
+
+        Parameters
+        ----------
+        merge_type : ``"ZZ"`` or ``"XX"``
+        my_edge : ``"bottom" | "top" | "left" | "right"``
+        other_code : code instance on the other side of the merge
+        other_edge : edge of *other_code* facing the merge boundary
+        my_data_global : ``{local_data_idx: global_qubit_idx}`` for this block
+        other_data_global : ``{local_data_idx: global_qubit_idx}`` for other block
+        seam_qubit_offset : starting global qubit index for seam ancillas
+        """
+        d = self._d
+        d_other = other_code._d if hasattr(other_code, '_d') else d
+
+        # CX schedule (identical to rotated surface code)
+        z_sched = [(+1, +1), (+1, -1), (-1, +1), (-1, -1)]
+        x_sched = [(+1, +1), (-1, +1), (+1, -1), (-1, -1)]
+
+        seam_stab_type = "Z" if merge_type == "ZZ" else "X"
+        grown_stab_type = "X" if merge_type == "ZZ" else "Z"
+
+        my_coords = list(self.metadata["data_coords"])
+        my_coord_to_local = {tuple(c): i for i, c in enumerate(my_coords)}
+
+        other_coords = list(other_code.metadata["data_coords"])
+        other_coord_to_local = {tuple(c): i for i, c in enumerate(other_coords)}
+
+        horizontal_seam = my_edge in ("bottom", "top")
+
+        if horizontal_seam:
+            if my_edge == "bottom":
+                def my_perp(c):   return c[1]
+                def oth_perp(c):  return -(2 * d_other - c[1])
+                parallel_range = range(0, 2 * d + 1, 2)
+            else:
+                def my_perp(c):   return 2 * d - c[1]
+                def oth_perp(c):  return -(c[1])
+                parallel_range = range(0, 2 * d + 1, 2)
+
+            def par_coord(c):  return c[0]
+            def make_neighbor(par, perp):
+                if my_edge == "bottom":
+                    return (par, perp)
+                else:
+                    return (par, 2 * d - perp)
+            def make_other_neighbor(par, perp):
+                if my_edge == "bottom":
+                    return (par, 2 * d_other + perp)
+                else:
+                    return (par, -perp)
+        else:
+            if my_edge == "left":
+                def my_perp(c):   return c[0]
+                def oth_perp(c):  return -(2 * d_other - c[0])
+                parallel_range = range(0, 2 * d + 1, 2)
+            else:
+                def my_perp(c):   return 2 * d - c[0]
+                def oth_perp(c):  return -(c[0])
+                parallel_range = range(0, 2 * d + 1, 2)
+
+            def par_coord(c):  return c[1]
+            def make_neighbor(par, perp):
+                if my_edge == "left":
+                    return (perp, par)
+                else:
+                    return (2 * d - perp, par)
+            def make_other_neighbor(par, perp):
+                if my_edge == "left":
+                    return (2 * d_other + perp, par)
+                else:
+                    return (-perp, par)
+
+        def _stab_type_at(px: int, py: int) -> str:
+            return "X" if ((px // 2) % 2) != ((py // 2) % 2) else "Z"
+
+        seam_stabs: List[SeamStabilizer] = []
+        grown_stabs: List[GrownStabilizer] = []
+        seam_idx = 0
+
+        for par in parallel_range:
+            if horizontal_seam:
+                if my_edge == "bottom":
+                    lx, ly = par, 0
+                else:
+                    lx, ly = par, 2 * d
+            else:
+                if my_edge == "left":
+                    lx, ly = 0, par
+                else:
+                    lx, ly = 2 * d, par
+
+            pos_type = _stab_type_at(lx, ly)
+            sched = z_sched if pos_type == "Z" else x_sched
+
+            cx_phases: List[List[Tuple[int, int]]] = [[] for _ in range(4)]
+            support_globals: List[int] = []
+            new_cx_phases: List[List[Tuple[int, int]]] = [[] for _ in range(4)]
+            new_support_globals: List[int] = []
+            weight = 0
+            new_weight_delta = 0
+
+            for phase_idx, (dx, dy) in enumerate(sched):
+                if horizontal_seam:
+                    nb_par = par + dx
+                    nb_perp = dy
+                else:
+                    nb_par = par + dy
+                    nb_perp = dx
+
+                if nb_perp > 0:
+                    nb_local = make_neighbor(nb_par, nb_perp)
+                    if nb_local in my_coord_to_local:
+                        local_idx = my_coord_to_local[nb_local]
+                        g_data = my_data_global[local_idx]
+                        weight += 1
+                        support_globals.append(g_data)
+                        cx_phases[phase_idx].append((g_data, -1))
+                elif nb_perp < 0:
+                    nb_other_local = make_other_neighbor(nb_par, nb_perp)
+                    if nb_other_local in other_coord_to_local:
+                        local_idx = other_coord_to_local[nb_other_local]
+                        g_data = other_data_global[local_idx]
+                        weight += 1
+                        support_globals.append(g_data)
+                        new_weight_delta += 1
+                        new_support_globals.append(g_data)
+                        cx_phases[phase_idx].append((g_data, -1))
+                        new_cx_phases[phase_idx].append((g_data, -1))
+
+            if weight == 0:
+                continue
+
+            if pos_type == seam_stab_type:
+                g_anc = seam_qubit_offset + seam_idx
+                seam_idx += 1
+
+                final_cx: List[List[Tuple[int, int]]] = [[] for _ in range(4)]
+                for ph in range(4):
+                    for (g_data, _) in cx_phases[ph]:
+                        if pos_type == "Z":
+                            final_cx[ph].append((g_data, g_anc))
+                        else:
+                            final_cx[ph].append((g_anc, g_data))
+
+                seam_stabs.append(SeamStabilizer(
+                    lattice_position=(float(lx), float(ly)),
+                    stab_type=pos_type,
+                    global_ancilla_idx=g_anc,
+                    weight=weight,
+                    cx_per_phase=final_cx,
+                    support_globals=support_globals,
+                ))
+
+            elif pos_type == grown_stab_type and new_weight_delta > 0:
+                orig_w = weight - new_weight_delta
+
+                if orig_w < 2:
+                    g_anc = seam_qubit_offset + seam_idx
+                    seam_idx += 1
+                    final_cx_promoted: List[List[Tuple[int, int]]] = [[] for _ in range(4)]
+                    for ph in range(4):
+                        for (g_data, _) in cx_phases[ph]:
+                            if pos_type == "Z":
+                                final_cx_promoted[ph].append((g_data, g_anc))
+                            else:
+                                final_cx_promoted[ph].append((g_anc, g_data))
+                    seam_stabs.append(SeamStabilizer(
+                        lattice_position=(float(lx), float(ly)),
+                        stab_type=pos_type,
+                        global_ancilla_idx=g_anc,
+                        weight=weight,
+                        cx_per_phase=final_cx_promoted,
+                        support_globals=support_globals,
+                    ))
+                    continue
+
+                final_new_cx: List[List[Tuple[int, int]]] = [[] for _ in range(4)]
+                for ph in range(4):
+                    for (g_data, _) in new_cx_phases[ph]:
+                        if pos_type == "Z":
+                            final_new_cx[ph].append((g_data, -1))
+                        else:
+                            final_new_cx[ph].append((-1, g_data))
+
+                grown_stabs.append(GrownStabilizer(
+                    lattice_position=(float(lx), float(ly)),
+                    stab_type=pos_type,
+                    existing_ancilla_global=-1,
+                    original_weight=orig_w,
+                    new_weight=weight,
+                    new_cx_per_phase=final_new_cx,
+                    belongs_to_block="",
+                    new_support_globals=new_support_globals,
+                ))
+
+        return MergeStabilizerInfo(
+            seam_stabs=seam_stabs,
+            grown_stabs=grown_stabs,
+            seam_type=seam_stab_type,
+            grown_type=grown_stab_type,
+            num_cx_phases=4,
         )
 
 

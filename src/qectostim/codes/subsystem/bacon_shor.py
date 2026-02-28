@@ -120,7 +120,12 @@ from typing import Dict, Any, List, Optional, Tuple
 
 import numpy as np
 
-from qectostim.codes.abstract_css import CSSCode
+from qectostim.codes.abstract_css import (
+    CSSCode,
+    MergeStabilizerInfo,
+    SeamStabilizer,
+    GrownStabilizer,
+)
 from qectostim.codes.abstract_code import PauliString
 from qectostim.codes.complexes.css_complex import CSSChainComplex3
 from qectostim.codes.utils import validate_css_code
@@ -411,6 +416,264 @@ class BaconShorCode(CSSCode):
             z_ops.append(op)
         
         return x_ops, z_ops
+
+
+    # ------------------------------------------------------------------
+    # Physical boundaries
+    # ------------------------------------------------------------------
+
+    def has_physical_boundaries(self) -> bool:
+        """Bacon–Shor codes have physical boundaries (planar grid)."""
+        return True
+
+    # ------------------------------------------------------------------
+    # Lattice-surgery merge-stabilizer computation
+    # ------------------------------------------------------------------
+
+    def get_merge_stabilizers(
+        self,
+        merge_type: str,
+        my_edge: str,
+        other_code: "BaconShorCode",
+        other_edge: str,
+        my_data_global: Dict[int, int],
+        other_data_global: Dict[int, int],
+        seam_qubit_offset: int,
+    ) -> MergeStabilizerInfo:
+        """Compute seam and grown-boundary stabilizers for Bacon–Shor merge.
+
+        Bacon–Shor stabilisers are non-local:
+
+        * **X-stabilisers** are row-pair operators of weight 2n
+          (act on all qubits in two adjacent rows).
+        * **Z-stabilisers** are column-pair operators of weight 2m
+          (act on all qubits in two adjacent columns).
+
+        For a **ZZ merge** along bottom/top edges:
+
+        * Seam Z-stabs are column-pair operators spanning one column from
+          each patch (weight 2).
+        * Grown X-stabs are existing row-pair operators that gain an
+          entire row from the other patch.
+
+        CX schedule: because stabilisers can be high-weight, a serial
+        schedule is used (one CX per phase, 2m or 2n phases total).
+
+        Parameters
+        ----------
+        merge_type : ``\"ZZ\"`` or ``\"XX\"``
+        my_edge : ``\"bottom\" | \"top\" | \"left\" | \"right\"``
+        other_code : Bacon–Shor code on the other side
+        other_edge : edge of *other_code* facing the boundary
+        my_data_global : ``{local_data_idx: global_qubit_idx}`` for this block
+        other_data_global : ``{local_data_idx: global_qubit_idx}`` for other block
+        seam_qubit_offset : starting global qubit index for seam ancillas
+        """
+        m, n = self._m_grid, self._n_grid
+        m_o = other_code._m_grid if hasattr(other_code, '_m_grid') else m
+        n_o = other_code._n_grid if hasattr(other_code, '_n_grid') else n
+
+        seam_stab_type = "Z" if merge_type == "ZZ" else "X"
+        grown_stab_type = "X" if merge_type == "ZZ" else "Z"
+
+        seam_stabs: List[SeamStabilizer] = []
+        grown_stabs: List[GrownStabilizer] = []
+        seam_idx = 0
+
+        horizontal_seam = my_edge in ("bottom", "top")
+
+        def my_idx(r: int, c: int) -> int:
+            return r * n + c
+
+        def other_idx(r: int, c: int) -> int:
+            return r * n_o + c
+
+        if horizontal_seam:
+            # ZZ merge bottom/top:  seam Z-stabs are column-pair, grown X-stabs are row-pair
+            if merge_type == "ZZ":
+                # Seam: for each adjacent pair of columns, create a Z-stab
+                # spanning one qubit from this patch's boundary row and one
+                # from other patch's boundary row.
+                my_boundary_row = m - 1 if my_edge == "bottom" else 0
+                oth_boundary_row = 0 if other_edge == "top" else m_o - 1
+
+                n_cols = min(n, n_o)
+                for c in range(n_cols - 1):
+                    g_anc = seam_qubit_offset + seam_idx
+                    seam_idx += 1
+
+                    support: List[int] = []
+                    cx_phases: List[List[Tuple[int, int]]] = []
+
+                    # Data from my patch: two qubits in boundary row, columns c and c+1
+                    my_q1 = my_data_global[my_idx(my_boundary_row, c)]
+                    my_q2 = my_data_global[my_idx(my_boundary_row, c + 1)]
+                    # Data from other patch
+                    oth_q1 = other_data_global[other_idx(oth_boundary_row, c)]
+                    oth_q2 = other_data_global[other_idx(oth_boundary_row, c + 1)]
+
+                    support = [my_q1, my_q2, oth_q1, oth_q2]
+
+                    # 4-phase schedule: one CX per phase (Z-type: data→anc)
+                    cx_phases = [
+                        [(my_q1, g_anc)],
+                        [(my_q2, g_anc)],
+                        [(oth_q1, g_anc)],
+                        [(oth_q2, g_anc)],
+                    ]
+
+                    seam_stabs.append(SeamStabilizer(
+                        lattice_position=(float(c) + 0.5, float(my_boundary_row) + 0.5),
+                        stab_type="Z",
+                        global_ancilla_idx=g_anc,
+                        weight=4,
+                        cx_per_phase=cx_phases,
+                        support_globals=support,
+                    ))
+
+                # Grown: row-pair X-stabs at the boundary row gain an extra
+                # row from the other patch.  The existing row-pair X-stab for
+                # rows (boundary_row - 1, boundary_row) gains new CX to the
+                # other patch's boundary row.
+                if my_edge == "bottom" and m >= 2:
+                    grown_row_pair = m - 2  # stab index for rows (m-2, m-1)
+                elif my_edge == "top" and m >= 2:
+                    grown_row_pair = 0  # stab index for rows (0, 1)
+                else:
+                    grown_row_pair = -1
+
+                if grown_row_pair >= 0:
+                    new_cx: List[List[Tuple[int, int]]] = [[] for _ in range(4)]
+                    new_support: List[int] = []
+                    for c in range(min(n, n_o)):
+                        g_data = other_data_global[other_idx(oth_boundary_row, c)]
+                        new_support.append(g_data)
+                        # X-type: anc→data.  Distributed across phases.
+                        phase = c % 4
+                        new_cx[phase].append((-1, g_data))
+
+                    data_coords = self.metadata.get("data_coords", [])
+                    if data_coords:
+                        stab_x = float(np.mean([data_coords[my_idx(my_boundary_row, c)][0]
+                                                for c in range(n)]))
+                        stab_y = float(np.mean([data_coords[my_idx(my_boundary_row, c)][1]
+                                                for c in range(n)]))
+                    else:
+                        stab_x, stab_y = 0.0, 0.0
+
+                    grown_stabs.append(GrownStabilizer(
+                        lattice_position=(stab_x, stab_y),
+                        stab_type="X",
+                        existing_ancilla_global=-1,
+                        original_weight=2 * n,
+                        new_weight=2 * n + min(n, n_o),
+                        new_cx_per_phase=new_cx,
+                        belongs_to_block="",
+                        new_support_globals=new_support,
+                    ))
+
+            else:  # XX merge along bottom/top
+                # Seam X-stabs: row-pair operators spanning boundary rows
+                my_boundary_row = m - 1 if my_edge == "bottom" else 0
+                oth_boundary_row = 0 if other_edge == "top" else m_o - 1
+
+                n_cols = min(n, n_o)
+                for c in range(n_cols):
+                    g_anc = seam_qubit_offset + seam_idx
+                    seam_idx += 1
+
+                    my_q = my_data_global[my_idx(my_boundary_row, c)]
+                    oth_q = other_data_global[other_idx(oth_boundary_row, c)]
+
+                    support = [my_q, oth_q]
+                    cx_phases = [
+                        [(g_anc, my_q)],
+                        [(g_anc, oth_q)],
+                        [],
+                        [],
+                    ]
+
+                    seam_stabs.append(SeamStabilizer(
+                        lattice_position=(float(c), float(my_boundary_row) + 0.5),
+                        stab_type="X",
+                        global_ancilla_idx=g_anc,
+                        weight=2,
+                        cx_per_phase=cx_phases,
+                        support_globals=support,
+                    ))
+
+        else:  # Vertical seam (left/right)
+            if merge_type == "ZZ":
+                # Seam Z-stabs: column-pair spanning boundary columns
+                my_boundary_col = n - 1 if my_edge == "right" else 0
+                oth_boundary_col = 0 if other_edge == "left" else n_o - 1
+
+                n_rows = min(m, m_o)
+                for r in range(n_rows - 1):
+                    g_anc = seam_qubit_offset + seam_idx
+                    seam_idx += 1
+
+                    my_q1 = my_data_global[my_idx(r, my_boundary_col)]
+                    my_q2 = my_data_global[my_idx(r + 1, my_boundary_col)]
+                    oth_q1 = other_data_global[other_idx(r, oth_boundary_col)]
+                    oth_q2 = other_data_global[other_idx(r + 1, oth_boundary_col)]
+
+                    support = [my_q1, my_q2, oth_q1, oth_q2]
+                    cx_phases = [
+                        [(my_q1, g_anc)],
+                        [(my_q2, g_anc)],
+                        [(oth_q1, g_anc)],
+                        [(oth_q2, g_anc)],
+                    ]
+
+                    seam_stabs.append(SeamStabilizer(
+                        lattice_position=(float(my_boundary_col) + 0.5, float(r) + 0.5),
+                        stab_type="Z",
+                        global_ancilla_idx=g_anc,
+                        weight=4,
+                        cx_per_phase=cx_phases,
+                        support_globals=support,
+                    ))
+
+            else:  # XX merge left/right
+                my_boundary_col = n - 1 if my_edge == "right" else 0
+                oth_boundary_col = 0 if other_edge == "left" else n_o - 1
+
+                n_rows = min(m, m_o)
+                # Seam X-stabs: row-pair operators spanning boundary columns
+                for r in range(n_rows):
+                    g_anc = seam_qubit_offset + seam_idx
+                    seam_idx += 1
+
+                    my_q = my_data_global[my_idx(r, my_boundary_col)]
+                    oth_q = other_data_global[other_idx(r, oth_boundary_col)]
+
+                    support = [my_q, oth_q]
+                    cx_phases = [
+                        [(g_anc, my_q)],
+                        [(g_anc, oth_q)],
+                        [],
+                        [],
+                    ]
+
+                    seam_stabs.append(SeamStabilizer(
+                        lattice_position=(float(my_boundary_col) + 0.5, float(r)),
+                        stab_type="X",
+                        global_ancilla_idx=g_anc,
+                        weight=2,
+                        cx_per_phase=cx_phases,
+                        support_globals=support,
+                    ))
+
+        n_phases = max(4, max((len(s.cx_per_phase) for s in seam_stabs), default=4))
+
+        return MergeStabilizerInfo(
+            seam_stabs=seam_stabs,
+            grown_stabs=grown_stabs,
+            seam_type=seam_stab_type,
+            grown_type=grown_stab_type,
+            num_cx_phases=n_phases,
+        )
 
 
 # Pre-built instances

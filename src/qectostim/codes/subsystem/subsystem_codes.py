@@ -116,7 +116,12 @@ import warnings
 
 import numpy as np
 
-from qectostim.codes.abstract_css import CSSCode
+from qectostim.codes.abstract_css import (
+    CSSCode,
+    MergeStabilizerInfo,
+    SeamStabilizer,
+    GrownStabilizer,
+)
 from qectostim.codes.abstract_code import PauliString
 from qectostim.codes.utils import (
     compute_css_logicals,
@@ -331,6 +336,157 @@ class SubsystemSurfaceCode(CSSCode):
             for c in range(d):
                 coords.append((float(c), float(r)))
         return coords
+
+    # ------------------------------------------------------------------
+    # Physical boundaries
+    # ------------------------------------------------------------------
+
+    def has_physical_boundaries(self) -> bool:
+        """Subsystem surface codes are planar with physical boundaries."""
+        return True
+
+    # ------------------------------------------------------------------
+    # Lattice-surgery merge-stabilizer computation
+    # ------------------------------------------------------------------
+
+    def get_merge_stabilizers(
+        self,
+        merge_type: str,
+        my_edge: str,
+        other_code: "SubsystemSurfaceCode",
+        other_edge: str,
+        my_data_global: Dict[int, int],
+        other_data_global: Dict[int, int],
+        seam_qubit_offset: int,
+    ) -> MergeStabilizerInfo:
+        """Compute seam and grown-boundary stabilizers for a lattice-surgery merge.
+
+        The subsystem surface code uses a **d × d** grid with integer
+        coordinates ``(col, row)``.  Effective stabilisers are weight-4
+        plaquette operators (products of weight-2 gauge operators).
+
+        The merge creates seam stabilisers spanning both patches and
+        identifies grown boundary stabilisers that gain new data support.
+
+        CX schedule: 4-phase plaquette schedule.
+
+        Parameters
+        ----------
+        merge_type : ``\"ZZ\"`` or ``\"XX\"``
+        my_edge : ``\"bottom\" | \"top\" | \"left\" | \"right\"``
+        other_code : subsystem surface code on the other side
+        other_edge : edge of *other_code* facing the boundary
+        my_data_global : ``{local_data_idx: global_qubit_idx}`` for this block
+        other_data_global : ``{local_data_idx: global_qubit_idx}`` for other
+        seam_qubit_offset : starting global qubit index for seam ancillas
+        """
+        d = self._distance
+        d_o = other_code._distance if hasattr(other_code, '_distance') else d
+
+        seam_stab_type = "Z" if merge_type == "ZZ" else "X"
+        grown_stab_type = "X" if merge_type == "ZZ" else "Z"
+
+        def my_idx(r: int, c: int) -> int:
+            return r * d + c
+
+        def other_idx(r: int, c: int) -> int:
+            return r * d_o + c
+
+        seam_stabs: List[SeamStabilizer] = []
+        grown_stabs: List[GrownStabilizer] = []
+        seam_idx = 0
+
+        horizontal = my_edge in ("bottom", "top")
+
+        if horizontal:
+            my_bnd_row = d - 1 if my_edge == "bottom" else 0
+            oth_bnd_row = 0 if other_edge == "top" else d_o - 1
+            n_cols = min(d, d_o)
+
+            # Seam stabs: weight-4 plaquettes at the boundary
+            for c in range(n_cols - 1):
+                g_anc = seam_qubit_offset + seam_idx
+                seam_idx += 1
+
+                # Plaquette spanning both patches: 2 qubits from each
+                my_q1 = my_data_global[my_idx(my_bnd_row, c)]
+                my_q2 = my_data_global[my_idx(my_bnd_row, c + 1)]
+                oth_q1 = other_data_global[other_idx(oth_bnd_row, c)]
+                oth_q2 = other_data_global[other_idx(oth_bnd_row, c + 1)]
+
+                support = [my_q1, my_q2, oth_q1, oth_q2]
+
+                if seam_stab_type == "Z":
+                    cx_phases: List[List[Tuple[int, int]]] = [
+                        [(my_q1, g_anc)],
+                        [(my_q2, g_anc)],
+                        [(oth_q1, g_anc)],
+                        [(oth_q2, g_anc)],
+                    ]
+                else:
+                    cx_phases = [
+                        [(g_anc, my_q1)],
+                        [(g_anc, my_q2)],
+                        [(g_anc, oth_q1)],
+                        [(g_anc, oth_q2)],
+                    ]
+
+                seam_stabs.append(SeamStabilizer(
+                    lattice_position=(float(c) + 0.5, float(my_bnd_row) + 0.5),
+                    stab_type=seam_stab_type,
+                    global_ancilla_idx=g_anc,
+                    weight=4,
+                    cx_per_phase=cx_phases,
+                    support_globals=support,
+                ))
+
+        else:  # vertical seam
+            my_bnd_col = d - 1 if my_edge == "right" else 0
+            oth_bnd_col = 0 if other_edge == "left" else d_o - 1
+            n_rows = min(d, d_o)
+
+            for r in range(n_rows - 1):
+                g_anc = seam_qubit_offset + seam_idx
+                seam_idx += 1
+
+                my_q1 = my_data_global[my_idx(r, my_bnd_col)]
+                my_q2 = my_data_global[my_idx(r + 1, my_bnd_col)]
+                oth_q1 = other_data_global[other_idx(r, oth_bnd_col)]
+                oth_q2 = other_data_global[other_idx(r + 1, oth_bnd_col)]
+
+                support = [my_q1, my_q2, oth_q1, oth_q2]
+
+                if seam_stab_type == "Z":
+                    cx_phases = [
+                        [(my_q1, g_anc)],
+                        [(my_q2, g_anc)],
+                        [(oth_q1, g_anc)],
+                        [(oth_q2, g_anc)],
+                    ]
+                else:
+                    cx_phases = [
+                        [(g_anc, my_q1)],
+                        [(g_anc, my_q2)],
+                        [(g_anc, oth_q1)],
+                        [(g_anc, oth_q2)],
+                    ]
+
+                seam_stabs.append(SeamStabilizer(
+                    lattice_position=(float(my_bnd_col) + 0.5, float(r) + 0.5),
+                    stab_type=seam_stab_type,
+                    global_ancilla_idx=g_anc,
+                    weight=4,
+                    cx_per_phase=cx_phases,
+                    support_globals=support,
+                ))
+
+        return MergeStabilizerInfo(
+            seam_stabs=seam_stabs,
+            grown_stabs=grown_stabs,
+            seam_type=seam_stab_type,
+            grown_type=grown_stab_type,
+            num_cx_phases=4,
+        )
 
 
 class GaugeColorCode(CSSCode):

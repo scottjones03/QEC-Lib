@@ -7,6 +7,7 @@ from typing import (
     Set,
     Dict,
 )
+from collections import defaultdict
 import networkx as nx
 from ..utils.qccd_nodes import *
 from ..utils.qccd_operations import *
@@ -17,7 +18,51 @@ from ..utils.qccd_arch import *
 def ionRouting(
     qccdArch: QCCDArch,
     operations: Sequence[QubitOperation],
-    trapCapacity: int
+    trapCapacity: int,
+) -> Tuple[Sequence[Operation], Sequence[int]]:
+    """Route ions on an Augmented Grid architecture.
+
+    Partitions *operations* by ``_tick_epoch`` so that all operations
+    in epoch *N* (and their transport) are fully routed before any
+    epoch *N+1* operations are processed.  This guarantees the stim
+    TICK ordering is preserved at routing boundaries.
+    """
+    # --- Group operations by tick epoch ---
+    epoch_groups: Dict[int, List[QubitOperation]] = defaultdict(list)
+    for op in operations:
+        ep = getattr(op, '_tick_epoch', 0)
+        epoch_groups[ep].append(op)
+
+    sorted_epochs = sorted(epoch_groups.keys())
+
+    # Single epoch (or no epoch tags) → fall through to inner router
+    if len(sorted_epochs) <= 1:
+        return _ionRouting_inner(qccdArch, operations, trapCapacity)
+
+    # Route each epoch group separately, accumulating allOps + barriers
+    allOps: List[Operation] = []
+    barriers: List[int] = []
+
+    for epoch in sorted_epochs:
+        epoch_ops = epoch_groups[epoch]
+        group_ops, group_barriers = _ionRouting_inner(
+            qccdArch, epoch_ops, trapCapacity,
+        )
+        # Offset group_barriers by current allOps length
+        offset = len(allOps)
+        for b in group_barriers:
+            barriers.append(b + offset)
+        allOps.extend(group_ops)
+        # Insert barrier at epoch boundary
+        barriers.append(len(allOps))
+
+    return allOps, barriers
+
+
+def _ionRouting_inner(
+    qccdArch: QCCDArch,
+    operations: Sequence[QubitOperation],
+    trapCapacity: int,
 ) -> Tuple[Sequence[Operation], Sequence[int]]:
     twoqubitGatesForAncillaIons: Dict[int, List[TwoQubitMSGate]] = {}
     for op in operations:
@@ -47,7 +92,18 @@ def ionRouting(
         while True:
             toRemove: List[Operation] = []
             ionsInvolved: Set[Ion] = set()
-            for op in operationsLeft:
+            # Sort by tick epoch so that earlier-epoch operations on the
+            # same ion are emitted first (preserves stim timeline order
+            # when multiple same-ion gates are co-located).
+            _epoch_sorted = sorted(
+                operationsLeft,
+                key=lambda _op: (
+                    getattr(_op, '_tick_epoch', -1),
+                    getattr(_op, '_stim_origin', -1),
+                ),
+            )
+
+            for op in _epoch_sorted:
                 trap = op.getTrapForIons()
                 if ionsInvolved.isdisjoint(op.ions) and trap:
                     op.setTrap(trap)
@@ -80,8 +136,11 @@ def ionRouting(
                 continue
             toMoveCandidates[ancillaIdx] = twoqubitGatesForAncillaIons[ancillaIdx].pop(0)
 
-        # move operations with priority according to the original happens before
-        toMove = sorted([(k,o) for k,o in toMoveCandidates.items()], key=lambda ko: opPriorities[ko[1]])
+        # move operations with priority: first by tick-epoch, then by original order
+        toMove = sorted(
+            [(k, o) for k, o in toMoveCandidates.items()],
+            key=lambda ko: (getattr(ko[1], '_tick_epoch', 0), opPriorities[ko[1]]),
+        )
 
         crossingsUsed: Set[Crossing] = set()
         qccdNodesFull: Set[QCCDNode] = set()

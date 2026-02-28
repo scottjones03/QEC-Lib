@@ -1,0 +1,70 @@
+# === Python ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# === Virtual environments ===
+my_venv/
+newvenv/
+venv/
+.venv/
+env/
+
+# === IDE ===
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# === Git repair artifacts ===
+.git_corrupt/
+
+# === Large / generated files ===
+*.mp4
+*.avi
+*.mov
+*.bak
+*.log
+
+# === Notebooks: large backups & generated outputs ===
+notebooks/logs/
+notebooks/old_native_animation_demo.ipynb
+notebooks/test_animation_demo.ipynb.bak
+notebooks/css_surgery_diagnostic.ipynb
+notebooks/wise_pipeline_v2_validation.ipynb
+notebooks/trapped_ion_demo copy.ipynb
+
+# === Temp / diagnostic scripts (root level) ===
+_diag_*.py
+_analyze_*.py
+_apply_*.py
+_bench_*.py
+_benchmark_*.py
+_bisect_*.py
+_check_*.py
+_d2_*.py
+_debug_*.py
+_fix_*.py
+_test_*.py
+_verify_*.py
+_css_test_output.txt
+
+# === Markdown context-save files ===
+_ADDITIONAL_FIX_DETAILS.md
+_ANALYSIS_*.md
+_COMPLETE_*.md
+_COMPREHENSIVE_*.md
+_CONTEXT_*.md
+_CRITICAL_*.md
+_CSS_BRIDGE_*.md
+_CSS_SURGERY_*.md
+_CURRENT_*.md
+
+# === Log directories ===
+logs/
+_test_output.log

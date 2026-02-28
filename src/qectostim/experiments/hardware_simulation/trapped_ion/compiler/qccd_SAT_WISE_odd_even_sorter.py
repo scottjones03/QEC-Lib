@@ -148,8 +148,9 @@ import multiprocessing as mp
 from scipy import stats
 from pysat.solvers import Solver
 import math
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 import logging
+import threading as _threading
 from scipy.optimize import linear_sum_assignment
 from .routing_config import (
     RoutingProgress,
@@ -179,6 +180,22 @@ def _get_safe_mp_context():
             return mp.get_context("fork")
         except ValueError:
             return mp.get_context()
+
+
+def _in_notebook_env() -> bool:
+    """Return *True* when running inside a Jupyter / IPython notebook kernel.
+
+    Used to avoid ``multiprocessing.Manager()`` which spawns a server
+    subprocess that deadlocks the Jupyter kernel on macOS (spawn context).
+    """
+    try:
+        from IPython import get_ipython
+        shell = get_ipython()
+        if shell is None:
+            return False
+        return shell.__class__.__name__ in ("ZMQInteractiveShell", "Shell")
+    except Exception:
+        return False
 
 
 def _wise_safe_sat_pool_workers(num_configs: int) -> int:
@@ -305,6 +322,20 @@ _MIN_POOL_BUDGET_S_FLOOR: float = 600.0
 # needs more time than a single subprocess.
 _POOL_BUDGET_MULT: float = 10.0
 BASE_CONFIG_BUDGET: float = 300.0
+
+# Maximum clause count for in-process SAT solving (bypass subprocess).
+# For small CNFs the subprocess spawn overhead (~1.5-2 s on macOS) far
+# exceeds the solve time (<0.1 s).  Solving in-process is safe because
+# these instances terminate quickly and cannot hang.
+# Empirically, d≤3 / 3×4 grids produce CNFs with ~5 000-15 000 clauses.
+#
+# On macOS, multiprocessing.Process(fork) can deadlock after importing
+# large C-extension libraries (numpy, pysat, etc.).  Set the environment
+# variable ``WISE_INPROCESS_LIMIT`` to a large value (e.g. 999999999) to
+# force all SAT/RC2 solves in-process, avoiding the subprocess entirely.
+_SAT_INPROCESS_CLAUSE_LIMIT: int = int(
+    os.environ.get("WISE_INPROCESS_LIMIT", "50000")
+)
 
 def _estimate_sat_timeout(
     n: int,
@@ -452,29 +483,8 @@ _active_managers: List["SATProcessManager"] = []
 # Global registry of executor worker PIDs for atexit cleanup
 _tracked_executor_pids: set = set()
 
-
-def _get_child_pids(parent_pid: int) -> set:
-    """Get all child PIDs of a process (non-recursive, direct children only)."""
-    children = set()
-    try:
-        import subprocess
-        # Use pgrep to find children - works on macOS and Linux
-        result = subprocess.run(
-            ["pgrep", "-P", str(parent_pid)],
-            capture_output=True,
-            text=True,
-            timeout=5.0,
-        )
-        if result.returncode == 0:
-            for line in result.stdout.strip().split('\n'):
-                if line.strip():
-                    try:
-                        children.add(int(line.strip()))
-                    except ValueError:
-                        pass
-    except Exception:
-        pass
-    return children
+# H10: Use shared utility instead of inline copy
+from ..utils.process_utils import get_child_pids as _get_child_pids
 
 
 def _kill_process_tree(pid: int, sig: int = signal.SIGTERM) -> None:
@@ -623,17 +633,25 @@ class SATProcessManager:
         self._pool_context = _get_safe_mp_context()
         
         # Create Manager for shared state
-        try:
-            self._manager = self._pool_context.Manager()
-            self.sat_children = self._manager.dict()
-            self.rc2_children = self._manager.dict()
-            self.stop_event = self._manager.Event()
-        except RuntimeError:
-            # Fall back to non-shared state (single-process mode)
+        # On macOS, spawn-context Manager() deadlocks — skip it and
+        # fall back to plain dicts + threading.Event.
+        if sys.platform == "darwin":
             self._manager = None
             self.sat_children = {}
             self.rc2_children = {}
-            self.stop_event = None
+            self.stop_event = _threading.Event()
+        else:
+            try:
+                self._manager = self._pool_context.Manager()
+                self.sat_children = self._manager.dict()
+                self.rc2_children = self._manager.dict()
+                self.stop_event = self._manager.Event()
+            except RuntimeError:
+                # Fall back to non-shared state (single-process mode)
+                self._manager = None
+                self.sat_children = {}
+                self.rc2_children = {}
+                self.stop_event = None
         
         # Propagate parent stop_event if already set
         if self._parent_stop_event is not None and self.stop_event is not None:
@@ -1969,6 +1987,46 @@ def _wise_sat_config_worker(
             "cost": cost_mid,
         }
 
+    # ------------------------------------------------------------------
+    # Feasibility pre-check: test the loosest bound (max_bound_B) first.
+    # If UNSAT even with maximum headroom, skip the entire binary search
+    # — this P_max can never be feasible.  Saves ~log₂(max_bound_B)
+    # iterations for every UNSAT config.
+    # ------------------------------------------------------------------
+    if max_bound_B > 1:
+        feas_result = _solve_with_bound(max_bound_B)
+        last_result = feas_result
+        if not (feas_result.get("status") == "ok"
+                and feas_result.get("sat")
+                and feas_result.get("model") is not None):
+            wise_logger.debug(
+                "[WISE] config P_max=%d cap=%.2f: UNSAT at loosest ΣP=%d — skipping bisection",
+                P_max, boundary_capacity_factor, max_bound_B,
+            )
+            feas_result["sum_bound_B"] = max_bound_B
+            publish(feas_result)
+            if last_result is not None:
+                return last_result
+            return {
+                "P_max": P_max,
+                "boundary_capacity_factor": boundary_capacity_factor,
+                "status": "unsat",
+                "sat": False,
+                "schedule": None,
+                "per_round_usage": None,
+                "model": None,
+            }
+        # Feasible at loosest bound — record as initial best and bisect
+        # to find the tightest feasible bound.
+        feas_result["sum_bound_B"] = max_bound_B
+        best_result = feas_result
+        publish(feas_result)
+        high = max_bound_B - 1  # narrow search to [low, max_bound_B-1]
+        wise_logger.debug(
+            "[WISE] config P_max=%d cap=%.2f: SAT at loosest ΣP=%d — bisecting [%d,%d]",
+            P_max, boundary_capacity_factor, max_bound_B, low, high,
+        )
+
     while low <= high:
         if stop_event is not None and stop_event.is_set():
             wise_logger.debug(
@@ -2146,12 +2204,39 @@ def run_sat_with_timeout_file(
     """
     Run Minisat22 on *cnf* in a separate process with a wall-clock timeout.
 
+    For small CNFs (≤ ``_SAT_INPROCESS_CLAUSE_LIMIT`` clauses), the solver
+    runs in-process to avoid macOS subprocess spawn overhead (~1.5-2 s per
+    spawn).  Larger instances still use the subprocess path for timeout
+    isolation.
+
     Returns
     -------
     (sat_ok, model, status)
         *status* is ``"ok"`` | ``"timeout"`` | ``"error"`` | ``"user_abort"``.
         On non-ok status, *sat_ok* and *model* are ``None``.
     """
+    # --- In-process fast path ---
+    # Use when: (1) in notebook (spawn context deadlocks), (2) inside
+    # daemon process (can't spawn children), or (3) small CNF.
+    # PySAT's C solver releases the GIL, so ThreadPoolExecutor
+    # workers still get real parallelism.
+    _is_pool_worker = mp.current_process().daemon
+    if _in_notebook_env() or _is_pool_worker or len(cnf.clauses) <= _SAT_INPROCESS_CLAUSE_LIMIT:
+        try:
+            sat = Minisat22(bootstrap_with=cnf.clauses)
+            if assumptions is not None:
+                sat_ok = sat.solve(assumptions=assumptions)
+            else:
+                sat_ok = sat.solve()
+            model = sat.get_model() if sat_ok else None
+            sat.delete()
+            return bool(sat_ok), model, "ok"
+        except Exception as _ip_exc:
+            wise_logger.warning(
+                "In-process SAT solve failed (%s), falling through to subprocess",
+                _ip_exc,
+            )
+
     extra_args = (assumptions,) if assumptions is not None else ()
 
     data, status = _run_solver_in_subprocess(
@@ -2469,12 +2554,34 @@ def run_rc2_with_timeout_file(
     """
     Run RC2 on *wcnf* in a separate process with a wall-clock timeout.
 
+    For small WCNFs (≤ ``_SAT_INPROCESS_CLAUSE_LIMIT`` hard clauses),
+    the solver runs in-process to avoid subprocess spawn overhead.
+
     Returns
     -------
     (model, cost, status)
         *status* is ``"ok"`` | ``"timeout"`` | ``"error"`` | ``"user_abort"``.
         On non-ok status, *model* and *cost* are ``None``.
     """
+    # --- In-process fast path ---
+    # Use when: (1) in notebook (spawn context deadlocks), (2) inside
+    # daemon process (can't spawn children), or (3) small WCNF.
+    # PySAT's C solver releases the GIL, so ThreadPoolExecutor
+    # workers still get real parallelism.
+    _is_pool_worker = mp.current_process().daemon
+    if _in_notebook_env() or _is_pool_worker or len(wcnf.hard) <= _SAT_INPROCESS_CLAUSE_LIMIT:
+        try:
+            rc2 = RC2(wcnf)
+            model = rc2.compute()
+            cost = rc2.cost if model is not None else None
+            rc2.delete()
+            return model, cost, "ok"
+        except Exception as _ip_exc:
+            wise_logger.warning(
+                "In-process RC2 solve failed (%s), falling through to subprocess",
+                _ip_exc,
+            )
+
     data, status = _run_solver_in_subprocess(
         input_obj=wcnf,
         input_filename="instance.wcnf.pkl",
@@ -3333,8 +3440,33 @@ def optimal_QMR_for_WISE(
     DEBUG_DIAG_DETAILED = False
 
     A_in = np.asarray(A_in, dtype=int)
+
+    # --- Sparse-grid padding: replace 0 (empty sentinel) cells with
+    # unique dummy ion IDs.  The WISE permutation model requires every
+    # cell to hold a distinct element; multiple zeros create an immediate
+    # UNSAT because the CNF forces "ion 0" into all empty cells while
+    # also requiring each ion to occupy exactly one cell.
+    # Dummy IDs are negative to avoid collision with real 1-based ions.
+    _dummy_ids: set = set()
+    _next_dummy = -1
+    n_tmp, m_tmp = A_in.shape
+    for _r in range(n_tmp):
+        for _c in range(m_tmp):
+            if A_in[_r, _c] == 0:
+                A_in[_r, _c] = _next_dummy
+                _dummy_ids.add(_next_dummy)
+                _next_dummy -= 1
+
     n, m = A_in.shape
     R = len(P_arr)
+
+    # When R == 1 and ignore_initial_reconfig is set, the optimization
+    # loop ``range(1, 1)`` is empty — no rounds are optimised at all and
+    # the P-variable assignments for round 0 are unconstrained garbage.
+    # Force ignore_initial_reconfig=False so round 0 is fully optimised.
+    if R <= 1 and ignore_initial_reconfig:
+        ignore_initial_reconfig = False
+
     optimize_round_start = 1 if (ignore_initial_reconfig and R > 0) else 0
 
     if len(full_P_arr) == 0:
@@ -3521,30 +3653,51 @@ def optimal_QMR_for_WISE(
         global_budget_s = max(_MIN_POOL_BUDGET_S, global_budget_s)
 
     # Create a Manager for shared state (stop_event, children dicts).
-    # ONLY needed when NOT nested — nested calls reuse the parent
-    # stop_event and plain dicts (no Manager server process, which
-    # would become a zombie if the parent worker is killed).
-    is_nested = parent_stop_event is not None
-    if is_nested:
-        # Nested: skip Manager entirely — use plain dicts and the
-        # parent stop_event directly as our cooperative stop signal.
+    # Skip Manager on macOS (spawn-context Manager() deadlocks) and when
+    # serial mode is requested (max_inner_workers <= 1).
+    # When max_inner_workers is set, the worker count is already capped
+    # at line ~3630 via min(max_workers, max_inner_workers).
+    _force_serial = (max_inner_workers is not None and max_inner_workers <= 1)
+    _notebook_env = _in_notebook_env()
+    # On macOS, spawn-context Manager() deadlocks even from the terminal
+    # (not just notebooks).  Skip Manager for ALL macOS environments.
+    _skip_manager = _notebook_env or sys.platform == "darwin"
+    if _force_serial:
+        # Serial mode requested: skip Manager entirely to avoid
+        # spawning a subprocess (hangs on macOS with spawn context).
         manager = None
         sat_children = {}
         rc2_children = {}
-        stop_event = parent_stop_event
+        stop_event = None
     else:
-        try:
-            manager = pool_context.Manager()
-        except RuntimeError:
+        if _skip_manager:
+            # Skip Manager() — its server subprocess deadlocks on
+            # macOS with spawn context (both notebook and terminal).
+            manager = None
+        else:
             try:
-                manager = mp.Manager()
-            except Exception:
-                manager = None
+                manager = pool_context.Manager()
+            except RuntimeError:
+                try:
+                    manager = mp.Manager()
+                except Exception:
+                    manager = None
 
         if manager is not None:
             sat_children = manager.dict()
             rc2_children = manager.dict()
             stop_event = manager.Event()
+        elif _skip_manager:
+            # ThreadPoolExecutor: workers are threads sharing memory,
+            # so threading.Event works for cooperative stop signaling.
+            # Always create a FRESH stop_event — never alias
+            # parent_stop_event.  Aliasing caused the parent event to
+            # be set when global_budget_s expired, poisoning ALL
+            # subsequent patch calls that share the same parent event.
+            # The poll loop checks parent_stop_event separately.
+            sat_children = {}
+            rc2_children = {}
+            stop_event = _threading.Event()
         else:
             sat_children = {}
             rc2_children = {}
@@ -3554,28 +3707,29 @@ def optimal_QMR_for_WISE(
     progress_dir = tempfile.mkdtemp(prefix="wise_sat_pool_")
     progress_paths: Dict[int, str] = {}
     
-    # FIX A (relaxed): When nested inside an outer process pool, allow
-    # controlled inner parallelism if we have a CPU budget for it.
-    # We no longer create a nested Manager (the zombie/pickle source);
-    # we reuse the parent stop_event (Manager proxy, picklable) and
-    # plain dicts for PID tracking.  The worker cap
-    # (max_workers ≤ max_inner_workers) was already applied above, so
-    # total process count stays bounded across nesting levels.
-    if is_nested:
-        if (max_inner_workers is not None
-                and max_inner_workers > 1
-                and len(configs) > 1):
-            # Budget allows inner workers and we have enough configs to
-            # justify inter-process overhead.
-            use_multiprocessing = True
-        else:
-            use_multiprocessing = False
+    # Parallelism decision: when _force_serial is set (max_inner_workers
+    # <= 1), skip the pool.  Otherwise use ProcessPoolExecutor for true
+    # multiprocessing.  The worker count is already capped by
+    # max_inner_workers at line ~3630, so total CPU usage stays bounded
+    # even for nested calls.
+    if _force_serial:
+        use_multiprocessing = False
     else:
-        use_multiprocessing = manager is not None
+        use_multiprocessing = True if _skip_manager else manager is not None
     
     if use_multiprocessing:
         try:
-            executor = ProcessPoolExecutor(max_workers=max_workers, mp_context=pool_context)
+            if _skip_manager:
+                # ThreadPoolExecutor avoids the spawn-context deadlock on
+                # macOS (both notebook and terminal).  Workers are threads;
+                # each uses the fast in-process path for SAT/RC2 solving.
+                # PySAT's C solver releases the GIL, giving real parallelism.
+                executor = ThreadPoolExecutor(max_workers=max_workers)
+            else:
+                # ProcessPoolExecutor gives true multiprocessing — each worker
+                # gets its own GIL, so both CNF construction and SAT solving
+                # run in parallel.
+                executor = ProcessPoolExecutor(max_workers=max_workers, mp_context=pool_context)
         except Exception as exc:
             # Catch ALL failures (RuntimeError, OSError, AssertionError
             # for daemon processes, etc.) and fall back to sequential.
@@ -3591,12 +3745,14 @@ def optimal_QMR_for_WISE(
         # Emit progress: SAT pool is starting
         if progress_callback is not None:
             try:
+                _pool_type = "threads" if _skip_manager else "processes"
                 progress_callback(RoutingProgress(
                     stage=STAGE_SAT_POOL_START,
                     current=0,
                     total=len(configs),
-                    message=f"Starting SAT pool with {max_workers} workers",
-                    extra={"num_configs": len(configs), "max_workers": max_workers},
+                    message=f"Starting SAT pool: {max_workers} {_pool_type}, {len(configs)} configs",
+                    extra={"num_configs": len(configs), "max_workers": max_workers,
+                           "pool_type": _pool_type},
                 ))
             except Exception:
                 pass
@@ -3629,11 +3785,35 @@ def optimal_QMR_for_WISE(
 
             # Track completed count for incremental progress during poll
             _poll_completed_count = 0
+            # Early-exit threshold for the parallel path — once we
+            # collect enough SAT results we break and let the finally
+            # block handle cleanup.  IMPORTANT: never call fut.cancel()
+            # on individual futures — on Python 3.11 this causes the
+            # ProcessPoolExecutor management thread to crash with
+            # InvalidStateError when it later tries set_exception on
+            # already-cancelled futures, which hangs ALL subsequent
+            # executor invocations.
+            _grid_cells = n * m
+            _POOL_EARLY_EXIT_SAT = 3 if _grid_cells <= 24 else 5
+            _pool_sat_count = 0
+            _last_progress_time = time.time()  # stall detection
+            _STALL_TIMEOUT_S = 60.0  # break if no progress for 60s
             
             while True:
                 # Emit incremental progress as configs complete
                 current_completed = sum(1 for _, _, fut in futures if fut.done())
                 if current_completed > _poll_completed_count:
+                    _last_progress_time = time.time()  # reset stall timer
+                    # Count SAT results among newly completed futures
+                    _pool_sat_count = 0
+                    for _, _, fut in futures:
+                        if fut.done():
+                            try:
+                                r = fut.result()
+                                if r.get('sat') and r.get('status') == 'ok':
+                                    _pool_sat_count += 1
+                            except Exception:
+                                pass
                     _poll_completed_count = current_completed
                     if progress_callback is not None:
                         try:
@@ -3649,6 +3829,22 @@ def optimal_QMR_for_WISE(
                 unfinished = [1 for _, _, fut in futures if not fut.done()]
                 if not unfinished:
                     break
+                # Early exit: enough SAT results found — break and let
+                # the finally block shut down the executor cleanly.
+                if _pool_sat_count >= _POOL_EARLY_EXIT_SAT:
+                    if DEBUG_DIAG:
+                        wise_logger.info(
+                            "[WISE] pool early exit: %d SAT results from "
+                            "%d/%d completed configs",
+                            _pool_sat_count, _poll_completed_count,
+                            len(configs),
+                        )
+                    if stop_event is not None:
+                        stop_event.set()
+                    # Do NOT cancel individual futures here — it crashes
+                    # the executor's management thread on Python 3.11.
+                    # The finally block calls executor.shutdown(cancel_futures=True).
+                    break
                 # Check parent stop_event (from outer best-effort search)
                 if parent_stop_event is not None:
                     try:
@@ -3660,8 +3856,6 @@ def optimal_QMR_for_WISE(
                             timed_out = True
                             if stop_event is not None:
                                 stop_event.set()
-                            for _, _, fut in futures:
-                                fut.cancel()
                             break
                     except Exception:
                         pass
@@ -3671,13 +3865,24 @@ def optimal_QMR_for_WISE(
                 ):
                     if DEBUG_DIAG:
                         wise_logger.info(
-                            "[WISE] global SAT pool budget exhausted; collecting best-so-far results and cancelling remaining workers."
+                            "[WISE] global SAT pool budget exhausted; collecting best-so-far results."
                         )
                     timed_out = True
-                    # Cooperatively ask inner workers to stop, then cancel futures.
-                    stop_event.set()
-                    for _, _, fut in futures:
-                        fut.cancel()
+                    if stop_event is not None:
+                        stop_event.set()
+                    break
+                # Stall detection: if no futures completed for
+                # _STALL_TIMEOUT_S, the executor is likely broken
+                # (e.g. management thread crashed).  Break out to
+                # avoid hanging indefinitely.
+                if (time.time() - _last_progress_time) >= _STALL_TIMEOUT_S:
+                    wise_logger.warning(
+                        "[WISE] SAT pool stalled for %.0fs with "
+                        "%d/%d completed; breaking out.",
+                        _STALL_TIMEOUT_S, _poll_completed_count,
+                        len(configs),
+                    )
+                    timed_out = True
                     break
                 time.sleep(0.05)
 
@@ -3778,124 +3983,50 @@ def optimal_QMR_for_WISE(
                         break
             except (ChildProcessError, OSError):
                 pass
-    else:
-        # Sequential fallback - run each config worker directly
-        # with **adaptive two-phase** per-config time caps derived from
-        # the unified difficulty estimator (_difficulty computed above).
-        #
-        # Phase 1 (Discovery): short caps → skip slow UNSAT quickly,
-        #          find *any* SAT result as early as possible.
-        # Phase 2 (Optimization): caps increase with each additional SAT
-        #          result, investing more time to find harder but better
-        #          (lower-cost) schedules.
-        if DEBUG_DIAG:
-            wise_logger.info(
-                "[WISE] using sequential fallback (difficulty=%.2f, budget=%.0fs)",
-                _difficulty,
-                global_budget_s if global_budget_s is not None else float("inf"),
-            )
-        
-        # Emit progress: SAT pool starting (sequential mode)
+
+        # Signal SAT bar completion after multiprocessing path finishes.
         if progress_callback is not None:
             try:
+                n_sat = sum(1 for r in results if r.get("sat"))
+                n_unsat = sum(1 for r in results if not r.get("sat"))
+                _pool_type = "threads" if _skip_manager else "processes"
                 progress_callback(RoutingProgress(
-                    stage=STAGE_SAT_POOL_START,
-                    current=0,
+                    stage=STAGE_SAT_CONFIG_DONE,
+                    current=len(configs),
                     total=len(configs),
-                    message="Starting SAT solve (sequential mode)",
-                    extra={"num_configs": len(configs), "mode": "sequential"},
+                    message=(f"SAT pool done ({_pool_type}): "
+                             f"{n_sat} SAT + {n_unsat} UNSAT "
+                             f"= {len(results)}/{len(configs)} configs"),
                 ))
             except Exception:
                 pass
 
-        _seq_sat_count = 0
-        _SEQ_EARLY_EXIT_SAT = 5  # stop after finding this many SAT results
+        # If ALL workers crashed, fall through to sequential fallback.
+        if not results and configs:
+            wise_logger.warning(
+                "[WISE] all %d MP workers produced no results; "
+                "falling back to sequential.",
+                len(configs),
+            )
+            use_multiprocessing = False  # flag for downstream logging
 
+    # -- Sequential fallback (when _force_serial or all MP workers failed) --
+    if not results and configs:
         for idx, cfg in enumerate(configs):
-            # Budget / cancellation check for sequential mode
-            elapsed = time.time() - start_pool
-            if global_budget_s is not None and elapsed >= global_budget_s:
-                if DEBUG_DIAG:
-                    wise_logger.info(
-                        "[WISE] sequential budget exhausted after %d/%d configs "
-                        "(%.0fs elapsed, %d SAT found)",
-                        idx, len(configs), elapsed, _seq_sat_count,
-                    )
-                break
             if parent_stop_event is not None:
                 try:
                     if parent_stop_event.is_set():
-                        if DEBUG_DIAG:
-                            wise_logger.info(
-                                "[WISE] parent_stop_event set; aborting sequential at config %d/%d",
-                                idx, len(configs),
-                            )
                         break
                 except Exception:
                     pass
-
-            # --- Adaptive per-config cap ---
-            remaining_budget = (
-                (global_budget_s - elapsed)
-                if global_budget_s is not None
-                else float("inf")
-            )
-            remaining_configs = max(1, len(configs) - idx)
-
-            if _seq_sat_count == 0:
-                # Phase 1 – Discovery: generous caps so that harder
-                # (lower P_max) configs that ARE SAT don't falsely
-                # timeout.  30× difficulty ≈ 30s for d=2,k=2.
-                per_config_cap = min(
-                    remaining_budget / remaining_configs,
-                    BASE_CONFIG_BUDGET * _difficulty,
-                )
-            else:
-                # Phase 2 – Optimization: invest even more time per
-                # config as confidence grows (more SAT results found).
-                per_config_cap = min(
-                    remaining_budget / remaining_configs,
-                    BASE_CONFIG_BUDGET * _difficulty * (1.0 + _seq_sat_count),
-                )
-
-            # Floor: always give at least 5s so trivial problems
-            # don't get zero budget.
-            per_config_cap = max(5.0, per_config_cap)
-
-            effective_sat_time = min(max_sat_time, per_config_cap) if max_sat_time is not None else per_config_cap
-            effective_rc2_time = min(max_rc2_time, per_config_cap) if max_rc2_time is not None else per_config_cap
-
-            if DEBUG_DIAG:
-                phase_label = "discovery" if _seq_sat_count == 0 else "optimization"
-                wise_logger.info(
-                    "[WISE] seq cfg %d/%d [%s] P_max=%s cap=%.1f "
-                    "(eff_sat=%.1f, eff_rc2=%.1f, sat_count=%d)",
-                    idx, len(configs), phase_label,
-                    cfg[0], per_config_cap,
-                    effective_sat_time, effective_rc2_time,
-                    _seq_sat_count,
-                )
-
             progress_path = os.path.join(progress_dir, f"cfg_{idx}.pkl")
-            # Emit progress: config starting
-            if progress_callback is not None:
-                try:
-                    progress_callback(RoutingProgress(
-                        stage=STAGE_SAT_CONFIG_START,
-                        current=idx,
-                        total=len(configs),
-                        message=f"Solving config {idx}: P_max={cfg[0]}, cap_factor={cfg[1]}",
-                        extra={"config_idx": idx, "P_max": cfg[0], "cap_factor": cfg[1]},
-                    ))
-                except Exception:
-                    pass
             try:
                 res = _wise_sat_config_worker(
                     cfg,
                     context=builder_ctx,
                     optimize_round_start=optimize_round_start,
-                    max_sat_time=effective_sat_time,
-                    max_rc2_time=effective_rc2_time,
+                    max_sat_time=max_sat_time,
+                    max_rc2_time=max_rc2_time,
                     boundary_adjacent=boundary_adjacent,
                     cross_boundary_prefs=cross_boundary_prefs,
                     ignore_initial_reconfig=ignore_initial_reconfig,
@@ -3906,52 +4037,10 @@ def optimal_QMR_for_WISE(
                     stop_event=stop_event,
                 )
                 results.append(res)
-
-                # Track SAT count for phase transitions
                 if res.get("sat") and res.get("status") == "ok":
-                    _seq_sat_count += 1
-
-                # Emit progress: config completed
-                if progress_callback is not None:
-                    try:
-                        progress_callback(RoutingProgress(
-                            stage=STAGE_SAT_CONFIG_DONE,
-                            current=len(results),
-                            total=len(configs),
-                            message=f"Config {idx} done: P_max={res.get('P_max')}, sat={res.get('sat')}",
-                            extra={
-                                "config_idx": idx,
-                                "P_max": res.get("P_max"),
-                                "sat": res.get("sat"),
-                                "status": res.get("status"),
-                            },
-                        ))
-                    except Exception:
-                        pass
-                if DEBUG_DIAG:
-                    usage = res.get("per_round_usage") or [1e9]
-                    sum_usage = int(sum(usage[(optimize_round_start * (R > 1)):]))
-                    wise_logger.info(
-                        "[WISE] sequential result: P_max=%s, sum_usage=%d cap_factor=%.2f, status=%s, sat=%s",
-                        res.get("P_max"),
-                        sum_usage,
-                        res.get("boundary_capacity_factor", float("nan")),
-                        res.get("status"),
-                        res.get("sat"),
-                    )
-
-                # Early exit: once we have enough SAT results, stop
-                # searching to save time.
-                if _seq_sat_count >= _SEQ_EARLY_EXIT_SAT:
-                    if DEBUG_DIAG:
-                        wise_logger.info(
-                            "[WISE] early exit: found %d SAT results after %d/%d configs",
-                            _seq_sat_count, idx + 1, len(configs),
-                        )
-                    break
-            except Exception as e:
-                if DEBUG_DIAG:
-                    wise_logger.warning("[WISE] sequential config %s crashed: %s", cfg, e)
+                    break  # one SAT result is enough for serial mode
+            except Exception:
+                pass
 
     # ---- Cleanup: shut down Manager and remove progress temp dir ----
     if manager is not None:
@@ -4314,6 +4403,14 @@ def optimal_QMR_for_WISE(
         wise_logger.warning(
             "[WISE] BT consistency check failed; proceeding with returned layouts anyway"
         )
+
+    # --- Reverse sparse-grid padding: replace dummy IDs back with 0 ---
+    if _dummy_ids:
+        for lay in layouts:
+            for _r in range(lay.shape[0]):
+                for _c in range(lay.shape[1]):
+                    if int(lay[_r, _c]) in _dummy_ids:
+                        lay[_r, _c] = 0
 
     return layouts, schedule, pass_horizon
 

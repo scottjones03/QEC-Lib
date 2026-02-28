@@ -71,6 +71,7 @@ src/qectostim/codes/small/steane_713.py
 src/qectostim/codes/subsystem/__init__.py
 src/qectostim/codes/subsystem/bacon_shor.py
 src/qectostim/codes/subsystem/subsystem_codes.py
+src/qectostim/codes/surface/4d_surface_code.py
 src/qectostim/codes/surface/__init__.py
 src/qectostim/codes/surface/exotic_surface.py
 src/qectostim/codes/surface/four_d_surface_code.py
@@ -152,16 +153,20 @@ src/qectostim/experiments/hardware_simulation/trapped_ion/compiler/routing_confi
 src/qectostim/experiments/hardware_simulation/trapped_ion/demo/__init__.py
 src/qectostim/experiments/hardware_simulation/trapped_ion/demo/run.py
 src/qectostim/experiments/hardware_simulation/trapped_ion/demo/test_e2e.py
+src/qectostim/experiments/hardware_simulation/trapped_ion/demo/test_integration_layer.py
 src/qectostim/experiments/hardware_simulation/trapped_ion/demo/test_sat_cleanup.py
+src/qectostim/experiments/hardware_simulation/trapped_ion/demo/test_scheduling.py
 src/qectostim/experiments/hardware_simulation/trapped_ion/utils/__init__.py
 src/qectostim/experiments/hardware_simulation/trapped_ion/utils/architectures.py
 src/qectostim/experiments/hardware_simulation/trapped_ion/utils/best_effort_compilation_WISE.py
 src/qectostim/experiments/hardware_simulation/trapped_ion/utils/execution_planner.py
 src/qectostim/experiments/hardware_simulation/trapped_ion/utils/experiment.py
+src/qectostim/experiments/hardware_simulation/trapped_ion/utils/gadget_routing.py
 src/qectostim/experiments/hardware_simulation/trapped_ion/utils/gate_decomposition.py
 src/qectostim/experiments/hardware_simulation/trapped_ion/utils/metrics.py
 src/qectostim/experiments/hardware_simulation/trapped_ion/utils/noise.py
 src/qectostim/experiments/hardware_simulation/trapped_ion/utils/physics.py
+src/qectostim/experiments/hardware_simulation/trapped_ion/utils/process_utils.py
 src/qectostim/experiments/hardware_simulation/trapped_ion/utils/progress_table.py
 src/qectostim/experiments/hardware_simulation/trapped_ion/utils/qccd_arch.py
 src/qectostim/experiments/hardware_simulation/trapped_ion/utils/qccd_circuit.py
@@ -218,3 +223,4 @@ src/qectostim/utils/pauli.py
 src/qectostim/utils/scheduling_core.py
 src/tests/__init__.py
 src/tests/testing_utils.py
+tests/test_css_surgery_pipeline.py

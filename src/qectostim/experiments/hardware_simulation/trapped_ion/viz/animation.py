@@ -45,6 +45,7 @@ from .display import (
     _draw_transport_arrows,
     _extract_active_ions,
     _extract_per_ion_gate_kind,
+    _extract_ms_pairs,
     _extract_ions_from_leaf,
     _gate_kind,
     _gate_kind_single,
@@ -258,13 +259,27 @@ def _build_stim_mapping(
             else:
                 stim_lines_per_step[step_idx] = set()
 
-    # Normalize viewBox across all ticks to prevent panel jumping
+    # Normalize viewBox across all ticks to prevent panel jumping.
+    # Use the union bounding box padded to a square.  The content-tight
+    # viewBox from parse_stim_timeslice_svg already clips to drawn
+    # primitives, so the union here is much tighter than before.
     all_vbs = [svg["viewBox"] for svg in tick_svg_cache.values() if svg]
     if len(all_vbs) > 1:
         ux = min(v[0] for v in all_vbs)
         uy = min(v[1] for v in all_vbs)
         uw = max(v[0] + v[2] for v in all_vbs) - ux
         uh = max(v[1] + v[3] for v in all_vbs) - uy
+        # Pad to square aspect ratio to prevent extreme squishing when
+        # the layout is much wider than tall or vice versa (e.g. multi-
+        # block gadgets with vertically stacked blocks).
+        if uw > 0 and uh > 0:
+            side = max(uw, uh)
+            pad_x = (side - uw) / 2
+            pad_y = (side - uh) / 2
+            ux -= pad_x
+            uy -= pad_y
+            uw = side
+            uh = side
         for svg in tick_svg_cache.values():
             if svg:
                 svg["viewBox"] = (ux, uy, uw, uh)
@@ -367,6 +382,32 @@ def _apply_authoritative_mapping(
         return [op]
 
     anchors: List[Tuple[int, int]] = [(0, 0)]
+    # Steps whose entries were resolved directly from _stim_origin
+    # (ground-truth provenance).  Section 7 monotonicity enforcement
+    # must not override these — they represent the real stim origin.
+    _directly_matched: Set[int] = set()
+
+    # Gate-kind → stim gate name category mapping for cross-validation.
+    # Native rotations that are part of a CX/CZ decomposition must also
+    # be allowed to highlight the parent 2Q stim gate, so "rotation"
+    # includes all 2Q names as well.
+    _2q_names = {"CX", "CZ", "CNOT", "XX", "ZZ", "SQRT_XX",
+                 "XCX", "XCZ", "YCZ", "ISWAP", "SQRT_ZZ", "SPP"}
+    _meas_names = {"M", "MR", "MX", "MY", "MZ", "MRX", "MRY", "MRZ", "MPP"}
+    _reset_names = {"R", "RX", "RY", "RZ"}
+    _rot_names = {"H", "S", "S_DAG", "X", "Y", "Z", "SQRT_X", "SQRT_Y",
+                  "SQRT_Z", "SQRT_X_DAG", "SQRT_Y_DAG", "SQRT_Z_DAG",
+                  "H_XY", "H_YZ", "C_XYZ", "C_ZYX"}
+    _native_cat: Dict[str, Set[str]] = {
+        "ms": _2q_names,
+        "measure": _meas_names,
+        # Resets may originate from combined stim ops like MR, MRX.
+        "reset": _reset_names | _meas_names,
+        # Rotations may originate from 2Q gate decompositions (e.g.
+        # CX → RY,RX,RX,MS,RY) or basis-change rotations from
+        # MRX/MX decompositions, so allow all categories.
+        "rotation": _rot_names | _reset_names | _2q_names | _meas_names,
+    }
 
     for si in range(1, n_ops + 1):
         gk = gate_kinds[si] if si < len(gate_kinds) else None
@@ -377,10 +418,16 @@ def _apply_authoritative_mapping(
 
         if operations is not None and 0 < si <= len(operations):
             sub_ops = _collect_sub_ops(operations[si - 1])
+            allowed_gates = _native_cat.get(gk, set())
             for sub in sub_ops:
                 origin = getattr(sub, "_stim_origin", None)
                 if origin is not None and origin >= 0 and origin in _gate_entry_indices:
-                    matched_entries.add(origin)
+                    # Cross-check: sidebar entry gate must match native op kind
+                    entry = sidebar[origin]
+                    entry_gate = (entry.gate or "").upper()
+                    if not allowed_gates or entry_gate in allowed_gates:
+                        matched_entries.add(origin)
+                    # else: mismatch — skip this origin, fall through to heuristic
 
         if not matched_entries:
             # Fallback for un-tagged ops (e.g. transport steps):
@@ -393,16 +440,7 @@ def _apply_authoritative_mapping(
                     lq = physical_to_logical.get(disp, disp) if physical_to_logical else disp
                     logical_qubits.add(lq)
 
-                # Map native gate kind → stim gate categories
-                _2q_names = {"CX", "CZ", "CNOT", "XX", "ZZ", "SQRT_XX",
-                             "XCX", "XCZ", "YCZ", "ISWAP", "SQRT_ZZ", "SPP"}
-                _meas_names = {"M", "MR", "MX", "MY", "MZ", "MRX", "MRY", "MRZ", "MPP"}
-                _reset_names = {"R", "RX", "RY", "RZ"}
-
-                _native_cat = {
-                    "ms": _2q_names, "measure": _meas_names,
-                    "reset": _reset_names, "rotation": _reset_names,
-                }
+                # Map native gate kind → stim gate categories (reuse outer defs)
                 allowed = _native_cat.get(gk, set())
                 fz_lq = frozenset(logical_qubits)
 
@@ -420,6 +458,9 @@ def _apply_authoritative_mapping(
             earliest_block = min(blocks)
             stim_tick_per_step[si] = max(0, min(earliest_block, n_ticks - 1))
             anchors.append((si, earliest_block))
+            # Mark as directly matched if entries came from _stim_origin
+            if operations is not None and 0 < si <= len(operations):
+                _directly_matched.add(si)
 
     # End anchor
     anchors.append((n_ops, n_blocks - 1))
@@ -461,6 +502,61 @@ def _apply_authoritative_mapping(
         clamped_block = max(0, min(block, n_blocks - 1))
         stim_lines_per_step[si] = set(block_gate_entries[clamped_block])
 
+    # ------------------------------------------------------------------
+    # 7. Monotonicity enforcement
+    # ------------------------------------------------------------------
+    # After scheduling reorders operations, native rotations that are
+    # part of a CX decomposition may carry _stim_origin pointing to an
+    # earlier stim line than the previously highlighted one.  This
+    # causes the animation timeline to jump backwards, confusing the
+    # viewer.  Enforce that tick and highlighted entries never go
+    # backwards — once we advance to stim line N, we never go below N.
+    #
+    # EXCEPTION: Steps that were *directly matched* via _stim_origin
+    # (ground-truth provenance) are exempt from entry filtering.
+    # These represent the real stim instruction that generated the
+    # native op.  Only interpolated/heuristic steps get filtered.
+    # Tick monotonicity is still enforced universally for smooth
+    # SVG panel progression.
+    _high_water_tick = 0
+    _high_water_min_entry = 0
+    for si in range(n_ops + 1):
+        tick = stim_tick_per_step[si]
+        if tick is not None:
+            if tick < _high_water_tick:
+                stim_tick_per_step[si] = _high_water_tick
+            else:
+                _high_water_tick = tick
+
+        entries = stim_lines_per_step[si]
+        if entries:
+            min_entry = min(entries)
+            if min_entry < _high_water_min_entry:
+                if si in _directly_matched:
+                    # Ground-truth provenance — keep entries as-is,
+                    # but do NOT regress the high-water mark.
+                    pass
+                else:
+                    # Interpolated / heuristic — filter entries
+                    filtered = {e for e in entries
+                                if e >= _high_water_min_entry}
+                    if not filtered:
+                        clamped_tick = stim_tick_per_step[si] or 0
+                        clamped_block = max(0, min(clamped_tick,
+                                                   n_blocks - 1))
+                        block_entries = set(
+                            block_gate_entries[clamped_block])
+                        filtered = {e for e in block_entries
+                                    if e >= _high_water_min_entry}
+                        if not filtered:
+                            filtered = {_high_water_min_entry}
+                    stim_lines_per_step[si] = filtered
+                    new_min = min(filtered)
+                    if new_min > _high_water_min_entry:
+                        _high_water_min_entry = new_min
+            else:
+                _high_water_min_entry = min_entry
+
     return True
 
 
@@ -491,21 +587,21 @@ def _draw_animation_legend(ax: Any, ion_roles: Optional[Dict[int, str]]) -> None
                 name, color = role_info[k]
                 h = Line2D([0], [0], marker="o", color="w",
                            markerfacecolor=_ROLE_COLORS.get(role, color),
-                           markersize=8, label=name, linestyle="None")
+                           markersize=11, label=name, linestyle="None")
                 handles.append(h)
     # Infrastructure
     handles.append(Line2D([0], [0], marker="s", color="w",
-                          markerfacecolor=TRAP_FILL, markersize=10,
+                          markerfacecolor=TRAP_FILL, markersize=13,
                           markeredgecolor="#5C6BC0", markeredgewidth=1.2,
                           label="Trap", linestyle="None"))
     handles.append(Line2D([0], [0], marker="s", color="w",
-                          markerfacecolor=JUNCTION_FILL, markersize=9,
+                          markerfacecolor=JUNCTION_FILL, markersize=12,
                           markeredgecolor="#E65100", markeredgewidth=1.2,
                           label="Junction", linestyle="None"))
     if handles:
         ax.legend(handles=handles, loc="upper center",
                   bbox_to_anchor=(0.5, -0.02), ncol=len(handles),
-                  fontsize=10, framealpha=0.85, fancybox=True,
+                  fontsize=13, framealpha=0.85, fancybox=True,
                   edgecolor="#ccc")
 
 
@@ -731,50 +827,55 @@ def animate_transport(
         has_svg = bool(tick_svg_cache)
 
     # ------------------------------------------------------------------
-    # 5. Figure + GridSpec layout
+    # 5. Figure + GridSpec layout  (adaptive to grid + circuit size)
     # ------------------------------------------------------------------
+    n_q = stim_circuit.num_qubits if stim_circuit is not None else 0
+
     if figsize is None:
         dx = (max(all_x) - min(all_x)) if all_x else 10
         dy = (max(all_y) - min(all_y)) if all_y else 8
         if is_wise:
-            # WISE grids tend to be compact; give them more room so
-            # trap labels and ion annotations don't overlap.
-            base_w = max(14, min(24, dx * 1.3 + 7))
-            base_h = max(10, min(18, dy * 1.3 + 6))
+            base_w = max(6, min(8, dx * 0.35 + 2))
+            base_h = max(6, min(8, dy * 0.35 + 2))
         else:
-            base_w = max(12, min(22, dx * 0.9 + 5))
-            base_h = max(8, min(16, dy * 0.9 + 4))
+            base_w = max(5, min(7, dx * 0.30 + 2))
+            base_h = max(5, min(7, dy * 0.30 + 2))
+
         if has_stim and has_svg:
-            figsize = (base_w + 10, base_h + 2)
+            # Timeslice + sidebar add width; sidebar is compact (6 lines)
+            ts_extra_w = max(3, min(5, 2.5 + n_q * 0.03))
+            figsize = (base_w + ts_extra_w + 1, max(base_h, 6))
         elif has_stim:
-            figsize = (base_w + 5, base_h)
+            figsize = (base_w + 2, base_h)
         else:
             figsize = (base_w, base_h)
 
-    # Scale DPI down for very large figures to stay under embed_limit
-    effective_dpi = DPI
-    if figsize[0] > 24:
-        effective_dpi = min(DPI, 90)
-    elif figsize[0] > 20:
-        effective_dpi = min(DPI, 100)
-    elif figsize[0] > 16:
-        effective_dpi = min(DPI, 110)
+    # Use high DPI so the (smaller) figure has enough pixel resolution.
+    # This keeps text large on screen because the browser doesn't need to
+    # shrink a giant image to fit the notebook output cell.
+    effective_dpi = DPI  # 120 from constants
 
-    # Raise the jshtml embed limit to 40 MB
-    plt.rcParams['animation.embed_limit'] = 40
+    # Raise the jshtml embed limit to 80 MB for large animations
+    plt.rcParams['animation.embed_limit'] = 80
 
     fig = plt.figure(figsize=figsize, dpi=effective_dpi)
     plt.close(fig)
 
+    # GridSpec: timeslice ratio grows with qubit count
+    _ts_ratio = min(2.8, max(1.5, 1.2 + n_q * 0.015))
+    # Sidebar is narrow – only 6 lines of text
+    _sb_ratio = 0.85
+
     if has_stim and has_svg:
-        gs = GridSpec(1, 3, figure=fig, width_ratios=[3.0, 2.0, 1.0],
-                      wspace=0.08)
+        gs = GridSpec(1, 3, figure=fig,
+                      width_ratios=[3.0, _ts_ratio, _sb_ratio],
+                      wspace=0.04)
         ax = fig.add_subplot(gs[0, 0])
         ax_topo = fig.add_subplot(gs[0, 1])
         ax_sidebar = fig.add_subplot(gs[0, 2])
     elif has_stim:
-        gs = GridSpec(1, 2, figure=fig, width_ratios=[3.0, 1.3],
-                      wspace=0.06)
+        gs = GridSpec(1, 2, figure=fig, width_ratios=[3.0, _sb_ratio],
+                      wspace=0.04)
         ax = fig.add_subplot(gs[0, 0])
         ax_topo = None
         ax_sidebar = fig.add_subplot(gs[0, 1])
@@ -782,6 +883,9 @@ def animate_transport(
         ax = fig.add_subplot(111)
         ax_topo = None
         ax_sidebar = None
+
+    # Remove whitespace around the figure – pack panels edge-to-edge
+    fig.subplots_adjust(left=0.02, right=0.98, top=0.95, bottom=0.03)
 
     # ------------------------------------------------------------------
     # 6. Physical timing
@@ -906,6 +1010,7 @@ def animate_transport(
                     show_laser = True
                     gk = prev_gk  # use the previous gate kind for tint
             _pigk = _extract_per_ion_gate_kind(operations[op_idx])
+            _ms_pairs = _extract_ms_pairs(operations[op_idx])
             _draw_ions_full(
                 ax, interp_pos, active,
                 ion_roles=ion_roles,
@@ -915,6 +1020,7 @@ def animate_transport(
                 ion_idx_remap=ion_idx_remap,
                 physical_to_logical=physical_to_logical,
                 per_ion_gate_kind=_pigk,
+                ms_pairs=_ms_pairs,
             )
 
             # Transport arrows
@@ -940,7 +1046,7 @@ def animate_transport(
         # Title (short — just the prefix or kind)
         ax.set_title(
             title_prefix or title_str,
-            fontsize=16, fontweight="bold", pad=12)
+            fontsize=20, fontweight="bold", pad=12)
 
         # Ops list text box (right side)
         if frame > 0:
@@ -951,7 +1057,7 @@ def animate_transport(
                     ops_txt += f"\n… +{len(op_lines)-12} more"
                 ax.text(0.98, 0.88, ops_txt,
                         transform=ax.transAxes,
-                        fontsize=12, fontfamily="monospace",
+                        fontsize=14, fontfamily="monospace",
                         va="top", ha="right", color="#222",
                         bbox=dict(facecolor="white", alpha=0.90,
                                   edgecolor="#bbb",
@@ -1016,7 +1122,7 @@ def animate_transport(
                     f"TICK {cur_tick}\n(no SVG data)",
                     transform=ax_topo.transAxes,
                     ha="center", va="center",
-                    fontsize=10, color="#999")
+                    fontsize=13, color="#999")
 
         # --- Legend ---
         _draw_animation_legend(ax, ion_roles)

@@ -791,28 +791,111 @@ class MemoryRoundEmitter:
         emit_detectors: bool = True,
     ) -> None:
         """
-        Emit one round in parallel — all builders share Z/X layers.
-        
-        For anchor rounds, blocks are grouped by first_basis:
-        - X-first blocks (|+⟩ prep): emit X layer first, then Z
-        - Z-first blocks (|0⟩ prep): emit Z layer first, then X
-        
-        For non-anchor rounds, standard Z-then-X order is used.
+        Emit one round in parallel — all builders share interleaved TICK layers.
+
+        When all builders support geometric interleaving (``n_interleave_phases() > 0``),
+        X and Z CX gates from *all* blocks are emitted in the **same** TICK layer
+        for each geometric phase.  This achieves both:
+
+        - **Intra-block parallelism**: X and Z stabiliser CX gates share TICKs
+          (like ``_emit_interleaved_round`` does for single-block memory experiments).
+        - **Inter-block parallelism**: All blocks' CX gates share the same TICKs,
+          so the trapped-ion compiler sees them as simultaneous operations.
+
+        Falls back to sequential per-builder Z-then-X emission when any builder
+        does not support interleaving.
         """
         from qectostim.gadgets.scheduling import StabilizerBasis as SchedulerBasis
-        
+
         is_anchor_round = any(rs.is_anchor_round for rs in round_info.values())
-        
+
+        # Check if all builders support cross-builder interleaving
+        phases_per_builder = [
+            getattr(b, 'n_interleave_phases', lambda: 0)()
+            for b in self.builders
+        ]
+        can_all_interleave = all(p > 0 for p in phases_per_builder)
+
+        if can_all_interleave:
+            n_phases = max(phases_per_builder)
+            self._emit_parallel_interleaved(
+                circuit, round_info, emit_detectors, n_phases, is_anchor_round,
+            )
+        else:
+            # Fallback: sequential per-builder Z-then-X emission
+            self._emit_parallel_sequential_fallback(
+                circuit, round_info, emit_detectors, is_anchor_round,
+            )
+
+        # Finalize round for all builders
+        for b in self.builders:
+            b.finalize_parallel_round(circuit)
+
+    def _emit_parallel_interleaved(
+        self,
+        circuit: stim.Circuit,
+        round_info: Dict[str, "RoundSchedule"],
+        emit_detectors: bool,
+        n_phases: int,
+        is_anchor_round: bool,
+    ) -> None:
+        """Interleaved cross-builder emission: all blocks share TICK layers.
+
+        Structure:
+        1. Reset all ancillas (all builders) → TICK
+        2. For each geometric phase 0..n-1:
+              all builders emit X+Z CX gates in the SAME TICK
+              → TICK
+        3. Measure all ancillas + emit detectors (all builders) → TICK
+        """
+        from qectostim.gadgets.scheduling import StabilizerBasis as SchedulerBasis
+
+        # --- 1. Reset ancillas for all builders ---
+        for b in self.builders:
+            rs = round_info[b.block_name]
+            z_anch = (is_anchor_round
+                      and rs.anchor_basis == SchedulerBasis.Z)
+            x_anch = (is_anchor_round
+                      and rs.anchor_basis == SchedulerBasis.X)
+            b.emit_ancilla_reset(circuit,
+                                 emit_z_anchors=z_anch,
+                                 emit_x_anchors=x_anch)
+        circuit.append("TICK")
+
+        # --- 2. Interleaved CX phases ---
+        for phase_idx in range(n_phases):
+            if phase_idx > 0:
+                circuit.append("TICK")
+            for b in self.builders:
+                b.emit_cx_for_phase(circuit, phase_idx)
+
+        circuit.append("TICK")
+
+        # --- 3. Measure ancillas + detectors ---
+        for b in self.builders:
+            b.emit_ancilla_measure_and_detectors(circuit, emit_detectors)
+
+        # Final TICK separating this round from the next
+        circuit.append("TICK")
+
+    def _emit_parallel_sequential_fallback(
+        self,
+        circuit: stim.Circuit,
+        round_info: Dict[str, "RoundSchedule"],
+        emit_detectors: bool,
+        is_anchor_round: bool,
+    ) -> None:
+        """Fallback: sequential per-builder Z-then-X emission (original logic)."""
+        from qectostim.gadgets.scheduling import StabilizerBasis as SchedulerBasis
+
         if is_anchor_round:
-            # Group builders by which basis needs to be measured first
             x_first = [b for b in self.builders
                        if round_info[b.block_name].first_basis == SchedulerBasis.X]
             z_first = [b for b in self.builders
                        if round_info[b.block_name].first_basis == SchedulerBasis.Z]
             other = [b for b in self.builders
                      if b not in x_first and b not in z_first]
-            
-            # X-first blocks: X layer (with anchors), then Z layer
+
             for b in x_first:
                 rs = round_info[b.block_name]
                 b.emit_x_layer(circuit, emit_detectors=emit_detectors,
@@ -821,28 +904,21 @@ class MemoryRoundEmitter:
                 rs = round_info[b.block_name]
                 b.emit_z_layer(circuit, emit_detectors=emit_detectors,
                                emit_z_anchors=(rs.anchor_basis == SchedulerBasis.Z))
-            
-            # Second layer for each group
+
             for b in x_first:
                 b.emit_z_layer(circuit, emit_detectors=emit_detectors, emit_z_anchors=False)
             for b in z_first:
                 b.emit_x_layer(circuit, emit_detectors=emit_detectors, emit_x_anchors=False)
-            
-            # Non-anchor blocks: standard Z then X
+
             for b in other:
                 b.emit_z_layer(circuit, emit_detectors=emit_detectors, emit_z_anchors=False)
             for b in other:
                 b.emit_x_layer(circuit, emit_detectors=emit_detectors, emit_x_anchors=False)
         else:
-            # Standard ordering: Z layer for all, then X layer for all
             for b in self.builders:
                 b.emit_z_layer(circuit, emit_detectors=emit_detectors, emit_z_anchors=False)
             for b in self.builders:
                 b.emit_x_layer(circuit, emit_detectors=emit_detectors, emit_x_anchors=False)
-        
-        # Finalize round for all builders
-        for b in self.builders:
-            b.finalize_parallel_round(circuit)
 
 
 def emit_scheduled_rounds(

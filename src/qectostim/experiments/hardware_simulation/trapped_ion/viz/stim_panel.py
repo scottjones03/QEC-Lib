@@ -197,6 +197,36 @@ def parse_stim_timeslice_svg(
             fill = fm.group(1)
         data["paths"].append((d, stroke, sw, fill))
 
+    # ── Content-tight viewBox ────────────────────────────────────
+    # Recompute the viewBox from actual drawn primitives (circles,
+    # rects, texts) rather than trusting stim's full-grid viewBox.
+    # This produces a much tighter bounding box when the circuit has
+    # multi-block vertical stacking with large gaps.
+    all_xs: List[float] = []
+    all_ys: List[float] = []
+    for cx, cy, r, _f, _s in data["circles"]:
+        all_xs.extend([cx - r, cx + r])
+        all_ys.extend([cy - r, cy + r])
+    for rx, ry, rw, rh, _f, _s in data["rects"]:
+        all_xs.extend([rx, rx + rw])
+        all_ys.extend([ry, ry + rh])
+    for tx, ty, _txt, fs, _f in data["texts"]:
+        all_xs.append(tx)
+        all_ys.append(ty)
+    if all_xs and all_ys:
+        pad = 8.0  # SVG-coordinate units of padding
+        tight_vb = (
+            min(all_xs) - pad,
+            min(all_ys) - pad,
+            max(all_xs) - min(all_xs) + 2 * pad,
+            max(all_ys) - min(all_ys) + 2 * pad,
+        )
+        # Use the tighter box only if it's meaningfully smaller
+        orig_area = data["viewBox"][2] * data["viewBox"][3]
+        tight_area = tight_vb[2] * tight_vb[3]
+        if tight_area < orig_area * 0.95:
+            data["viewBox"] = tight_vb
+
     return data
 
 
@@ -247,7 +277,7 @@ def draw_stim_svg(
     def _ty(sy: float) -> float:
         return 1.0 - off_y - (sy - vb_y) * scale  # Y flipped
 
-    ax.set_title(title, fontsize=14, fontweight="bold", pad=8)
+    ax.set_title(title, fontsize=18, fontweight="bold", pad=8)
 
     # Gate-name → colour mapping for SVG boxes
     _SVG_GATE_COLORS: Dict[str, str] = {
@@ -329,15 +359,18 @@ def draw_stim_svg(
 
     # --- Compute adaptive gate-box size from qubit spacing ---
     n_rects = len(svg_data["rects"])
-    if len(qubit_ys) >= 2:
+    n_wires = len(qubit_ys)
+    qubit_spacing = 0.12  # default for sparse / unknown layouts
+    if n_wires >= 2:
         _qy_diffs = [abs(qubit_ys[i + 1] - qubit_ys[i])
-                      for i in range(len(qubit_ys) - 1)]
+                      for i in range(n_wires - 1)]
         qubit_spacing = min(_qy_diffs) if _qy_diffs else 0.12
-        gate_box_h = min(0.11, max(0.05, qubit_spacing * 0.60))
+        # Box height must fit within wire spacing to avoid overlap
+        gate_box_h = max(0.012, min(qubit_spacing * 0.70, 0.11))
         gate_box_w = gate_box_h * 1.3  # slightly wider than tall
     elif n_rects > 0:
-        gate_box_w = max(0.07, min(0.12, 0.55 / max(n_rects, 2)))
-        gate_box_h = max(0.06, min(0.10, 0.45 / max(n_rects, 2)))
+        gate_box_w = max(0.05, min(0.12, 0.55 / max(n_rects, 2)))
+        gate_box_h = max(0.04, min(0.10, 0.45 / max(n_rects, 2)))
     else:
         gate_box_w = 0.10
         gate_box_h = 0.08
@@ -370,10 +403,10 @@ def draw_stim_svg(
         ax.add_patch(rect)
         # Draw gate name label centered on box
         if gate_name:
-            lbl_fs = max(9, min(18, gate_box_h * 160))
+            lbl_fs = max(9, min(22, gate_box_h * 200))
             # Shrink font for long names
             if name_len > 2:
-                lbl_fs = max(8, lbl_fs * 0.85)
+                lbl_fs = max(5, lbl_fs * 0.85)
             ax.text(cx_r, cy_r, gate_name,
                     fontsize=lbl_fs, fontfamily="monospace",
                     fontweight="bold", color="white",
@@ -383,7 +416,8 @@ def draw_stim_svg(
                         linewidth=3, foreground="#222")])
 
     # --- Large circles (CX control/target) ---
-    cx_dot_r = 0.035
+    # Scale CX dot radius with qubit spacing to prevent overlap
+    cx_dot_r = min(0.035, max(0.010, qubit_spacing * 0.40))
     for cx, cy, r, fill, stroke in large_circles:
         mcx = _tx(cx)
         mcy = _ty(cy)
@@ -419,7 +453,7 @@ def draw_stim_svg(
             ax.add_patch(circ)
 
     # --- Small circles (qubit position dots) ---
-    small_dot_r = 0.012
+    small_dot_r = min(0.012, max(0.003, qubit_spacing * 0.12))
     for cx, cy, r, fill, stroke in small_circles:
         mcx = _tx(cx)
         mcy = _ty(cy)
@@ -434,19 +468,23 @@ def draw_stim_svg(
 
     # --- Qubit index labels (from SVG circle IDs) ---
     # Label every qubit at its actual (x, y) position, not once per wire.
+    # Skip labels when circuit is too dense to avoid unreadable clutter.
     _qubit_id_map = svg_data.get("qubit_ids", {})
-    label_fs = max(8, min(13, gate_box_h * 150))
-    for (cx_q, cy_q), qidx in _qubit_id_map.items():
-        lx = _tx(cx_q)
-        ly = _ty(cy_q)
-        # Place label above the qubit dot
-        ax.text(lx, ly + gate_box_h * 0.8, f"q{qidx}",
-                fontsize=label_fs, fontfamily="monospace",
-                fontweight="bold", color="#444",
-                ha="center", va="bottom",
-                transform=ax.transAxes, zorder=7, clip_on=False,
-                path_effects=[path_effects.withStroke(
-                    linewidth=2.5, foreground="white")])
+    _show_qubit_labels = len(_qubit_id_map) <= 40
+    if _show_qubit_labels:
+        label_fs = max(8, min(16, gate_box_h * 180))
+        lbl_stroke = max(1.5, min(2.5, gate_box_h * 50))
+        for (cx_q, cy_q), qidx in _qubit_id_map.items():
+            lx = _tx(cx_q)
+            ly = _ty(cy_q)
+            # Place label above the qubit dot
+            ax.text(lx, ly + gate_box_h * 0.8, f"q{qidx}",
+                    fontsize=label_fs, fontfamily="monospace",
+                    fontweight="bold", color="#444",
+                    ha="center", va="bottom",
+                    transform=ax.transAxes, zorder=7, clip_on=False,
+                    path_effects=[path_effects.withStroke(
+                        linewidth=lbl_stroke, foreground="white")])
 
     # --- Text labels (gate names) ---
     # Gate name labels are now rendered directly on the gate boxes above.
@@ -514,7 +552,7 @@ def draw_stim_svg(
     if is_cx_tick and large_circles:
         # Place a "CX" label in the top-left area
         ax.text(0.05, 0.92, "CNOT",
-                fontsize=12, fontfamily="monospace", fontweight="bold",
+                fontsize=16, fontfamily="monospace", fontweight="bold",
                 color=CX_COLOR, alpha=0.85,
                 ha="left", va="top",
                 transform=ax.transAxes, zorder=10, clip_on=False)
@@ -560,6 +598,9 @@ def parse_stim_for_sidebar(
         elif upper.startswith(("DETECTOR", "OBSERVABLE_INCLUDE")):
             kind = "annotation"
             color = "#6A1B9A"
+        elif upper.startswith("REPEAT") or stripped == "}":
+            kind = "annotation"
+            color = "#795548"
         elif upper.startswith(("M", "MR", "MX", "MY", "MZ")):
             kind = "gate"
             color = LASER_MEASURE
@@ -649,7 +690,7 @@ def draw_sidebar(
     ax.axis("off")
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
-    ax.set_title(title, fontsize=14, fontweight="bold", pad=8)
+    ax.set_title(title, fontsize=18, fontweight="bold", pad=8)
 
     if not entries:
         return
@@ -663,7 +704,7 @@ def draw_sidebar(
         return
 
     n_lines = len(gate_entries)
-    window = min(18, n_lines)
+    window = min(6, n_lines)  # tight sliding window – only 6 lines
 
     # Find the filtered position of the highlighted / center entry
     filtered_center = 0
@@ -680,41 +721,56 @@ def draw_sidebar(
     if w_end - w_start < window:
         w_start = max(0, w_end - window)
 
+    # Compact vertical layout: leave room for title at top and
+    # position/total counter at bottom.
+    y_top = 0.88          # just below the title
+    y_bot = 0.10          # leave room for counter text
+    usable = y_top - y_bot
+    row_h = usable / window if window else usable
+
     for vi, fi in enumerate(range(w_start, w_end)):
         orig_idx, entry = gate_entries[fi]
         is_highlighted = orig_idx in highlight_lines
-        y_frac = 1.0 - (vi + 0.5) / window
+        y_frac = y_top - (vi + 0.5) * row_h
 
         # Yellow highlight background
         if is_highlighted:
             ax.axhspan(
-                y_frac - 0.5 / window,
-                y_frac + 0.5 / window,
+                y_frac - 0.5 * row_h,
+                y_frac + 0.5 * row_h,
                 facecolor="#FFD600", alpha=0.45, zorder=0)
 
         # Orange pointer arrow on highlighted line
         if is_highlighted and highlight_lines:
-            ax.text(0.98, y_frac, "\u25C0",
+            ax.text(0.97, y_frac, "\u25C0",
                     transform=ax.transAxes,
-                    fontsize=13, color="#E65100",
+                    fontsize=18, color="#E65100",
                     fontweight="bold", ha="right", va="center",
                     zorder=5)
 
         # Coloured dot for gate kind
-        ax.plot(0.02, y_frac, "o",
-                color=entry.color, markersize=6,
+        ax.plot(0.03, y_frac, "o",
+                color=entry.color, markersize=7,
                 transform=ax.transAxes, zorder=4, clip_on=False)
 
-        # Truncated line text (larger font, no line numbers)
-        trunc = entry.text[:42]
-        if len(entry.text) > 42:
+        # Truncated line text – larger font for 6-line window
+        trunc = entry.text[:46]
+        if len(entry.text) > 46:
             trunc += "\u2026"
-        ax.text(0.06, y_frac, trunc,
+        ax.text(0.08, y_frac, trunc,
                 transform=ax.transAxes,
-                fontsize=12, fontfamily="monospace",
+                fontsize=16, fontfamily="monospace",
                 color="#000" if is_highlighted else "#555",
                 fontweight="bold" if is_highlighted else "normal",
                 va="center", zorder=3)
+
+    # Position counter at the bottom of the sidebar
+    ax.text(0.50, 0.03,
+            f"{filtered_center + 1} / {n_lines}",
+            transform=ax.transAxes,
+            fontsize=14, fontfamily="monospace",
+            ha="center", va="bottom",
+            color="#888", zorder=3)
 
 
 def draw_ops_sidebar(
@@ -744,7 +800,7 @@ def draw_ops_sidebar(
     ax.axis("off")
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
-    ax.set_title(title, fontsize=12, fontweight="bold", pad=6)
+    ax.set_title(title, fontsize=16, fontweight="bold", pad=6)
 
     n_labels = len(labels)
     if n_labels == 0:
@@ -775,7 +831,7 @@ def draw_ops_sidebar(
                        facecolor="#FFD600", alpha=0.40, zorder=0)
             ax.text(0.98, y_frac, "\u25C0",
                     transform=ax.transAxes,
-                    fontsize=11, color="#E65100",
+                    fontsize=14, color="#E65100",
                     fontweight="bold", ha="right", va="center",
                     zorder=5)
 
@@ -793,7 +849,7 @@ def draw_ops_sidebar(
         ax.text(0.08, y_frac,
                 f"{sidx:3d}\u2502 {trunc}",
                 transform=ax.transAxes,
-                fontsize=8.0, fontfamily="monospace",
+                fontsize=12, fontfamily="monospace",
                 color="#000" if is_cur else "#666",
                 fontweight="bold" if is_cur else "normal",
                 va="center", zorder=3)
@@ -868,7 +924,7 @@ def draw_progress_bar(
     ax.text(bar_x + bar_width / 2, bar_y - 0.008,
             time_str,
             transform=ax.transAxes,
-            fontsize=11, ha="center", va="top",
+            fontsize=13, ha="center", va="top",
             fontfamily="monospace", fontweight="bold", color="#424242",
             zorder=100, clip_on=False)
 

@@ -399,3 +399,98 @@ class TestSimulation:
 
         assert 0.0 <= ler <= 1.0, f"Invalid logical error rate: {ler}"
         print(f"  Logical error rate: {ler:.4f} ({num_errors}/100)")
+
+
+# =====================================================================
+# Stim→Native verification tests
+# =====================================================================
+
+
+class TestStimNativeCorrespondence:
+    """Verify every stim CX instruction maps to a native MS gate.
+
+    NOTE: we use ``type(op).__name__`` string checks instead of
+    ``isinstance`` because pytest's ``src.qectostim...`` namespace can
+    differ from the runtime ``qectostim...`` namespace, making
+    ``isinstance`` return ``False`` even for the correct class.
+    """
+
+    @staticmethod
+    def _count_stim_cx_pairs(circuit: stim.Circuit) -> int:
+        """Count CX qubit-pairs in the flattened circuit."""
+        n = 0
+        for inst in circuit.flattened():
+            if inst.name in ("CX", "CZ", "XCZ", "ZCX", "ZCZ"):
+                n += len(inst.targets_copy()) // 2
+        return n
+
+    @staticmethod
+    def _filter_by_name(ops, class_name: str) -> list:
+        """Filter operations by class __name__ (namespace-safe)."""
+        return [op for op in ops if type(op).__name__ == class_name]
+
+    def test_wise_ms_count_matches_cx(self, wise_compiled, ideal):
+        """WISE: compiled MS gate count == stim CX pair count."""
+        _, _, compiled = wise_compiled
+        all_ops = compiled.scheduled.metadata.get("all_operations", [])
+        ms_ops = self._filter_by_name(all_ops, "TwoQubitMSGate")
+        n_cx = self._count_stim_cx_pairs(ideal)
+
+        assert len(ms_ops) == n_cx, (
+            f"WISE: {len(ms_ops)} MS gates != {n_cx} stim CX pairs. "
+            f"Missing {n_cx - len(ms_ops)} gates."
+        )
+
+    def test_wise_all_ms_have_stim_origin(self, wise_compiled):
+        """WISE: every MS gate must carry _stim_origin >= 0."""
+        _, _, compiled = wise_compiled
+        all_ops = compiled.scheduled.metadata.get("all_operations", [])
+        ms_ops = self._filter_by_name(all_ops, "TwoQubitMSGate")
+
+        bad = [i for i, op in enumerate(ms_ops)
+               if getattr(op, '_stim_origin', -1) < 0]
+        assert len(bad) == 0, (
+            f"{len(bad)}/{len(ms_ops)} MS gates missing _stim_origin"
+        )
+
+    def test_wise_all_ms_have_tick_epoch(self, wise_compiled):
+        """WISE: every MS gate must carry _tick_epoch >= 0."""
+        _, _, compiled = wise_compiled
+        all_ops = compiled.scheduled.metadata.get("all_operations", [])
+        ms_ops = self._filter_by_name(all_ops, "TwoQubitMSGate")
+
+        bad = [i for i, op in enumerate(ms_ops)
+               if getattr(op, '_tick_epoch', -1) < 0]
+        assert len(bad) == 0, (
+            f"{len(bad)}/{len(ms_ops)} MS gates missing _tick_epoch"
+        )
+
+    def test_ag_ms_count_matches_cx(self, ag_compiled, ideal):
+        """Augmented Grid: compiled MS gate count == stim CX pair count."""
+        _, _, compiled = ag_compiled
+        all_ops = compiled.scheduled.metadata.get("all_operations", [])
+        ms_ops = self._filter_by_name(all_ops, "TwoQubitMSGate")
+        n_cx = self._count_stim_cx_pairs(ideal)
+
+        assert len(ms_ops) == n_cx, (
+            f"AG: {len(ms_ops)} MS gates != {n_cx} stim CX pairs. "
+            f"Missing {n_cx - len(ms_ops)} gates."
+        )
+
+    def test_wise_measurements_at_least_stim(self, wise_compiled, ideal):
+        """Native measurement count >= stim measurement count.
+
+        Native may have MORE because MR -> M+R and MRX -> rotations+M+R+rotations.
+        """
+        _, _, compiled = wise_compiled
+        all_ops = compiled.scheduled.metadata.get("all_operations", [])
+        n_native_meas = len(self._filter_by_name(all_ops, "Measurement"))
+
+        n_stim_meas = 0
+        for inst in ideal.flattened():
+            if inst.name in ("M", "MZ", "MX", "MY", "MR", "MRX", "MRY", "MRZ"):
+                n_stim_meas += len(inst.targets_copy())
+
+        assert n_native_meas >= n_stim_meas, (
+            f"Fewer native measurements ({n_native_meas}) than stim ({n_stim_meas})"
+        )

@@ -198,7 +198,11 @@ class ToricCodeBase(TopologicalCSSCode):
     
     Subclasses: ToricCode, ToricCode33, ToricCode55
     """
-    
+
+    def has_physical_boundaries(self) -> bool:
+        """Toric codes have periodic boundaries — no open edges for surgery."""
+        return False
+
     @classmethod
     def from_lattice(
         cls,

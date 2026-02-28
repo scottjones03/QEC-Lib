@@ -389,19 +389,24 @@ class GlobalReconfigurations(Operation):
 
             # After executing the SAT schedule, check we reached the target.
             if not np.array_equal(A, T):
-                # print("[WARN] SAT-driven reconfig: final layout does NOT match newAssignment!")
-                # print("  A (final):")
-                # print(A)
-                # print("  T (target):")
-                # print(T)
-                # You can raise if you want:
-                raise RuntimeError("SAT schedule did not realise target layout")
-            # if not initial_placement:
-            #     print(
-            #         f"RECONFIGURATION (SAT schedule): {acc_passes} passes were needed for the current reconfiguration round, "
-            #         f"taking {timeElapsed} time and {heatingRates} heating"
-            #     )
-            return heatingRates, timeElapsed
+                diff_count = int(np.sum(A != T))
+                import logging as _logging
+                _logging.getLogger("wise.qccd.reconfig").warning(
+                    "SAT schedule did not fully realise target layout "
+                    "(%d/%d cells differ, schedule_len=%d); "
+                    "falling through to heuristic odd-even reconfig "
+                    "for remaining mismatches.",
+                    diff_count, A.size, len(sat_schedule),
+                )
+                # Do NOT return — fall through to Phase B/C/D heuristic
+                # which will finish sorting A → T.
+            else:
+                # if not initial_placement:
+                #     print(
+                #         f"RECONFIGURATION (SAT schedule): {acc_passes} passes were needed for the current reconfiguration round, "
+                #         f"taking {timeElapsed} time and {heatingRates} heating"
+                #     )
+                return heatingRates, timeElapsed
         # else:
             # sat_schedule is None: fall back to heuristic odd-even reconfiguration.
             # try:

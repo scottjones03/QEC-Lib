@@ -337,6 +337,10 @@ class ToricCode(TopologicalCSSCode):
         self._hx = hx.astype(np.uint8)
         self._hz = hz.astype(np.uint8)
     
+    def has_physical_boundaries(self) -> bool:
+        """Toric codes have periodic boundaries — no open edges for surgery."""
+        return False
+
     def qubit_coords(self) -> List[Coord2D]:
         """Return qubit coordinates for visualization."""
         return list(self.metadata.get("data_coords", []))

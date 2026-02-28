@@ -12,6 +12,7 @@ The compilation pipeline:
 
 from __future__ import annotations
 
+import logging
 import stim
 from typing import (
     Sequence,
@@ -61,9 +62,10 @@ from ..compiler.qccd_qubits_to_ions import (
 from ..compiler.qccd_parallelisation import (
     paralleliseOperations,
     paralleliseOperationsWithBarriers,
+    reorder_rotations_for_batching,
 )
 from ..compiler.qccd_ion_routing import ionRouting
-from ..compiler.qccd_WISE_ion_route import ionRoutingWISEArch
+from ..compiler.qccd_WISE_ion_route import ionRoutingWISEArch, ionRoutingGadgetArch
 from ..compiler.routing_config import (
     WISERoutingConfig,
     WISESolverParams,
@@ -74,6 +76,8 @@ from ..compiler.routing_config import (
     make_sat_only_tqdm_progress_callback,
     make_logging_progress_callback,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class TrappedIonCompiler(HardwareCompiler):
@@ -174,20 +178,11 @@ class TrappedIonCompiler(HardwareCompiler):
             plus ``metadata["barriers"]``, ``metadata["toMoveOps"]``,
             ``metadata["ion_mapping"]``.
         """
-        # --- 1. Flatten circuit to instruction strings ---
-        instructions_raw = (
-            circuit.flattened()
-            .decomposed()
-            .without_noise()
-            .__str__()
-            .splitlines()
-        )
-
-        # --- 1a. Build decomposed→sidebar-entry mapping ---
+        # --- 1. Build decomposed→sidebar-entry mapping ---
         # The sidebar is built from ``str(circuit)`` (original, un-
-        # flattened), while the compiler works from ``circuit.flattened()
-        # .decomposed()``.  We need to connect each decomposed gate line
-        # back to its sidebar entry index.
+        # flattened), while the compiler works from decomposed gate
+        # lines.  We need to connect each decomposed gate line back
+        # to its sidebar entry index.
         #
         # Strategy:
         #   1. Walk the *original* circuit lines to build a gate-text →
@@ -196,9 +191,14 @@ class TrappedIonCompiler(HardwareCompiler):
         #      gate must correspond to an original gate (flattening only
         #      expands REPEATs; simple circuits are unchanged).  Look up
         #      its sidebar index.
-        #   3. Decompose each flattened gate to primitives to count how
-        #      many decomposed lines it produces, assigning each the
-        #      same sidebar index.
+        #   3. Decompose each flattened gate *individually* and build
+        #      ``instructions_raw`` from the per-gate results, keeping
+        #      non-gate lines (TICK, DETECTOR, QUBIT_COORDS, etc.)
+        #      from the flattened circuit.  This avoids the merging
+        #      of adjacent same-type gates that ``stim.Circuit.
+        #      decomposed()`` performs on the whole circuit (e.g.
+        #      ``R 6`` + ``R 11 12`` → ``R 6 11 12``), which would
+        #      desynchronise the per-line sidebar mapping.
 
         _skip_prefixes = ("QUBIT_COORDS", "DETECTOR", "TICK", "OBSERVABLE",
                           "SHIFT_COORDS", "REPEAT", "}", "MPP")
@@ -219,11 +219,18 @@ class TrappedIonCompiler(HardwareCompiler):
         # Step 2: flattened circuit gate lines → sidebar index
         # For simple (non-REPEAT) circuits, flattened == original gate lines.
         # For REPEAT circuits, we match gate text sequentially.
-        _flat_lines = str(circuit.flattened()).splitlines()
+        _flat_circuit = circuit.flattened().without_noise()
+        _flat_lines = str(_flat_circuit).splitlines()
         _flat_gate_lines = [l.strip() for l in _flat_lines
                             if l.strip() and not any(
                                 l.strip().upper().startswith(p)
                                 for p in _skip_prefixes)]
+
+        # Build reverse lookup: gate_text → list of sidebar indices
+        # (for REPEAT body fallback when forward matching exhausts)
+        _text_to_sidebar: Dict[str, List[int]] = {}
+        for _txt, _sb in _orig_gate_sidebar:
+            _text_to_sidebar.setdefault(_txt, []).append(_sb)
 
         _flat_gate_to_sidebar: List[int] = []
         _orig_cursor = 0
@@ -238,26 +245,60 @@ class TrappedIonCompiler(HardwareCompiler):
                     _orig_cursor += 1
                     matched = True
             if not matched:
-                # REPEAT expansion: reuse the last block's sidebar indices
-                # by cycling through them
-                _flat_gate_to_sidebar.append(-1)
+                # REPEAT expansion: reuse the REPEAT body's sidebar
+                # indices by looking up the gate text.  Prefer the last
+                # occurrence (the REPEAT body entry) over earlier entries
+                # so that all repeated iterations highlight the body.
+                candidates = _text_to_sidebar.get(fg, [])
+                if candidates:
+                    _flat_gate_to_sidebar.append(candidates[-1])
+                else:
+                    _flat_gate_to_sidebar.append(-1)
 
-        # Step 3: decompose each flattened gate → count primitives
+        # Step 3: Build instructions_raw by decomposing each flattened
+        # gate individually, interleaved with non-gate lines from the
+        # flattened circuit.  This also builds _decomp_to_sidebar.
+        #
+        # Using whole-circuit decomposed() would merge adjacent same-
+        # type gate lines (e.g. ``R 6`` from ``R 6`` + ``R 11 12``
+        # from ``RX 11 12`` → ``R 6 11 12``), throwing off the index
+        # alignment.  Per-gate decomposition avoids this.
+        instructions_raw: List[str] = []
         _decomp_to_sidebar: Dict[int, int] = {}
-        _dcursor = 0
-        for _fgi, _fg in enumerate(_flat_gate_lines):
+        _flat_gate_cursor = 0
+        _decomp_gate_idx = 0
+
+        for line in _flat_lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            upper = stripped.upper()
+            is_gate = not any(upper.startswith(p) for p in _skip_prefixes)
+            if not is_gate:
+                # Pass through non-gate lines (TICK, DETECTOR, etc.)
+                instructions_raw.append(stripped)
+                continue
+            # Decompose this single gate individually
+            _sb_idx = (_flat_gate_to_sidebar[_flat_gate_cursor]
+                       if _flat_gate_cursor < len(_flat_gate_to_sidebar)
+                       else -1)
+            _flat_gate_cursor += 1
             try:
-                _mini = stim.Circuit(_fg).decomposed().__str__().splitlines()
-                _mini_gates = [l for l in _mini
+                _mini = stim.Circuit(stripped).decomposed().__str__().splitlines()
+                _mini_gates = [l.strip() for l in _mini
                                if l.strip() and not any(
                                    l.strip().upper().startswith(p)
                                    for p in _skip_prefixes)]
-            except Exception:
-                _mini_gates = [_fg]
-            _sb_idx = _flat_gate_to_sidebar[_fgi] if _fgi < len(_flat_gate_to_sidebar) else -1
-            for _ in _mini_gates:
-                _decomp_to_sidebar[_dcursor] = _sb_idx
-                _dcursor += 1
+            except (ValueError, RuntimeError) as _decomp_exc:
+                logger.warning(
+                    "stim decomposed() failed for line %r: %s — using raw line",
+                    stripped, _decomp_exc,
+                )
+                _mini_gates = [stripped]
+            for mg in _mini_gates:
+                instructions_raw.append(mg)
+                _decomp_to_sidebar[_decomp_gate_idx] = _sb_idx
+                _decomp_gate_idx += 1
 
         newInstructions: List[str] = []
         new_instr_origin: List[int] = []   # parallel to newInstructions
@@ -356,11 +397,48 @@ class TrappedIonCompiler(HardwareCompiler):
         ]
         toMoveIdx = 0
 
+        # C4 fix: Track expected skips per toMoveOps bucket so that
+        # toMoveIdx advances correctly when CX pairs are skipped.
+        _toMove_skips: List[int] = [0] * len(toMoves)
+
+        def _advance_toMoveIdx_if_full():
+            """Advance toMoveIdx when bucket is full (including skips)."""
+            nonlocal toMoveIdx
+            while (
+                toMoveIdx < len(toMoves)
+                and (len(toMoveOps[toMoveIdx]) + _toMove_skips[toMoveIdx])
+                    >= len(toMoves[toMoveIdx])
+            ):
+                toMoveIdx += 1
+
+        def _record_cx_skip():
+            """Record that a CX pair was skipped in the current bucket."""
+            if toMoveIdx < len(toMoves):
+                _toMove_skips[toMoveIdx] += 1
+                _advance_toMoveIdx_if_full()
+
         def _tag(op: QubitOperation, origin: int, epoch: int) -> QubitOperation:
             """Attach stim provenance and tick epoch to a native operation."""
             op._stim_origin = origin  # type: ignore[attr-defined]
             op._tick_epoch = epoch    # type: ignore[attr-defined]
             return op
+
+        # ── Helper: resolve qubit index → Ion ───────────────
+        def _ion_for(qi_str):
+            return self._ion_mapping[int(qi_str)][0]
+
+        # H9: Track skipped ops for diagnostics
+        _skipped_ops = 0
+
+        def _log_skip(gate: str, qubits):
+            """Record a skipped gate for H9 diagnostics."""
+            nonlocal _skipped_ops
+            _skipped_ops += 1
+            logger.debug(
+                "decompose_to_native: skipped %s gate (qubit(s) %s "
+                "not in ion_mapping) — total skips: %d",
+                gate, qubits, _skipped_ops,
+            )
 
         for _ri, instr in enumerate(remaining):
             _origin = remaining_origin[_ri] if _ri < len(remaining_origin) else -1
@@ -380,55 +458,135 @@ class TrappedIonCompiler(HardwareCompiler):
             qubit_parts = [p for p in parts[1:] if not p.startswith("(")]
             if not qubit_parts:
                 continue
-            try:
-                idx = int(qubit_parts[0])
-                ion = self._ion_mapping[idx][0]
-            except (ValueError, KeyError):
-                continue
 
+            # ── Single-qubit gates: iterate ALL qubit targets ───
             if gate_name in ("M", "MZ"):
-                operations.append(_tag(Measurement.qubitOperation(ion), _origin, _epoch))
+                for qi in qubit_parts:
+                    try:
+                        ion = _ion_for(qi)
+                    except (ValueError, KeyError):
+                        _log_skip(gate_name, qi)
+                        continue
+                    operations.append(_tag(Measurement.qubitOperation(ion), _origin, _epoch))
+
             elif gate_name == "H":
-                operations.extend([
-                    _tag(YRotation.qubitOperation(ion), _origin, _epoch),
-                    _tag(XRotation.qubitOperation(ion), _origin, _epoch),
-                ])
+                for qi in qubit_parts:
+                    try:
+                        ion = _ion_for(qi)
+                    except (ValueError, KeyError):
+                        _log_skip(gate_name, qi)
+                        continue
+                    operations.extend([
+                        _tag(YRotation.qubitOperation(ion), _origin, _epoch),
+                        _tag(XRotation.qubitOperation(ion), _origin, _epoch),
+                    ])
+
             elif gate_name == "R":
-                operations.append(_tag(QubitReset.qubitOperation(ion), _origin, _epoch))
-                if self.data_qubit_idxs is None:
-                    dataQubits.clear()
-            elif gate_name in ("CNOT", "CX", "ZCX"):
-                idx2 = int(qubit_parts[1])
-                ion2 = self._ion_mapping[idx2][0]
-                operations.extend([
-                    _tag(YRotation.qubitOperation(ion), _origin, _epoch),
-                    _tag(XRotation.qubitOperation(ion), _origin, _epoch),
-                    _tag(XRotation.qubitOperation(ion2), _origin, _epoch),
-                    _tag(TwoQubitMSGate.qubitOperation(ion, ion2), _origin, _epoch),
-                    _tag(YRotation.qubitOperation(ion), _origin, _epoch),
-                ])
-                toMoveOps[toMoveIdx].append(operations[-2])
-                if len(toMoveOps[toMoveIdx]) == len(toMoves[toMoveIdx]):
-                    toMoveIdx += 1
-            elif gate_name in ("CZ", "ZCZ"):
-                idx2 = int(qubit_parts[1])
-                ion2 = self._ion_mapping[idx2][0]
-                operations.extend([
-                    _tag(YRotation.qubitOperation(ion), _origin, _epoch),
-                    _tag(XRotation.qubitOperation(ion), _origin, _epoch),
-                    _tag(YRotation.qubitOperation(ion2), _origin, _epoch),
-                    _tag(XRotation.qubitOperation(ion2), _origin, _epoch),
-                    _tag(TwoQubitMSGate.qubitOperation(ion, ion2), _origin, _epoch),
-                    _tag(YRotation.qubitOperation(ion), _origin, _epoch),
-                    _tag(YRotation.qubitOperation(ion2), _origin, _epoch),
-                    _tag(XRotation.qubitOperation(ion2), _origin, _epoch),
-                ])
-                toMoveOps[toMoveIdx].append(operations[-4])
-                if len(toMoveOps[toMoveIdx]) == len(toMoves[toMoveIdx]):
-                    toMoveIdx += 1
+                for qi in qubit_parts:
+                    try:
+                        ion = _ion_for(qi)
+                    except (ValueError, KeyError):
+                        _log_skip(gate_name, qi)
+                        continue
+                    operations.append(_tag(QubitReset.qubitOperation(ion), _origin, _epoch))
+                # M6: Removed dead `dataQubits.clear()`
+
             elif gate_name == "MR":
-                operations.append(_tag(Measurement.qubitOperation(ion), _origin, _epoch))
-                operations.append(_tag(QubitReset.qubitOperation(ion), _origin, _epoch))
+                for qi in qubit_parts:
+                    try:
+                        ion = _ion_for(qi)
+                    except (ValueError, KeyError):
+                        _log_skip(gate_name, qi)
+                        continue
+                    operations.append(_tag(Measurement.qubitOperation(ion), _origin, _epoch))
+                    operations.append(_tag(QubitReset.qubitOperation(ion), _origin, _epoch))
+
+            # ── Direct RX / MX / MRX handling (Fix E2) ────────
+            elif gate_name == "RX":
+                # X-basis reset: R → RY → RX  (prepare |+⟩)
+                for qi in qubit_parts:
+                    try:
+                        ion = _ion_for(qi)
+                    except (ValueError, KeyError):
+                        _log_skip(gate_name, qi)
+                        continue
+                    operations.append(_tag(QubitReset.qubitOperation(ion), _origin, _epoch))
+                    operations.append(_tag(YRotation.qubitOperation(ion), _origin, _epoch))
+                    operations.append(_tag(XRotation.qubitOperation(ion), _origin, _epoch))
+
+            elif gate_name in ("MX", "MY"):
+                # Basis-change then measure
+                for qi in qubit_parts:
+                    try:
+                        ion = _ion_for(qi)
+                    except (ValueError, KeyError):
+                        _log_skip(gate_name, qi)
+                        continue
+                    if gate_name == "MX":
+                        operations.append(_tag(XRotation.qubitOperation(ion), _origin, _epoch))
+                        operations.append(_tag(YRotation.qubitOperation(ion), _origin, _epoch))
+                    else:  # MY
+                        operations.append(_tag(YRotation.qubitOperation(ion), _origin, _epoch))
+                    operations.append(_tag(Measurement.qubitOperation(ion), _origin, _epoch))
+
+            elif gate_name == "MRX":
+                # MX then RX: (XRot → YRot → M) + (R → YRot → XRot)
+                for qi in qubit_parts:
+                    try:
+                        ion = _ion_for(qi)
+                    except (ValueError, KeyError):
+                        _log_skip(gate_name, qi)
+                        continue
+                    # MX part
+                    operations.append(_tag(XRotation.qubitOperation(ion), _origin, _epoch))
+                    operations.append(_tag(YRotation.qubitOperation(ion), _origin, _epoch))
+                    operations.append(_tag(Measurement.qubitOperation(ion), _origin, _epoch))
+                    # RX part
+                    operations.append(_tag(QubitReset.qubitOperation(ion), _origin, _epoch))
+                    operations.append(_tag(YRotation.qubitOperation(ion), _origin, _epoch))
+                    operations.append(_tag(XRotation.qubitOperation(ion), _origin, _epoch))
+
+            # ── Two-qubit gates: iterate over pairs ────────────
+            elif gate_name in ("CNOT", "CX", "ZCX"):
+                for pair_start in range(0, len(qubit_parts) - 1, 2):
+                    try:
+                        ion = _ion_for(qubit_parts[pair_start])
+                        ion2 = _ion_for(qubit_parts[pair_start + 1])
+                    except (ValueError, KeyError):
+                        _log_skip(gate_name, qubit_parts[pair_start:pair_start+2])
+                        _record_cx_skip()
+                        continue
+                    operations.extend([
+                        _tag(YRotation.qubitOperation(ion), _origin, _epoch),
+                        _tag(XRotation.qubitOperation(ion), _origin, _epoch),
+                        _tag(XRotation.qubitOperation(ion2), _origin, _epoch),
+                        _tag(TwoQubitMSGate.qubitOperation(ion, ion2), _origin, _epoch),
+                        _tag(YRotation.qubitOperation(ion), _origin, _epoch),
+                    ])
+                    toMoveOps[toMoveIdx].append(operations[-2])
+                    _advance_toMoveIdx_if_full()
+
+            elif gate_name in ("CZ", "ZCZ"):
+                for pair_start in range(0, len(qubit_parts) - 1, 2):
+                    try:
+                        ion = _ion_for(qubit_parts[pair_start])
+                        ion2 = _ion_for(qubit_parts[pair_start + 1])
+                    except (ValueError, KeyError):
+                        _log_skip(gate_name, qubit_parts[pair_start:pair_start+2])
+                        _record_cx_skip()
+                        continue
+                    operations.extend([
+                        _tag(YRotation.qubitOperation(ion), _origin, _epoch),
+                        _tag(XRotation.qubitOperation(ion), _origin, _epoch),
+                        _tag(YRotation.qubitOperation(ion2), _origin, _epoch),
+                        _tag(XRotation.qubitOperation(ion2), _origin, _epoch),
+                        _tag(TwoQubitMSGate.qubitOperation(ion, ion2), _origin, _epoch),
+                        _tag(YRotation.qubitOperation(ion), _origin, _epoch),
+                        _tag(YRotation.qubitOperation(ion2), _origin, _epoch),
+                        _tag(XRotation.qubitOperation(ion2), _origin, _epoch),
+                    ])
+                    toMoveOps[toMoveIdx].append(operations[-4])
+                    _advance_toMoveIdx_if_full()
             else:
                 # Fallback: gate decomposition module
                 all_qubit_indices = tuple(int(p) for p in qubit_parts)
@@ -443,8 +601,7 @@ class TrappedIonCompiler(HardwareCompiler):
                                 _origin, _epoch,
                             ))
                             toMoveOps[toMoveIdx].append(operations[-1])
-                            if len(toMoveOps[toMoveIdx]) == len(toMoves[toMoveIdx]):
-                                toMoveIdx += 1
+                            _advance_toMoveIdx_if_full()
                         elif dg.name in ("RX", "RY"):
                             dg_ion = self._ion_mapping[dg.qubits[0]][0]
                             if dg.name == "RX":
@@ -482,7 +639,13 @@ class TrappedIonCompiler(HardwareCompiler):
                                 _origin, _epoch,
                             ))
                 except (ValueError, KeyError):
-                    pass
+                    _log_skip(gate_name, all_qubit_indices)
+
+        if _skipped_ops > 0:
+            logger.info(
+                "decompose_to_native: total skipped ops: %d",
+                _skipped_ops,
+            )
 
         if self.data_qubit_idxs is not None:
             dataQubits = [self._ion_mapping[j][0] for j in self.data_qubit_idxs]
@@ -515,7 +678,10 @@ class TrappedIonCompiler(HardwareCompiler):
     def map_qubits(self, circuit: NativeCircuit) -> MappedCircuit:
         """Map logical qubits to physical ions via cluster partitioning.
 
-        Triggers architecture topology building.
+        When ``qec_metadata`` with ≥ 2 block allocations is present in
+        ``circuit.metadata``, automatically switches to **per-block
+        topology building** (``build_topology_per_block``) so that each
+        code block is placed in its own disjoint sub-grid region.
 
         Returns
         -------
@@ -529,7 +695,26 @@ class TrappedIonCompiler(HardwareCompiler):
         )
         data_ions = circuit.metadata.get("data_ions", self._data_ions)
 
-        # Build architecture topology if method exists
+        # ── Detect multi-block gadget experiments ────────────────────
+        qec_metadata = getattr(circuit, 'qec_metadata', None)
+        if qec_metadata is None:
+            qec_metadata = circuit.metadata.get("qec_metadata")
+        qubit_allocation = circuit.metadata.get("qubit_allocation")
+
+        _use_per_block = (
+            qec_metadata is not None
+            and qubit_allocation is not None
+            and hasattr(qec_metadata, 'block_allocations')
+            and len(qec_metadata.block_allocations) >= 2
+            and hasattr(arch, 'build_topology_per_block')
+        )
+
+        if _use_per_block:
+            return self._map_qubits_per_block(
+                circuit, arch, ion_mapping, qec_metadata, qubit_allocation,
+            )
+
+        # ── Standard global topology ────────────────────────────────
         if hasattr(arch, "build_topology"):
             arch.build_topology(measurement_ions, data_ions, ion_mapping)
 
@@ -539,6 +724,122 @@ class TrappedIonCompiler(HardwareCompiler):
             if isinstance(ion, SpectatorIon):
                 continue
             mapping.add_mapping(stim_idx, ion.idx)
+
+        return MappedCircuit(
+            native_circuit=circuit,
+            mapping=mapping,
+            metadata={"ion_mapping": ion_mapping},
+        )
+
+    # ------------------------------------------------------------------
+    # Per-block topology for multi-block gadget experiments
+    # ------------------------------------------------------------------
+
+    def _map_qubits_per_block(
+        self,
+        circuit: NativeCircuit,
+        arch,
+        ion_mapping: dict,
+        qec_metadata,
+        qubit_allocation,
+    ) -> MappedCircuit:
+        """Per-block topology building for multi-block gadgets.
+
+        Mirrors the logic previously in ``compile_gadget_for_animation``:
+        separates ions by block, assigns bridge ancillas, then calls
+        ``arch.build_topology_per_block``.
+        """
+        from .gadget_routing import partition_grid_for_blocks
+
+        k = getattr(self.wise_config, 'k', 2) if self.wise_config else 2
+
+        sub_grids = partition_grid_for_blocks(
+            qec_metadata, qubit_allocation, k=k,
+        )
+
+        block_names = [ba.block_name for ba in qec_metadata.block_allocations]
+
+        # ── Bridge ancilla → block assignment ────────────────────────
+        _bridge_block_map: Dict[int, str] = {}
+        _explicit_bridge_map: Dict[int, list] = getattr(
+            qubit_allocation, 'bridge_connected_blocks', {}
+        ) or {}
+        if hasattr(qubit_allocation, "bridge_ancillas"):
+            for gi, _coord, purpose in qubit_allocation.bridge_ancillas:
+                _assigned: Optional[str] = None
+                if gi in _explicit_bridge_map and _explicit_bridge_map[gi]:
+                    for _cb in _explicit_bridge_map[gi]:
+                        if _cb in block_names:
+                            _assigned = _cb
+                            break
+                if _assigned is None:
+                    # Heuristic: assign bridge ancillas to blocks by
+                    # merge type.  Use first/second block by index —
+                    # works regardless of actual naming convention.
+                    if "zz_merge" in purpose and len(block_names) >= 1:
+                        _assigned = block_names[0]
+                    elif "xx_merge" in purpose and len(block_names) >= 2:
+                        _assigned = block_names[1]
+                if _assigned is None and block_names:
+                    _assigned = block_names[0]
+                if _assigned is not None:
+                    _bridge_block_map[gi] = _assigned
+
+        # ── Separate ions by block ───────────────────────────────────
+        measurement_ions_per_block: Dict[str, list] = {}
+        data_ions_per_block: Dict[str, list] = {}
+        for ba in qec_metadata.block_allocations:
+            m_ions_block, d_ions_block = [], []
+            all_qubits = (
+                set(ba.data_qubits)
+                | set(ba.x_ancilla_qubits)
+                | set(ba.z_ancilla_qubits)
+            )
+            for gi, assigned_bn in _bridge_block_map.items():
+                if assigned_bn == ba.block_name:
+                    all_qubits.add(gi)
+            for q in all_qubits:
+                if q in ion_mapping:
+                    ion, _ = ion_mapping[q]
+                    if ion._label == "M":
+                        m_ions_block.append(ion)
+                    else:
+                        d_ions_block.append(ion)
+            measurement_ions_per_block[ba.block_name] = m_ions_block
+            data_ions_per_block[ba.block_name] = d_ions_block
+
+        # ── Build per-block topology ─────────────────────────────────
+        arch.build_topology_per_block(
+            sub_grids, measurement_ions_per_block,
+            data_ions_per_block, ion_mapping,
+        )
+
+        # ── Update sub_grids.ion_indices with reassigned Ion.idx ─────
+        for ba in qec_metadata.block_allocations:
+            new_ion_indices = []
+            all_qubits = (
+                set(ba.data_qubits)
+                | set(ba.x_ancilla_qubits)
+                | set(ba.z_ancilla_qubits)
+            )
+            for gi, assigned_bn in _bridge_block_map.items():
+                if assigned_bn == ba.block_name:
+                    all_qubits.add(gi)
+            for q in all_qubits:
+                if q in ion_mapping:
+                    ion, _ = ion_mapping[q]
+                    if not isinstance(ion, SpectatorIon):
+                        new_ion_indices.append(ion.idx)
+            sub_grids[ba.block_name].ion_indices = new_ion_indices
+
+        # ── Inject block_sub_grids for ionRoutingGadgetArch ──────────
+        circuit.metadata["block_sub_grids"] = sub_grids
+
+        # ── Build QubitMapping ───────────────────────────────────────
+        mapping = QubitMapping()
+        for stim_idx, (ion, _coords) in ion_mapping.items():
+            if not isinstance(ion, SpectatorIon):
+                mapping.add_mapping(stim_idx, ion.idx)
 
         return MappedCircuit(
             native_circuit=circuit,
@@ -568,6 +869,31 @@ class TrappedIonCompiler(HardwareCompiler):
 
         reconfig_time = 0.0
         _progress_close = None            # might be set below for tqdm cleanup
+        _widget_container = None           # ipywidgets container (notebook)
+
+        def _try_notebook_progress(rc):
+            """Attempt to upgrade rc.progress_callback to ipywidgets.
+
+            Returns (widget_container, progress_close, did_upgrade).
+            On failure or non-notebook environment returns (None, None, False).
+            """
+            try:
+                from .progress_table import (
+                    make_notebook_widget_progress_callback,
+                    _in_notebook,
+                )
+                if _in_notebook():
+                    from IPython.display import display as _ipy_display
+                    container, cb, closer = (
+                        make_notebook_widget_progress_callback("WISE Routing")
+                    )
+                    _ipy_display(container)
+                    rc.progress_callback = cb
+                    return container, closer, True
+            except Exception:
+                pass
+            return None, None, False
+
         if self.is_wise and self.wise_config is not None:
             kwargs = dict(self.routing_kwargs)
             if "routing_config" not in kwargs or kwargs.get("routing_config") is None:
@@ -577,20 +903,30 @@ class TrappedIonCompiler(HardwareCompiler):
                     show_progress=self.show_progress,
                 )
                 rc = kwargs["routing_config"]
+                if self.show_progress and rc is not None and rc.progress_callback is not None:
+                    _widget_container, _progress_close, _ = _try_notebook_progress(rc)
+                    if _progress_close is not None:
+                        rc._progress_close = _progress_close
                 if rc.progress_callback is not None:
                     # Stash the close function so we can clean up later
                     _progress_close = getattr(rc, '_progress_close', None)
             else:
-                # routing_config was pre-provided — inject tqdm if
-                # show_progress is on and no callback was set
+                # routing_config was pre-provided — upgrade progress to
+                # ipywidgets in notebooks (even if tqdm was pre-created).
                 rc = kwargs["routing_config"]
-                if self.show_progress and rc is not None and rc.progress_callback is None:
-                    _progress_cb, _progress_close = make_triple_tqdm_progress_callback(
-                        round_desc="MS Rounds",
-                        patch_desc="Patches",
-                        sat_desc="SAT Configs",
+                if self.show_progress and rc is not None:
+                    _widget_container, _progress_close, _did_widget = (
+                        _try_notebook_progress(rc)
                     )
-                    rc.progress_callback = _progress_cb
+                    if not _did_widget and rc.progress_callback is None:
+                        # Terminal fallback — create tqdm triple bars
+                        _progress_cb, _progress_close = make_triple_tqdm_progress_callback(
+                            round_desc="MS Rounds",
+                            patch_desc="Patches",
+                            sat_desc="SAT Configs",
+                        )
+                        rc.progress_callback = _progress_cb
+                    rc._progress_close = _progress_close
             # Auto-populate top-level ionRoutingWISEArch kwargs from
             # routing_config so callers only need to set values once.
             rc = kwargs.get("routing_config")
@@ -610,9 +946,79 @@ class TrappedIonCompiler(HardwareCompiler):
                 _toMoveOps = circuit.native_circuit.metadata.get("toMoveOps")
                 if _toMoveOps is not None:
                     kwargs["toMoveOps"] = _toMoveOps
-            allOps, route_barriers, reconfig_time = ionRoutingWISEArch(
-                arch, self.wise_config, instructions, **kwargs
+
+            # Detect gadget experiments and dispatch to phase-aware routing
+            _qec_meta = circuit.native_circuit.metadata.get("qec_metadata")
+            _is_gadget = (
+                _qec_meta is not None
+                and hasattr(_qec_meta, 'is_gadget')
+                and _qec_meta.is_gadget
             )
+
+            if _is_gadget:
+                _gadget = circuit.native_circuit.metadata.get("gadget")
+                _qubit_alloc = circuit.native_circuit.metadata.get("qubit_allocation")
+                _block_sub_grids = circuit.native_circuit.metadata.get("block_sub_grids")
+
+                # ---- Fix 4: Build real qubit→ion mapping ----
+                # The analytics path assumes ion.idx == qubit_idx + 1,
+                # but compact clustering may assign different indices.
+                # Build the actual mapping from the compiler's ion
+                # assignment and pass it to ionRoutingGadgetArch so
+                # cross-validation (Fix 1) uses the correct index
+                # space.
+                _ion_map = circuit.native_circuit.metadata.get(
+                    "ion_mapping", self._ion_mapping
+                )
+                _compiler_q2i = {
+                    q: ion.idx
+                    for q, (ion, _) in _ion_map.items()
+                    if not isinstance(ion, SpectatorIon)
+                }
+
+                # ---- Fix 2: Build per-toMoveOps phase tags ----
+                # Each tag is the *filtered* phase index (init/measure
+                # excluded) that the corresponding toMoveOps entry
+                # belongs to.  ionRoutingGadgetArch uses these to
+                # validate greedy-extraction consistency and skip
+                # reordering when tags are available.
+                _toMove_phase_tags = None
+                _phases_filtered = [
+                    p for p in _qec_meta.phases
+                    if getattr(p, 'phase_type', '') not in
+                       ('init', 'measure', '')
+                ]
+                if _phases_filtered:
+                    _toMove_phase_tags = []
+                    for _ph_i, _ph in enumerate(_phases_filtered):
+                        _cnt = getattr(_ph, 'ms_pair_count', 0)
+                        _toMove_phase_tags.extend([_ph_i] * _cnt)
+
+                # M10: Assert that toMoveOps and _toMove_phase_tags have
+                # matching lengths — both represent CX instructions (buckets),
+                # NOT individual ion pairs within each bucket.
+                if _toMove_phase_tags is not None and _toMoveOps:
+                    _expected_len = len(_toMoveOps)
+                    if len(_toMove_phase_tags) != _expected_len:
+                        logger.warning(
+                            "toMove_phase_tags length %d != toMoveOps buckets %d",
+                            len(_toMove_phase_tags), _expected_len,
+                        )
+
+                allOps, route_barriers, reconfig_time = ionRoutingGadgetArch(
+                    arch, self.wise_config, instructions,
+                    qec_metadata=_qec_meta,
+                    gadget=_gadget,
+                    qubit_allocation=_qubit_alloc,
+                    block_sub_grids=_block_sub_grids,
+                    toMove_phase_tags=_toMove_phase_tags,
+                    _compiler_q2i=_compiler_q2i,
+                    **kwargs
+                )
+            else:
+                allOps, route_barriers, reconfig_time = ionRoutingWISEArch(
+                    arch, self.wise_config, instructions, **kwargs
+                )
             # Close tqdm bar if we created one
             if _progress_close is not None:
                 _progress_close()
@@ -640,8 +1046,16 @@ class TrappedIonCompiler(HardwareCompiler):
             },
         )
 
-    def schedule(self, circuit: RoutedCircuit) -> ScheduledCircuit:
+    def schedule(self, circuit: RoutedCircuit, epoch_mode: str = "edge") -> ScheduledCircuit:
         """Schedule operations into parallel batches.
+
+        Parameters
+        ----------
+        epoch_mode : str
+            How tick-epoch boundaries constrain scheduling:
+            ``"edge"`` (default) — same-ion epoch edges only,
+            ``"barrier"`` — full barriers between all epoch groups,
+            ``"hybrid"`` — barriers only at measurement/reset epochs.
 
         Returns
         -------
@@ -652,13 +1066,38 @@ class TrappedIonCompiler(HardwareCompiler):
         is_wise = circuit.metadata.get("is_wise", False)
         allOps = circuit.operations
 
+        # ── Pre-scheduling: reorder rotations for better batching ──
+        # Rotations between MS rounds are grouped by type (all RX before
+        # all RY) to maximise same-type parallel batches on WISE.
+        # Rotations can cross resets/measurements on different qubits
+        # but cannot cross MS-round boundaries.
+        if is_wise:
+            allOps = reorder_rotations_for_batching(list(allOps))
+            # Rebuild barriers at type-transition boundaries after
+            # reordering.  The original barrier positions (computed on
+            # the pre-reorder sequence) become stale when ops move.
+            if barriers:
+                new_barriers: list[int] = []
+                for i in range(1, len(allOps)):
+                    prev_op = allOps[i - 1]
+                    curr_op = allOps[i]
+                    # Barrier at MS / multi-qubit gate boundaries
+                    if isinstance(curr_op, TwoQubitMSGate) or isinstance(prev_op, TwoQubitMSGate):
+                        new_barriers.append(i)
+                    # Barrier at transport (non-QubitOperation) boundaries
+                    elif not isinstance(curr_op, QubitOperation) or not isinstance(prev_op, QubitOperation):
+                        new_barriers.append(i)
+                barriers = sorted(set(new_barriers))
+
         if barriers:
             parallelOpsMap = paralleliseOperationsWithBarriers(
-                allOps, barriers, isWiseArch=is_wise
+                allOps, barriers, isWiseArch=is_wise,
+                epoch_mode=epoch_mode,
             )
         else:
             parallelOpsMap = paralleliseOperations(
-                allOps, isWISEArch=is_wise
+                allOps, isWISEArch=is_wise,
+                epoch_mode=epoch_mode,
             )
 
         # Convert to ScheduledCircuit format

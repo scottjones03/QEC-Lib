@@ -343,6 +343,24 @@ class DualCode(CSSCode):
         """
         return self.base_code
 
+    # ------------------------------------------------------------------
+    # Boundary API — delegate to base code with X↔Z swap
+    # ------------------------------------------------------------------
+
+    def has_physical_boundaries(self) -> bool:
+        """Delegate to the base code."""
+        return self.base_code.has_physical_boundaries()
+
+    def get_boundary_type(self, edge: str) -> str:
+        """Swap smooth↔rough relative to the base code.
+
+        Dualisation exchanges X- and Z-type operators, so a rough
+        boundary of the base code becomes a smooth boundary of the dual
+        and vice versa.
+        """
+        base_type = self.base_code.get_boundary_type(edge)
+        return "smooth" if base_type == "rough" else "rough"
+
 
 class SelfDualCode(CSSCode):
     """
