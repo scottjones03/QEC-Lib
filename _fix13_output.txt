@@ -1,0 +1,17 @@
+============================================================
+Fix 13 Verification: MS Gate Scheduling & Dropping
+============================================================
+
+Phases: 9
+  [0] 'init'  rounds=0  ms_pairs=0
+  [1] 'stabilizer_round_pre'  rounds=2  ms_pairs=8
+  [2] 'gadget'  rounds=4  ms_pairs=12
+  [3] 'gadget'  rounds=0  ms_pairs=0
+  [4] 'gadget'  rounds=4  ms_pairs=12
+  [5] 'gadget'  rounds=0  ms_pairs=0
+  [6] 'gadget'  rounds=0  ms_pairs=0
+  [7] 'stabilizer_round_post'  rounds=2  ms_pairs=8
+  [8] 'measure'  rounds=0  ms_pairs=0
+Total expected MS pairs from metadata: 40
+
+Compiling with subgridsize=(4,3,0)...

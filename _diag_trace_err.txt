@@ -1,0 +1,5 @@
+Traceback (most recent call last):
+  File "/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/_diag_trace.py", line 68, in <module>
+    initial_layout = np.array(arch.getArrangement())
+                              ^^^^^^^^^^^^^^^^^^^
+AttributeError: 'WISEArchitecture' object has no attribute 'getArrangement'. Did you mean: 'resetArrangement'?

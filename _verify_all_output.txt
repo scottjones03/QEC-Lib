@@ -1,0 +1,2471 @@
+============================================================
+VERIFICATION: Fix A + Fix B + Fix C
+============================================================
+
+Ideal circuit: 306 instructions, 25 qubits
+Phases: 9
+
+Compiling CSS Surgery d=2 with lookahead=1...
+MS Rounds:   0%|          | 0/40 [00:00<?, ?rnd/s]MS Rounds:   0%|          | 0/40 [00:00<?, ?rnd/s, Processing MS round 0/40]MS Rounds:   0%|          | 0/40 [00:00<?, ?rnd/s, Processing MS round 0/40]
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s][A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s, Cycle 1: 0/2 patches][A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s, Cycle 1: 0/2 patches][A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s][A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s, Starting SAT pool with 8 workers][A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s, Starting SAT pool with 8 workers][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:00<00:11,  1.27cfg/s, 1/15 configs done]       [A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:00<00:11,  1.24cfg/s, 1/15 configs done][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:01<00:09,  1.42cfg/s, 2/15 configs done][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:01<00:09,  1.37cfg/s, 2/15 configs done][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:01<00:06,  1.97cfg/s, 3/15 configs done][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:01<00:06,  1.97cfg/s, 3/15 configs done][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:10<00:28,  2.61s/cfg, 4/15 configs done][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:10<00:28,  2.61s/cfg, 4/15 configs done][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:12<00:25,  2.55s/cfg, 5/15 configs done][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:12<00:25,  2.55s/cfg, 5/15 configs done][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:20<00:30,  3.36s/cfg, 6/15 configs done][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:20<00:30,  3.40s/cfg, 6/15 configs done][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:21<00:24,  3.03s/cfg, 7/15 configs done][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:21<00:24,  3.03s/cfg, 7/15 configs done][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:21<00:19,  2.73s/cfg, 8/15 configs done][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:21<00:19,  2.73s/cfg, 8/15 configs done][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:24<00:16,  2.76s/cfg, 9/15 configs done][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:24<00:16,  2.76s/cfg, 9/15 configs done][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:25<00:12,  2.60s/cfg, 10/15 configs done][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:25<00:12,  2.60s/cfg, 10/15 configs done][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:26<00:09,  2.39s/cfg, 11/15 configs done][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:26<00:09,  2.39s/cfg, 11/15 configs done][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:27<00:06,  2.28s/cfg, 12/15 configs done][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:27<00:06,  2.29s/cfg, 12/15 configs done][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:28<00:04,  2.17s/cfg, 13/15 configs done][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:28<00:04,  2.17s/cfg, 13/15 configs done][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:28<00:02,  2.05s/cfg, 14/15 configs done][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:28<00:02,  2.05s/cfg, 14/15 configs done][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:28<00:00,  1.92s/cfg, 15/15 configs done][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:28<00:00,  1.92s/cfg, 15/15 configs done][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:28<06:43, 28.80s/cfg, Config 0 done: P_max=15, sat=True][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:28<06:43, 28.80s/cfg, Config 0 done: P_max=15, sat=True][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:28<03:07, 14.40s/cfg, Config 1 done: P_max=1, sat=False][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:28<03:07, 14.40s/cfg, Config 1 done: P_max=1, sat=False][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:28<01:55,  9.60s/cfg, Config 2 done: P_max=14, sat=True][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:28<01:55,  9.60s/cfg, Config 2 done: P_max=14, sat=True][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:28<01:19,  7.20s/cfg, Config 3 done: P_max=2, sat=False][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:28<01:19,  7.20s/cfg, Config 3 done: P_max=2, sat=False][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:28<00:57,  5.76s/cfg, Config 4 done: P_max=13, sat=True][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:28<00:57,  5.76s/cfg, Config 4 done: P_max=13, sat=True][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:28<00:43,  4.80s/cfg, Config 5 done: P_max=3, sat=False][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:28<00:43,  4.80s/cfg, Config 5 done: P_max=3, sat=False][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:28<00:32,  4.11s/cfg, Config 6 done: P_max=12, sat=True][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:28<00:32,  4.11s/cfg, Config 6 done: P_max=12, sat=True][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:28<00:25,  3.60s/cfg, Config 7 done: P_max=4, sat=True] [A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:28<00:25,  3.60s/cfg, Config 7 done: P_max=4, sat=True][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:28<00:19,  3.20s/cfg, Config 8 done: P_max=11, sat=True][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:28<00:19,  3.20s/cfg, Config 8 done: P_max=11, sat=True][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:28<00:14,  2.88s/cfg, Config 9 done: P_max=5, sat=True][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:28<00:14,  2.88s/cfg, Config 9 done: P_max=5, sat=True][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:28<00:10,  2.62s/cfg, Config 10 done: P_max=10, sat=True][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:28<00:10,  2.62s/cfg, Config 10 done: P_max=10, sat=True][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:28<00:07,  2.40s/cfg, Config 11 done: P_max=6, sat=True] [A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:28<00:07,  2.40s/cfg, Config 11 done: P_max=6, sat=True][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:28<00:04,  2.22s/cfg, Config 12 done: P_max=9, sat=True][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:28<00:04,  2.22s/cfg, Config 12 done: P_max=9, sat=True][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:28<00:02,  2.06s/cfg, Config 13 done: P_max=7, sat=True][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:28<00:02,  2.06s/cfg, Config 13 done: P_max=7, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:28<00:00,  1.92s/cfg, Config 14 done: P_max=8, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:28<00:00,  1.92s/cfg, Config 14 done: P_max=8, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:28<00:00,  1.92s/cfg, SAT pool complete (15 results from 15 configs)][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:28<00:00,  1.92s/cfg, SAT pool complete (15 results from 15 configs)][A[A
+Patches:  50%|█████     | 1/2 [00:29<00:29, 29.19s/pat, Patch 1/2 (0 gates left)][A
+Patches:  50%|█████     | 1/2 [00:29<00:29, 29.19s/pat, Patch 1/2 (0 gates left)][AMS Rounds:   2%|▎         | 1/40 [00:29<18:58, 29.19s/rnd, Processing MS round 1/40]MS Rounds:   2%|▎         | 1/40 [00:29<18:58, 29.19s/rnd, Processing MS round 1/40]
+                                                                                 [A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s][A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s, Cycle 1: 0/2 patches][A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s, Cycle 1: 0/2 patches][A
+
+                                                                                                             [A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s][A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s, Starting SAT pool with 8 workers][A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s, Starting SAT pool with 8 workers][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:00<00:12,  1.12cfg/s, 1/15 configs done]       [A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:00<00:13,  1.06cfg/s, 1/15 configs done][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:01<00:06,  1.87cfg/s, 2/15 configs done][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:01<00:06,  1.87cfg/s, 2/15 configs done][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:01<00:06,  1.88cfg/s, 3/15 configs done][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:01<00:06,  1.88cfg/s, 3/15 configs done][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:14<00:39,  3.56s/cfg, 4/15 configs done][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:14<00:39,  3.56s/cfg, 4/15 configs done][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:20<00:40,  4.02s/cfg, 5/15 configs done][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:20<00:40,  4.02s/cfg, 5/15 configs done][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:23<00:35,  3.95s/cfg, 6/15 configs done][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:24<00:36,  4.05s/cfg, 6/15 configs done][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:38<00:43,  5.47s/cfg, 7/15 configs done][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:38<00:44,  5.51s/cfg, 7/15 configs done][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:41<00:35,  5.14s/cfg, 8/15 configs done][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:41<00:35,  5.14s/cfg, 8/15 configs done][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:41<00:27,  4.59s/cfg, 9/15 configs done][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:41<00:27,  4.59s/cfg, 9/15 configs done][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:41<00:20,  4.17s/cfg, 10/15 configs done][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:41<00:20,  4.17s/cfg, 10/15 configs done][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:43<00:15,  3.93s/cfg, 11/15 configs done][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:43<00:15,  3.93s/cfg, 11/15 configs done][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:43<00:10,  3.65s/cfg, 12/15 configs done][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:43<00:10,  3.65s/cfg, 12/15 configs done][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:44<00:06,  3.42s/cfg, 13/15 configs done][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:44<00:06,  3.42s/cfg, 13/15 configs done][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:44<00:03,  3.19s/cfg, 14/15 configs done][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:44<00:03,  3.19s/cfg, 14/15 configs done][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:45<00:00,  3.02s/cfg, 15/15 configs done][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:45<00:00,  3.02s/cfg, 15/15 configs done][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:45<10:33, 45.23s/cfg, Config 0 done: P_max=15, sat=True][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:45<10:33, 45.23s/cfg, Config 0 done: P_max=15, sat=True][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:45<04:54, 22.62s/cfg, Config 1 done: P_max=1, sat=False][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:45<04:54, 22.62s/cfg, Config 1 done: P_max=1, sat=False][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:45<03:00, 15.08s/cfg, Config 2 done: P_max=14, sat=True][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:45<03:00, 15.08s/cfg, Config 2 done: P_max=14, sat=True][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:45<02:04, 11.31s/cfg, Config 3 done: P_max=2, sat=False][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:45<02:04, 11.31s/cfg, Config 3 done: P_max=2, sat=False][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:45<01:30,  9.05s/cfg, Config 4 done: P_max=13, sat=True][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:45<01:30,  9.05s/cfg, Config 4 done: P_max=13, sat=True][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:45<01:07,  7.54s/cfg, Config 5 done: P_max=3, sat=False][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:45<01:07,  7.54s/cfg, Config 5 done: P_max=3, sat=False][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:45<00:51,  6.46s/cfg, Config 6 done: P_max=12, sat=True][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:45<00:51,  6.46s/cfg, Config 6 done: P_max=12, sat=True][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:45<00:39,  5.65s/cfg, Config 7 done: P_max=4, sat=True] [A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:45<00:39,  5.65s/cfg, Config 7 done: P_max=4, sat=True][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:45<00:30,  5.03s/cfg, Config 8 done: P_max=11, sat=True][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:45<00:30,  5.03s/cfg, Config 8 done: P_max=11, sat=True][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:45<00:22,  4.52s/cfg, Config 9 done: P_max=5, sat=True][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:45<00:22,  4.52s/cfg, Config 9 done: P_max=5, sat=True][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:45<00:16,  4.11s/cfg, Config 10 done: P_max=10, sat=True][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:45<00:16,  4.11s/cfg, Config 10 done: P_max=10, sat=True][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:45<00:11,  3.77s/cfg, Config 11 done: P_max=6, sat=True] [A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:45<00:11,  3.77s/cfg, Config 11 done: P_max=6, sat=True][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:45<00:06,  3.48s/cfg, Config 12 done: P_max=9, sat=True][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:45<00:06,  3.48s/cfg, Config 12 done: P_max=9, sat=True][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:45<00:03,  3.23s/cfg, Config 13 done: P_max=7, sat=True][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:45<00:03,  3.23s/cfg, Config 13 done: P_max=7, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:45<00:00,  3.02s/cfg, Config 14 done: P_max=8, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:45<00:00,  3.02s/cfg, Config 14 done: P_max=8, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:45<00:00,  3.02s/cfg, SAT pool complete (15 results from 15 configs)][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:45<00:00,  3.02s/cfg, SAT pool complete (15 results from 15 configs)][A[A
+Patches:  50%|█████     | 1/2 [00:45<00:45, 45.59s/pat, Patch 1/2 (0 gates left)][A
+Patches:  50%|█████     | 1/2 [00:45<00:45, 45.59s/pat, Patch 1/2 (0 gates left)][AMS Rounds:   5%|▌         | 2/40 [01:14<23:40, 37.39s/rnd, Processing MS round 2/40]MS Rounds:   5%|▌         | 2/40 [01:14<23:40, 37.39s/rnd, Processing MS round 2/40]
+                                                                                 [A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s][A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s, Cycle 1: 0/2 patches][A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s, Cycle 1: 0/2 patches][A
+
+                                                                                                             [A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s][A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s, Starting SAT pool with 8 workers][A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s, Starting SAT pool with 8 workers][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:00<00:07,  1.96cfg/s, 1/15 configs done]       [A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:00<00:07,  1.96cfg/s, 1/15 configs done][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:00<00:05,  2.39cfg/s, 2/15 configs done][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:00<00:05,  2.39cfg/s, 2/15 configs done][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:01<00:06,  1.82cfg/s, 3/15 configs done][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:01<00:06,  1.72cfg/s, 3/15 configs done][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:09<00:25,  2.31s/cfg, 4/15 configs done][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:09<00:25,  2.32s/cfg, 4/15 configs done][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:17<00:34,  3.45s/cfg, 5/15 configs done][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:17<00:34,  3.47s/cfg, 5/15 configs done][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:21<00:32,  3.66s/cfg, 6/15 configs done][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:21<00:32,  3.66s/cfg, 6/15 configs done][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:37<00:42,  5.29s/cfg, 7/15 configs done][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:37<00:42,  5.29s/cfg, 7/15 configs done][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:37<00:33,  4.73s/cfg, 8/15 configs done][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:37<00:33,  4.73s/cfg, 8/15 configs done][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:37<00:18,  3.80s/cfg, 10/15 configs done][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:38<00:19,  3.82s/cfg, 10/15 configs done][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:39<00:14,  3.63s/cfg, 11/15 configs done][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:39<00:14,  3.63s/cfg, 11/15 configs done][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:40<00:10,  3.38s/cfg, 12/15 configs done][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:40<00:10,  3.38s/cfg, 12/15 configs done][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:41<00:02,  2.94s/cfg, 14/15 configs done][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:41<00:02,  2.94s/cfg, 14/15 configs done][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:41<00:00,  2.78s/cfg, 15/15 configs done][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:41<00:00,  2.78s/cfg, 15/15 configs done][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:41<09:44, 41.73s/cfg, Config 0 done: P_max=15, sat=True][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:41<09:44, 41.73s/cfg, Config 0 done: P_max=15, sat=True][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:41<04:31, 20.87s/cfg, Config 1 done: P_max=1, sat=False][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:41<04:31, 20.87s/cfg, Config 1 done: P_max=1, sat=False][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:41<02:46, 13.91s/cfg, Config 2 done: P_max=14, sat=True][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:41<02:46, 13.91s/cfg, Config 2 done: P_max=14, sat=True][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:41<01:54, 10.43s/cfg, Config 3 done: P_max=2, sat=False][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:41<01:54, 10.43s/cfg, Config 3 done: P_max=2, sat=False][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:41<01:23,  8.35s/cfg, Config 4 done: P_max=13, sat=True][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:41<01:23,  8.35s/cfg, Config 4 done: P_max=13, sat=True][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:41<01:02,  6.96s/cfg, Config 5 done: P_max=3, sat=False][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:41<01:02,  6.96s/cfg, Config 5 done: P_max=3, sat=False][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:41<00:47,  5.96s/cfg, Config 6 done: P_max=12, sat=True][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:41<00:47,  5.96s/cfg, Config 6 done: P_max=12, sat=True][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:41<00:36,  5.22s/cfg, Config 7 done: P_max=4, sat=True] [A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:41<00:36,  5.22s/cfg, Config 7 done: P_max=4, sat=True][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:41<00:27,  4.64s/cfg, Config 8 done: P_max=11, sat=True][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:41<00:27,  4.64s/cfg, Config 8 done: P_max=11, sat=True][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:41<00:20,  4.17s/cfg, Config 9 done: P_max=5, sat=True][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:41<00:20,  4.17s/cfg, Config 9 done: P_max=5, sat=True][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:41<00:15,  3.79s/cfg, Config 10 done: P_max=10, sat=True][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:41<00:15,  3.79s/cfg, Config 10 done: P_max=10, sat=True][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:41<00:10,  3.48s/cfg, Config 11 done: P_max=6, sat=True] [A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:41<00:10,  3.48s/cfg, Config 11 done: P_max=6, sat=True][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:41<00:06,  3.21s/cfg, Config 12 done: P_max=9, sat=True][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:41<00:06,  3.21s/cfg, Config 12 done: P_max=9, sat=True][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:41<00:02,  2.98s/cfg, Config 13 done: P_max=7, sat=True][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:41<00:02,  2.98s/cfg, Config 13 done: P_max=7, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:41<00:00,  2.78s/cfg, Config 14 done: P_max=8, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:41<00:00,  2.78s/cfg, Config 14 done: P_max=8, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:41<00:00,  2.78s/cfg, SAT pool complete (15 results from 15 configs)][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:41<00:00,  2.78s/cfg, SAT pool complete (15 results from 15 configs)][A[A
+Patches:  50%|█████     | 1/2 [00:42<00:42, 42.10s/pat, Patch 1/2 (0 gates left)][A
+Patches:  50%|█████     | 1/2 [00:42<00:42, 42.10s/pat, Patch 1/2 (0 gates left)][AMS Rounds:   8%|▊         | 3/40 [01:56<24:01, 38.96s/rnd, Processing MS round 3/40]MS Rounds:   8%|▊         | 3/40 [01:56<24:01, 38.96s/rnd, Processing MS round 3/40]
+                                                                                 [A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s][A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s, Cycle 1: 0/2 patches][A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s, Cycle 1: 0/2 patches][A
+
+                                                                                                             [A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s][A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s, Starting SAT pool with 8 workers][A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s, Starting SAT pool with 8 workers][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:00<00:10,  1.37cfg/s, 1/15 configs done]       [A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:00<00:10,  1.37cfg/s, 1/15 configs done][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:01<00:07,  1.73cfg/s, 2/15 configs done][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:01<00:07,  1.73cfg/s, 2/15 configs done][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:01<00:06,  1.93cfg/s, 3/15 configs done][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:01<00:06,  1.82cfg/s, 3/15 configs done][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:20<00:57,  5.22s/cfg, 4/15 configs done][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:20<00:57,  5.22s/cfg, 4/15 configs done][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:25<00:51,  5.16s/cfg, 5/15 configs done][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:25<00:51,  5.16s/cfg, 5/15 configs done][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:27<00:40,  4.50s/cfg, 6/15 configs done][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:27<00:40,  4.51s/cfg, 6/15 configs done][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:36<00:41,  5.23s/cfg, 7/15 configs done][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:36<00:41,  5.23s/cfg, 7/15 configs done][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:36<00:32,  4.59s/cfg, 8/15 configs done][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:36<00:32,  4.59s/cfg, 8/15 configs done][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:36<00:24,  4.09s/cfg, 9/15 configs done][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:36<00:24,  4.09s/cfg, 9/15 configs done][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:38<00:19,  3.81s/cfg, 10/15 configs done][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:38<00:19,  3.81s/cfg, 10/15 configs done][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:39<00:09,  3.27s/cfg, 12/15 configs done][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:39<00:09,  3.27s/cfg, 12/15 configs done][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:39<00:06,  3.08s/cfg, 13/15 configs done][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:39<00:06,  3.08s/cfg, 13/15 configs done][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:40<00:02,  2.91s/cfg, 14/15 configs done][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:40<00:02,  2.91s/cfg, 14/15 configs done][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:41<00:00,  2.74s/cfg, 15/15 configs done][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:41<00:00,  2.74s/cfg, 15/15 configs done][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:41<09:34, 41.06s/cfg, Config 0 done: P_max=15, sat=True][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:41<09:34, 41.06s/cfg, Config 0 done: P_max=15, sat=True][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:41<04:26, 20.53s/cfg, Config 1 done: P_max=1, sat=False][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:41<04:26, 20.53s/cfg, Config 1 done: P_max=1, sat=False][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:41<02:44, 13.69s/cfg, Config 2 done: P_max=14, sat=True][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:41<02:44, 13.69s/cfg, Config 2 done: P_max=14, sat=True][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:41<01:52, 10.26s/cfg, Config 3 done: P_max=2, sat=False][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:41<01:52, 10.26s/cfg, Config 3 done: P_max=2, sat=False][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:41<01:22,  8.21s/cfg, Config 4 done: P_max=13, sat=True][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:41<01:22,  8.21s/cfg, Config 4 done: P_max=13, sat=True][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:41<01:01,  6.84s/cfg, Config 5 done: P_max=3, sat=False][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:41<01:01,  6.84s/cfg, Config 5 done: P_max=3, sat=False][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:41<00:46,  5.87s/cfg, Config 6 done: P_max=12, sat=True][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:41<00:46,  5.87s/cfg, Config 6 done: P_max=12, sat=True][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:41<00:35,  5.13s/cfg, Config 7 done: P_max=4, sat=True] [A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:41<00:35,  5.13s/cfg, Config 7 done: P_max=4, sat=True][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:41<00:27,  4.56s/cfg, Config 8 done: P_max=11, sat=True][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:41<00:27,  4.56s/cfg, Config 8 done: P_max=11, sat=True][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:41<00:20,  4.11s/cfg, Config 9 done: P_max=5, sat=True][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:41<00:20,  4.11s/cfg, Config 9 done: P_max=5, sat=True][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:41<00:14,  3.73s/cfg, Config 10 done: P_max=10, sat=True][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:41<00:14,  3.73s/cfg, Config 10 done: P_max=10, sat=True][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:41<00:10,  3.42s/cfg, Config 11 done: P_max=6, sat=True] [A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:41<00:10,  3.42s/cfg, Config 11 done: P_max=6, sat=True][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:41<00:06,  3.16s/cfg, Config 12 done: P_max=9, sat=True][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:41<00:06,  3.16s/cfg, Config 12 done: P_max=9, sat=True][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:41<00:02,  2.93s/cfg, Config 13 done: P_max=7, sat=True][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:41<00:02,  2.93s/cfg, Config 13 done: P_max=7, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:41<00:00,  2.74s/cfg, Config 14 done: P_max=8, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:41<00:00,  2.74s/cfg, Config 14 done: P_max=8, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:41<00:00,  2.74s/cfg, SAT pool complete (15 results from 15 configs)][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:41<00:00,  2.74s/cfg, SAT pool complete (15 results from 15 configs)][A[A
+Patches:  50%|█████     | 1/2 [00:41<00:41, 41.45s/pat, Patch 1/2 (0 gates left)][A
+Patches:  50%|█████     | 1/2 [00:41<00:41, 41.45s/pat, Patch 1/2 (0 gates left)][AMS Rounds:  10%|█         | 4/40 [02:38<23:44, 39.58s/rnd, Processing MS round 4/40]MS Rounds:  10%|█         | 4/40 [02:38<23:44, 39.58s/rnd, Processing MS round 4/40]
+                                                                                 [AMS Rounds:  12%|█▎        | 5/40 [02:38<18:28, 31.67s/rnd, Processing MS round 5/40]MS Rounds:  12%|█▎        | 5/40 [02:38<18:28, 31.67s/rnd, Processing MS round 5/40]MS Rounds:  15%|█▌        | 6/40 [02:38<14:57, 26.39s/rnd, Processing MS round 6/40]MS Rounds:  15%|█▌        | 6/40 [02:38<14:57, 26.39s/rnd, Processing MS round 6/40]MS Rounds:  18%|█▊        | 7/40 [02:38<12:26, 22.62s/rnd, Processing MS round 7/40]MS Rounds:  18%|█▊        | 7/40 [02:38<12:26, 22.62s/rnd, Processing MS round 7/40]MS Rounds:  20%|██        | 8/40 [02:38<10:33, 19.79s/rnd, Processing MS round 8/40]MS Rounds:  20%|██        | 8/40 [02:38<10:33, 19.79s/rnd, Processing MS round 8/40]MS Rounds:  22%|██▎       | 9/40 [02:38<09:05, 17.59s/rnd, Processing MS round 9/40]MS Rounds:  22%|██▎       | 9/40 [02:38<09:05, 17.59s/rnd, Processing MS round 9/40]MS Rounds:  25%|██▌       | 10/40 [02:38<07:54, 15.83s/rnd, Processing MS round 10/40]MS Rounds:  25%|██▌       | 10/40 [02:38<07:54, 15.83s/rnd, Processing MS round 10/40]MS Rounds:  28%|██▊       | 11/40 [02:38<06:57, 14.39s/rnd, Processing MS round 11/40]MS Rounds:  28%|██▊       | 11/40 [02:38<06:57, 14.39s/rnd, Processing MS round 11/40]MS Rounds:  30%|███       | 12/40 [02:38<06:09, 13.19s/rnd, Processing MS round 12/40]MS Rounds:  30%|███       | 12/40 [02:38<06:09, 13.19s/rnd, Processing MS round 12/40]
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s][A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s, Cycle 1: 0/2 patches][A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s, Cycle 1: 0/2 patches][A
+
+                                                                                                             [A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s][A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s, Starting SAT pool with 8 workers][A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s, Starting SAT pool with 8 workers][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:00<00:12,  1.09cfg/s, 1/15 configs done]       [A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:00<00:12,  1.09cfg/s, 1/15 configs done][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:01<00:08,  1.62cfg/s, 2/15 configs done][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:01<00:08,  1.54cfg/s, 2/15 configs done][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:01<00:06,  1.91cfg/s, 3/15 configs done][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:01<00:06,  1.91cfg/s, 3/15 configs done][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:05<00:13,  1.25s/cfg, 4/15 configs done][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:05<00:13,  1.26s/cfg, 4/15 configs done][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:07<00:15,  1.51s/cfg, 5/15 configs done][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:07<00:15,  1.52s/cfg, 5/15 configs done][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:11<00:17,  1.92s/cfg, 6/15 configs done][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:11<00:17,  1.92s/cfg, 6/15 configs done][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:14<00:17,  2.13s/cfg, 7/15 configs done][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:15<00:17,  2.14s/cfg, 7/15 configs done][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:15<00:13,  1.89s/cfg, 8/15 configs done][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:15<00:13,  1.89s/cfg, 8/15 configs done][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:15<00:10,  1.73s/cfg, 9/15 configs done][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:15<00:10,  1.73s/cfg, 9/15 configs done][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:15<00:07,  1.60s/cfg, 10/15 configs done][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:15<00:07,  1.60s/cfg, 10/15 configs done][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:17<00:06,  1.64s/cfg, 11/15 configs done][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:18<00:06,  1.64s/cfg, 11/15 configs done][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:18<00:01,  1.35s/cfg, 14/15 configs done][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:18<00:01,  1.35s/cfg, 14/15 configs done][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:19<00:00,  1.27s/cfg, 15/15 configs done][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:19<00:00,  1.27s/cfg, 15/15 configs done][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:19<04:27, 19.10s/cfg, Config 0 done: P_max=15, sat=True][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:19<04:27, 19.10s/cfg, Config 0 done: P_max=15, sat=True][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:19<02:04,  9.55s/cfg, Config 1 done: P_max=1, sat=False][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:19<02:04,  9.55s/cfg, Config 1 done: P_max=1, sat=False][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:19<01:16,  6.37s/cfg, Config 2 done: P_max=14, sat=True][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:19<01:16,  6.37s/cfg, Config 2 done: P_max=14, sat=True][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:19<00:52,  4.77s/cfg, Config 3 done: P_max=2, sat=False][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:19<00:52,  4.77s/cfg, Config 3 done: P_max=2, sat=False][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:19<00:38,  3.82s/cfg, Config 4 done: P_max=13, sat=True][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:19<00:38,  3.82s/cfg, Config 4 done: P_max=13, sat=True][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:19<00:28,  3.18s/cfg, Config 5 done: P_max=3, sat=False][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:19<00:28,  3.18s/cfg, Config 5 done: P_max=3, sat=False][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:19<00:21,  2.73s/cfg, Config 6 done: P_max=12, sat=True][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:19<00:21,  2.73s/cfg, Config 6 done: P_max=12, sat=True][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:19<00:16,  2.39s/cfg, Config 7 done: P_max=4, sat=True] [A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:19<00:16,  2.39s/cfg, Config 7 done: P_max=4, sat=True][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:19<00:12,  2.12s/cfg, Config 8 done: P_max=11, sat=True][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:19<00:12,  2.12s/cfg, Config 8 done: P_max=11, sat=True][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:19<00:09,  1.91s/cfg, Config 9 done: P_max=5, sat=True][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:19<00:09,  1.91s/cfg, Config 9 done: P_max=5, sat=True][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:19<00:06,  1.74s/cfg, Config 10 done: P_max=10, sat=True][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:19<00:06,  1.74s/cfg, Config 10 done: P_max=10, sat=True][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:19<00:04,  1.59s/cfg, Config 11 done: P_max=6, sat=True] [A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:19<00:04,  1.59s/cfg, Config 11 done: P_max=6, sat=True][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:19<00:02,  1.47s/cfg, Config 12 done: P_max=9, sat=True][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:19<00:02,  1.47s/cfg, Config 12 done: P_max=9, sat=True][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:19<00:01,  1.36s/cfg, Config 13 done: P_max=7, sat=True][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:19<00:01,  1.36s/cfg, Config 13 done: P_max=7, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:19<00:00,  1.27s/cfg, Config 14 done: P_max=8, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:19<00:00,  1.27s/cfg, Config 14 done: P_max=8, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:19<00:00,  1.27s/cfg, SAT pool complete (15 results from 15 configs)][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:19<00:00,  1.27s/cfg, SAT pool complete (15 results from 15 configs)][A[A
+Patches:  50%|█████     | 1/2 [00:19<00:19, 19.43s/pat, Patch 1/2 (0 gates left)][A
+Patches:  50%|█████     | 1/2 [00:19<00:19, 19.43s/pat, Patch 1/2 (0 gates left)][AMS Rounds:  32%|███▎      | 13/40 [02:57<06:09, 13.67s/rnd, Processing MS round 13/40]MS Rounds:  32%|███▎      | 13/40 [02:57<06:09, 13.67s/rnd, Processing MS round 13/40]
+                                                                                 [A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s][A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s, Cycle 1: 0/2 patches][A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s, Cycle 1: 0/2 patches][A
+
+                                                                                                             [A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s][A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s, Starting SAT pool with 8 workers][A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s, Starting SAT pool with 8 workers][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:00<00:07,  1.92cfg/s, 1/15 configs done]       [A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:00<00:07,  1.92cfg/s, 1/15 configs done][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:01<00:08,  1.48cfg/s, 2/15 configs done][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:01<00:09,  1.35cfg/s, 2/15 configs done][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:01<00:07,  1.71cfg/s, 3/15 configs done][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:01<00:07,  1.71cfg/s, 3/15 configs done][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:02<00:05,  1.88cfg/s, 4/15 configs done][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:02<00:06,  1.78cfg/s, 4/15 configs done][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:05<00:10,  1.04s/cfg, 5/15 configs done][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:05<00:10,  1.04s/cfg, 5/15 configs done][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:10<00:15,  1.73s/cfg, 6/15 configs done][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:10<00:15,  1.73s/cfg, 6/15 configs done][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:17<00:19,  2.46s/cfg, 7/15 configs done][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:17<00:19,  2.46s/cfg, 7/15 configs done][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:17<00:15,  2.23s/cfg, 8/15 configs done][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:17<00:15,  2.23s/cfg, 8/15 configs done][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:19<00:12,  2.13s/cfg, 9/15 configs done][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:19<00:12,  2.14s/cfg, 9/15 configs done][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:19<00:09,  1.99s/cfg, 10/15 configs done][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:19<00:09,  1.99s/cfg, 10/15 configs done][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:21<00:07,  1.91s/cfg, 11/15 configs done][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:21<00:07,  1.91s/cfg, 11/15 configs done][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:21<00:05,  1.77s/cfg, 12/15 configs done][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:21<00:05,  1.77s/cfg, 12/15 configs done][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:21<00:03,  1.65s/cfg, 13/15 configs done][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:21<00:03,  1.65s/cfg, 13/15 configs done][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:22<00:01,  1.58s/cfg, 14/15 configs done][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:22<00:01,  1.58s/cfg, 14/15 configs done][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:22<00:00,  1.49s/cfg, 15/15 configs done][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:22<00:00,  1.49s/cfg, 15/15 configs done][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:22<05:12, 22.33s/cfg, Config 0 done: P_max=15, sat=True][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:22<05:12, 22.33s/cfg, Config 0 done: P_max=15, sat=True][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:22<02:25, 11.17s/cfg, Config 1 done: P_max=1, sat=False][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:22<02:25, 11.17s/cfg, Config 1 done: P_max=1, sat=False][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:22<01:29,  7.44s/cfg, Config 2 done: P_max=14, sat=True][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:22<01:29,  7.44s/cfg, Config 2 done: P_max=14, sat=True][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:22<01:01,  5.58s/cfg, Config 3 done: P_max=2, sat=False][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:22<01:01,  5.58s/cfg, Config 3 done: P_max=2, sat=False][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:22<00:44,  4.47s/cfg, Config 4 done: P_max=13, sat=True][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:22<00:44,  4.47s/cfg, Config 4 done: P_max=13, sat=True][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:22<00:33,  3.72s/cfg, Config 5 done: P_max=3, sat=False][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:22<00:33,  3.72s/cfg, Config 5 done: P_max=3, sat=False][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:22<00:25,  3.19s/cfg, Config 6 done: P_max=12, sat=True][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:22<00:25,  3.19s/cfg, Config 6 done: P_max=12, sat=True][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:22<00:19,  2.79s/cfg, Config 7 done: P_max=4, sat=False][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:22<00:19,  2.79s/cfg, Config 7 done: P_max=4, sat=False][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:22<00:14,  2.48s/cfg, Config 8 done: P_max=11, sat=True][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:22<00:14,  2.48s/cfg, Config 8 done: P_max=11, sat=True][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:22<00:11,  2.23s/cfg, Config 9 done: P_max=5, sat=False][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:22<00:11,  2.23s/cfg, Config 9 done: P_max=5, sat=False][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:22<00:08,  2.03s/cfg, Config 10 done: P_max=10, sat=True][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:22<00:08,  2.03s/cfg, Config 10 done: P_max=10, sat=True][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:22<00:05,  1.86s/cfg, Config 11 done: P_max=6, sat=True] [A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:22<00:05,  1.86s/cfg, Config 11 done: P_max=6, sat=True][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:22<00:03,  1.72s/cfg, Config 12 done: P_max=9, sat=True][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:22<00:03,  1.72s/cfg, Config 12 done: P_max=9, sat=True][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:22<00:01,  1.60s/cfg, Config 13 done: P_max=7, sat=True][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:22<00:01,  1.60s/cfg, Config 13 done: P_max=7, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:22<00:00,  1.49s/cfg, Config 14 done: P_max=8, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:22<00:00,  1.49s/cfg, Config 14 done: P_max=8, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:22<00:00,  1.49s/cfg, SAT pool complete (15 results from 15 configs)][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:22<00:00,  1.49s/cfg, SAT pool complete (15 results from 15 configs)][A[A
+Patches:  50%|█████     | 1/2 [00:22<00:22, 22.82s/pat, Patch 1/2 (0 gates left)][A
+Patches:  50%|█████     | 1/2 [00:22<00:22, 22.82s/pat, Patch 1/2 (0 gates left)][AMS Rounds:  35%|███▌      | 14/40 [03:20<06:12, 14.33s/rnd, Processing MS round 14/40]MS Rounds:  35%|███▌      | 14/40 [03:20<06:12, 14.33s/rnd, Processing MS round 14/40]
+                                                                                 [AMS Rounds:  38%|███▊      | 15/40 [03:20<05:34, 13.37s/rnd, Processing MS round 15/40]MS Rounds:  38%|███▊      | 15/40 [03:20<05:34, 13.37s/rnd, Processing MS round 15/40]MS Rounds:  40%|████      | 16/40 [03:20<05:00, 12.54s/rnd, Processing MS round 16/40]MS Rounds:  40%|████      | 16/40 [03:20<05:00, 12.54s/rnd, Processing MS round 16/40]MS Rounds:  42%|████▎     | 17/40 [03:20<04:31, 11.80s/rnd, Processing MS round 17/40]MS Rounds:  42%|████▎     | 17/40 [03:20<04:31, 11.80s/rnd, Processing MS round 17/40]MS Rounds:  45%|████▌     | 18/40 [03:20<04:05, 11.14s/rnd, Processing MS round 18/40]MS Rounds:  45%|████▌     | 18/40 [03:20<04:05, 11.14s/rnd, Processing MS round 18/40]MS Rounds:  48%|████▊     | 19/40 [03:20<03:41, 10.56s/rnd, Processing MS round 19/40]MS Rounds:  48%|████▊     | 19/40 [03:20<03:41, 10.56s/rnd, Processing MS round 19/40]MS Rounds:  50%|█████     | 20/40 [03:20<03:20, 10.03s/rnd, Processing MS round 20/40]MS Rounds:  50%|█████     | 20/40 [03:20<03:20, 10.03s/rnd, Processing MS round 20/40]MS Rounds:  52%|█████▎    | 21/40 [03:20<03:01,  9.55s/rnd, Processing MS round 21/40]MS Rounds:  52%|█████▎    | 21/40 [03:20<03:01,  9.55s/rnd, Processing MS round 21/40]MS Rounds:  55%|█████▌    | 22/40 [03:20<02:44,  9.12s/rnd, Processing MS round 22/40]MS Rounds:  55%|█████▌    | 22/40 [03:20<02:44,  9.12s/rnd, Processing MS round 22/40]MS Rounds:  57%|█████▊    | 23/40 [03:20<02:28,  8.72s/rnd, Processing MS round 23/40]MS Rounds:  57%|█████▊    | 23/40 [03:20<02:28,  8.72s/rnd, Processing MS round 23/40]MS Rounds:  60%|██████    | 24/40 [03:20<02:13,  8.36s/rnd, Processing MS round 24/40]MS Rounds:  60%|██████    | 24/40 [03:20<02:13,  8.36s/rnd, Processing MS round 24/40]
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s][A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s, Cycle 1: 0/2 patches][A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s, Cycle 1: 0/2 patches][A
+
+                                                                                                             [A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s][A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s, Starting SAT pool with 8 workers][A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s, Starting SAT pool with 8 workers][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:00<00:08,  1.58cfg/s, 1/15 configs done]       [A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:00<00:09,  1.48cfg/s, 1/15 configs done][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:02<00:14,  1.13s/cfg, 2/15 configs done][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:02<00:15,  1.23s/cfg, 2/15 configs done][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:03<00:13,  1.09s/cfg, 3/15 configs done][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:03<00:13,  1.09s/cfg, 3/15 configs done][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:04<00:13,  1.21s/cfg, 4/15 configs done][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:04<00:13,  1.21s/cfg, 4/15 configs done][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:05<00:11,  1.19s/cfg, 5/15 configs done][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:05<00:11,  1.19s/cfg, 5/15 configs done][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:11<00:17,  1.97s/cfg, 6/15 configs done][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:11<00:17,  1.98s/cfg, 6/15 configs done][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:11<00:13,  1.71s/cfg, 7/15 configs done][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:11<00:13,  1.71s/cfg, 7/15 configs done][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:12<00:10,  1.52s/cfg, 8/15 configs done][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:12<00:10,  1.52s/cfg, 8/15 configs done][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:14<00:07,  1.44s/cfg, 10/15 configs done][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:14<00:07,  1.44s/cfg, 10/15 configs done][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:15<00:05,  1.39s/cfg, 11/15 configs done][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:15<00:05,  1.39s/cfg, 11/15 configs done][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:15<00:02,  1.19s/cfg, 13/15 configs done][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:15<00:02,  1.19s/cfg, 13/15 configs done][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:16<00:00,  1.09s/cfg, 15/15 configs done][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:16<00:00,  1.09s/cfg, 15/15 configs done][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:16<03:48, 16.31s/cfg, Config 0 done: P_max=15, sat=True][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:16<03:48, 16.31s/cfg, Config 0 done: P_max=15, sat=True][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:16<01:45,  8.15s/cfg, Config 1 done: P_max=1, sat=False][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:16<01:45,  8.15s/cfg, Config 1 done: P_max=1, sat=False][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:16<01:05,  5.44s/cfg, Config 2 done: P_max=14, sat=True][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:16<01:05,  5.44s/cfg, Config 2 done: P_max=14, sat=True][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:16<00:44,  4.08s/cfg, Config 3 done: P_max=2, sat=True] [A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:16<00:44,  4.08s/cfg, Config 3 done: P_max=2, sat=True][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:16<00:32,  3.26s/cfg, Config 4 done: P_max=13, sat=True][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:16<00:32,  3.26s/cfg, Config 4 done: P_max=13, sat=True][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:16<00:24,  2.72s/cfg, Config 5 done: P_max=3, sat=True] [A[A
+
+SAT Configs:  40%|████      | 6/15 [00:16<00:24,  2.72s/cfg, Config 5 done: P_max=3, sat=True][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:16<00:18,  2.33s/cfg, Config 6 done: P_max=12, sat=True][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:16<00:18,  2.33s/cfg, Config 6 done: P_max=12, sat=True][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:16<00:14,  2.04s/cfg, Config 7 done: P_max=4, sat=True] [A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:16<00:14,  2.04s/cfg, Config 7 done: P_max=4, sat=True][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:16<00:10,  1.81s/cfg, Config 8 done: P_max=11, sat=True][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:16<00:10,  1.81s/cfg, Config 8 done: P_max=11, sat=True][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:16<00:08,  1.63s/cfg, Config 9 done: P_max=5, sat=True][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:16<00:08,  1.63s/cfg, Config 9 done: P_max=5, sat=True][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:16<00:05,  1.48s/cfg, Config 10 done: P_max=10, sat=True][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:16<00:05,  1.48s/cfg, Config 10 done: P_max=10, sat=True][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:16<00:04,  1.36s/cfg, Config 11 done: P_max=6, sat=True] [A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:16<00:04,  1.36s/cfg, Config 11 done: P_max=6, sat=True][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:16<00:02,  1.25s/cfg, Config 12 done: P_max=9, sat=True][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:16<00:02,  1.25s/cfg, Config 12 done: P_max=9, sat=True][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:16<00:01,  1.16s/cfg, Config 13 done: P_max=7, sat=True][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:16<00:01,  1.16s/cfg, Config 13 done: P_max=7, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:16<00:00,  1.09s/cfg, Config 14 done: P_max=8, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:16<00:00,  1.09s/cfg, Config 14 done: P_max=8, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:16<00:00,  1.09s/cfg, SAT pool complete (15 results from 15 configs)][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:16<00:00,  1.09s/cfg, SAT pool complete (15 results from 15 configs)][A[A
+Patches:  50%|█████     | 1/2 [00:16<00:16, 16.54s/pat, Patch 1/2 (0 gates left)][A
+Patches:  50%|█████     | 1/2 [00:16<00:16, 16.54s/pat, Patch 1/2 (0 gates left)][AMS Rounds:  62%|██████▎   | 25/40 [03:37<02:10,  8.68s/rnd, Processing MS round 25/40]MS Rounds:  62%|██████▎   | 25/40 [03:37<02:10,  8.68s/rnd, Processing MS round 25/40]
+                                                                                 [A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s][A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s, Cycle 1: 0/2 patches][A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s, Cycle 1: 0/2 patches][A
+
+                                                                                                             [A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s][A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s, Starting SAT pool with 8 workers][A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s, Starting SAT pool with 8 workers][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:00<00:13,  1.01cfg/s, 1/15 configs done]       [A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:00<00:13,  1.01cfg/s, 1/15 configs done][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:01<00:08,  1.62cfg/s, 2/15 configs done][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:01<00:08,  1.58cfg/s, 2/15 configs done][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:01<00:06,  1.96cfg/s, 3/15 configs done][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:01<00:06,  1.92cfg/s, 3/15 configs done][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:01<00:05,  2.02cfg/s, 4/15 configs done][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:02<00:05,  2.00cfg/s, 4/15 configs done][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:04<00:09,  1.06cfg/s, 5/15 configs done][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:04<00:09,  1.06cfg/s, 5/15 configs done][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:13<00:20,  2.26s/cfg, 6/15 configs done][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:13<00:20,  2.27s/cfg, 6/15 configs done][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:16<00:19,  2.39s/cfg, 7/15 configs done][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:16<00:19,  2.39s/cfg, 7/15 configs done][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:19<00:16,  2.39s/cfg, 8/15 configs done][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:19<00:17,  2.48s/cfg, 8/15 configs done][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:20<00:13,  2.31s/cfg, 9/15 configs done][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:20<00:13,  2.31s/cfg, 9/15 configs done][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:23<00:11,  2.35s/cfg, 10/15 configs done][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:23<00:11,  2.35s/cfg, 10/15 configs done][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:23<00:08,  2.15s/cfg, 11/15 configs done][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:23<00:08,  2.15s/cfg, 11/15 configs done][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:23<00:03,  1.84s/cfg, 13/15 configs done][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:23<00:03,  1.84s/cfg, 13/15 configs done][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:24<00:01,  1.76s/cfg, 14/15 configs done][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:24<00:01,  1.76s/cfg, 14/15 configs done][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:24<00:00,  1.66s/cfg, 15/15 configs done][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:24<00:00,  1.66s/cfg, 15/15 configs done][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:24<05:48, 24.87s/cfg, Config 0 done: P_max=15, sat=True][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:24<05:48, 24.87s/cfg, Config 0 done: P_max=15, sat=True][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:24<02:41, 12.44s/cfg, Config 1 done: P_max=1, sat=False][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:24<02:41, 12.44s/cfg, Config 1 done: P_max=1, sat=False][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:24<01:39,  8.29s/cfg, Config 2 done: P_max=14, sat=True][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:24<01:39,  8.29s/cfg, Config 2 done: P_max=14, sat=True][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:24<01:08,  6.22s/cfg, Config 3 done: P_max=2, sat=False][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:24<01:08,  6.22s/cfg, Config 3 done: P_max=2, sat=False][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:24<00:49,  4.97s/cfg, Config 4 done: P_max=13, sat=True][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:24<00:49,  4.97s/cfg, Config 4 done: P_max=13, sat=True][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:24<00:37,  4.15s/cfg, Config 5 done: P_max=3, sat=False][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:24<00:37,  4.15s/cfg, Config 5 done: P_max=3, sat=False][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:24<00:28,  3.55s/cfg, Config 6 done: P_max=12, sat=True][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:24<00:28,  3.55s/cfg, Config 6 done: P_max=12, sat=True][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:24<00:21,  3.11s/cfg, Config 7 done: P_max=4, sat=False][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:24<00:21,  3.11s/cfg, Config 7 done: P_max=4, sat=False][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:24<00:16,  2.76s/cfg, Config 8 done: P_max=11, sat=True][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:24<00:16,  2.76s/cfg, Config 8 done: P_max=11, sat=True][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:24<00:12,  2.49s/cfg, Config 9 done: P_max=5, sat=False][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:24<00:12,  2.49s/cfg, Config 9 done: P_max=5, sat=False][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:24<00:09,  2.26s/cfg, Config 10 done: P_max=10, sat=True][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:24<00:09,  2.26s/cfg, Config 10 done: P_max=10, sat=True][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:24<00:06,  2.07s/cfg, Config 11 done: P_max=6, sat=True] [A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:24<00:06,  2.07s/cfg, Config 11 done: P_max=6, sat=True][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:24<00:03,  1.91s/cfg, Config 12 done: P_max=9, sat=True][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:24<00:03,  1.91s/cfg, Config 12 done: P_max=9, sat=True][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:24<00:01,  1.78s/cfg, Config 13 done: P_max=7, sat=True][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:24<00:01,  1.78s/cfg, Config 13 done: P_max=7, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:24<00:00,  1.66s/cfg, Config 14 done: P_max=8, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:24<00:00,  1.66s/cfg, Config 14 done: P_max=8, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:24<00:00,  1.66s/cfg, SAT pool complete (15 results from 15 configs)][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:24<00:00,  1.66s/cfg, SAT pool complete (15 results from 15 configs)][A[A
+Patches:  50%|█████     | 1/2 [00:25<00:25, 25.38s/pat, Patch 1/2 (0 gates left)][A
+Patches:  50%|█████     | 1/2 [00:25<00:25, 25.38s/pat, Patch 1/2 (0 gates left)][AMS Rounds:  65%|██████▌   | 26/40 [04:02<02:10,  9.33s/rnd, Processing MS round 26/40]MS Rounds:  65%|██████▌   | 26/40 [04:02<02:10,  9.33s/rnd, Processing MS round 26/40]
+                                                                                 [AMS Rounds:  68%|██████▊   | 27/40 [04:02<01:56,  8.98s/rnd, Processing MS round 27/40]MS Rounds:  68%|██████▊   | 27/40 [04:02<01:56,  8.98s/rnd, Processing MS round 27/40]MS Rounds:  70%|███████   | 28/40 [04:02<01:43,  8.66s/rnd, Processing MS round 28/40]MS Rounds:  70%|███████   | 28/40 [04:02<01:43,  8.66s/rnd, Processing MS round 28/40]MS Rounds:  72%|███████▎  | 29/40 [04:02<01:31,  8.36s/rnd, Processing MS round 29/40]MS Rounds:  72%|███████▎  | 29/40 [04:02<01:31,  8.36s/rnd, Processing MS round 29/40]MS Rounds:  75%|███████▌  | 30/40 [04:02<01:20,  8.08s/rnd, Processing MS round 30/40]MS Rounds:  75%|███████▌  | 30/40 [04:02<01:20,  8.08s/rnd, Processing MS round 30/40]
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s][A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s, Cycle 1: 0/2 patches][A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s, Cycle 1: 0/2 patches][A
+
+                                                                                                             [A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s][A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s, Starting SAT pool with 8 workers][A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s, Starting SAT pool with 8 workers][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:00<00:08,  1.60cfg/s, 1/15 configs done]       [A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:00<00:08,  1.60cfg/s, 1/15 configs done][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:01<00:10,  1.25cfg/s, 2/15 configs done][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:01<00:10,  1.25cfg/s, 2/15 configs done][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:03<00:13,  1.09s/cfg, 3/15 configs done][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:03<00:13,  1.15s/cfg, 3/15 configs done][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:05<00:13,  1.26s/cfg, 4/15 configs done][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:05<00:13,  1.26s/cfg, 4/15 configs done][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:05<00:11,  1.17s/cfg, 5/15 configs done][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:05<00:11,  1.17s/cfg, 5/15 configs done][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:11<00:17,  1.93s/cfg, 6/15 configs done][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:11<00:17,  1.94s/cfg, 6/15 configs done][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:12<00:14,  1.77s/cfg, 7/15 configs done][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:12<00:14,  1.77s/cfg, 7/15 configs done][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:12<00:11,  1.61s/cfg, 8/15 configs done][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:12<00:11,  1.62s/cfg, 8/15 configs done][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:14<00:09,  1.58s/cfg, 9/15 configs done][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:14<00:09,  1.58s/cfg, 9/15 configs done][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:14<00:07,  1.50s/cfg, 10/15 configs done][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:15<00:07,  1.51s/cfg, 10/15 configs done][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:15<00:05,  1.41s/cfg, 11/15 configs done][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:15<00:05,  1.41s/cfg, 11/15 configs done][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:15<00:02,  1.21s/cfg, 13/15 configs done][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:15<00:02,  1.21s/cfg, 13/15 configs done][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:16<00:01,  1.14s/cfg, 14/15 configs done][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:16<00:01,  1.14s/cfg, 14/15 configs done][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:16<00:00,  1.09s/cfg, 15/15 configs done][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:16<00:00,  1.09s/cfg, 15/15 configs done][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:16<03:48, 16.31s/cfg, Config 0 done: P_max=15, sat=True][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:16<03:48, 16.31s/cfg, Config 0 done: P_max=15, sat=True][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:16<01:46,  8.15s/cfg, Config 1 done: P_max=1, sat=False][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:16<01:46,  8.15s/cfg, Config 1 done: P_max=1, sat=False][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:16<01:05,  5.44s/cfg, Config 2 done: P_max=14, sat=True][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:16<01:05,  5.44s/cfg, Config 2 done: P_max=14, sat=True][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:16<00:44,  4.08s/cfg, Config 3 done: P_max=2, sat=True] [A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:16<00:44,  4.08s/cfg, Config 3 done: P_max=2, sat=True][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:16<00:32,  3.26s/cfg, Config 4 done: P_max=13, sat=True][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:16<00:32,  3.26s/cfg, Config 4 done: P_max=13, sat=True][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:16<00:24,  2.72s/cfg, Config 5 done: P_max=3, sat=True] [A[A
+
+SAT Configs:  40%|████      | 6/15 [00:16<00:24,  2.72s/cfg, Config 5 done: P_max=3, sat=True][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:16<00:18,  2.33s/cfg, Config 6 done: P_max=12, sat=True][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:16<00:18,  2.33s/cfg, Config 6 done: P_max=12, sat=True][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:16<00:14,  2.04s/cfg, Config 7 done: P_max=4, sat=True] [A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:16<00:14,  2.04s/cfg, Config 7 done: P_max=4, sat=True][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:16<00:10,  1.81s/cfg, Config 8 done: P_max=11, sat=True][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:16<00:10,  1.81s/cfg, Config 8 done: P_max=11, sat=True][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:16<00:08,  1.63s/cfg, Config 9 done: P_max=5, sat=True][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:16<00:08,  1.63s/cfg, Config 9 done: P_max=5, sat=True][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:16<00:05,  1.48s/cfg, Config 10 done: P_max=10, sat=True][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:16<00:05,  1.48s/cfg, Config 10 done: P_max=10, sat=True][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:16<00:04,  1.36s/cfg, Config 11 done: P_max=6, sat=True] [A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:16<00:04,  1.36s/cfg, Config 11 done: P_max=6, sat=True][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:16<00:02,  1.25s/cfg, Config 12 done: P_max=9, sat=True][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:16<00:02,  1.25s/cfg, Config 12 done: P_max=9, sat=True][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:16<00:01,  1.16s/cfg, Config 13 done: P_max=7, sat=True][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:16<00:01,  1.16s/cfg, Config 13 done: P_max=7, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:16<00:00,  1.09s/cfg, Config 14 done: P_max=8, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:16<00:00,  1.09s/cfg, Config 14 done: P_max=8, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:16<00:00,  1.09s/cfg, SAT pool complete (15 results from 15 configs)][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:16<00:00,  1.09s/cfg, SAT pool complete (15 results from 15 configs)][A[A
+Patches:  50%|█████     | 1/2 [00:16<00:16, 16.53s/pat, Patch 1/2 (0 gates left)][A
+Patches:  50%|█████     | 1/2 [00:16<00:16, 16.53s/pat, Patch 1/2 (0 gates left)][AMS Rounds:  78%|███████▊  | 31/40 [04:19<01:15,  8.36s/rnd, Processing MS round 31/40]MS Rounds:  78%|███████▊  | 31/40 [04:19<01:15,  8.36s/rnd, Processing MS round 31/40]
+                                                                                 [A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s][A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s, Cycle 1: 0/2 patches][A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s, Cycle 1: 0/2 patches][A
+
+                                                                                                             [A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s][A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s, Starting SAT pool with 8 workers][A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s, Starting SAT pool with 8 workers][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:00<00:10,  1.37cfg/s, 1/15 configs done]       [A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:00<00:10,  1.37cfg/s, 1/15 configs done][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:01<00:06,  1.99cfg/s, 2/15 configs done][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:01<00:07,  1.83cfg/s, 2/15 configs done][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:01<00:06,  1.94cfg/s, 3/15 configs done][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:01<00:06,  1.79cfg/s, 3/15 configs done][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:01<00:05,  2.07cfg/s, 4/15 configs done][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:02<00:06,  1.73cfg/s, 4/15 configs done][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:04<00:08,  1.12cfg/s, 5/15 configs done][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:04<00:08,  1.12cfg/s, 5/15 configs done][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:14<00:21,  2.35s/cfg, 6/15 configs done][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:14<00:21,  2.39s/cfg, 6/15 configs done][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:17<00:20,  2.55s/cfg, 7/15 configs done][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:17<00:20,  2.55s/cfg, 7/15 configs done][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:19<00:16,  2.42s/cfg, 8/15 configs done][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:19<00:16,  2.42s/cfg, 8/15 configs done][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:21<00:14,  2.34s/cfg, 9/15 configs done][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:21<00:14,  2.35s/cfg, 9/15 configs done][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:23<00:08,  2.10s/cfg, 11/15 configs done][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:23<00:08,  2.10s/cfg, 11/15 configs done][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:23<00:05,  1.95s/cfg, 12/15 configs done][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:23<00:05,  1.95s/cfg, 12/15 configs done][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:23<00:03,  1.84s/cfg, 13/15 configs done][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:23<00:03,  1.84s/cfg, 13/15 configs done][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:24<00:01,  1.78s/cfg, 14/15 configs done][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:24<00:01,  1.78s/cfg, 14/15 configs done][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:24<00:00,  1.67s/cfg, 15/15 configs done][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:24<00:00,  1.67s/cfg, 15/15 configs done][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:24<05:49, 24.99s/cfg, Config 0 done: P_max=15, sat=True][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:24<05:49, 24.99s/cfg, Config 0 done: P_max=15, sat=True][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:24<02:42, 12.50s/cfg, Config 1 done: P_max=1, sat=False][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:24<02:42, 12.50s/cfg, Config 1 done: P_max=1, sat=False][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:24<01:39,  8.33s/cfg, Config 2 done: P_max=14, sat=True][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:24<01:39,  8.33s/cfg, Config 2 done: P_max=14, sat=True][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:24<01:08,  6.25s/cfg, Config 3 done: P_max=2, sat=False][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:24<01:08,  6.25s/cfg, Config 3 done: P_max=2, sat=False][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:24<00:49,  5.00s/cfg, Config 4 done: P_max=13, sat=True][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:24<00:49,  5.00s/cfg, Config 4 done: P_max=13, sat=True][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:24<00:37,  4.17s/cfg, Config 5 done: P_max=3, sat=False][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:24<00:37,  4.17s/cfg, Config 5 done: P_max=3, sat=False][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:24<00:28,  3.57s/cfg, Config 6 done: P_max=12, sat=True][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:24<00:28,  3.57s/cfg, Config 6 done: P_max=12, sat=True][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:24<00:21,  3.12s/cfg, Config 7 done: P_max=4, sat=False][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:24<00:21,  3.12s/cfg, Config 7 done: P_max=4, sat=False][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:24<00:16,  2.78s/cfg, Config 8 done: P_max=11, sat=True][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:24<00:16,  2.78s/cfg, Config 8 done: P_max=11, sat=True][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:24<00:12,  2.50s/cfg, Config 9 done: P_max=5, sat=False][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:24<00:12,  2.50s/cfg, Config 9 done: P_max=5, sat=False][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:24<00:09,  2.27s/cfg, Config 10 done: P_max=10, sat=True][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:24<00:09,  2.27s/cfg, Config 10 done: P_max=10, sat=True][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:24<00:06,  2.08s/cfg, Config 11 done: P_max=6, sat=True] [A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:24<00:06,  2.08s/cfg, Config 11 done: P_max=6, sat=True][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:24<00:03,  1.92s/cfg, Config 12 done: P_max=9, sat=True][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:24<00:03,  1.92s/cfg, Config 12 done: P_max=9, sat=True][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:24<00:01,  1.79s/cfg, Config 13 done: P_max=7, sat=True][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:24<00:01,  1.79s/cfg, Config 13 done: P_max=7, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:24<00:00,  1.67s/cfg, Config 14 done: P_max=8, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:24<00:00,  1.67s/cfg, Config 14 done: P_max=8, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:24<00:00,  1.67s/cfg, SAT pool complete (15 results from 15 configs)][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:24<00:00,  1.67s/cfg, SAT pool complete (15 results from 15 configs)][A[A
+Patches:  50%|█████     | 1/2 [00:25<00:25, 25.47s/pat, Patch 1/2 (0 gates left)][A
+Patches:  50%|█████     | 1/2 [00:25<00:25, 25.47s/pat, Patch 1/2 (0 gates left)][AMS Rounds:  80%|████████  | 32/40 [04:44<01:11,  8.89s/rnd, Processing MS round 32/40]MS Rounds:  80%|████████  | 32/40 [04:44<01:11,  8.89s/rnd, Processing MS round 32/40]
+                                                                                 [A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s][A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s, Cycle 1: 0/2 patches][A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s, Cycle 1: 0/2 patches][A
+
+                                                                                                             [A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s][A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s, Starting SAT pool with 8 workers][A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s, Starting SAT pool with 8 workers][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:00<00:08,  1.68cfg/s, 1/15 configs done]       [A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:00<00:09,  1.40cfg/s, 1/15 configs done][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:01<00:09,  1.37cfg/s, 2/15 configs done][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:01<00:09,  1.30cfg/s, 2/15 configs done][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:01<00:07,  1.68cfg/s, 3/15 configs done][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:01<00:07,  1.64cfg/s, 3/15 configs done][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:06<00:17,  1.56s/cfg, 4/15 configs done][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:06<00:17,  1.56s/cfg, 4/15 configs done][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:10<00:20,  2.04s/cfg, 5/15 configs done][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:10<00:20,  2.04s/cfg, 5/15 configs done][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:12<00:18,  2.03s/cfg, 6/15 configs done][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:12<00:18,  2.04s/cfg, 6/15 configs done][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:17<00:20,  2.52s/cfg, 7/15 configs done][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:17<00:20,  2.52s/cfg, 7/15 configs done][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:18<00:16,  2.36s/cfg, 8/15 configs done][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:18<00:16,  2.36s/cfg, 8/15 configs done][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:19<00:13,  2.21s/cfg, 9/15 configs done][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:20<00:13,  2.23s/cfg, 9/15 configs done][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:20<00:10,  2.06s/cfg, 10/15 configs done][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:20<00:10,  2.08s/cfg, 10/15 configs done][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:21<00:07,  1.96s/cfg, 11/15 configs done][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:21<00:07,  1.96s/cfg, 11/15 configs done][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:21<00:05,  1.82s/cfg, 12/15 configs done][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:21<00:05,  1.82s/cfg, 12/15 configs done][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:21<00:01,  1.56s/cfg, 14/15 configs done][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:21<00:01,  1.56s/cfg, 14/15 configs done][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:22<00:00,  1.50s/cfg, 15/15 configs done][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:22<00:00,  1.50s/cfg, 15/15 configs done][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:22<05:14, 22.45s/cfg, Config 0 done: P_max=15, sat=True][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:22<05:14, 22.45s/cfg, Config 0 done: P_max=15, sat=True][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:22<02:25, 11.22s/cfg, Config 1 done: P_max=1, sat=False][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:22<02:25, 11.22s/cfg, Config 1 done: P_max=1, sat=False][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:22<01:29,  7.48s/cfg, Config 2 done: P_max=14, sat=True][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:22<01:29,  7.48s/cfg, Config 2 done: P_max=14, sat=True][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:22<01:01,  5.61s/cfg, Config 3 done: P_max=2, sat=False][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:22<01:01,  5.61s/cfg, Config 3 done: P_max=2, sat=False][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:22<00:44,  4.49s/cfg, Config 4 done: P_max=13, sat=True][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:22<00:44,  4.49s/cfg, Config 4 done: P_max=13, sat=True][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:22<00:33,  3.74s/cfg, Config 5 done: P_max=3, sat=False][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:22<00:33,  3.74s/cfg, Config 5 done: P_max=3, sat=False][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:22<00:25,  3.21s/cfg, Config 6 done: P_max=12, sat=True][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:22<00:25,  3.21s/cfg, Config 6 done: P_max=12, sat=True][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:22<00:19,  2.81s/cfg, Config 7 done: P_max=4, sat=True] [A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:22<00:19,  2.81s/cfg, Config 7 done: P_max=4, sat=True][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:22<00:14,  2.49s/cfg, Config 8 done: P_max=11, sat=True][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:22<00:14,  2.49s/cfg, Config 8 done: P_max=11, sat=True][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:22<00:11,  2.24s/cfg, Config 9 done: P_max=5, sat=True][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:22<00:11,  2.24s/cfg, Config 9 done: P_max=5, sat=True][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:22<00:08,  2.04s/cfg, Config 10 done: P_max=10, sat=True][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:22<00:08,  2.04s/cfg, Config 10 done: P_max=10, sat=True][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:22<00:05,  1.87s/cfg, Config 11 done: P_max=6, sat=True] [A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:22<00:05,  1.87s/cfg, Config 11 done: P_max=6, sat=True][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:22<00:03,  1.73s/cfg, Config 12 done: P_max=9, sat=True][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:22<00:03,  1.73s/cfg, Config 12 done: P_max=9, sat=True][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:22<00:01,  1.60s/cfg, Config 13 done: P_max=7, sat=True][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:22<00:01,  1.60s/cfg, Config 13 done: P_max=7, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:22<00:00,  1.50s/cfg, Config 14 done: P_max=8, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:22<00:00,  1.50s/cfg, Config 14 done: P_max=8, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:22<00:00,  1.50s/cfg, SAT pool complete (15 results from 15 configs)][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:22<00:00,  1.50s/cfg, SAT pool complete (15 results from 15 configs)][A[A
+Patches:  50%|█████     | 1/2 [00:22<00:22, 22.81s/pat, Patch 1/2 (0 gates left)][A
+Patches:  50%|█████     | 1/2 [00:22<00:22, 22.81s/pat, Patch 1/2 (0 gates left)][AMS Rounds:  82%|████████▎ | 33/40 [05:07<01:05,  9.31s/rnd, Processing MS round 33/40]MS Rounds:  82%|████████▎ | 33/40 [05:07<01:05,  9.31s/rnd, Processing MS round 33/40]
+                                                                                 [A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s][A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s, Cycle 1: 0/2 patches][A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s, Cycle 1: 0/2 patches][A
+
+                                                                                                             [A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s][A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s, Starting SAT pool with 8 workers][A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s, Starting SAT pool with 8 workers][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:00<00:12,  1.10cfg/s, 1/15 configs done]       [A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:00<00:12,  1.10cfg/s, 1/15 configs done][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:01<00:07,  1.82cfg/s, 2/15 configs done][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:01<00:08,  1.60cfg/s, 2/15 configs done][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:01<00:06,  2.00cfg/s, 3/15 configs done][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:01<00:06,  2.00cfg/s, 3/15 configs done][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:05<00:15,  1.41s/cfg, 4/15 configs done][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:05<00:15,  1.41s/cfg, 4/15 configs done][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:14<00:29,  2.92s/cfg, 5/15 configs done][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:14<00:29,  2.94s/cfg, 5/15 configs done][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:15<00:22,  2.51s/cfg, 6/15 configs done][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:15<00:22,  2.51s/cfg, 6/15 configs done][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:23<00:26,  3.33s/cfg, 7/15 configs done][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:23<00:26,  3.33s/cfg, 7/15 configs done][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:29<00:25,  3.71s/cfg, 8/15 configs done][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:30<00:26,  3.75s/cfg, 8/15 configs done][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:35<00:23,  3.97s/cfg, 9/15 configs done][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:35<00:23,  3.97s/cfg, 9/15 configs done][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:36<00:18,  3.60s/cfg, 10/15 configs done][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:36<00:18,  3.60s/cfg, 10/15 configs done][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:37<00:13,  3.37s/cfg, 11/15 configs done][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:37<00:13,  3.37s/cfg, 11/15 configs done][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:37<00:09,  3.16s/cfg, 12/15 configs done][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:37<00:09,  3.17s/cfg, 12/15 configs done][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:38<00:05,  2.98s/cfg, 13/15 configs done][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:38<00:05,  2.98s/cfg, 13/15 configs done][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:39<00:02,  2.82s/cfg, 14/15 configs done][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:39<00:02,  2.83s/cfg, 14/15 configs done][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:39<00:00,  2.66s/cfg, 15/15 configs done][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:39<00:00,  2.66s/cfg, 15/15 configs done][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:39<09:17, 39.83s/cfg, Config 0 done: P_max=15, sat=True][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:39<09:17, 39.83s/cfg, Config 0 done: P_max=15, sat=True][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:39<04:18, 19.92s/cfg, Config 1 done: P_max=1, sat=False][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:39<04:18, 19.92s/cfg, Config 1 done: P_max=1, sat=False][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:39<02:39, 13.28s/cfg, Config 2 done: P_max=14, sat=True][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:39<02:39, 13.28s/cfg, Config 2 done: P_max=14, sat=True][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:39<01:49,  9.96s/cfg, Config 3 done: P_max=2, sat=False][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:39<01:49,  9.96s/cfg, Config 3 done: P_max=2, sat=False][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:39<01:19,  7.97s/cfg, Config 4 done: P_max=13, sat=True][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:39<01:19,  7.97s/cfg, Config 4 done: P_max=13, sat=True][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:39<00:59,  6.64s/cfg, Config 5 done: P_max=3, sat=False][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:39<00:59,  6.64s/cfg, Config 5 done: P_max=3, sat=False][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:39<00:45,  5.69s/cfg, Config 6 done: P_max=12, sat=True][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:39<00:45,  5.69s/cfg, Config 6 done: P_max=12, sat=True][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:39<00:34,  4.98s/cfg, Config 7 done: P_max=4, sat=True] [A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:39<00:34,  4.98s/cfg, Config 7 done: P_max=4, sat=True][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:39<00:26,  4.43s/cfg, Config 8 done: P_max=11, sat=True][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:39<00:26,  4.43s/cfg, Config 8 done: P_max=11, sat=True][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:39<00:19,  3.98s/cfg, Config 9 done: P_max=5, sat=True][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:39<00:19,  3.98s/cfg, Config 9 done: P_max=5, sat=True][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:39<00:14,  3.62s/cfg, Config 10 done: P_max=10, sat=True][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:39<00:14,  3.62s/cfg, Config 10 done: P_max=10, sat=True][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:39<00:09,  3.32s/cfg, Config 11 done: P_max=6, sat=True] [A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:39<00:09,  3.32s/cfg, Config 11 done: P_max=6, sat=True][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:39<00:06,  3.06s/cfg, Config 12 done: P_max=9, sat=True][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:39<00:06,  3.06s/cfg, Config 12 done: P_max=9, sat=True][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:39<00:02,  2.85s/cfg, Config 13 done: P_max=7, sat=True][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:39<00:02,  2.85s/cfg, Config 13 done: P_max=7, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:39<00:00,  2.66s/cfg, Config 14 done: P_max=8, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:39<00:00,  2.66s/cfg, Config 14 done: P_max=8, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:39<00:00,  2.66s/cfg, SAT pool complete (15 results from 15 configs)][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:39<00:00,  2.66s/cfg, SAT pool complete (15 results from 15 configs)][A[A
+Patches:  50%|█████     | 1/2 [00:40<00:40, 40.20s/pat, Patch 1/2 (0 gates left)][A
+Patches:  50%|█████     | 1/2 [00:40<00:40, 40.20s/pat, Patch 1/2 (0 gates left)][AMS Rounds:  85%|████████▌ | 34/40 [05:47<01:01, 10.22s/rnd, Processing MS round 34/40]MS Rounds:  85%|████████▌ | 34/40 [05:47<01:01, 10.22s/rnd, Processing MS round 34/40]
+                                                                                 [A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s][A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s, Cycle 1: 0/2 patches][A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s, Cycle 1: 0/2 patches][A
+
+                                                                                                             [A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s][A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s, Starting SAT pool with 8 workers][A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s, Starting SAT pool with 8 workers][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:00<00:11,  1.26cfg/s, 1/15 configs done]       [A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:00<00:11,  1.26cfg/s, 1/15 configs done][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:01<00:08,  1.53cfg/s, 2/15 configs done][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:01<00:08,  1.52cfg/s, 2/15 configs done][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:01<00:06,  1.86cfg/s, 3/15 configs done][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:01<00:06,  1.86cfg/s, 3/15 configs done][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:07<00:20,  1.86s/cfg, 4/15 configs done][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:07<00:20,  1.88s/cfg, 4/15 configs done][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:10<00:20,  2.01s/cfg, 5/15 configs done][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:10<00:20,  2.04s/cfg, 5/15 configs done][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:13<00:20,  2.27s/cfg, 6/15 configs done][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:16<00:24,  2.67s/cfg, 6/15 configs done][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:21<00:18,  2.63s/cfg, 8/15 configs done][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:21<00:18,  2.65s/cfg, 8/15 configs done][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:21<00:14,  2.43s/cfg, 9/15 configs done][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:21<00:14,  2.43s/cfg, 9/15 configs done][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:23<00:11,  2.32s/cfg, 10/15 configs done][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:23<00:11,  2.33s/cfg, 10/15 configs done][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:24<00:08,  2.18s/cfg, 11/15 configs done][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:24<00:08,  2.18s/cfg, 11/15 configs done][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:24<00:03,  1.86s/cfg, 13/15 configs done][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:24<00:03,  1.86s/cfg, 13/15 configs done][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:25<00:01,  1.80s/cfg, 14/15 configs done][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:25<00:01,  1.80s/cfg, 14/15 configs done][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:25<00:00,  1.70s/cfg, 15/15 configs done][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:25<00:00,  1.70s/cfg, 15/15 configs done][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:25<05:56, 25.49s/cfg, Config 0 done: P_max=15, sat=True][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:25<05:56, 25.49s/cfg, Config 0 done: P_max=15, sat=True][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:25<02:45, 12.75s/cfg, Config 1 done: P_max=1, sat=False][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:25<02:45, 12.75s/cfg, Config 1 done: P_max=1, sat=False][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:25<01:41,  8.50s/cfg, Config 2 done: P_max=14, sat=True][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:25<01:41,  8.50s/cfg, Config 2 done: P_max=14, sat=True][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:25<01:10,  6.37s/cfg, Config 3 done: P_max=2, sat=False][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:25<01:10,  6.37s/cfg, Config 3 done: P_max=2, sat=False][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:25<00:50,  5.10s/cfg, Config 4 done: P_max=13, sat=True][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:25<00:50,  5.10s/cfg, Config 4 done: P_max=13, sat=True][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:25<00:38,  4.25s/cfg, Config 5 done: P_max=3, sat=False][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:25<00:38,  4.25s/cfg, Config 5 done: P_max=3, sat=False][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:25<00:29,  3.64s/cfg, Config 6 done: P_max=12, sat=True][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:25<00:29,  3.64s/cfg, Config 6 done: P_max=12, sat=True][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:25<00:22,  3.19s/cfg, Config 7 done: P_max=4, sat=True] [A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:25<00:22,  3.19s/cfg, Config 7 done: P_max=4, sat=True][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:25<00:16,  2.83s/cfg, Config 8 done: P_max=11, sat=True][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:25<00:16,  2.83s/cfg, Config 8 done: P_max=11, sat=True][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:25<00:12,  2.55s/cfg, Config 9 done: P_max=5, sat=True][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:25<00:12,  2.55s/cfg, Config 9 done: P_max=5, sat=True][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:25<00:09,  2.32s/cfg, Config 10 done: P_max=10, sat=True][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:25<00:09,  2.32s/cfg, Config 10 done: P_max=10, sat=True][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:25<00:06,  2.12s/cfg, Config 11 done: P_max=6, sat=True] [A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:25<00:06,  2.12s/cfg, Config 11 done: P_max=6, sat=True][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:25<00:03,  1.96s/cfg, Config 12 done: P_max=9, sat=True][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:25<00:03,  1.96s/cfg, Config 12 done: P_max=9, sat=True][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:25<00:01,  1.82s/cfg, Config 13 done: P_max=7, sat=True][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:25<00:01,  1.82s/cfg, Config 13 done: P_max=7, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:25<00:00,  1.70s/cfg, Config 14 done: P_max=8, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:25<00:00,  1.70s/cfg, Config 14 done: P_max=8, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:25<00:00,  1.70s/cfg, SAT pool complete (15 results from 15 configs)][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:25<00:00,  1.70s/cfg, SAT pool complete (15 results from 15 configs)][A[A
+Patches:  50%|█████     | 1/2 [00:25<00:25, 25.85s/pat, Patch 1/2 (0 gates left)][A
+Patches:  50%|█████     | 1/2 [00:25<00:25, 25.85s/pat, Patch 1/2 (0 gates left)][AMS Rounds:  88%|████████▊ | 35/40 [06:13<00:53, 10.67s/rnd, Processing MS round 35/40]MS Rounds:  88%|████████▊ | 35/40 [06:13<00:53, 10.67s/rnd, Processing MS round 35/40]
+                                                                                 [A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s][A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s, Cycle 1: 0/2 patches][A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s, Cycle 1: 0/2 patches][A
+
+                                                                                                             [A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s][A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s, Starting SAT pool with 8 workers][A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s, Starting SAT pool with 8 workers][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:00<00:11,  1.22cfg/s, 1/15 configs done]       [A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:00<00:11,  1.17cfg/s, 1/15 configs done][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:01<00:07,  1.83cfg/s, 2/15 configs done][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:01<00:07,  1.83cfg/s, 2/15 configs done][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:01<00:05,  2.23cfg/s, 3/15 configs done][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:01<00:05,  2.18cfg/s, 3/15 configs done][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:08<00:22,  2.05s/cfg, 4/15 configs done][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:08<00:22,  2.05s/cfg, 4/15 configs done][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:14<00:29,  2.96s/cfg, 5/15 configs done][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:14<00:29,  2.96s/cfg, 5/15 configs done][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:19<00:29,  3.23s/cfg, 6/15 configs done][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:20<00:30,  3.36s/cfg, 6/15 configs done][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:26<00:30,  3.82s/cfg, 7/15 configs done][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:26<00:30,  3.82s/cfg, 7/15 configs done][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:28<00:25,  3.60s/cfg, 8/15 configs done][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:28<00:25,  3.60s/cfg, 8/15 configs done][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:29<00:19,  3.25s/cfg, 9/15 configs done][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:29<00:19,  3.25s/cfg, 9/15 configs done][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:29<00:14,  2.95s/cfg, 10/15 configs done][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:29<00:14,  2.95s/cfg, 10/15 configs done][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:30<00:11,  2.76s/cfg, 11/15 configs done][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:30<00:11,  2.76s/cfg, 11/15 configs done][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:30<00:07,  2.57s/cfg, 12/15 configs done][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:30<00:07,  2.58s/cfg, 12/15 configs done][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:31<00:04,  2.41s/cfg, 13/15 configs done][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:31<00:04,  2.41s/cfg, 13/15 configs done][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:31<00:02,  2.26s/cfg, 14/15 configs done][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:31<00:02,  2.26s/cfg, 14/15 configs done][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:31<00:00,  2.13s/cfg, 15/15 configs done][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:31<00:00,  2.13s/cfg, 15/15 configs done][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:31<07:26, 31.93s/cfg, Config 0 done: P_max=15, sat=True][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:31<07:26, 31.93s/cfg, Config 0 done: P_max=15, sat=True][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:31<03:27, 15.96s/cfg, Config 1 done: P_max=1, sat=False][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:31<03:27, 15.96s/cfg, Config 1 done: P_max=1, sat=False][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:31<02:07, 10.64s/cfg, Config 2 done: P_max=14, sat=True][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:31<02:07, 10.64s/cfg, Config 2 done: P_max=14, sat=True][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:31<01:27,  7.98s/cfg, Config 3 done: P_max=2, sat=False][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:31<01:27,  7.98s/cfg, Config 3 done: P_max=2, sat=False][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:31<01:03,  6.39s/cfg, Config 4 done: P_max=13, sat=True][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:31<01:03,  6.39s/cfg, Config 4 done: P_max=13, sat=True][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:31<00:47,  5.32s/cfg, Config 5 done: P_max=3, sat=False][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:31<00:47,  5.32s/cfg, Config 5 done: P_max=3, sat=False][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:31<00:36,  4.56s/cfg, Config 6 done: P_max=12, sat=True][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:31<00:36,  4.56s/cfg, Config 6 done: P_max=12, sat=True][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:31<00:27,  3.99s/cfg, Config 7 done: P_max=4, sat=True] [A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:31<00:27,  3.99s/cfg, Config 7 done: P_max=4, sat=True][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:31<00:21,  3.55s/cfg, Config 8 done: P_max=11, sat=True][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:31<00:21,  3.55s/cfg, Config 8 done: P_max=11, sat=True][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:31<00:15,  3.19s/cfg, Config 9 done: P_max=5, sat=True][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:31<00:15,  3.19s/cfg, Config 9 done: P_max=5, sat=True][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:31<00:11,  2.90s/cfg, Config 10 done: P_max=10, sat=True][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:31<00:11,  2.90s/cfg, Config 10 done: P_max=10, sat=True][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:31<00:07,  2.66s/cfg, Config 11 done: P_max=6, sat=True] [A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:31<00:07,  2.66s/cfg, Config 11 done: P_max=6, sat=True][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:31<00:04,  2.46s/cfg, Config 12 done: P_max=9, sat=True][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:31<00:04,  2.46s/cfg, Config 12 done: P_max=9, sat=True][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:31<00:02,  2.28s/cfg, Config 13 done: P_max=7, sat=True][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:31<00:02,  2.28s/cfg, Config 13 done: P_max=7, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:31<00:00,  2.13s/cfg, Config 14 done: P_max=8, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:31<00:00,  2.13s/cfg, Config 14 done: P_max=8, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:31<00:00,  2.13s/cfg, SAT pool complete (15 results from 15 configs)][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:31<00:00,  2.13s/cfg, SAT pool complete (15 results from 15 configs)][A[A
+Patches:  50%|█████     | 1/2 [00:32<00:32, 32.32s/pat, Patch 1/2 (0 gates left)][A
+Patches:  50%|█████     | 1/2 [00:32<00:32, 32.32s/pat, Patch 1/2 (0 gates left)][AMS Rounds:  90%|█████████ | 36/40 [06:45<00:45, 11.27s/rnd, Processing MS round 36/40]MS Rounds:  90%|█████████ | 36/40 [06:45<00:45, 11.27s/rnd, Processing MS round 36/40]
+                                                                                 [A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s][A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s, Cycle 1: 0/2 patches][A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s, Cycle 1: 0/2 patches][A
+
+                                                                                                             [A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s][A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s, Starting SAT pool with 8 workers][A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s, Starting SAT pool with 8 workers][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:01<00:06,  1.88cfg/s, 2/15 configs done]       [A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:01<00:06,  1.86cfg/s, 2/15 configs done][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:03<00:15,  1.33s/cfg, 3/15 configs done][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:04<00:16,  1.33s/cfg, 3/15 configs done][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:06<00:16,  1.50s/cfg, 4/15 configs done][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:06<00:16,  1.50s/cfg, 4/15 configs done][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:07<00:14,  1.47s/cfg, 5/15 configs done][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:07<00:14,  1.47s/cfg, 5/15 configs done][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:17<00:25,  2.83s/cfg, 6/15 configs done][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:17<00:25,  2.83s/cfg, 6/15 configs done][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:17<00:19,  2.50s/cfg, 7/15 configs done][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:17<00:19,  2.50s/cfg, 7/15 configs done][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:19<00:16,  2.42s/cfg, 8/15 configs done][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:19<00:16,  2.42s/cfg, 8/15 configs done][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:20<00:13,  2.27s/cfg, 9/15 configs done][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:20<00:13,  2.27s/cfg, 9/15 configs done][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:21<00:10,  2.15s/cfg, 10/15 configs done][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:21<00:10,  2.15s/cfg, 10/15 configs done][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:22<00:08,  2.03s/cfg, 11/15 configs done][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:22<00:08,  2.03s/cfg, 11/15 configs done][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:22<00:05,  1.87s/cfg, 12/15 configs done][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:22<00:05,  1.88s/cfg, 12/15 configs done][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:23<00:03,  1.78s/cfg, 13/15 configs done][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:23<00:03,  1.79s/cfg, 13/15 configs done][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:23<00:01,  1.66s/cfg, 14/15 configs done][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:23<00:01,  1.66s/cfg, 14/15 configs done][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:23<00:00,  1.56s/cfg, 15/15 configs done][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:23<00:00,  1.56s/cfg, 15/15 configs done][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:23<05:27, 23.41s/cfg, Config 0 done: P_max=15, sat=True][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:23<05:27, 23.41s/cfg, Config 0 done: P_max=15, sat=True][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:23<02:32, 11.71s/cfg, Config 1 done: P_max=1, sat=False][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:23<02:32, 11.71s/cfg, Config 1 done: P_max=1, sat=False][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:23<01:33,  7.80s/cfg, Config 2 done: P_max=14, sat=True][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:23<01:33,  7.80s/cfg, Config 2 done: P_max=14, sat=True][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:23<01:04,  5.85s/cfg, Config 3 done: P_max=2, sat=False][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:23<01:04,  5.85s/cfg, Config 3 done: P_max=2, sat=False][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:23<00:46,  4.68s/cfg, Config 4 done: P_max=13, sat=True][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:23<00:46,  4.68s/cfg, Config 4 done: P_max=13, sat=True][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:23<00:35,  3.90s/cfg, Config 5 done: P_max=3, sat=True] [A[A
+
+SAT Configs:  40%|████      | 6/15 [00:23<00:35,  3.90s/cfg, Config 5 done: P_max=3, sat=True][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:23<00:26,  3.34s/cfg, Config 6 done: P_max=12, sat=True][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:23<00:26,  3.34s/cfg, Config 6 done: P_max=12, sat=True][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:23<00:20,  2.93s/cfg, Config 7 done: P_max=4, sat=True] [A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:23<00:20,  2.93s/cfg, Config 7 done: P_max=4, sat=True][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:23<00:15,  2.60s/cfg, Config 8 done: P_max=11, sat=True][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:23<00:15,  2.60s/cfg, Config 8 done: P_max=11, sat=True][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:23<00:11,  2.34s/cfg, Config 9 done: P_max=5, sat=True][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:23<00:11,  2.34s/cfg, Config 9 done: P_max=5, sat=True][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:23<00:08,  2.13s/cfg, Config 10 done: P_max=10, sat=True][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:23<00:08,  2.13s/cfg, Config 10 done: P_max=10, sat=True][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:23<00:05,  1.95s/cfg, Config 11 done: P_max=6, sat=True] [A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:23<00:05,  1.95s/cfg, Config 11 done: P_max=6, sat=True][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:23<00:03,  1.80s/cfg, Config 12 done: P_max=9, sat=True][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:23<00:03,  1.80s/cfg, Config 12 done: P_max=9, sat=True][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:23<00:01,  1.67s/cfg, Config 13 done: P_max=7, sat=True][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:23<00:01,  1.67s/cfg, Config 13 done: P_max=7, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:23<00:00,  1.56s/cfg, Config 14 done: P_max=8, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:23<00:00,  1.56s/cfg, Config 14 done: P_max=8, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:23<00:00,  1.56s/cfg, SAT pool complete (15 results from 15 configs)][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:23<00:00,  1.56s/cfg, SAT pool complete (15 results from 15 configs)][A[A
+Patches:  50%|█████     | 1/2 [00:23<00:23, 23.71s/pat, Patch 1/2 (0 gates left)][A
+Patches:  50%|█████     | 1/2 [00:23<00:23, 23.71s/pat, Patch 1/2 (0 gates left)][AMS Rounds:  92%|█████████▎| 37/40 [07:09<00:34, 11.61s/rnd, Processing MS round 37/40]MS Rounds:  92%|█████████▎| 37/40 [07:09<00:34, 11.61s/rnd, Processing MS round 37/40]
+                                                                                 [A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s][A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s, Cycle 1: 0/2 patches][A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s, Cycle 1: 0/2 patches][A
+
+                                                                                                             [A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s][A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s, Starting SAT pool with 8 workers][A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s, Starting SAT pool with 8 workers][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:00<00:10,  1.30cfg/s, 1/15 configs done]       [A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:00<00:10,  1.30cfg/s, 1/15 configs done][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:01<00:09,  1.35cfg/s, 2/15 configs done][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:01<00:09,  1.35cfg/s, 2/15 configs done][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:01<00:06,  1.75cfg/s, 3/15 configs done][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:01<00:06,  1.75cfg/s, 3/15 configs done][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:07<00:20,  1.90s/cfg, 4/15 configs done][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:07<00:21,  1.92s/cfg, 4/15 configs done][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:11<00:22,  2.26s/cfg, 5/15 configs done][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:11<00:22,  2.26s/cfg, 5/15 configs done][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:15<00:22,  2.51s/cfg, 6/15 configs done][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:15<00:22,  2.54s/cfg, 6/15 configs done][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:21<00:24,  3.01s/cfg, 7/15 configs done][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:21<00:24,  3.02s/cfg, 7/15 configs done][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:21<00:19,  2.72s/cfg, 8/15 configs done][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:21<00:19,  2.72s/cfg, 8/15 configs done][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:22<00:15,  2.50s/cfg, 9/15 configs done][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:22<00:15,  2.53s/cfg, 9/15 configs done][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:23<00:11,  2.33s/cfg, 10/15 configs done][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:23<00:11,  2.33s/cfg, 10/15 configs done][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:25<00:09,  2.28s/cfg, 11/15 configs done][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:25<00:09,  2.28s/cfg, 11/15 configs done][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:25<00:06,  2.13s/cfg, 12/15 configs done][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:25<00:06,  2.13s/cfg, 12/15 configs done][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:26<00:04,  2.01s/cfg, 13/15 configs done][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:26<00:04,  2.01s/cfg, 13/15 configs done][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:26<00:01,  1.88s/cfg, 14/15 configs done][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:26<00:01,  1.88s/cfg, 14/15 configs done][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:26<00:00,  1.79s/cfg, 15/15 configs done][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:26<00:00,  1.79s/cfg, 15/15 configs done][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:26<06:15, 26.82s/cfg, Config 0 done: P_max=15, sat=True][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:26<06:15, 26.82s/cfg, Config 0 done: P_max=15, sat=True][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:26<02:54, 13.41s/cfg, Config 1 done: P_max=1, sat=False][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:26<02:54, 13.41s/cfg, Config 1 done: P_max=1, sat=False][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:26<01:47,  8.94s/cfg, Config 2 done: P_max=14, sat=True][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:26<01:47,  8.94s/cfg, Config 2 done: P_max=14, sat=True][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:26<01:13,  6.70s/cfg, Config 3 done: P_max=2, sat=False][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:26<01:13,  6.70s/cfg, Config 3 done: P_max=2, sat=False][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:26<00:53,  5.36s/cfg, Config 4 done: P_max=13, sat=True][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:26<00:53,  5.36s/cfg, Config 4 done: P_max=13, sat=True][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:26<00:40,  4.47s/cfg, Config 5 done: P_max=3, sat=False][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:26<00:40,  4.47s/cfg, Config 5 done: P_max=3, sat=False][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:26<00:30,  3.83s/cfg, Config 6 done: P_max=12, sat=True][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:26<00:30,  3.83s/cfg, Config 6 done: P_max=12, sat=True][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:26<00:23,  3.35s/cfg, Config 7 done: P_max=4, sat=True] [A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:26<00:23,  3.35s/cfg, Config 7 done: P_max=4, sat=True][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:26<00:17,  2.98s/cfg, Config 8 done: P_max=11, sat=True][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:26<00:17,  2.98s/cfg, Config 8 done: P_max=11, sat=True][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:26<00:13,  2.68s/cfg, Config 9 done: P_max=5, sat=True][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:26<00:13,  2.68s/cfg, Config 9 done: P_max=5, sat=True][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:26<00:09,  2.44s/cfg, Config 10 done: P_max=10, sat=True][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:26<00:09,  2.44s/cfg, Config 10 done: P_max=10, sat=True][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:26<00:06,  2.23s/cfg, Config 11 done: P_max=6, sat=True] [A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:26<00:06,  2.23s/cfg, Config 11 done: P_max=6, sat=True][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:26<00:04,  2.06s/cfg, Config 12 done: P_max=9, sat=True][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:26<00:04,  2.06s/cfg, Config 12 done: P_max=9, sat=True][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:26<00:01,  1.92s/cfg, Config 13 done: P_max=7, sat=True][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:26<00:01,  1.92s/cfg, Config 13 done: P_max=7, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:26<00:00,  1.79s/cfg, Config 14 done: P_max=8, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:26<00:00,  1.79s/cfg, Config 14 done: P_max=8, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:26<00:00,  1.79s/cfg, SAT pool complete (15 results from 15 configs)][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:26<00:00,  1.79s/cfg, SAT pool complete (15 results from 15 configs)][A[A
+Patches:  50%|█████     | 1/2 [00:27<00:27, 27.19s/pat, Patch 1/2 (0 gates left)][A
+Patches:  50%|█████     | 1/2 [00:27<00:27, 27.19s/pat, Patch 1/2 (0 gates left)][AMS Rounds:  95%|█████████▌| 38/40 [07:36<00:24, 12.02s/rnd, Processing MS round 38/40]MS Rounds:  95%|█████████▌| 38/40 [07:36<00:24, 12.02s/rnd, Processing MS round 38/40]
+                                                                                 [A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s][A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s, Cycle 1: 0/2 patches][A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s, Cycle 1: 0/2 patches][A
+
+                                                                                                             [A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s][A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s, Starting SAT pool with 8 workers][A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s, Starting SAT pool with 8 workers][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:00<00:13,  1.06cfg/s, 1/15 configs done]       [A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:00<00:13,  1.06cfg/s, 1/15 configs done][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:01<00:05,  2.16cfg/s, 3/15 configs done][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:01<00:05,  2.11cfg/s, 3/15 configs done][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:04<00:09,  1.08cfg/s, 5/15 configs done][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:04<00:09,  1.08cfg/s, 5/15 configs done][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:21<00:31,  3.54s/cfg, 6/15 configs done][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:21<00:31,  3.54s/cfg, 6/15 configs done][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:24<00:27,  3.44s/cfg, 7/15 configs done][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:24<00:27,  3.44s/cfg, 7/15 configs done][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:35<00:30,  4.40s/cfg, 8/15 configs done][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:35<00:30,  4.40s/cfg, 8/15 configs done][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:38<00:25,  4.26s/cfg, 9/15 configs done][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:38<00:25,  4.26s/cfg, 9/15 configs done][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:41<00:10,  3.48s/cfg, 12/15 configs done][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:41<00:10,  3.48s/cfg, 12/15 configs done][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:43<00:06,  3.35s/cfg, 13/15 configs done][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:43<00:06,  3.35s/cfg, 13/15 configs done][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:43<00:03,  3.14s/cfg, 14/15 configs done][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:43<00:03,  3.14s/cfg, 14/15 configs done][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:44<00:00,  2.96s/cfg, 15/15 configs done][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:44<00:00,  2.96s/cfg, 15/15 configs done][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:44<10:20, 44.33s/cfg, Config 0 done: P_max=15, sat=True][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:44<10:20, 44.33s/cfg, Config 0 done: P_max=15, sat=True][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:44<04:48, 22.17s/cfg, Config 1 done: P_max=1, sat=False][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:44<04:48, 22.17s/cfg, Config 1 done: P_max=1, sat=False][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:44<02:57, 14.78s/cfg, Config 2 done: P_max=14, sat=True][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:44<02:57, 14.78s/cfg, Config 2 done: P_max=14, sat=True][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:44<02:01, 11.08s/cfg, Config 3 done: P_max=2, sat=False][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:44<02:01, 11.08s/cfg, Config 3 done: P_max=2, sat=False][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:44<01:28,  8.87s/cfg, Config 4 done: P_max=13, sat=True][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:44<01:28,  8.87s/cfg, Config 4 done: P_max=13, sat=True][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:44<01:06,  7.39s/cfg, Config 5 done: P_max=3, sat=False][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:44<01:06,  7.39s/cfg, Config 5 done: P_max=3, sat=False][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:44<00:50,  6.33s/cfg, Config 6 done: P_max=12, sat=True][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:44<00:50,  6.33s/cfg, Config 6 done: P_max=12, sat=True][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:44<00:38,  5.54s/cfg, Config 7 done: P_max=4, sat=False][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:44<00:38,  5.54s/cfg, Config 7 done: P_max=4, sat=False][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:44<00:29,  4.93s/cfg, Config 8 done: P_max=11, sat=True][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:44<00:29,  4.93s/cfg, Config 8 done: P_max=11, sat=True][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:44<00:22,  4.43s/cfg, Config 9 done: P_max=5, sat=False][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:44<00:22,  4.43s/cfg, Config 9 done: P_max=5, sat=False][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:44<00:16,  4.03s/cfg, Config 10 done: P_max=10, sat=True][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:44<00:16,  4.03s/cfg, Config 10 done: P_max=10, sat=True][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:44<00:11,  3.69s/cfg, Config 11 done: P_max=6, sat=True] [A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:44<00:11,  3.69s/cfg, Config 11 done: P_max=6, sat=True][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:44<00:06,  3.41s/cfg, Config 12 done: P_max=9, sat=True][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:44<00:06,  3.41s/cfg, Config 12 done: P_max=9, sat=True][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:44<00:03,  3.17s/cfg, Config 13 done: P_max=7, sat=True][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:44<00:03,  3.17s/cfg, Config 13 done: P_max=7, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:44<00:00,  2.96s/cfg, Config 14 done: P_max=8, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:44<00:00,  2.96s/cfg, Config 14 done: P_max=8, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:44<00:00,  2.96s/cfg, SAT pool complete (15 results from 15 configs)][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:44<00:00,  2.96s/cfg, SAT pool complete (15 results from 15 configs)][A[A
+Patches:  50%|█████     | 1/2 [00:44<00:44, 44.82s/pat, Patch 1/2 (0 gates left)][A
+Patches:  50%|█████     | 1/2 [00:44<00:44, 44.82s/pat, Patch 1/2 (0 gates left)][AMS Rounds:  98%|█████████▊| 39/40 [08:21<00:12, 12.86s/rnd, Processing MS round 39/40]MS Rounds:  98%|█████████▊| 39/40 [08:21<00:12, 12.86s/rnd, Processing MS round 39/40]
+                                                                                 [A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s][A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s, Cycle 1: 0/2 patches][A
+Patches:   0%|          | 0/2 [00:00<?, ?pat/s, Cycle 1: 0/2 patches][A
+
+                                                                                                             [A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s][A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s, Starting SAT pool with 8 workers][A[A
+
+SAT Configs:   0%|          | 0/15 [00:00<?, ?cfg/s, Starting SAT pool with 8 workers][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:01<00:16,  1.16s/cfg, 1/15 configs done]       [A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:01<00:16,  1.16s/cfg, 1/15 configs done][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:01<00:08,  1.57cfg/s, 2/15 configs done][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:01<00:08,  1.57cfg/s, 2/15 configs done][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:01<00:06,  1.92cfg/s, 3/15 configs done][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:01<00:06,  1.92cfg/s, 3/15 configs done][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:08<00:23,  2.10s/cfg, 4/15 configs done][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:08<00:23,  2.13s/cfg, 4/15 configs done][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:09<00:19,  1.92s/cfg, 5/15 configs done][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:09<00:19,  1.92s/cfg, 5/15 configs done][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:15<00:23,  2.63s/cfg, 6/15 configs done][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:15<00:23,  2.63s/cfg, 6/15 configs done][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:16<00:18,  2.36s/cfg, 7/15 configs done][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:16<00:19,  2.38s/cfg, 7/15 configs done][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:17<00:15,  2.24s/cfg, 8/15 configs done][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:17<00:15,  2.24s/cfg, 8/15 configs done][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:20<00:13,  2.26s/cfg, 9/15 configs done][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:20<00:13,  2.27s/cfg, 9/15 configs done][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:22<00:11,  2.23s/cfg, 10/15 configs done][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:22<00:11,  2.23s/cfg, 10/15 configs done][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:22<00:08,  2.08s/cfg, 11/15 configs done][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:22<00:08,  2.08s/cfg, 11/15 configs done][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:22<00:05,  1.91s/cfg, 12/15 configs done][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:22<00:05,  1.91s/cfg, 12/15 configs done][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:23<00:03,  1.82s/cfg, 13/15 configs done][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:23<00:03,  1.82s/cfg, 13/15 configs done][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:24<00:01,  1.73s/cfg, 14/15 configs done][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:24<00:01,  1.73s/cfg, 14/15 configs done][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:24<00:00,  1.62s/cfg, 15/15 configs done][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:24<00:00,  1.62s/cfg, 15/15 configs done][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:24<05:39, 24.26s/cfg, Config 0 done: P_max=15, sat=True][A[A
+
+SAT Configs:   7%|▋         | 1/15 [00:24<05:39, 24.26s/cfg, Config 0 done: P_max=15, sat=True][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:24<02:37, 12.13s/cfg, Config 1 done: P_max=1, sat=False][A[A
+
+SAT Configs:  13%|█▎        | 2/15 [00:24<02:37, 12.13s/cfg, Config 1 done: P_max=1, sat=False][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:24<01:37,  8.09s/cfg, Config 2 done: P_max=14, sat=True][A[A
+
+SAT Configs:  20%|██        | 3/15 [00:24<01:37,  8.09s/cfg, Config 2 done: P_max=14, sat=True][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:24<01:06,  6.07s/cfg, Config 3 done: P_max=2, sat=False][A[A
+
+SAT Configs:  27%|██▋       | 4/15 [00:24<01:06,  6.07s/cfg, Config 3 done: P_max=2, sat=False][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:24<00:48,  4.85s/cfg, Config 4 done: P_max=13, sat=True][A[A
+
+SAT Configs:  33%|███▎      | 5/15 [00:24<00:48,  4.85s/cfg, Config 4 done: P_max=13, sat=True][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:24<00:36,  4.04s/cfg, Config 5 done: P_max=3, sat=False][A[A
+
+SAT Configs:  40%|████      | 6/15 [00:24<00:36,  4.04s/cfg, Config 5 done: P_max=3, sat=False][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:24<00:27,  3.47s/cfg, Config 6 done: P_max=12, sat=True][A[A
+
+SAT Configs:  47%|████▋     | 7/15 [00:24<00:27,  3.47s/cfg, Config 6 done: P_max=12, sat=True][A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:24<00:21,  3.03s/cfg, Config 7 done: P_max=4, sat=True] [A[A
+
+SAT Configs:  53%|█████▎    | 8/15 [00:24<00:21,  3.03s/cfg, Config 7 done: P_max=4, sat=True][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:24<00:16,  2.70s/cfg, Config 8 done: P_max=11, sat=True][A[A
+
+SAT Configs:  60%|██████    | 9/15 [00:24<00:16,  2.70s/cfg, Config 8 done: P_max=11, sat=True][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:24<00:12,  2.43s/cfg, Config 9 done: P_max=5, sat=True][A[A
+
+SAT Configs:  67%|██████▋   | 10/15 [00:24<00:12,  2.43s/cfg, Config 9 done: P_max=5, sat=True][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:24<00:08,  2.21s/cfg, Config 10 done: P_max=10, sat=True][A[A
+
+SAT Configs:  73%|███████▎  | 11/15 [00:24<00:08,  2.21s/cfg, Config 10 done: P_max=10, sat=True][A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:24<00:06,  2.02s/cfg, Config 11 done: P_max=6, sat=True] [A[A
+
+SAT Configs:  80%|████████  | 12/15 [00:24<00:06,  2.02s/cfg, Config 11 done: P_max=6, sat=True][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:24<00:03,  1.87s/cfg, Config 12 done: P_max=9, sat=True][A[A
+
+SAT Configs:  87%|████████▋ | 13/15 [00:24<00:03,  1.87s/cfg, Config 12 done: P_max=9, sat=True][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:24<00:01,  1.73s/cfg, Config 13 done: P_max=7, sat=True][A[A
+
+SAT Configs:  93%|█████████▎| 14/15 [00:24<00:01,  1.73s/cfg, Config 13 done: P_max=7, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:24<00:00,  1.62s/cfg, Config 14 done: P_max=8, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:24<00:00,  1.62s/cfg, Config 14 done: P_max=8, sat=True][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:24<00:00,  1.62s/cfg, SAT pool complete (15 results from 15 configs)][A[A
+
+SAT Configs: 100%|██████████| 15/15 [00:24<00:00,  1.62s/cfg, SAT pool complete (15 results from 15 configs)][A[A
+Patches:  50%|█████     | 1/2 [00:24<00:24, 24.62s/pat, Patch 1/2 (0 gates left)][A
+Patches:  50%|█████     | 1/2 [00:24<00:24, 24.62s/pat, Patch 1/2 (0 gates left)][AMS Rounds:   0%|          | 0/40 [08:46<?, ?rnd/s, Processing MS round 0/40]          MS Rounds:   0%|          | 0/40 [08:46<?, ?rnd/s, Processing MS round 0/40]
+                                                                                 [AMS Rounds:   2%|▎         | 1/40 [08:46<5:41:55, 526.03s/rnd, Processing MS round 1/40]MS Rounds:   2%|▎         | 1/40 [08:46<5:41:55, 526.03s/rnd, Processing MS round 1/40]MS Rounds:   5%|▌         | 2/40 [08:46<2:46:34, 263.02s/rnd, Processing MS round 2/40]MS Rounds:   5%|▌         | 2/40 [08:46<2:46:34, 263.02s/rnd, Processing MS round 2/40]MS Rounds:   8%|▊         | 3/40 [08:46<1:48:07, 175.35s/rnd, Processing MS round 3/40]MS Rounds:   8%|▊         | 3/40 [08:46<1:48:07, 175.35s/rnd, Processing MS round 3/40]MS Rounds:  10%|█         | 4/40 [08:46<1:18:54, 131.51s/rnd, Processing MS round 4/40]MS Rounds:  10%|█         | 4/40 [08:46<1:18:54, 131.51s/rnd, Processing MS round 4/40]RECONFIGURATION: 28 passes were needed for the current reconfiguration round, taking 0.008824000000000004 time and {1: 0.0101429, 2: 0.0170312, 4: 0.012163199999999999, 8: 0.017858600000000002, 5: 0.014110399999999999, 7: 0.016885, 10: 0.018759100000000004, 13: 0.0158383, 11: 0.012017, 14: 0.018759100000000004, 31: 0.015083999999999998, 32: 0.0169581, 34: 0.0159114, 38: 0.0139642, 19: 0.0149378, 37: 0.015010899999999999, 25: 0.017785500000000003, 28: 0.013136799999999999, 43: 0.020706300000000007, 29: 0.0159845, 17: 0.015010899999999999, 20: 0.015010899999999999, 16: 0.0149378, 23: 0.015010899999999999, 35: 0.012163199999999999, 22: 0.0159845, 40: 0.017858600000000002, 41: 0.016885, 26: 0.016885, 44: 0.02167990000000001, 46: 0.014037299999999999, 47: 0.0051287, 49: 0.0120901, 50: 0.015083999999999998, 52: 0.010216, 53: 0.0111896, 55: 0.016885, 56: 0.0159114, 58: 0.014037299999999999, 59: 0.0082688} heating
+MS Rounds:  12%|█▎        | 5/40 [08:46<1:01:22, 105.21s/rnd, Processing MS round 5/40]MS Rounds:  12%|█▎        | 5/40 [08:46<1:01:22, 105.21s/rnd, Processing MS round 5/40]MS Rounds:  15%|█▌        | 6/40 [08:46<49:40, 87.68s/rnd, Processing MS round 6/40]   MS Rounds:  15%|█▌        | 6/40 [08:46<49:40, 87.68s/rnd, Processing MS round 6/40]MS Rounds:  18%|█▊        | 7/40 [08:46<41:19, 75.15s/rnd, Processing MS round 7/40]MS Rounds:  18%|█▊        | 7/40 [08:46<41:19, 75.15s/rnd, Processing MS round 7/40]MS Rounds:  20%|██        | 8/40 [08:46<35:04, 65.76s/rnd, Processing MS round 8/40]MS Rounds:  20%|██        | 8/40 [08:46<35:04, 65.76s/rnd, Processing MS round 8/40]RECONFIGURATION: 28 passes were needed for the current reconfiguration round, taking 0.008824000000000004 time and {1: 0.0101429, 2: 0.0170312, 4: 0.012163199999999999, 8: 0.017858600000000002, 5: 0.014110399999999999, 7: 0.016885, 10: 0.018759100000000004, 13: 0.0158383, 11: 0.012017, 14: 0.018759100000000004, 31: 0.015083999999999998, 32: 0.0169581, 34: 0.0159114, 38: 0.0139642, 19: 0.0149378, 37: 0.015010899999999999, 25: 0.017785500000000003, 28: 0.013136799999999999, 43: 0.020706300000000007, 29: 0.0159845, 17: 0.015010899999999999, 20: 0.015010899999999999, 16: 0.0149378, 23: 0.015010899999999999, 35: 0.012163199999999999, 22: 0.0159845, 40: 0.017858600000000002, 41: 0.016885, 26: 0.016885, 44: 0.02167990000000001, 46: 0.014037299999999999, 47: 0.0051287, 49: 0.0120901, 50: 0.015083999999999998, 52: 0.010216, 53: 0.0111896, 55: 0.016885, 56: 0.0159114, 58: 0.014037299999999999, 59: 0.0082688} heating
+MS Rounds:  22%|██▎       | 9/40 [08:46<30:12, 58.45s/rnd, Processing MS round 9/40]MS Rounds:  22%|██▎       | 9/40 [08:46<30:12, 58.45s/rnd, Processing MS round 9/40]MS Rounds:  25%|██▌       | 10/40 [08:46<26:18, 52.61s/rnd, Processing MS round 10/40]MS Rounds:  25%|██▌       | 10/40 [08:46<26:18, 52.61s/rnd, Processing MS round 10/40]MS Rounds:  28%|██▊       | 11/40 [08:46<23:06, 47.82s/rnd, Processing MS round 11/40]MS Rounds:  28%|██▊       | 11/40 [08:46<23:06, 47.82s/rnd, Processing MS round 11/40]MS Rounds:  30%|███       | 12/40 [08:46<20:27, 43.84s/rnd, Processing MS round 12/40]MS Rounds:  30%|███       | 12/40 [08:46<20:27, 43.84s/rnd, Processing MS round 12/40]MS Rounds:  32%|███▎      | 13/40 [08:46<18:12, 40.47s/rnd, Processing MS round 13/40]MS Rounds:  32%|███▎      | 13/40 [08:46<18:12, 40.47s/rnd, Processing MS round 13/40]MS Rounds:  35%|███▌      | 14/40 [08:46<16:17, 37.58s/rnd, Processing MS round 14/40]MS Rounds:  35%|███▌      | 14/40 [08:46<16:17, 37.58s/rnd, Processing MS round 14/40]RECONFIGURATION: 27 passes were needed for the current reconfiguration round, taking 0.008612000000000003 time and {1: 0.010216, 2: 0.0180048, 4: 0.017858600000000002, 8: 0.0129175, 5: 0.0149378, 7: 0.0158383, 10: 0.018759100000000004, 13: 0.0139642, 11: 0.0168119, 14: 0.004301300000000001, 31: 0.0111165, 32: 0.0159845, 34: 0.0130637, 38: 0.0129175, 19: 0.0110434, 37: 0.0158383, 25: 0.0100698, 28: 0.0111165, 43: 0.0092424, 29: 0.0063216, 17: 0.0149378, 20: 0.0180048, 16: 0.0109703, 23: 0.0130637, 35: 0.0120901, 22: 0.013136799999999999, 40: 0.0159114, 41: 0.0138911, 26: 0.0149378, 44: 0.0110434, 46: 0.015083999999999998, 47: 0.0090962, 49: 0.016057599999999998, 50: 0.0100698, 52: 0.012163199999999999, 53: 0.014037299999999999, 55: 0.017785500000000003, 56: 0.018759100000000004, 58: 0.0092424, 59: 0.0082688} heating
+MS Rounds:  38%|███▊      | 15/40 [08:46<14:36, 35.07s/rnd, Processing MS round 15/40]MS Rounds:  38%|███▊      | 15/40 [08:46<14:36, 35.07s/rnd, Processing MS round 15/40]MS Rounds:  40%|████      | 16/40 [08:46<13:09, 32.88s/rnd, Processing MS round 16/40]MS Rounds:  40%|████      | 16/40 [08:46<13:09, 32.88s/rnd, Processing MS round 16/40]MS Rounds:  42%|████▎     | 17/40 [08:46<11:51, 30.95s/rnd, Processing MS round 17/40]MS Rounds:  42%|████▎     | 17/40 [08:46<11:51, 30.95s/rnd, Processing MS round 17/40]MS Rounds:  45%|████▌     | 18/40 [08:46<10:43, 29.23s/rnd, Processing MS round 18/40]MS Rounds:  45%|████▌     | 18/40 [08:46<10:43, 29.23s/rnd, Processing MS round 18/40]RECONFIGURATION: 22 passes were needed for the current reconfiguration round, taking 0.006360000000000003 time and {2: 0.0043744000000000005, 1: 0.0169581, 17: 0.0169581, 34: 0.0159845, 32: 0.0072952, 31: 0.015010899999999999, 28: 0.015010899999999999, 56: 0.015010899999999999, 55: 0.0159845, 44: 0.0159845, 50: 0.0100698, 4: 0.0159845, 38: 0.0110434, 5: 0.014037299999999999, 13: 0.0139642, 53: 0.0149378, 41: 0.0091693, 37: 0.0130637, 14: 0.016885, 43: 0.006248500000000001, 20: 0.0043013, 23: 0.0111165, 47: 0.016885, 19: 0.0111165, 22: 0.0091693, 16: 0.0139642, 29: 0.0159114, 25: 0.0063216, 26: 0.016885, 40: 0.016885, 8: 0.014037299999999999, 49: 0.0130637, 7: 0.0130637, 46: 0.0130637, 35: 0.0130637, 11: 0.0159845, 52: 0.0063216, 59: 0.0063216, 58: 0.017931700000000002, 10: 0.005348} heating
+MS Rounds:  48%|████▊     | 19/40 [08:46<09:41, 27.69s/rnd, Processing MS round 19/40]MS Rounds:  48%|████▊     | 19/40 [08:46<09:41, 27.69s/rnd, Processing MS round 19/40]MS Rounds:  50%|█████     | 20/40 [08:46<08:46, 26.31s/rnd, Processing MS round 20/40]MS Rounds:  50%|█████     | 20/40 [08:46<08:46, 26.31s/rnd, Processing MS round 20/40]RECONFIGURATION: 27 passes were needed for the current reconfiguration round, taking 0.008612000000000003 time and {1: 0.010216, 2: 0.0180048, 4: 0.017858600000000002, 8: 0.0129175, 5: 0.0149378, 7: 0.0158383, 10: 0.018759100000000004, 13: 0.0139642, 11: 0.0168119, 14: 0.004301300000000001, 31: 0.0111165, 32: 0.0159845, 34: 0.0130637, 38: 0.0129175, 19: 0.0110434, 37: 0.0158383, 25: 0.0100698, 28: 0.0111165, 43: 0.0092424, 29: 0.0063216, 17: 0.0149378, 20: 0.0180048, 16: 0.0109703, 23: 0.0130637, 35: 0.0120901, 22: 0.013136799999999999, 40: 0.0159114, 41: 0.0138911, 26: 0.0149378, 44: 0.0110434, 46: 0.015083999999999998, 47: 0.0090962, 49: 0.016057599999999998, 50: 0.0100698, 52: 0.012163199999999999, 53: 0.014037299999999999, 55: 0.017785500000000003, 56: 0.018759100000000004, 58: 0.0092424, 59: 0.0082688} heating
+MS Rounds:  52%|█████▎    | 21/40 [08:46<07:56, 25.05s/rnd, Processing MS round 21/40]MS Rounds:  52%|█████▎    | 21/40 [08:46<07:56, 25.05s/rnd, Processing MS round 21/40]MS Rounds:  55%|█████▌    | 22/40 [08:46<07:10, 23.92s/rnd, Processing MS round 22/40]MS Rounds:  55%|█████▌    | 22/40 [08:46<07:10, 23.92s/rnd, Processing MS round 22/40]MS Rounds:  57%|█████▊    | 23/40 [08:46<06:28, 22.88s/rnd, Processing MS round 23/40]MS Rounds:  57%|█████▊    | 23/40 [08:46<06:28, 22.88s/rnd, Processing MS round 23/40]MS Rounds:  60%|██████    | 24/40 [08:46<05:50, 21.92s/rnd, Processing MS round 24/40]MS Rounds:  60%|██████    | 24/40 [08:46<05:50, 21.92s/rnd, Processing MS round 24/40]MS Rounds:  62%|██████▎   | 25/40 [08:46<05:15, 21.05s/rnd, Processing MS round 25/40]MS Rounds:  62%|██████▎   | 25/40 [08:46<05:15, 21.05s/rnd, Processing MS round 25/40]MS Rounds:  65%|██████▌   | 26/40 [08:46<04:43, 20.24s/rnd, Processing MS round 26/40]MS Rounds:  65%|██████▌   | 26/40 [08:46<04:43, 20.24s/rnd, Processing MS round 26/40]RECONFIGURATION: 28 passes were needed for the current reconfiguration round, taking 0.008824000000000004 time and {1: 0.0159845, 2: 0.017931700000000002, 4: 0.010216, 8: 0.0169581, 5: 0.014037299999999999, 7: 0.0139642, 10: 0.018759100000000004, 13: 0.0168119, 11: 0.012017, 14: 0.0110434, 31: 0.0169581, 32: 0.018905300000000003, 34: 0.0169581, 38: 0.019805800000000005, 19: 0.012017, 37: 0.018832200000000004, 25: 0.014110399999999999, 28: 0.015010899999999999, 43: 0.020706300000000007, 29: 0.020706300000000007, 17: 0.018978400000000003, 20: 0.0159114, 16: 0.016885, 23: 0.0130637, 35: 0.0129175, 22: 0.010216, 40: 0.0159114, 41: 0.0120901, 26: 0.0082688, 44: 0.02167990000000001, 46: 0.0091693, 47: 0.0091693, 49: 0.015083999999999998, 50: 0.016057599999999998, 52: 0.014110399999999999, 53: 0.013136799999999999, 55: 0.013136799999999999, 56: 0.018759100000000004, 58: 0.018759100000000004, 59: 0.0139642} heating
+MS Rounds:  68%|██████▊   | 27/40 [08:46<04:13, 19.49s/rnd, Processing MS round 27/40]MS Rounds:  68%|██████▊   | 27/40 [08:46<04:13, 19.49s/rnd, Processing MS round 27/40]MS Rounds:  70%|███████   | 28/40 [08:46<03:45, 18.79s/rnd, Processing MS round 28/40]MS Rounds:  70%|███████   | 28/40 [08:46<03:45, 18.79s/rnd, Processing MS round 28/40]MS Rounds:  72%|███████▎  | 29/40 [08:46<03:19, 18.14s/rnd, Processing MS round 29/40]MS Rounds:  72%|███████▎  | 29/40 [08:46<03:19, 18.14s/rnd, Processing MS round 29/40]MS Rounds:  75%|███████▌  | 30/40 [08:46<02:55, 17.54s/rnd, Processing MS round 30/40]MS Rounds:  75%|███████▌  | 30/40 [08:46<02:55, 17.54s/rnd, Processing MS round 30/40]MS Rounds:  78%|███████▊  | 31/40 [08:46<02:32, 16.97s/rnd, Processing MS round 31/40]MS Rounds:  78%|███████▊  | 31/40 [08:46<02:32, 16.97s/rnd, Processing MS round 31/40]MS Rounds:  80%|████████  | 32/40 [08:46<02:11, 16.44s/rnd, Processing MS round 32/40]MS Rounds:  80%|████████  | 32/40 [08:46<02:11, 16.44s/rnd, Processing MS round 32/40]MS Rounds:  82%|████████▎ | 33/40 [08:46<01:51, 15.94s/rnd, Processing MS round 33/40]MS Rounds:  82%|████████▎ | 33/40 [08:46<01:51, 15.94s/rnd, Processing MS round 33/40]MS Rounds:  85%|████████▌ | 34/40 [08:46<01:32, 15.48s/rnd, Processing MS round 34/40]MS Rounds:  85%|████████▌ | 34/40 [08:46<01:32, 15.48s/rnd, Processing MS round 34/40]MS Rounds:  88%|████████▊ | 35/40 [08:46<01:15, 15.03s/rnd, Processing MS round 35/40]MS Rounds:  88%|████████▊ | 35/40 [08:46<01:15, 15.03s/rnd, Processing MS round 35/40]MS Rounds:  90%|█████████ | 36/40 [08:46<00:58, 14.62s/rnd, Processing MS round 36/40]MS Rounds:  90%|█████████ | 36/40 [08:46<00:58, 14.62s/rnd, Processing MS round 36/40]MS Rounds:  92%|█████████▎| 37/40 [08:46<00:42, 14.22s/rnd, Processing MS round 37/40]MS Rounds:  92%|█████████▎| 37/40 [08:46<00:42, 14.22s/rnd, Processing MS round 37/40]MS Rounds:  95%|█████████▌| 38/40 [08:46<00:27, 13.85s/rnd, Processing MS round 38/40]MS Rounds:  95%|█████████▌| 38/40 [08:46<00:27, 13.85s/rnd, Processing MS round 38/40]MS Rounds:  98%|█████████▊| 39/40 [08:46<00:13, 13.49s/rnd, Processing MS round 39/40]MS Rounds:  98%|█████████▊| 39/40 [08:46<00:13, 13.49s/rnd, Processing MS round 39/40]MS Rounds: 100%|██████████| 40/40 [08:46<00:00, 13.16s/rnd, Processing MS round 39/40]Compilation: 526.4s
+Parallel steps: 712
+Total operations: 1579
+
+Operation counts:
+  GlobalReconfigurations: 40
+  Measurement: 90
+  QubitReset: 169
+  TwoQubitMSGate: 192
+  XRotation: 544
+  YRotation: 544
+
+============================================================
+CHECK 1: MS gates > 0
+  PASS: 192 MS gates
+
+CHECK 2: Parallel steps < baseline (1003)
+  PASS: 712 steps (29% reduction)
+
+CHECK 3: GlobalReconfig -> MS gate ordering
+  MS group 0: 6 gates
+  MS group 1: 6 gates
+  MS group 2: 6 gates
+  MS group 3: 6 gates
+  MS group 4: 6 gates
+  Total MS groups: 40
+  PASS
+
+CHECK 4: No UNMATCHED/SKIPPING warnings
+  PASS: 0 UNMATCHED/SKIPPING warnings
+
+CHECK 5: Fix B - Gadget phase cache hits
+  INFO: 0 cache hits (may be expected if all phases are unique)
+
+CHECK 6: Fix C - Combined routing rounds
+  Total routing log messages: 452
+  PASS: 192 MS gates produced with combined rounds
+
+============================================================
+SUMMARY
+============================================================
+MS gates:        192
+Parallel steps:  712
+Compile time:    526.4s
+Warnings:        1
+Cache hits:      0
+
+ALL CHECKS:      PASS
+
+
+                                                                                                             [A[AMS Rounds: 100%|██████████| 40/40 [08:46<00:00, 13.16s/rnd, Processing MS round 39/40]

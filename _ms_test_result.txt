@@ -1,0 +1,8 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.11.5, pytest-9.0.1, pluggy-1.6.0 -- /Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/my_venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim
+configfile: pyproject.toml
+collecting ... collected 1 item
+
+tests/test_css_surgery_pipeline.py::TestStimToNativeVerification::test_ms_gate_count_matches_stim_cx_pairs 

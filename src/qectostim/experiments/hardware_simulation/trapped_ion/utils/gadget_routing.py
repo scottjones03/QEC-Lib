@@ -941,6 +941,95 @@ def build_ion_return_bt_for_patch_and_route(
     return [dict() for _ in range(num_rounds)] + [{(0, 0): dict(bt_map)}]
 
 
+def _compute_return_reconfig(
+    final_layout: np.ndarray,
+    target_layout: np.ndarray,
+    arch,
+    subgridsize,
+    base_pmax_in: int = 1,
+    stop_event=None,
+    max_inner_workers=None,
+) -> list:
+    """Compute return-round reconfiguration as a **separate** SAT call.
+
+    Instead of bundling the return round as an extra empty round with BT
+    pins in the main MS-gate SAT instance (which inflates *R* and can cause
+    UNSAT), this function solves the pure reconfiguration problem: move all
+    ions from *final_layout* back to *target_layout*.
+
+    Uses ``_rebuild_schedule_for_layout`` which iteratively applies
+    SAT-based patch reconfiguration with BT pins until convergence.
+    If SAT cannot fully converge to the target layout, the final
+    snapshot will have ``schedule=None``, causing ``physicalOperation``
+    to fall through to the deterministic Phase B/C/D heuristic
+    (odd-even transposition sort on the full grid) which always
+    succeeds.
+
+    Parameters
+    ----------
+    final_layout : np.ndarray
+        Layout after all MS rounds have been routed.
+    target_layout : np.ndarray
+        Desired ion positions (typically the initial EC layout).
+    arch : QCCDWiseArch
+        Grid geometry.
+    subgridsize : tuple
+        Patch dimensions for SAT tiling.
+    base_pmax_in : int
+        Base P_max for SAT solver.
+    stop_event, max_inner_workers : optional
+        Threading controls.
+
+    Returns
+    -------
+    list
+        List of ``RoutingStep`` objects for the return reconfiguration.
+        Empty list if layouts already match.
+
+    """
+    from ..compiler.qccd_WISE_ion_route import (
+        _rebuild_schedule_for_layout,
+        RoutingStep,
+    )
+
+    if np.array_equal(final_layout, target_layout):
+        return []
+
+    _logger = logging.getLogger("wise.qccd.gadget_routing")
+    _logger.debug(
+        "[ReturnRound] computing separate return reconfig "
+        "(%d non-matching cells)",
+        int(np.sum(final_layout != target_layout)),
+    )
+    # If SAT cannot fully converge, _rebuild_schedule_for_layout
+    # appends a final snapshot with schedule=None, which causes
+    # physicalOperation to use the heuristic odd-even sort instead.
+    snaps = _rebuild_schedule_for_layout(
+        final_layout.copy(),
+        arch,
+        target_layout,
+        subgridsize=subgridsize,
+        base_pmax_in=base_pmax_in,
+        stop_event=stop_event,
+        max_inner_workers=max_inner_workers or 1,
+    )
+
+    steps = []
+    for i, (layout, schedule, _pairs) in enumerate(snaps):
+        steps.append(RoutingStep(
+            layout_after=np.array(layout, copy=True),
+            schedule=schedule,
+            solved_pairs=[],
+            ms_round_index=-1,
+            from_cache=False,
+            tiling_meta=(i, 0),
+            can_merge_with_next=False,
+            is_initial_placement=False,
+            is_layout_transition=True,
+        ))
+    return steps
+
+
 # =====================================================================
 # Integration Layer: Full Experiment Result
 # =====================================================================
@@ -2044,22 +2133,80 @@ def _reconstruct_ec_target(
     global_layout: np.ndarray,
     block_sub_grids: Dict[str, "BlockSubGrid"],
     k: int,
+    ion_to_block: Optional[Dict[int, str]] = None,
 ) -> np.ndarray:
     """Build a full-grid target from per-block EC initial layouts.
 
-    Each block's sub-grid region in the global layout is overwritten with
-    the saved EC initial layout for that block.  Regions not covered by
-    any block are left unchanged (preserving spectator ions).
+    When *ion_to_block* is supplied, only **active** ions (those that
+    carry a qubit) are pinned to their EC-initial positions.  Spectator
+    ions stay at their **current** positions in *global_layout*, which
+    drastically reduces the permutation the SAT solver must achieve.
+    If a spectator currently occupies a cell needed by an active ion,
+    the spectator is relocated to the nearest available empty cell.
+
+    Without *ion_to_block* this falls back to the legacy behaviour of
+    overwriting entire block regions.
     """
-    target = global_layout.copy()
+    if ion_to_block is None:
+        # Legacy path: overwrite entire block regions (moves spectators)
+        target = global_layout.copy()
+        for bname, sg in block_sub_grids.items():
+            if bname in ec_initial_layouts:
+                r0, c0, r1, c1 = sg.grid_region
+                c0i, c1i = c0 * k, c1 * k
+                ec_lay = ec_initial_layouts[bname]
+                rows = min(r1 - r0, ec_lay.shape[0])
+                cols = min(c1i - c0i, ec_lay.shape[1])
+                target[r0:r0 + rows, c0i:c0i + cols] = ec_lay[:rows, :cols]
+        return target
+
+    # ── Smart path: only pin active ions ──
+    # 1. Collect where each active ion must go (from EC-initial layouts)
+    active_targets: Dict[int, Tuple[int, int]] = {}
     for bname, sg in block_sub_grids.items():
-        if bname in ec_initial_layouts:
-            r0, c0, r1, c1 = sg.grid_region
-            c0i, c1i = c0 * k, c1 * k
-            ec_lay = ec_initial_layouts[bname]
-            rows = min(r1 - r0, ec_lay.shape[0])
-            cols = min(c1i - c0i, ec_lay.shape[1])
-            target[r0:r0 + rows, c0i:c0i + cols] = ec_lay[:rows, :cols]
+        if bname not in ec_initial_layouts:
+            continue
+        r0, c0, r1, c1 = sg.grid_region
+        c0i = c0 * k
+        ec_lay = ec_initial_layouts[bname]
+        rows = min(r1 - r0, ec_lay.shape[0])
+        cols = min((c1 - c0) * k, ec_lay.shape[1])
+        for r in range(rows):
+            for c in range(cols):
+                ion_idx = int(ec_lay[r, c])
+                if ion_idx != 0 and ion_idx in ion_to_block:
+                    active_targets[ion_idx] = (r0 + r, c0i + c)
+
+    # 2. Start from the *current* layout (preserves spectator positions)
+    target = global_layout.copy()
+
+    # 3. Remove all active ions from their current positions
+    for r in range(target.shape[0]):
+        for c in range(target.shape[1]):
+            if int(target[r, c]) in active_targets:
+                target[r, c] = 0
+
+    # 4. Place active ions at their EC-initial positions.
+    #    If a spectator sits there, displace it.
+    displaced: list = []
+    for ion_idx, (tr, tc) in active_targets.items():
+        occupant = int(target[tr, tc])
+        if occupant != 0:
+            displaced.append(occupant)
+            target[tr, tc] = 0
+        target[tr, tc] = ion_idx
+
+    # 5. Relocate displaced spectators to any empty cell
+    for spec_ion in displaced:
+        for r in range(target.shape[0]):
+            for c in range(target.shape[1]):
+                if target[r, c] == 0:
+                    target[r, c] = spec_ion
+                    break
+            else:
+                continue
+            break
+
     return target
 
 
@@ -2137,9 +2284,32 @@ def _compute_transition_reconfig_steps(
         reconfigurations into one, which is valid because each
         snapshot's schedule transforms the previous layout to the next
         and concatenation preserves this sequential property.
+
+        If any step has ``schedule=None`` (heuristic fallback from
+        ``_rebuild_schedule_for_layout``), the consolidated result also
+        uses ``schedule=None``.  This causes ``physicalOperation`` to
+        fall through to the deterministic Phase B/C/D odd-even
+        transposition sort on the full grid, which always succeeds.
         """
         if len(steps) <= 1:
             return steps
+        # If any step uses the heuristic fallback (schedule=None), the
+        # earlier SAT schedules only got us partway.  The heuristic will
+        # sort from the current layout all the way to the final target
+        # in one shot, so we consolidate to schedule=None.
+        has_heuristic_fallback = any(s.schedule is None for s in steps)
+        if has_heuristic_fallback:
+            return [RoutingStep(
+                layout_after=np.array(steps[-1].layout_after, copy=True),
+                schedule=None,
+                solved_pairs=[],
+                ms_round_index=-1,
+                from_cache=False,
+                tiling_meta=(0, 0),
+                can_merge_with_next=False,
+                is_initial_placement=False,
+                is_layout_transition=True,
+            )]
         merged_schedule = []
         for s in steps:
             if s.schedule:
@@ -2157,6 +2327,9 @@ def _compute_transition_reconfig_steps(
         )]
 
     # --- Check block purity ---
+    # Only consider ions that are actually mapped to a block (i.e.
+    # carry a qubit).  Unmapped ions are physical trap slots with
+    # no qubit assignment (common when k > 1) and must be ignored.
     blocks_pure = True
     for bname, sg in block_sub_grids.items():
         r0, c0, r1, c1 = sg.grid_region
@@ -2165,8 +2338,8 @@ def _compute_transition_reconfig_steps(
         for r in range(block_slice.shape[0]):
             for c in range(block_slice.shape[1]):
                 ion_idx = int(block_slice[r, c])
-                if ion_idx != 0:
-                    owner = ion_to_block.get(ion_idx)
+                if ion_idx != 0 and ion_idx in ion_to_block:
+                    owner = ion_to_block[ion_idx]
                     if owner != bname:
                         blocks_pure = False
                         break
@@ -2196,21 +2369,14 @@ def _compute_transition_reconfig_steps(
             block_rows, block_cols = block_current.shape
             block_wise = _WA(n=block_rows, m=block_cols // k, k=k)
 
-            try:
-                snaps = _rebuild_schedule_for_layout(
-                    block_current, block_wise, block_target,
-                    subgridsize=subgridsize,
-                    base_pmax_in=base_pmax_in,
-                    stop_event=stop_event,
-                    max_inner_workers=1,
-                )
-            except (NoFeasibleLayoutError, Exception) as exc:
-                _logger.warning(
-                    "[TransitionReconfig] per-block reconfig for %s "
-                    "failed (%s); skipping block transition",
-                    bname, exc,
-                )
-                snaps = []
+            # If SAT cannot fully converge, fallback to heuristic sort.
+            snaps = _rebuild_schedule_for_layout(
+                block_current, block_wise, block_target,
+                subgridsize=subgridsize,
+                base_pmax_in=base_pmax_in,
+                stop_event=stop_event,
+                max_inner_workers=1,
+            )
             per_block_steps[bname] = _snapshots_to_steps(snaps)
 
         # Merge per-block steps into global steps
@@ -2228,21 +2394,14 @@ def _compute_transition_reconfig_steps(
             "using full-grid routing via _rebuild_schedule_for_layout",
         )
 
-        try:
-            snaps = _rebuild_schedule_for_layout(
-                current_layout.copy(), wiseArch, target_layout,
-                subgridsize=subgridsize,
-                base_pmax_in=base_pmax_in,
-                stop_event=stop_event,
-                max_inner_workers=max_inner_workers,
-            )
-        except (NoFeasibleLayoutError, Exception) as exc:
-            _logger.warning(
-                "[TransitionReconfig] full-grid reconfig failed "
-                "(%s); returning empty transition",
-                exc,
-            )
-            snaps = []
+        # If SAT cannot fully converge, fallback to heuristic sort.
+        snaps = _rebuild_schedule_for_layout(
+            current_layout.copy(), wiseArch, target_layout,
+            subgridsize=subgridsize,
+            base_pmax_in=base_pmax_in,
+            stop_event=stop_event,
+            max_inner_workers=max_inner_workers,
+        )
         # Consolidate multiple transition steps into one reconfiguration
         return _consolidate_transition_steps(_snapshots_to_steps(snaps))
 
@@ -2444,6 +2603,7 @@ def route_full_experiment_as_steps(
     from ..compiler.routing_config import (
         RoutingProgress,
         STAGE_ROUTING,
+        STAGE_RECONFIG,
         STAGE_COMPLETE,
     )
     from .qccd_nodes import QCCDWiseArch
@@ -2467,6 +2627,24 @@ def route_full_experiment_as_steps(
     )
     _global_round_offset = 0  # accumulated after each phase
     _route_emit_hwm = 0       # suppress backward Route emissions
+
+    # Reconfig progress counter — tracks transition/return reconfigs
+    # across all phases so the user sees deterministic progress after
+    # the MS rounds complete.
+    _reconfig_count = 0
+
+    def _emit_reconfig_progress(message: str) -> None:
+        """Emit a STAGE_RECONFIG progress event."""
+        nonlocal _reconfig_count
+        _reconfig_count += 1
+        if progress_callback is None:
+            return
+        progress_callback(RoutingProgress(
+            stage=STAGE_RECONFIG,
+            current=_total_global_rounds,
+            total=_total_global_rounds,
+            message=message,
+        ))
 
     def _global_progress_wrapper(p: RoutingProgress) -> None:
         """Intercept per-phase routing progress and remap to global."""
@@ -2492,6 +2670,9 @@ def route_full_experiment_as_steps(
                 message=f"Phase routing: {global_current}/{_total_global_rounds}",
                 extra=p.extra,
             ))
+        elif p.stage == STAGE_RECONFIG:
+            # Reconfig events: pass through directly
+            progress_callback(p)
         else:
             # SAT and Patch stages: pass through unchanged
             progress_callback(p)
@@ -2541,6 +2722,62 @@ def route_full_experiment_as_steps(
         len(plans), n, m * k, k, len(block_sub_grids),
     )
 
+    # ── Diagnostic: initial layout purity check ──────────────────
+    if ion_to_block and block_sub_grids:
+        logger.warning(
+            "[BlockPurity-DIAG] grid shape=%s, ion_to_block=%s",
+            current_layout.shape,
+            {b: sorted(ions) for b, ions in
+             {bn: [i for i, bx in ion_to_block.items() if bx == bn]
+              for bn in block_sub_grids}.items()},
+        )
+        for _bname, _sg in block_sub_grids.items():
+            _r0, _c0, _r1, _c1 = _sg.grid_region
+            _c0i, _c1i = _c0 * k, _c1 * k
+            logger.warning(
+                "[BlockPurity-DIAG] %s: region=(%d,%d,%d,%d), ion_cols=(%d,%d), "
+                "ion_indices=%s, grid_slice=\n%s",
+                _bname, _r0, _c0, _r1, _c1, _c0i, _c1i,
+                sorted(_sg.ion_indices),
+                current_layout[_r0:_r1, _c0i:_c1i],
+            )
+        _init_misplaced: Dict[str, List[int]] = {}
+        for _bname, _sg in block_sub_grids.items():
+            _r0, _c0, _r1, _c1 = _sg.grid_region
+            _c0i, _c1i = _c0 * k, _c1 * k
+            _blk_slice = current_layout[_r0:_r1, _c0i:_c1i]
+            for _ri in range(_blk_slice.shape[0]):
+                for _ci in range(_blk_slice.shape[1]):
+                    _ion = int(_blk_slice[_ri, _ci])
+                    if _ion != 0 and _ion in ion_to_block and ion_to_block[_ion] != _bname:
+                        _init_misplaced.setdefault(_bname, []).append(_ion)
+        if _init_misplaced:
+            logger.warning(
+                "[BlockPurity] INITIAL LAYOUT IMPURE — misplaced ions: %s. "
+                "ion_to_block has %d entries, grid has %d non-zero cells.",
+                {b: sorted(ions) for b, ions in _init_misplaced.items()},
+                len(ion_to_block),
+                int(np.count_nonzero(current_layout)),
+            )
+            # Log unmapped ions for debugging
+            _all_grid_ions = set()
+            for _ri in range(current_layout.shape[0]):
+                for _ci in range(current_layout.shape[1]):
+                    _ion = int(current_layout[_ri, _ci])
+                    if _ion != 0:
+                        _all_grid_ions.add(_ion)
+            _unmapped = _all_grid_ions - set(ion_to_block.keys())
+            if _unmapped:
+                logger.warning(
+                    "[BlockPurity] %d ions in grid NOT in ion_to_block: %s",
+                    len(_unmapped), sorted(_unmapped),
+                )
+        else:
+            logger.warning(
+                "[BlockPurity] INITIAL LAYOUT PURE — all %d ions in home blocks",
+                len(ion_to_block),
+            )
+
     # ── Nested helpers (H2/H3/H4): shared EC and gadget routing ──
 
     def _route_ec_fresh(
@@ -2570,25 +2807,57 @@ def route_full_experiment_as_steps(
             sr_pair_count = len(sr_pairs)
 
             if _use_per_block:
-                # --- Per-block decomposition ---
+                # --- Per-block decomposition (P5 fix: cross-block
+                # pairs route on merged grid, not single block) ---
                 block_pairs_map: Dict[str, List[List[Tuple[int, int]]]] = {
                     bname: [[] for _ in range(sr_pair_count)]
                     for bname in block_sub_grids
                 }
+                # Collect cross-block pairs separately — these need
+                # the merged bounding-box grid, not a single block's
+                # sub-grid.
+                cross_block_pairs: List[List[Tuple[int, int]]] = [
+                    [] for _ in range(sr_pair_count)
+                ]
+                _has_cross_block = False
+                _cross_block_blocks: set = set()
+
                 for round_i, pairs_in_round in enumerate(sr_pairs):
                     for pair in pairs_in_round:
                         a_idx, d_idx = pair
                         blk_a = ion_to_block.get(a_idx)
                         blk_d = ion_to_block.get(d_idx)
                         if blk_a == blk_d and blk_a is not None:
+                            # Both ions in same block — route per-block
                             block_pairs_map[blk_a][round_i].append(pair)
-                        elif blk_a is not None:
-                            block_pairs_map[blk_a][round_i].append(pair)
-                        elif blk_d is not None:
-                            block_pairs_map[blk_d][round_i].append(pair)
+                        elif blk_a is not None and blk_d is not None and blk_a != blk_d:
+                            # Cross-block pair — must route on merged grid
+                            cross_block_pairs[round_i].append(pair)
+                            _has_cross_block = True
+                            _cross_block_blocks.add(blk_a)
+                            _cross_block_blocks.add(blk_d)
+                        elif blk_a is not None and blk_d is None:
+                            # Ion d unknown block (bridge ancilla?) —
+                            # route on merged grid for safety
+                            cross_block_pairs[round_i].append(pair)
+                            _has_cross_block = True
+                            _cross_block_blocks.add(blk_a)
+                        elif blk_d is not None and blk_a is None:
+                            cross_block_pairs[round_i].append(pair)
+                            _has_cross_block = True
+                            _cross_block_blocks.add(blk_d)
                         else:
+                            # Both ions have unknown block — fallback
                             default_block = list(block_sub_grids.keys())[0]
                             block_pairs_map[default_block][round_i].append(pair)
+
+                if _has_cross_block:
+                    _n_xb = sum(len(r) for r in cross_block_pairs)
+                    logger.info(
+                        "[PhaseSteps] EC phase: %d cross-block pairs "
+                        "detected across blocks %s — routing on merged grid",
+                        _n_xb, sorted(_cross_block_blocks),
+                    )
 
                 per_block_steps: Dict[str, list] = {}
                 for bname, sg in block_sub_grids.items():
@@ -2610,16 +2879,17 @@ def route_full_experiment_as_steps(
                     block_arch = QCCDWiseArch(
                         m=block_cols, n=block_rows, k=k,
                     )
-                    block_bts = build_ion_return_bt_for_patch_and_route(
-                        block_layout, num_rounds=len(bp),
-                        active_ions=block_active,
-                    )
-                    block_p_arr = list(bp) + [[]]  # empty return round
+                    # --- Fix A: Route MS rounds WITHOUT bundled return ---
+                    # The return round is now solved as a separate SAT
+                    # instance after the MS rounds, reducing R by 1 in
+                    # every SAT call and avoiding UNSAT from conflicting
+                    # return-BT + gate-pairing constraints.
+                    block_p_arr = list(bp)
                     # Blocks are routed sequentially in this loop,
                     # so there is no nested parallelism concern —
                     # pass through the real max_inner_workers to allow
                     # the SAT pool to use multiple workers.
-                    blk_steps, _ = _route_round_sequence(
+                    blk_steps, _blk_final = _route_round_sequence(
                         block_layout,
                         block_arch,
                         block_p_arr,
@@ -2627,38 +2897,167 @@ def route_full_experiment_as_steps(
                         subgridsize=subgridsize,
                         base_pmax_in=base_pmax_in or 1,
                         active_ions=block_active,
-                        initial_BTs=block_bts,
                         stop_event=stop_event,
                         max_inner_workers=max_inner_workers,
                         progress_callback=_phase_cb,
                     )
-                    per_block_steps[bname] = list(blk_steps)
+                    # Separate return-round: move ions back to starting
+                    # positions via an independent SAT call.
+                    _return_steps = _compute_return_reconfig(
+                        _blk_final, block_layout,
+                        block_arch, subgridsize,
+                        base_pmax_in=base_pmax_in or 1,
+                        stop_event=stop_event,
+                        max_inner_workers=max_inner_workers,
+                    )
+                    per_block_steps[bname] = list(blk_steps) + _return_steps
 
                 sr_merged, current = _merge_block_routing_steps(
                     per_block_steps, block_sub_grids,
                     current, k,
                 )
+
+                # --- P5: Route cross-block pairs on merged bbox grid ---
+                if _has_cross_block:
+                    _xb_nonempty = [r for r in cross_block_pairs if r]
+                    if _xb_nonempty:
+                        # Build bounding box covering all involved blocks
+                        _xb_sgs = [
+                            block_sub_grids[nm]
+                            for nm in sorted(_cross_block_blocks)
+                            if nm in block_sub_grids
+                        ]
+                        _PAD_R = 1
+                        _PAD_C = 1
+                        _xb_r0 = max(0, min(
+                            sg.grid_region[0] for sg in _xb_sgs
+                        ) - _PAD_R)
+                        _xb_r1 = min(n, max(
+                            sg.grid_region[2] for sg in _xb_sgs
+                        ) + _PAD_R)
+                        _xb_c0 = max(0, min(
+                            sg.grid_region[1] for sg in _xb_sgs
+                        ) - _PAD_C)
+                        _xb_c1 = min(m, max(
+                            sg.grid_region[3] for sg in _xb_sgs
+                        ) + _PAD_C)
+                        _xb_c0p = _xb_c0 * k
+                        _xb_c1p = _xb_c1 * k
+
+                        _xb_layout = current[
+                            _xb_r0:_xb_r1, _xb_c0p:_xb_c1p
+                        ].copy()
+                        _xb_rows = _xb_r1 - _xb_r0
+                        _xb_m = _xb_c1 - _xb_c0
+                        _xb_wise = QCCDWiseArch(
+                            n=_xb_rows, m=_xb_m, k=k,
+                        )
+                        # Include ALL ions from ALL involved blocks as
+                        # active so the SAT solver can shuffle them
+                        # out of the way when routing cross-block
+                        # pairs.  The merged bbox grid is tiled into
+                        # subgridsize patches by _patch_and_route
+                        # (called via _route_round_sequence), so
+                        # individual SAT instances stay small.
+                        _xb_active = []
+                        for _sg in _xb_sgs:
+                            _xb_active.extend(
+                                idx for idx in _sg.ion_indices
+                                if idx in active_ions_set
+                            )
+                        logger.debug(
+                            "[PhaseSteps] cross-block SAT: bbox=%dx%d "
+                            "(rows %d-%d, cols %d-%d), "
+                            "active_ions=%d (of %d in blocks), "
+                            "pairs=%d",
+                            _xb_rows, _xb_m * k,
+                            _xb_r0, _xb_r1, _xb_c0, _xb_c1,
+                            len(_xb_active),
+                            sum(len(sg.ion_indices) for sg in _xb_sgs),
+                            sum(len(r) for r in _xb_nonempty),
+                        )
+                        _xb_p_arr = list(_xb_nonempty)
+
+                        try:
+                            _xb_steps, _xb_final = _route_round_sequence(
+                                _xb_layout,
+                                _xb_wise,
+                                _xb_p_arr,
+                                lookahead=min(
+                                    lookahead, len(_xb_p_arr),
+                                ),
+                                subgridsize=subgridsize,
+                                base_pmax_in=base_pmax_in or 1,
+                                active_ions=_xb_active,
+                                stop_event=stop_event,
+                                max_inner_workers=max_inner_workers,
+                                progress_callback=_phase_cb,
+                            )
+                            # Separate return-round reconfig
+                            _xb_return = _compute_return_reconfig(
+                                _xb_final, _xb_layout,
+                                _xb_wise, subgridsize,
+                                base_pmax_in=base_pmax_in or 1,
+                                stop_event=stop_event,
+                                max_inner_workers=max_inner_workers,
+                            )
+                            _xb_steps = list(_xb_steps) + _xb_return
+                            # Re-embed bbox results into global layout
+                            _sched_row_off = _xb_r0
+                            _sched_col_off = _xb_c0p
+                            for step in _xb_steps:
+                                _gl = np.array(current, copy=True)
+                                _gl[
+                                    _xb_r0:_xb_r1,
+                                    _xb_c0p:_xb_c1p,
+                                ] = step.layout_after
+                                step.layout_after = _gl
+                                if step.schedule is not None:
+                                    step.schedule = (
+                                        _remap_schedule_to_global(
+                                            step.schedule,
+                                            _sched_row_off,
+                                            _sched_col_off,
+                                        )
+                                    )
+                                sr_merged.append(step)
+                                current = _gl
+                            logger.info(
+                                "[PhaseSteps] EC cross-block pairs "
+                                "routed: %d steps on %dx%d merged grid",
+                                len(list(_xb_steps)),
+                                _xb_rows, _xb_m * k,
+                            )
+                        except Exception as _xb_exc:
+                            logger.warning(
+                                "[PhaseSteps] EC cross-block routing "
+                                "failed (%s); pairs may be unrouted",
+                                _xb_exc,
+                            )
             else:
                 # --- Single-grid fallback ---
-                bts = build_ion_return_bt_for_patch_and_route(
-                    current, num_rounds=len(sr_pairs),
-                    active_ions=active_ions,
-                )
-                p_arr_with_return = list(sr_pairs) + [[]]
-                sr_merged, current = _route_round_sequence(
+                # Route MS rounds without bundled return round.
+                sr_merged, _sr_final = _route_round_sequence(
                     np.array(current, copy=True),
                     wiseArch,
-                    p_arr_with_return,
-                    lookahead=min(lookahead, len(p_arr_with_return)),
+                    list(sr_pairs),
+                    lookahead=min(lookahead, len(sr_pairs)),
                     subgridsize=subgridsize,
                     base_pmax_in=base_pmax_in or 1,
                     active_ions=active_ions,
-                    initial_BTs=bts,
                     stop_event=stop_event,
                     max_inner_workers=max_inner_workers,
                     progress_callback=_phase_cb,
                 )
-                sr_merged = list(sr_merged)
+                # Separate return-round reconfig
+                _sr_return = _compute_return_reconfig(
+                    _sr_final, current,
+                    wiseArch, subgridsize,
+                    base_pmax_in=base_pmax_in or 1,
+                    stop_event=stop_event,
+                    max_inner_workers=max_inner_workers,
+                )
+                sr_merged = list(sr_merged) + _sr_return
 
             for step in sr_merged:
                 if step.ms_round_index >= sr_pair_count:
@@ -2684,29 +3083,68 @@ def route_full_experiment_as_steps(
         ec_target = _reconstruct_ec_target(
             ec_initial_layouts, cur_layout,
             block_sub_grids, k,
+            ion_to_block=ion_to_block,
         )
         if np.array_equal(cur_layout, ec_target):
             return phase_steps, cur_layout
+        _emit_reconfig_progress(
+            f"Phase {phase_idx + 1}/{len(plans)}: returning ions to home blocks ({label})"
+        )
+        # Transition reconfig needs enough sorting passes (pmax) to
+        # move ions across the grid.  Normal MS routing works with
+        # pmax=1 because MS pairs guide the solver, but BT-only
+        # reconfig must explicitly permute ions to distant targets.
+        # Scale pmax with grid dimensions so ions can traverse the
+        # full grid span in a single SAT cycle.
+        _transition_pmax = max(base_pmax_in or 1, n, m * k // 2, 3)
+        _transition_skipped = False
+        # Primary: per-block or full-grid SAT transition reconfig.
+        # If this fails, try the simpler return-reconfig SAT approach.
+        # If BOTH fail, gracefully continue with the current layout
+        # — the EC routing in _route_ec_fresh already handles
+        # cross-block pairs via the P5 merged-grid path, and
+        # per-block pairs are classified by ion_to_block at route
+        # time, so misplaced ions get routed on the merged grid
+        # instead of a wrong block's sub-grid.
+        transition: list = []
         try:
-            transition = _compute_transition_reconfig_steps(
-                current_layout=cur_layout,
-                target_layout=ec_target,
-                wiseArch=wiseArch,
-                block_sub_grids=block_sub_grids,
-                ion_to_block=ion_to_block,
-                k=k,
-                subgridsize=subgridsize,
-                base_pmax_in=base_pmax_in or 1,
-                max_inner_workers=max_inner_workers,
-                stop_event=stop_event,
-            )
-        except Exception as exc:
+            try:
+                transition = _compute_transition_reconfig_steps(
+                    current_layout=cur_layout,
+                    target_layout=ec_target,
+                    wiseArch=wiseArch,
+                    block_sub_grids=block_sub_grids,
+                    ion_to_block=ion_to_block,
+                    k=k,
+                    subgridsize=subgridsize,
+                    base_pmax_in=_transition_pmax,
+                    max_inner_workers=max_inner_workers,
+                    stop_event=stop_event,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[PhaseSteps] gadget phase %d (%s): transition "
+                    "reconfig failed (%s); retrying with direct "
+                    "return-round SAT",
+                    phase_idx, label, exc,
+                )
+                transition = _compute_return_reconfig(
+                    cur_layout, ec_target,
+                    wiseArch, subgridsize,
+                    base_pmax_in=_transition_pmax,
+                    stop_event=stop_event,
+                    max_inner_workers=max_inner_workers,
+                )
+        except Exception as exc_final:
             logger.warning(
-                "[PhaseSteps] gadget phase %d (%s): post-gadget "
-                "transition reconfig failed (%s); skipping transition",
-                phase_idx, label, exc,
+                "[PhaseSteps] gadget phase %d (%s): BOTH transition "
+                "reconfig attempts failed (%s); continuing with "
+                "current layout (ions may be in non-home blocks — "
+                "EC routing will handle via merged-grid path)",
+                phase_idx, label, exc_final,
             )
             transition = []
+            _transition_skipped = True
         for ts in transition:
             ts.ms_round_index = n_pairs
         phase_steps.extend(transition)
@@ -2717,6 +3155,53 @@ def route_full_experiment_as_steps(
             "transition reconfig: %d steps",
             phase_idx, label, len(transition),
         )
+
+        # ── P6: Post-gadget route-back validation ──
+        # Verify every ion is back in its home block region.
+        # Log any stragglers so we can detect incomplete route-back.
+        if ion_to_block and block_sub_grids:
+            _misplaced: list = []
+            # Build block → grid region lookup
+            _block_regions: Dict[str, Tuple[int, int, int, int]] = {}
+            for _bname, _sg in block_sub_grids.items():
+                _r0, _c0, _r1, _c1 = _sg.grid_region
+                _block_regions[_bname] = (_r0, _c0 * k, _r1, _c1 * k)
+
+            for _r in range(cur_layout.shape[0]):
+                for _c in range(cur_layout.shape[1]):
+                    _ion = int(cur_layout[_r, _c])
+                    if _ion == 0:
+                        continue
+                    _home = ion_to_block.get(_ion)
+                    if _home is None:
+                        continue  # spectator or unmapped ion
+                    _hr0, _hc0, _hr1, _hc1 = _block_regions.get(
+                        _home, (0, 0, 0, 0),
+                    )
+                    if not (_hr0 <= _r < _hr1 and _hc0 <= _c < _hc1):
+                        _misplaced.append((_ion, _home, _r, _c))
+
+            if _misplaced:
+                _msg = (
+                    f"[PhaseSteps] gadget phase {phase_idx} ({label}): "
+                    f"P6 route-back validation: {len(_misplaced)} ions "
+                    f"NOT in home block after transition! "
+                    f"Misplaced: {_misplaced[:10]}"
+                )
+                if _transition_skipped:
+                    # Transition already failed — downgrade to warning
+                    # and let EC routing handle via merged-grid path (P5)
+                    logger.warning(_msg)
+                else:
+                    logger.error(_msg)
+                    raise RuntimeError(_msg)
+            else:
+                logger.debug(
+                    "[PhaseSteps] gadget phase %d (%s): P6 route-back "
+                    "validation: all ions in home blocks ✓",
+                    phase_idx, label,
+                )
+
         return phase_steps, cur_layout
 
     for phase_idx, plan in enumerate(plans):
@@ -2751,6 +3236,10 @@ def route_full_experiment_as_steps(
                 # layout, prepend a transition reconfig to return us to
                 # the layout the cached schedule expects.
                 if not np.array_equal(current_layout, cached_starting_layout):
+                    _emit_reconfig_progress(
+                        f"Phase {phase_idx + 1}/{len(plans)} (EC cached): "
+                        f"transition reconfig to cached layout"
+                    )
                     try:
                         transition_steps = _compute_transition_reconfig_steps(
                             current_layout=current_layout,
@@ -2885,6 +3374,10 @@ def route_full_experiment_as_steps(
                 phase_steps: List[RoutingStep] = []
 
                 if not np.array_equal(current_layout, cached_starting_layout):
+                    _emit_reconfig_progress(
+                        f"Phase {phase_idx + 1}/{len(plans)} (gadget cached): "
+                        f"transition reconfig to cached layout"
+                    )
                     try:
                         transition_steps = _compute_transition_reconfig_steps(
                             current_layout=current_layout,
@@ -3182,45 +3675,23 @@ def route_full_experiment_as_steps(
                          block_regions[sg.block_name][1])
                         for sg in interacting_sgs
                     ]
-                    p_arr_for_solve, bts = _build_gadget_exit_bt(
-                        _bt_offsets, phase_pairs, ec_initial_layouts,
+                    # --- Fix A: Route gadget MS rounds without bundled
+                    # exit-BT return round.  The return to EC positions
+                    # is handled by _apply_post_gadget_transition which
+                    # runs after this call and uses a separate SAT call.
+                    phase_steps_raw, _mf = _route_round_sequence(
+                        np.array(merged_layout, copy=True),
+                        merged_wise,
+                        list(phase_pairs),
+                        lookahead=min(lookahead, len(phase_pairs)),
+                        subgridsize=merged_sgs,
+                        base_pmax_in=base_pmax_in or 1,
+                        active_ions=merged_active,
+                        stop_event=stop_event,
+                        max_inner_workers=max_inner_workers,
+                        progress_callback=_phase_cb,
                     )
-
-                    try:
-                        phase_steps_raw, _mf = _route_round_sequence(
-                            np.array(merged_layout, copy=True),
-                            merged_wise,
-                            p_arr_for_solve,
-                            lookahead=min(lookahead, len(p_arr_for_solve)),
-                            subgridsize=merged_sgs,
-                            base_pmax_in=base_pmax_in or 1,
-                            active_ions=merged_active,
-                            initial_BTs=bts,
-                            stop_event=stop_event,
-                            max_inner_workers=max_inner_workers,
-                            progress_callback=_phase_cb,
-                        )
-                        phase_steps = list(phase_steps_raw)
-                    except Exception as exc:
-                        logger.warning(
-                            "[PhaseSteps] gadget phase %d: BT routing failed (%s), "
-                            "routing without BT + adding post-gadget transition reconfig",
-                            phase_idx, exc,
-                            exc_info=True,
-                        )
-                        phase_steps_raw, _mf = _route_round_sequence(
-                            np.array(merged_layout, copy=True),
-                            merged_wise,
-                            list(phase_pairs),
-                            lookahead=min(lookahead, len(phase_pairs)),
-                            subgridsize=merged_sgs,
-                            base_pmax_in=base_pmax_in or 1,
-                            active_ions=merged_active,
-                            stop_event=stop_event,
-                            max_inner_workers=max_inner_workers,
-                            progress_callback=_phase_cb,
-                        )
-                        phase_steps = list(phase_steps_raw)
+                    phase_steps = list(phase_steps_raw)
 
                     # Group return round with last MS round
                     # (but preserve layout-transition steps in their own group)
@@ -3379,55 +3850,24 @@ def route_full_experiment_as_steps(
 
                 else:
                     # --- Full-grid routing (all blocks active) ---
-                    # H4: Reuse shared exit-BT helper (global offsets)
-                    _fg_sgs = [
-                        (bname, sg.grid_region[0], sg.grid_region[1] * k)
-                        for bname, sg in block_sub_grids.items()
-                    ]
-                    p_arr_for_solve, bts = _build_gadget_exit_bt(
-                        _fg_sgs, phase_pairs, ec_initial_layouts,
+                    # Fix A: Route MS rounds directly without exit-BT.
+                    # The return to EC positions is handled by
+                    # _apply_post_gadget_transition below.
+                    phase_steps_raw, current_layout = _route_round_sequence(
+                        np.array(current_layout, copy=True),
+                        wiseArch,
+                        list(phase_pairs),
+                        lookahead=min(
+                            lookahead or 2, len(phase_pairs),
+                        ),
+                        subgridsize=subgridsize,
+                        base_pmax_in=base_pmax_in or 1,
+                        active_ions=active_ions,
+                        stop_event=stop_event,
+                        max_inner_workers=max_inner_workers,
+                        progress_callback=_phase_cb,
                     )
-
-                    try:
-                        phase_steps_raw, current_layout = _route_round_sequence(
-                            np.array(current_layout, copy=True),
-                            wiseArch,
-                            p_arr_for_solve,
-                            lookahead=min(
-                                lookahead or 2, len(p_arr_for_solve),
-                            ),
-                            subgridsize=subgridsize,
-                            base_pmax_in=base_pmax_in or 1,
-                            active_ions=active_ions,
-                            initial_BTs=bts,
-                            stop_event=stop_event,
-                            max_inner_workers=max_inner_workers,
-                            progress_callback=_phase_cb,
-                        )
-                        phase_steps = list(phase_steps_raw)
-                    except Exception as exc:
-                        # Fix 4e: Route without BT, then add explicit post-gadget
-                        # transition reconfig to return ions to EC positions.
-                        logger.warning(
-                            "[PhaseSteps] gadget phase %d: BT routing failed (%s), "
-                            "routing without BT + adding post-gadget transition reconfig",
-                            phase_idx, exc, exc_info=True,
-                        )
-                        phase_steps_raw, current_layout = _route_round_sequence(
-                            np.array(current_layout, copy=True),
-                            wiseArch,
-                            list(phase_pairs),
-                            lookahead=min(
-                                lookahead or 2, len(phase_pairs),
-                            ),
-                            subgridsize=subgridsize,
-                            base_pmax_in=base_pmax_in or 1,
-                            active_ions=active_ions,
-                            stop_event=stop_event,
-                            max_inner_workers=max_inner_workers,
-                            progress_callback=_phase_cb,
-                        )
-                        phase_steps = list(phase_steps_raw)
+                    phase_steps = list(phase_steps_raw)
 
                     # Group return round with last MS round
                     # (but preserve layout-transition steps in their own group)
@@ -3471,6 +3911,33 @@ def route_full_experiment_as_steps(
             phase_steps[0].is_initial_placement = True
 
         all_routing_steps.extend(phase_steps)
+
+        # ── Fix E: blocks_pure diagnostic after each phase ──
+        if ion_to_block and block_sub_grids and phase_steps:
+            _post_layout = phase_steps[-1].layout_after
+            _misplaced: Dict[str, List[int]] = {}
+            for _bname, _sg in block_sub_grids.items():
+                _r0, _c0, _r1, _c1 = _sg.grid_region
+                _c0i, _c1i = _c0 * k, _c1 * k
+                _blk_slice = _post_layout[_r0:_r1, _c0i:_c1i]
+                for _ri in range(_blk_slice.shape[0]):
+                    for _ci in range(_blk_slice.shape[1]):
+                        _ion = int(_blk_slice[_ri, _ci])
+                        if _ion != 0 and _ion in ion_to_block and ion_to_block[_ion] != _bname:
+                            _misplaced.setdefault(_bname, []).append(_ion)
+            _pt_label = getattr(plan.phase_type, 'name', plan.phase_type)
+            if _misplaced:
+                logger.warning(
+                    "[BlockPurity] Phase %d/%d (%s): IMPURE — misplaced ions: %s",
+                    phase_idx + 1, len(plans), _pt_label,
+                    {b: sorted(ions) for b, ions in _misplaced.items()},
+                )
+            else:
+                logger.info(
+                    "[BlockPurity] Phase %d/%d (%s): PURE — all ions in home blocks",
+                    phase_idx + 1, len(plans), _pt_label,
+                )
+
         # Advance round_cursor past ALL indices used in this phase,
         # including post-gadget transition steps (which sit at n_pairs,
         # beyond the return-round capping at n_pairs - 1).  Without
@@ -3488,5 +3955,18 @@ def route_full_experiment_as_steps(
         "[PhaseSteps] total %d routing steps across %d phases",
         len(all_routing_steps), len(plans),
     )
+
+    # Emit final STAGE_COMPLETE so the progress bar shows 100%
+    if progress_callback is not None:
+        progress_callback(RoutingProgress(
+            stage=STAGE_COMPLETE,
+            current=_total_global_rounds,
+            total=_total_global_rounds,
+            message=(
+                f"Routing complete: {len(all_routing_steps)} steps, "
+                f"{len(plans)} phases, "
+                f"{_reconfig_count} reconfigurations"
+            ),
+        ))
 
     return all_routing_steps, current_layout

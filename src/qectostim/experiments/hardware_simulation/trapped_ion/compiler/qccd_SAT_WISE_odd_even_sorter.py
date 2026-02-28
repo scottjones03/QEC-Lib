@@ -290,14 +290,16 @@ def _estimate_sat_difficulty(
     float
         Difficulty factor ≥ 1.0.
     """
+    # Old formula multiplied num_ions × (n×m) × P_max × R, but for
+    # full grids num_ions ≈ n×m, so grid area was effectively squared.
+    # Use grid_area × P_max × R instead (num_ions removed).
     var_estimate = (
-        max(1, num_ions)
-        * max(1, n * m)
+        max(1, n * m)
         * max(1, P_max)
         * max(1, R)
     )
-    # Reference: d=2, k=2 baseline → 6 ions, 3×2 grid, P_max=1, R=1 → 36
-    _REFERENCE = 36.0
+    # Reference: d=2, k=2 baseline → 3×2 grid, P_max=1, R=1 → 6
+    _REFERENCE = 6.0
     ratio = var_estimate / _REFERENCE
     return max(1.0, math.sqrt(ratio))
 
@@ -935,7 +937,7 @@ WISE_LOGGER_NAME = "wise.qccd.sat"
 wise_logger = logging.getLogger(WISE_LOGGER_NAME)
 if not wise_logger.handlers:
     wise_logger.addHandler(logging.NullHandler())
-wise_logger.propagate = False
+wise_logger.propagate = True
 
 
 
@@ -2220,18 +2222,61 @@ def run_sat_with_timeout_file(
     # daemon process (can't spawn children), or (3) small CNF.
     # PySAT's C solver releases the GIL, so ThreadPoolExecutor
     # workers still get real parallelism.
+    # A threading-based timeout prevents infinite hangs on hard instances.
     _is_pool_worker = mp.current_process().daemon
-    if _in_notebook_env() or _is_pool_worker or len(cnf.clauses) <= _SAT_INPROCESS_CLAUSE_LIMIT:
+    if _in_notebook_env() or _is_pool_worker or sys.platform == "darwin" or len(cnf.clauses) <= _SAT_INPROCESS_CLAUSE_LIMIT:
+        _ip_timeout = timeout_s if (timeout_s is not None and timeout_s > 0) else 60.0
+        wise_logger.debug(
+            "%s SAT in-process: clauses=%d, vars=%d, timeout=%.1fs",
+            debug_prefix, len(cnf.clauses), cnf.nv, _ip_timeout,
+        )
         try:
             sat = Minisat22(bootstrap_with=cnf.clauses)
-            if assumptions is not None:
-                sat_ok = sat.solve(assumptions=assumptions)
-            else:
-                sat_ok = sat.solve()
-            model = sat.get_model() if sat_ok else None
+            _ip_result = [None, None, "timeout"]
+            _ip_exc_slot = [None]
+
+            def _ip_sat_solve():
+                try:
+                    if assumptions is not None:
+                        _ok = sat.solve(assumptions=assumptions)
+                    else:
+                        _ok = sat.solve()
+                    _ip_result[0] = bool(_ok)
+                    _ip_result[1] = sat.get_model() if _ok else None
+                    _ip_result[2] = "ok"
+                except Exception as _e:
+                    _ip_exc_slot[0] = _e
+                    _ip_result[2] = "error"
+
+            _ip_t = _threading.Thread(target=_ip_sat_solve, daemon=True)
+            _ip_t.start()
+            _ip_t.join(timeout=_ip_timeout)
+            if _ip_t.is_alive():
+                wise_logger.debug(
+                    "%s SAT in-process TIMEOUT after %.1fs (clauses=%d)",
+                    debug_prefix, _ip_timeout, len(cnf.clauses),
+                )
+                try:
+                    sat.interrupt()
+                except Exception:
+                    pass
+                try:
+                    sat.delete()
+                except Exception:
+                    pass
+                return None, None, "timeout"
             sat.delete()
-            return bool(sat_ok), model, "ok"
+            if _ip_result[2] == "error" and _ip_exc_slot[0] is not None:
+                raise _ip_exc_slot[0]
+            return _ip_result[0], _ip_result[1], _ip_result[2]
         except Exception as _ip_exc:
+            if sys.platform == "darwin" or _in_notebook_env():
+                wise_logger.error(
+                    "In-process SAT solve failed on macOS/notebook (%s); "
+                    "cannot fall through to subprocess (spawn deadlock)",
+                    _ip_exc,
+                )
+                raise
             wise_logger.warning(
                 "In-process SAT solve failed (%s), falling through to subprocess",
                 _ip_exc,
@@ -2568,15 +2613,57 @@ def run_rc2_with_timeout_file(
     # daemon process (can't spawn children), or (3) small WCNF.
     # PySAT's C solver releases the GIL, so ThreadPoolExecutor
     # workers still get real parallelism.
+    # A threading-based timeout prevents infinite hangs on hard instances.
     _is_pool_worker = mp.current_process().daemon
-    if _in_notebook_env() or _is_pool_worker or len(wcnf.hard) <= _SAT_INPROCESS_CLAUSE_LIMIT:
+    if _in_notebook_env() or _is_pool_worker or sys.platform == "darwin" or len(wcnf.hard) <= _SAT_INPROCESS_CLAUSE_LIMIT:
+        _ip_timeout = timeout_s if (timeout_s is not None and timeout_s > 0) else 60.0
+        # Cap timeout in notebook to avoid 600s hangs on hard RC2 instances
+        if _in_notebook_env() and _ip_timeout > 30.0:
+            _ip_timeout = 30.0
+        wise_logger.debug(
+            "%s RC2 in-process: hard=%d, soft=%d, vars=%d, timeout=%.1fs",
+            debug_prefix, len(wcnf.hard), len(wcnf.soft), wcnf.nv, _ip_timeout,
+        )
         try:
             rc2 = RC2(wcnf)
-            model = rc2.compute()
-            cost = rc2.cost if model is not None else None
+            _ip_result = [None, None, "timeout"]
+            _ip_exc_slot = [None]
+
+            def _ip_rc2_solve():
+                try:
+                    _model = rc2.compute()
+                    _ip_result[0] = _model
+                    _ip_result[1] = rc2.cost if _model is not None else None
+                    _ip_result[2] = "ok"
+                except Exception as _e:
+                    _ip_exc_slot[0] = _e
+                    _ip_result[2] = "error"
+
+            _ip_t = _threading.Thread(target=_ip_rc2_solve, daemon=True)
+            _ip_t.start()
+            _ip_t.join(timeout=_ip_timeout)
+            if _ip_t.is_alive():
+                wise_logger.debug(
+                    "%s RC2 in-process TIMEOUT after %.1fs (hard=%d)",
+                    debug_prefix, _ip_timeout, len(wcnf.hard),
+                )
+                try:
+                    rc2.delete()
+                except Exception:
+                    pass
+                return None, None, "timeout"
             rc2.delete()
-            return model, cost, "ok"
+            if _ip_result[2] == "error" and _ip_exc_slot[0] is not None:
+                raise _ip_exc_slot[0]
+            return _ip_result[0], _ip_result[1], _ip_result[2]
         except Exception as _ip_exc:
+            if sys.platform == "darwin" or _in_notebook_env():
+                wise_logger.error(
+                    "In-process RC2 solve failed on macOS/notebook (%s); "
+                    "cannot fall through to subprocess (spawn deadlock)",
+                    _ip_exc,
+                )
+                raise
             wise_logger.warning(
                 "In-process RC2 solve failed (%s), falling through to subprocess",
                 _ip_exc,
@@ -2688,7 +2775,9 @@ def _wise_normalize_inputs(
     bt_soft_weight_value = 0
     if bt_soft_enabled:
         base_pref_weight = max(wB_col, wB_row, 1)
-        bt_soft_weight_value = max(100, base_pref_weight * 10)
+        # Fix C: Increase BT soft weight by 100× to strongly discourage
+        # the MaxSAT solver from violating ion-return pin constraints.
+        bt_soft_weight_value = max(10000, base_pref_weight * 100)
         if debug_diag:
             wise_logger.info(
                 "[WISE] soft BT enabled: weight=%d", bt_soft_weight_value
@@ -3573,11 +3662,33 @@ def optimal_QMR_for_WISE(
     # has enough scheduling headroom (matches old module behaviour).
     limit_pmax = max(base_pmax + n + m, R + n + m)
 
+    # Raise the P_max floor when low values are guaranteed UNSAT.
+    # With many gates per round, P_max=1 (or similarly tiny values)
+    # can never produce a feasible schedule — the solver wastes time
+    # building and rejecting 784K-clause CNFs.  Use the max per-round
+    # gate count as a sensible floor.
+    _max_gates_per_round = max((len(rp) for rp in P_arr), default=0)
+    if _max_gates_per_round > 1:
+        base_pmax = max(base_pmax, _max_gates_per_round)
+
+    # --- Fix E: Warm-start from prev_pmax to skip known-UNSAT configs ---
+    # If a previous solve in this routing sequence found P_max=N, then
+    # P_max < N-1 is very likely UNSAT for similar sub-problems.
+    # Use prev_pmax - 1 as a floor to avoid wasted SAT attempts.
+    if prev_pmax is not None and prev_pmax > 1:
+        base_pmax = max(base_pmax, prev_pmax - 1)
+
     # When no boundary is adjacent (full-grid patch), the capacity factor
     # has no effect on the CNF — all values produce identical formulas.
     # Collapse to a single factor to avoid redundant SAT calls.
     has_boundary = any(boundary_adjacent.get(d, False) for d in ("top", "bottom", "left", "right"))
     eff_capacity_steps = 6 if has_boundary else 1
+
+    # For large round counts the SAT problems are already very heavy.
+    # Reduce capacity variants to avoid spawning 18+ parallel instances
+    # that each build 700K+ clause CNFs and thrash CPU / memory.
+    if R > 8 and eff_capacity_steps > 2:
+        eff_capacity_steps = 2
 
     configs = list(
         _wise_enumerate_pmax_configs(
@@ -4399,9 +4510,64 @@ def optimal_QMR_for_WISE(
     )
 
     bt_ok = _wise_assert_bt_consistency(layouts, BT, R, n, m, wise_logger)
-    if not bt_ok:
+    if not bt_ok and bt_soft:
+        # --- Fix C (cont.): Hard-BT retry ---
+        # Soft BT constraints were violated.  Retry once with hard BT
+        # to ensure ion-return consistency.  If the hard-BT solve also
+        # fails (UNSAT), fall through and use the soft-BT result.
         wise_logger.warning(
-            "[WISE] BT consistency check failed; proceeding with returned layouts anyway"
+            "[WISE] BT consistency check failed with soft BT; "
+            "retrying with hard BT constraints"
+        )
+        try:
+            layouts_hard, schedule_hard, ph_hard = optimal_QMR_for_WISE(
+                A_in=A_in,
+                P_arr=P_arr,
+                k=k,
+                BT=BT,
+                wB_col=wB_col,
+                wB_row=wB_row,
+                max_rc2_time=max_rc2_time,
+                max_sat_time=max_sat_time,
+                active_ions=active_ions,
+                full_P_arr=full_P_arr,
+                ignore_initial_reconfig=ignore_initial_reconfig,
+                base_pmax_in=base_pmax_in,
+                prev_pmax=prev_pmax,
+                grid_origin=grid_origin,
+                boundary_adjacent=boundary_adjacent,
+                cross_boundary_prefs=cross_boundary_prefs,
+                bt_soft=False,  # Force hard BT
+                parent_stop_event=parent_stop_event,
+                progress_callback=progress_callback,
+                max_inner_workers=max_inner_workers,
+            )
+            bt_ok_hard = _wise_assert_bt_consistency(
+                layouts_hard, BT, R, n, m, wise_logger
+            )
+            if bt_ok_hard:
+                wise_logger.info(
+                    "[WISE] Hard-BT retry succeeded; using hard-BT result"
+                )
+                layouts = layouts_hard
+                schedule = schedule_hard
+                pass_horizon = ph_hard
+                bt_ok = True
+            else:
+                wise_logger.warning(
+                    "[WISE] Hard-BT retry also failed; "
+                    "using original soft-BT result"
+                )
+        except (NoFeasibleLayoutError, Exception) as hard_bt_exc:
+            wise_logger.warning(
+                "[WISE] Hard-BT retry raised %s; "
+                "using original soft-BT result",
+                hard_bt_exc,
+            )
+    elif not bt_ok:
+        wise_logger.warning(
+            "[WISE] BT consistency check failed; "
+            "proceeding with returned layouts anyway"
         )
 
     # --- Reverse sparse-grid padding: replace dummy IDs back with 0 ---

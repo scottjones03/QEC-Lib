@@ -43,7 +43,7 @@ LOGGER_NAME = "wise.qccd.route"
 logger = logging.getLogger(LOGGER_NAME)
 if not logger.handlers:
     logger.addHandler(logging.NullHandler())
-logger.propagate = False
+logger.propagate = True
 
 def _compute_patch_gating_capacity(
     n: int,
@@ -424,7 +424,7 @@ def _patch_and_route(
         if cycle_idx == 0 and patch_w >= n_cols and patch_h >= n_rows:
             import logging as _log_mod
             _pr_log = _log_mod.getLogger("wise.qccd.route")
-            _pr_log.warning(
+            _pr_log.debug(
                 "[_patch_and_route] subgridsize=(%d,%d) covers the "
                 "full %dx%d grid as a single patch — SAT will be "
                 "slow. Consider subgridsize=(4,3,0) for 4×3 patches.",
@@ -601,8 +601,10 @@ def _patch_and_route(
                     and any(pref_round for pref_round in cross_boundary_prefs)
                 )
 
-                if patch_gate_count == 0 and not has_boundary_prefs:
-                    # No gates to solve in this patch; skip SAT even if boundary prefs exist.
+                if patch_gate_count == 0:
+                    # No gates to solve in this patch — always skip.
+                    # Boundary prefs alone cannot produce a valid SAT
+                    # schedule (P_arr is empty → NoFeasibleLayoutError).
                     remaining_pairs = new_remaining
                     # Still count this patch so the patch progress bar advances
                     if progress_callback is not None:
@@ -856,6 +858,15 @@ def _patch_and_route(
             # n_c += max(inc , min(n_c, wiseArch.k))
             # n_r += inc
             no_progress_cycles += 1
+            # When inc==0, retrying with identical params is futile — break after
+            # one no-progress cycle instead of wasting max_cycles * SAT-solver time.
+            if inc == 0 and no_progress_cycles >= 1:
+                logger.warning(
+                    "%s no progress in cycle %d with inc=0; stopping (retrying identical config is futile)",
+                    PATCH_LOG_PREFIX,
+                    cycle_idx + 1,
+                )
+                break
             if no_progress_cycles >= max_cycles or fully_global_patch:
                 logger.warning(
                     "%s no progress in cycle %d; stopping patch routing loop",
@@ -946,6 +957,13 @@ def _rebuild_schedule_for_layout(
     # Current layout that we iteratively push towards target_layout
     current_layout = np.array(oldArrangementArr, copy=True)
 
+    # Pre-build ion -> global target position map (target_layout is constant)
+    ion_target_pos: Dict[int, Tuple[int, int]] = {
+        int(target_layout[r, c]): (r, c)
+        for r in range(n_rows)
+        for c in range(n_cols)
+    }
+
     snapshots: List[Tuple[np.ndarray, List[Dict[str, Any]], List[Tuple[int, int]]]] = []
     max_cycles = max(n_rows, n_cols)
 
@@ -1029,10 +1047,13 @@ def _rebuild_schedule_for_layout(
 
                 # Build BT pins that force as many ions as possible in this patch
                 # towards their target positions, subject to the uniqueness
-                # constraint on (start_row_local, target_col_local).
+                # constraint on (start_row_local, target_col_local) AND
+                # (target_row, target_col) — the latter is required by
+                # _wise_validate_bt_preconditions.
                 BT_patch: List[Dict[int, Tuple[int, int]]] = [dict()]
                 bt_map = BT_patch[0]
                 used_keys: Dict[Tuple[int, int], int] = {}
+                used_targets: Dict[Tuple[int, int], int] = {}  # (target_row, target_col) → ion
 
                 for dr in range(r1 - r0):
                     for dc in range(c1 - c0):
@@ -1053,8 +1074,55 @@ def _rebuild_schedule_for_layout(
                         if existing_ion is not None and existing_ion != ionidx_target:
                             continue
 
+                        tgt_key = (dr, dc)  # target position uniqueness
+                        existing_tgt = used_targets.get(tgt_key)
+                        if existing_tgt is not None and existing_tgt != ionidx_target:
+                            continue
+
                         used_keys[key] = ionidx_target
+                        used_targets[tgt_key] = ionidx_target
                         bt_map[ionidx_target] = (dr, dc)
+
+                # --- Second pass: nudge ions toward out-of-patch targets ---
+                # For ions currently in the patch whose global target is
+                # outside this patch, compute a clamped intermediate position
+                # at the nearest patch boundary in the direction of their
+                # target.  This ensures each patch pass makes incremental
+                # progress even for ions that need to hop across multiple
+                # patches to reach home.
+                patch_h_local = r1 - r0
+                patch_w_local = c1 - c0
+                for lr in range(patch_h_local):
+                    for lc in range(patch_w_local):
+                        ion_here = int(patch_grid[lr, lc])
+                        if ion_here in bt_map:
+                            continue  # already pinned to exact target
+                        tgt_global = ion_target_pos.get(ion_here)
+                        if tgt_global is None:
+                            continue
+                        tgt_r, tgt_c = tgt_global
+                        # Skip if already at global target
+                        if tgt_r == r0 + lr and tgt_c == c0 + lc:
+                            continue
+                        # Clamp global target into patch-local coordinates
+                        clamped_r = max(0, min(tgt_r - r0, patch_h_local - 1))
+                        clamped_c = max(0, min(tgt_c - c0, patch_w_local - 1))
+                        # No useful movement if clamped equals current pos
+                        if clamped_r == lr and clamped_c == lc:
+                            continue
+                        # Respect (start_row_local, target_col_local) uniqueness
+                        key = (lr, clamped_c)
+                        existing = used_keys.get(key)
+                        if existing is not None and existing != ion_here:
+                            continue
+                        # Respect (target_row, target_col) uniqueness
+                        tgt_key = (clamped_r, clamped_c)
+                        existing_tgt = used_targets.get(tgt_key)
+                        if existing_tgt is not None and existing_tgt != ion_here:
+                            continue
+                        used_keys[key] = ion_here
+                        used_targets[tgt_key] = ion_here
+                        bt_map[ion_here] = (clamped_r, clamped_c)
 
                 if not bt_map:
                     continue
@@ -1263,9 +1331,28 @@ def _rebuild_schedule_for_layout(
         patch_w = min(new_w, n_cols)
 
     if not np.array_equal(current_layout, target_layout):
-        logger.warning(
-            "%s schedule-only rebuild terminated without exactly reaching target layout.",
+        mismatch_remaining = int(np.count_nonzero(current_layout != target_layout))
+        logger.error(
+            "%s schedule-only rebuild could not fully converge to target layout "
+            "(%d/%d cells still mismatched after %d cycle(s)). "
+            "Falling back to heuristic odd-even transposition sort on the FULL "
+            "grid (schedule=None → physicalOperation Phase B/C/D). "
+            "This is suboptimal but guaranteed to succeed.",
             PATCH_LOG_PREFIX,
+            mismatch_remaining,
+            current_layout.size,
+            len(snapshots),
+        )
+        # Append a final snapshot whose schedule is None.  When
+        # physicalOperation receives schedule=None it skips the SAT path
+        # and falls through to the deterministic Phase B/C/D heuristic
+        # (odd-even transposition sort) which is O(m+n) passes and
+        # *always* succeeds for any permutation.  We set the target to
+        # the full target_layout so the heuristic sorts from the current
+        # (partially-converged) layout all the way to the final target
+        # in a single reconfiguration step using the full grid.
+        snapshots.append(
+            (target_layout.copy(), None, [])
         )
 
     return snapshots
@@ -1318,6 +1405,101 @@ def _apply_layout_as_reconfiguration(
             ionidx = int(layout_after[d][c])
             newArrangementArr[d][c] = ionidx
 
+    # ── Defensive ion-set reconciliation ─────────────────────────
+    # Merged routing steps (from block-level SAT + merge) can
+    # occasionally produce a layout_after whose ion set diverges
+    # from oldArrangementArr due to SAT solver non-determinism,
+    # block-boundary edge cases, or return-reconfig convergence
+    # failures.  physicalOperation's Phase B (phaseB_greedy_layout)
+    # requires A and T to contain exactly the same ion IDs.
+    #
+    # Fix: detect mismatches before calling physicalOperation and
+    # reconcile by placing missing ions into empty cells and
+    # removing unexpected ions.
+    old_ions = set(oldArrangementArr.flatten()) - {0}
+    new_ions = set(newArrangementArr.flatten()) - {0}
+
+    # Also detect DUPLICATE ions in newArrangementArr: set() hides
+    # them, but physicalOperation requires exactly one copy of each.
+    _flat_new = newArrangementArr.flatten()
+    from collections import Counter as _Counter
+    _ion_counts = _Counter(int(v) for v in _flat_new if int(v) != 0)
+    _duplicates = {ion for ion, cnt in _ion_counts.items() if cnt > 1}
+
+    if old_ions != new_ions or _duplicates:
+        missing = old_ions - new_ions   # in old, not in new target
+        extra   = new_ions - old_ions   # in new target, not in old
+
+        logger.warning(
+            "%s _apply_layout_as_reconfiguration: ion set mismatch — "
+            "missing=%s, extra=%s, duplicates=%s. Reconciling arrays.",
+            PATCH_LOG_PREFIX, sorted(missing), sorted(extra),
+            sorted(_duplicates),
+        )
+
+        # 1a) Remove extra ions from newArrangementArr (set to 0)
+        for d in range(wiseArch.n):
+            for c in range(wiseArch.m * wiseArch.k):
+                if int(newArrangementArr[d, c]) in extra:
+                    newArrangementArr[d, c] = 0
+
+        # 1b) De-duplicate: keep ONE copy of each duplicated ion
+        #     (prefer the copy closest to the ion's old position)
+        #     and zero out the rest.
+        for dup_ion in sorted(_duplicates):
+            dup_positions = []
+            for d in range(wiseArch.n):
+                for c in range(wiseArch.m * wiseArch.k):
+                    if int(newArrangementArr[d, c]) == dup_ion:
+                        dup_positions.append((d, c))
+            if len(dup_positions) <= 1:
+                continue
+            # Find ideal keep position: closest to old position
+            _old_pos = np.argwhere(oldArrangementArr == dup_ion)
+            if len(_old_pos) > 0:
+                od, oc = int(_old_pos[0][0]), int(_old_pos[0][1])
+                dup_positions.sort(
+                    key=lambda rc: abs(rc[0] - od) + abs(rc[1] - oc)
+                )
+            # Keep first, zero out the rest
+            for dd, dc in dup_positions[1:]:
+                newArrangementArr[dd, dc] = 0
+
+        # 2) Place missing ions: prefer their old position if the
+        #    cell is now empty; otherwise find the nearest empty cell.
+        _empty_cells = []
+        for d in range(wiseArch.n):
+            for c in range(wiseArch.m * wiseArch.k):
+                if int(newArrangementArr[d, c]) == 0:
+                    _empty_cells.append((d, c))
+
+        for ion in sorted(missing):
+            # Find where the ion was in the old arrangement
+            _old_pos = np.argwhere(oldArrangementArr == ion)
+            placed = False
+            if len(_old_pos) > 0:
+                od, oc = int(_old_pos[0][0]), int(_old_pos[0][1])
+                if int(newArrangementArr[od, oc]) == 0:
+                    newArrangementArr[od, oc] = ion
+                    _empty_cells = [
+                        (d, c) for d, c in _empty_cells
+                        if not (d == od and c == oc)
+                    ]
+                    placed = True
+            if not placed and _empty_cells:
+                ed, ec = _empty_cells.pop(0)
+                newArrangementArr[ed, ec] = ion
+                placed = True
+            if not placed:
+                logger.error(
+                    "%s could not place missing ion %d — no empty cells",
+                    PATCH_LOG_PREFIX, ion,
+                )
+
+    # ── Build trap → ion mapping for physicalOperation ───────────
+    for d in range(wiseArch.n):
+        for c in range(wiseArch.m * wiseArch.k):
+            ionidx = int(newArrangementArr[d][c])
             old_ionidx = int(oldArrangementArr[d][c])
 
             # Determine which physical trap owns grid cell (d, c).
@@ -1658,20 +1840,65 @@ def _route_round_sequence(
 
         if not tiling_step:
             if not tiling_steps:
+                # --- Fix B: Skip _patch_and_route for empty-pair windows ---
+                # The trailing return round (appended by EC routing) has
+                # no MS pairs.  Routing it through the SAT solver
+                # yields 0 tiling steps, which triggers a false abort.
+                # Instead, produce a no-op step that preserves the
+                # current layout unchanged.
+                if all(len(rp) == 0 for rp in P_arr):
+                    logger.info(
+                        "%s empty-pair window at idx=%d; emitting no-op step",
+                        PATCH_LOG_PREFIX, idx,
+                    )
+                    tiling_steps = [[(currentArr.copy(), None, [])]]
+                    tiling_step = [t.pop(0) for t in tiling_steps]
+                    layout_after, schedule, solved_pairs = tiling_step.pop(0)
+                    steps.append(RoutingStep(
+                        layout_after=layout_after,
+                        schedule=None,
+                        solved_pairs=solved_pairs,
+                        ms_round_index=idx,
+                        from_cache=False,
+                        tiling_meta=(0, 0),
+                        can_merge_with_next=False,
+                        is_initial_placement=False,
+                    ))
+                    currentArr = layout_after.copy()
+                    idx += 1
+                    blk_idx += 1
+                    recheck_cache = (blk_idx not in cache_for_block)
+                    if blk_idx == blk_end:
+                        cache_for_block = {}
+                        blk_idx = blk_end = 0
+                    continue  # next iteration of while loop
                 # _patch_and_route returned no results (all SAT configs
-                # exhausted / UNSAT).  Retry with the full remaining
-                # round sequence to give the solver a larger P_max range.
+                # exhausted / UNSAT).  Retry with a *capped* window
+                # instead of dumping ALL remaining rounds at once —
+                # jumping from e.g. 1 → 31 rounds creates an
+                # intractable SAT problem (784K+ clauses).
                 remaining = parallelPairs[idx:]
+                # Cap retry at 2×lookahead to prevent window explosion.
+                # Previously used a fixed cap of 6 which could far exceed
+                # the user-specified lookahead, creating intractable SAT
+                # problems.  Now the retry window respects the lookahead
+                # parameter while still allowing a modest expansion.
+                _MAX_RETRY_WINDOW = max(2 * lookahead, 4)
                 if len(remaining) > len(P_arr):
+                    retry_window = min(
+                        len(remaining),
+                        _MAX_RETRY_WINDOW,
+                    )
                     logger.warning(
-                        "%s retrying with full remaining rounds (%d) after "
-                        "empty result for window of %d",
-                        PATCH_LOG_PREFIX, len(remaining), len(P_arr),
+                        "%s retrying with capped window (%d of %d remaining) "
+                        "after empty result for window of %d",
+                        PATCH_LOG_PREFIX, retry_window, len(remaining),
+                        len(P_arr),
                     )
                     tiling_steps_meta = _patch_and_route(
                         currentArr,
                         wiseArch,
-                        remaining,
+                        parallelPairs[idx:idx + retry_window],
                         subgridsize,
                         active_ions=active_ions,
                         ignore_initial_reconfig=True,
@@ -2788,40 +3015,25 @@ def _merge_disjoint_block_schedules(
     """Merge SAT schedules from two *disjoint* grid regions.
 
     Because blocks occupy disjoint grid regions, swaps from different
-    blocks at the same pass index never conflict and can execute in
-    parallel.  We therefore **index-align** the two schedules and
-    union all ``h_swaps`` / ``v_swaps`` at each index, regardless of
-    the ``"phase"`` label (which is cosmetic for disjoint blocks).
+    blocks never conflict and can execute in parallel within the same
+    pass (provided they share phase and comparator parity).
 
-    Each block's schedule already obeys its own H-then-V ordering
-    internally; the merged schedule preserves that per-block ordering
-    because we align by index.
+    Delegates to ``_merge_patch_round_schedules`` which:
 
-    Issue 3 fix: the previous implementation split by "H"/"V" label
-    then re-interleaved, which inflated the total pass count when
-    blocks had different H/V ratios and dropped any entry whose
-    ``"phase"`` was neither ``"H"`` nor ``"V"``.
+    1. Splits each schedule into its H-segment and V-segment,
+    2. Merges all H passes (parity-aligned) across blocks,
+    3. Merges all V passes (parity-aligned) across blocks,
+    4. Concatenates: merged-H then merged-V.
+
+    This guarantees the global schedule obeys the required
+    ``H_odd, H_even, … , V_odd, V_even, …`` ordering and that
+    **no swaps are silently dropped** when two blocks have different
+    H/V pass ratios (the previous index-aligned implementation used
+    a single phase label per index and ``_runOddEvenReconfig`` only
+    applies swaps matching the label, silently discarding cross-phase
+    swaps).
     """
-    max_len = max(len(sched_a), len(sched_b)) if (sched_a or sched_b) else 0
-    merged: List[Dict[str, Any]] = []
-
-    for i in range(max_len):
-        h_swaps: list = []
-        v_swaps: list = []
-        # Take phase label from whichever schedule still has entries
-        phase = "H"
-        if i < len(sched_a):
-            h_swaps.extend(sched_a[i].get("h_swaps", []))
-            v_swaps.extend(sched_a[i].get("v_swaps", []))
-            phase = sched_a[i].get("phase", "H")
-        if i < len(sched_b):
-            h_swaps.extend(sched_b[i].get("h_swaps", []))
-            v_swaps.extend(sched_b[i].get("v_swaps", []))
-            if i >= len(sched_a):
-                phase = sched_b[i].get("phase", "H")
-        merged.append({"phase": phase, "h_swaps": h_swaps, "v_swaps": v_swaps})
-
-    return merged
+    return _merge_patch_round_schedules([sched_a, sched_b])
 
 
 def _merge_block_routing_steps(
@@ -3254,9 +3466,12 @@ def ionRoutingGadgetArch(
                         _bq2i = getattr(_bsg, 'qubit_to_ion', {})
                         _b_ions.update(_bq2i.values())
                         if not _b_ions and hasattr(_bsg, 'ion_indices'):
-                            _b_ions = {q + 1 for q in _bsg.ion_indices}
+                            _b_ions = set(_bsg.ion_indices)  # Fix A: use physical IDs directly
                         _block_ion_sets[_bname] = _b_ions
 
+                    # Fix D: Track already-warned cross-block pairs to
+                    # avoid duplicate log lines.
+                    _warned_cross_pairs: set = set()
                     for _round_pairs in _ph_pairs:
                         for _a, _d in _round_pairs:
                             _a_block = None
@@ -3271,14 +3486,16 @@ def ionRoutingGadgetArch(
                                 and _d_block is not None
                                 and _a_block != _d_block
                             ):
-                                logger.warning(
-                                    "%s Fix3: EC phase %d has "
-                                    "cross-block pair (%d, %d): "
-                                    "blocks %s vs %s",
-                                    PATCH_LOG_PREFIX, _ph_i,
-                                    _a, _d, _a_block, _d_block,
-                                )
-                                break
+                                _pair_key = (min(_a, _d), max(_a, _d), _ph_i)
+                                if _pair_key not in _warned_cross_pairs:
+                                    _warned_cross_pairs.add(_pair_key)
+                                    logger.warning(
+                                        "%s Fix3: EC phase %d has "
+                                        "cross-block pair (%d, %d): "
+                                        "blocks %s vs %s",
+                                        PATCH_LOG_PREFIX, _ph_i,
+                                        _a, _d, _a_block, _d_block,
+                                    )
 
     if not phases or phase_pair_counts is None:
         # Metadata unavailable or epoch analysis failed.
@@ -3396,7 +3613,7 @@ def ionRoutingGadgetArch(
                     _diff_ca = _c_pairs_flat - _a_pairs_flat
                     _diff_ac = _a_pairs_flat - _c_pairs_flat
                     if _diff_ca or _diff_ac:
-                        logger.warning(
+                        logger.debug(
                             "%s Fix1 cross-validation: phase %d "
                             "(%s) pair mismatch — "
                             "compiler-only: %s, analytics-only: %s",

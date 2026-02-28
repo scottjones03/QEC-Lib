@@ -1,0 +1,2 @@
+[DIAG-GADGET] phase_pair_counts=[0, 12, 0, 12, 0, 0, 8], sum=32, len(parallelPairs)=32
+[DIAG-GADGET] phases=7, types=['stabilizer_round_pre', 'gadget', 'gadget', 'gadget', 'gadget', 'gadget', 'stabilizer_round_post']

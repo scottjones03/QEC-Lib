@@ -1,0 +1,37 @@
+Stim: 24 qubits, 245 instructions
+Compiling...
+[DIAG-SAT-PARAMS] phase_idx=1, phase_type=gadget
+[DIAG-SAT-PARAMS] merged_layout shape=(6, 8)
+[DIAG-SAT-PARAMS] p_arr_for_solve len=24, rounds=[1, 1, 1, 1, 1, 1, 1, 1, 6, 6, 6, 6, 1, 1, 1, 1, 1, 1, 1, 1, 6, 6, 6, 6]
+[DIAG-SAT-PARAMS] merged_active len=24, values=[1, 2, 4, 5, 13, 14, 16, 25, 37, 38, 40, 41, 43, 44, 46, 49, 55, 61, 62, 64]...
+[DIAG-SAT-PARAMS] merged_sgs=(12, 12, 0)
+[DIAG-SAT-PARAMS] bts=None
+[DIAG-SAT-PARAMS] phase_idx=3, phase_type=gadget
+[DIAG-SAT-PARAMS] merged_layout shape=(6, 8)
+[DIAG-SAT-PARAMS] p_arr_for_solve len=16, rounds=[2, 2, 2, 2, 6, 6, 6, 6, 2, 2, 2, 2, 6, 6, 6, 6]
+[DIAG-SAT-PARAMS] merged_active len=24, values=[1, 2, 4, 5, 13, 14, 16, 25, 37, 38, 40, 41, 43, 44, 46, 49, 55, 61, 62, 64]...
+[DIAG-SAT-PARAMS] merged_sgs=(12, 12, 0)
+[DIAG-SAT-PARAMS] bts=None
+
+Failed: 'NoneType' object is not subscriptable
+Traceback (most recent call last):
+  File "/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/_diag_orphan_ions.py", line 69, in <module>
+    arch_g, compiler_g, compiled_g, batches_g, ion_roles_g, p2l_g, remap_g = compile_gadget_for_animation(
+                                                                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/src/qectostim/experiments/hardware_simulation/trapped_ion/demo/run.py", line 686, in compile_gadget_for_animation
+    routed = compiler.route(mapped)
+             ^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/src/qectostim/experiments/hardware_simulation/trapped_ion/utils/trapped_ion_compiler.py", line 952, in route
+    allOps, route_barriers, reconfig_time = ionRoutingGadgetArch(
+                                            ^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/src/qectostim/experiments/hardware_simulation/trapped_ion/compiler/qccd_WISE_ion_route.py", line 3173, in ionRoutingGadgetArch
+    # ------------------------------------------------------------------
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/src/qectostim/experiments/hardware_simulation/trapped_ion/compiler/qccd_WISE_ion_route.py", line 2287, in ionRoutingWISEArch
+  File "/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/_diag_orphan_ions.py", line 21, in _patched_apply
+    result = _orig_apply(arch, wiseArch, oldArr, newArr, layout_after, allOps, schedule, initial_placement, sorted_traps)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/src/qectostim/experiments/hardware_simulation/trapped_ion/compiler/qccd_WISE_ion_route.py", line 1240, in _apply_layout_as_reconfiguration
+    old_ionidx = int(oldArrangementArr[d][c])
+                     ~~~~~~~~~~~~~~~~~^^^
+TypeError: 'NoneType' object is not subscriptable

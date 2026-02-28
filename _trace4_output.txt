@@ -1,0 +1,24 @@
+=== IMPORTING ===
+matplotlib | DEBUG | matplotlib data path: /Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/my_venv/lib/python3.11/site-packages/matplotlib/mpl-data
+matplotlib | DEBUG | CONFIGDIR=/Users/scottjones_admin/.matplotlib
+matplotlib | DEBUG | interactive is False
+matplotlib | DEBUG | platform is darwin
+matplotlib | DEBUG | CACHEDIR=/Users/scottjones_admin/.matplotlib
+matplotlib.font_manager | DEBUG | Using fontManager instance from /Users/scottjones_admin/.matplotlib/fontlist-v390.json
+matplotlib.pyplot | DEBUG | Loaded backend Agg version v2.2.
+=== IMPORTS DONE ===
+=== CIRCUIT: 24 qubits, meta.is_gadget=True ===
+=== PHASES: 9 total ===
+   phase[0]: type=init, ms_pair_count=0
+   phase[1]: type=stabilizer_round_pre, ms_pair_count=0
+   phase[2]: type=gadget, ms_pair_count=12
+   phase[3]: type=gadget, ms_pair_count=0
+   phase[4]: type=gadget, ms_pair_count=12
+   phase[5]: type=gadget, ms_pair_count=0
+   phase[6]: type=gadget, ms_pair_count=0
+   phase[7]: type=stabilizer_round_post, ms_pair_count=8
+   phase[8]: type=measure, ms_pair_count=0
+=== COMPILING ===
+wise.qccd.gadget_routing | INFO | [PhaseSteps] routing 7 phases, grid=6x8, k=2, blocks=3
+wise.qccd.gadget_routing | DEBUG | [PhaseSteps] gadget phase 1: blocks not in single row band (2 distinct row ranges) — using bounding-box extraction
+wise.qccd.gadget_routing | DEBUG | [PhaseSteps] gadget phase 1: bbox extraction 6x8 (rows 0-6, trap cols 0-4)

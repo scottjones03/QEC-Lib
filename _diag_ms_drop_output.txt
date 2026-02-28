@@ -1,0 +1,22 @@
+matplotlib DEBUG: matplotlib data path: /Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/my_venv/lib/python3.11/site-packages/matplotlib/mpl-data
+matplotlib DEBUG: CONFIGDIR=/Users/scottjones_admin/.matplotlib
+matplotlib DEBUG: interactive is False
+matplotlib DEBUG: platform is darwin
+matplotlib DEBUG: CACHEDIR=/Users/scottjones_admin/.matplotlib
+matplotlib.font_manager DEBUG: Using fontManager instance from /Users/scottjones_admin/.matplotlib/fontlist-v390.json
+matplotlib.pyplot DEBUG: Loaded backend Agg version v2.2.
+Phases: 9
+  [0] 'init'  rounds=0  ms_pairs=0
+  [1] 'stabilizer_round_pre'  rounds=2  ms_pairs=8
+  [2] 'gadget'  rounds=4  ms_pairs=12
+  [3] 'gadget'  rounds=0  ms_pairs=0
+  [4] 'gadget'  rounds=4  ms_pairs=12
+  [5] 'gadget'  rounds=0  ms_pairs=0
+  [6] 'gadget'  rounds=0  ms_pairs=0
+  [7] 'stabilizer_round_post'  rounds=2  ms_pairs=8
+  [8] 'measure'  rounds=0  ms_pairs=0
+qectostim.experiments.hardware_simulation.trapped_ion.utils.trapped_ion_compiler WARNING: toMove_phase_tags length 40 != toMoveOps total 192
+wise.qccd.gadget_routing INFO: [PhaseSteps] routing 7 phases, grid=10x8, k=2, blocks=3
+wise.qccd.gadget_routing INFO: [PhaseSteps] gadget phase 1: decomposed multi-block rounds: 12 → 28 sub-rounds
+wise.qccd.gadget_routing DEBUG: [PhaseSteps] gadget phase 1: using bounding-box extraction (gadget=True)
+wise.qccd.gadget_routing DEBUG: [PhaseSteps] gadget phase 1: bbox extraction 10x8 (rows 0-10, trap cols 0-4)

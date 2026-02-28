@@ -1,0 +1,11 @@
+Creating gadget...
+Gadget: CSSSurgeryCNOTGadget
+
+--- Compiling with phase-aware routing ---
+Traceback (most recent call last):
+  File "/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/_diag_phase_routing.py", line 47, in <module>
+    main()
+  File "/Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/_diag_phase_routing.py", line 21, in main
+    batches, _, final_layout, meta = compile_gadget_for_animation(
+                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: compile_gadget_for_animation() got an unexpected keyword argument 'd'

@@ -1,0 +1,1 @@
+[PhaseSteps] routing 7 phases, grid=6x8, k=2, blocks=3

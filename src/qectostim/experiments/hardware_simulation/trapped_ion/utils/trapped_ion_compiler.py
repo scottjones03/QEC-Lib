@@ -814,9 +814,11 @@ class TrappedIonCompiler(HardwareCompiler):
             data_ions_per_block, ion_mapping,
         )
 
-        # ── Update sub_grids.ion_indices with reassigned Ion.idx ─────
+        # ── Update sub_grids.ion_indices AND qubit_to_ion with
+        #    reassigned Ion.idx (Fix A) ─────────────────────────────
         for ba in qec_metadata.block_allocations:
             new_ion_indices = []
+            new_q2i: Dict[int, int] = {}  # Fix A: physical mapping
             all_qubits = (
                 set(ba.data_qubits)
                 | set(ba.x_ancilla_qubits)
@@ -830,7 +832,9 @@ class TrappedIonCompiler(HardwareCompiler):
                     ion, _ = ion_mapping[q]
                     if not isinstance(ion, SpectatorIon):
                         new_ion_indices.append(ion.idx)
+                        new_q2i[q] = ion.idx  # Fix A
             sub_grids[ba.block_name].ion_indices = new_ion_indices
+            sub_grids[ba.block_name].qubit_to_ion = new_q2i  # Fix A
 
         # ── Inject block_sub_grids for ionRoutingGadgetArch ──────────
         circuit.metadata["block_sub_grids"] = sub_grids
@@ -1081,11 +1085,14 @@ class TrappedIonCompiler(HardwareCompiler):
                 for i in range(1, len(allOps)):
                     prev_op = allOps[i - 1]
                     curr_op = allOps[i]
-                    # Barrier at MS / multi-qubit gate boundaries
-                    if isinstance(curr_op, TwoQubitMSGate) or isinstance(prev_op, TwoQubitMSGate):
-                        new_barriers.append(i)
-                    # Barrier at transport (non-QubitOperation) boundaries
-                    elif not isinstance(curr_op, QubitOperation) or not isinstance(prev_op, QubitOperation):
+                    # Barrier ONLY at transport (non-QubitOperation)
+                    # boundaries.  MS ↔ rotation type separation is
+                    # enforced by the WISE type-matching constraint in
+                    # paralleliseOperations, so we do NOT insert barriers
+                    # at MS ↔ non-MS transitions — doing so would isolate
+                    # each MS gate in a singleton segment and prevent the
+                    # scheduler from packing independent MS gates together.
+                    if not isinstance(curr_op, QubitOperation) or not isinstance(prev_op, QubitOperation):
                         new_barriers.append(i)
                 barriers = sorted(set(new_barriers))
 

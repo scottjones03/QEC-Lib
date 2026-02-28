@@ -1,0 +1,8 @@
+Building experiment...
+Compiling...
+[DIAG-GADGET] phase_pair_counts=[0, 12, 0, 12, 0, 0, 4], sum=28, len(parallelPairs)=28
+[DIAG-GADGET] phases=7, types=['stabilizer_round_pre', 'gadget', 'gadget', 'gadget', 'gadget', 'gadget', 'stabilizer_round_post']
+[DIAG-LOOP] Starting phase routing loop with 7 plans
+[DIAG-LOOP] Phase 0: type=ec, n_pairs=0
+[DIAG-LOOP] Phase 0: SKIPPING (n_pairs=0)
+[DIAG-LOOP] Phase 1: type=gadget, n_pairs=24

@@ -1,0 +1,102 @@
+[10:10:16] Step 1: Importing modules...
+[10:10:18] Imports OK
+[10:10:18] Step 2: Building circuit (d=2, k=2, rounds=0)...
+[10:10:18] Circuit built: 175 instructions, 26 qubits
+[10:10:18] Phases: 9
+[10:10:18]   phase 0: type='init'  blocks=None  rounds=0
+[10:10:18]   phase 1: type='stabilizer_round_pre'  blocks=['block_0', 'block_1', 'block_2']  rounds=0
+[10:10:18]   phase 2: type='gadget'  blocks=['block_0', 'block_1', 'block_2']  rounds=8
+[10:10:18]   phase 3: type='gadget'  blocks=['block_0', 'block_1']  rounds=0
+[10:10:18]   phase 4: type='gadget'  blocks=['block_0', 'block_1', 'block_2']  rounds=8
+[10:10:18]   phase 5: type='gadget'  blocks=['block_1', 'block_2']  rounds=0
+[10:10:18]   phase 6: type='gadget'  blocks=['block_1']  rounds=0
+[10:10:18]   phase 7: type='stabilizer_round_post'  blocks=['block_0', 'block_2']  rounds=0
+[10:10:18]   phase 8: type='measure'  blocks=None  rounds=0
+[10:10:18] Step 3: Compiling (subgridsize=(8,6,0), may take several minutes)...
+wise.qccd.route INFO: [PatchRoute] Fix10: split shared-ion rounds: 16 → 24 entries
+wise.qccd.route INFO: [PatchRoute] Fix10: updated phase_pair_counts: [0, 12, 0, 12, 0, 0, 0] (sum=24)
+wise.qccd.route WARNING: [PatchRoute] Fix1 cross-validation: phase 1 (gadget) pair mismatch — compiler-only: {(67, 68), (41, 49), (43, 46), (5, 25), (49, 62), (49, 65), (16, 28), (67, 70), (16, 25), (55, 68), (4, 5), (38, 49), (2, 62), (37, 38), (37, 41), (2, 13), (13, 25), (26, 28), (43, 44), (55, 70), (4, 65), (61, 62), (61, 65), (44, 55), (46, 55), (1, 65), (1, 62), (1, 13), (25, 26)}, analytics-only: {(15, 21), (18, 20), (3, 7), (4, 6), (9, 14), (8, 12), (17, 21), (11, 14), (2, 5), (16, 19), (3, 6), (8, 14), (17, 20), (2, 7), (10, 14), (11, 13), (16, 21), (15, 19), (18, 21), (4, 7), (9, 12), (10, 13), (1, 7)}
+wise.qccd.route INFO: [PatchRoute] _route_round_sequence: idx=0/33
+wise.qccd.route INFO: [PatchRoute] rechecked cache at idx=0; blk_idx=0, blk_end=0, new_blk_end=4, cache_for_block=0, new_cache=0
+wise.qccd.route INFO: [PatchRoute] starting patch routing: rounds=1, total_gates=3, patch_size=6x6, tilings=2, BTs=[{}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {(0, 0): {1: (0, 0), 2: (0, 1), 4: (0, 2), 5: (0, 3), 13: (1, 0), 14: (1, 1), 16: (1, 2), 17: (1, 3), 25: (2, 0), 26: (2, 1), 28: (2, 2), 29: (2, 3), 37: (3, 0), 38: (3, 1), 40: (3, 2), 41: (3, 3), 49: (4, 0), 50: (4, 1), 52: (4, 2), 53: (4, 3), 61: (5, 0), 62: (5, 1), 64: (5, 2), 65: (5, 3), 73: (6, 0), 74: (6, 1), 76: (6, 2), 77: (6, 3)}}]
+wise.qccd.route INFO: [PatchRoute] beginning tiling cycle 1; remaining_gates=3
+wise.qccd.route INFO: [PatchRoute] cycle 1 tiling 1/2 offset=(0,0) patches=2 remaining_before=3
+wise.qccd.route INFO: [PatchRoute] solving patch r[0:6] c[0:6] gates=3 per_round=[3] boundary_prefs=[{}], BTs=[{}]
+wise.qccd.route INFO: [PatchRoute] patch r[0:6] c[0:6] solved in 24.25s; moved_ions=22; details=ion 1: (0, 0)->(0, 2), ion 2: (0, 1)->(0, 0), ion 4: (0, 2)->(1, 1), ion 13: (1, 0)->(0, 1), ion 14: (1, 1)->(1, 0), ion 16: (1, 2)->(3, 3)
+wise.qccd.route INFO: [PatchRoute] completed tiling 1: solved_gates=3, remaining_gates=0
+wise.qccd.route INFO: [PatchRoute] completed cycle 1: solved=3, remaining=0
+wise.qccd.route INFO: [PatchRoute] finished patch routing successfully; all gates covered.
+wise.qccd.route INFO: [PatchRoute] patch routing idx=0 produced 1 tiling steps; blk_idx=0, cache_size=1
+wise.qccd.route INFO: [PatchRoute] _route_round_sequence: idx=1/33
+wise.qccd.route INFO: [PatchRoute] rechecked cache at idx=1; blk_idx=1, blk_end=4, new_blk_end=4, cache_for_block=1, new_cache=0
+wise.qccd.route INFO: [PatchRoute] starting patch routing: rounds=1, total_gates=2, patch_size=6x6, tilings=2, BTs=[]
+wise.qccd.route INFO: [PatchRoute] beginning tiling cycle 1; remaining_gates=2
+wise.qccd.route INFO: [PatchRoute] cycle 1 tiling 1/2 offset=(0,0) patches=2 remaining_before=2
+wise.qccd.route INFO: [PatchRoute] solving patch r[0:6] c[0:6] gates=2 per_round=[2] boundary_prefs=[{}], BTs=[{}]
+wise.qccd.route INFO: [PatchRoute] patch r[0:6] c[0:6] solved in 19.68s; moved_ions=17; details=ion 52: (2, 1)->(3, 1), ion 37: (2, 2)->(3, 3), ion 40: (2, 3)->(2, 2), ion 38: (3, 0)->(4, 1), ion 29: (3, 1)->(3, 0), ion 25: (3, 2)->(5, 2)
+wise.qccd.route INFO: [PatchRoute] completed tiling 1: solved_gates=2, remaining_gates=0
+wise.qccd.route INFO: [PatchRoute] completed cycle 1: solved=2, remaining=0
+wise.qccd.route INFO: [PatchRoute] finished patch routing successfully; all gates covered.
+wise.qccd.route INFO: [PatchRoute] patch routing idx=1 produced 1 tiling steps; blk_idx=1, cache_size=2
+wise.qccd.route INFO: [PatchRoute] _route_round_sequence: idx=2/33
+wise.qccd.route INFO: [PatchRoute] rechecked cache at idx=2; blk_idx=2, blk_end=4, new_blk_end=4, cache_for_block=2, new_cache=0
+wise.qccd.route INFO: [PatchRoute] finished patch routing successfully; all gates covered.
+wise.qccd.route INFO: [PatchRoute] patch routing idx=2 produced 0 tiling steps; blk_idx=2, cache_size=3
+wise.qccd.route WARNING: [PatchRoute] retrying with full remaining rounds (31) after empty result for window of 1
+wise.qccd.route INFO: [PatchRoute] starting patch routing: rounds=31, total_gates=39, patch_size=6x6, tilings=2, BTs=None
+wise.qccd.route INFO: [PatchRoute] beginning tiling cycle 1; remaining_gates=39
+wise.qccd.route INFO: [PatchRoute] cycle 1 tiling 1/2 offset=(0,0) patches=2 remaining_before=39
+wise.qccd.route INFO: [PatchRoute] solving patch r[0:6] c[0:6] gates=39 per_round=[0, 1, 2, 2, 0, 3, 2, 0, 1, 1, 2, 2, 0, 1, 3, 2, 0, 1, 2, 2, 0, 3, 2, 0, 1, 1, 2, 2, 0, 1, 0] boundary_prefs=[{}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}], BTs=[{}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}]
+wise.qccd.route WARNING: [PatchRoute] ERROR solving patch r[0:6] c[0:6] max_gate_zones=18 gates=39: No feasible layout for any Σ_r P_r bound over 54 configs.
+wise.qccd.route INFO: [PatchRoute] completed tiling 1: solved_gates=0, remaining_gates=39
+wise.qccd.route INFO: [PatchRoute] cycle 1 tiling 2/2 offset=(3,0) patches=1 remaining_before=39
+wise.qccd.route INFO: [PatchRoute] solving patch r[3:7] c[0:6] gates=14 per_round=[0, 0, 0, 2, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0, 0] boundary_prefs=[{}, {62: {'top'}}, {25: {'top'}}, {}, {}, {25: {'top'}}, {}, {}, {65: {'top'}}, {65: {'top'}}, {25: {'top'}}, {}, {}, {62: {'top'}}, {25: {'top'}}, {}, {}, {62: {'top'}}, {25: {'top'}}, {}, {}, {25: {'top'}}, {}, {}, {65: {'top'}}, {65: {'top'}}, {25: {'top'}}, {}, {}, {62: {'top'}}, {}], BTs=[{}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}]
+wise.qccd.route WARNING: [PatchRoute] ERROR solving patch r[3:7] c[0:6] max_gate_zones=12 gates=14: No feasible layout for any Σ_r P_r bound over 54 configs.
+wise.qccd.route INFO: [PatchRoute] completed tiling 2: solved_gates=0, remaining_gates=39
+wise.qccd.route INFO: [PatchRoute] completed cycle 1: solved=0, remaining=39
+wise.qccd.route WARNING: [PatchRoute] no progress in cycle 1 with inc=0; stopping (retrying identical config is futile)
+wise.qccd.route WARNING: [PatchRoute] 39 gate(s) remain unresolved after patch routing. Example (round, (ion_a, ion_b)): [(1, (2, 62)), (2, (1, 13)), (2, (25, 5)), (3, (37, 38)), (3, (49, 41))]
+wise.qccd.route INFO: [PatchRoute] _route_round_sequence: idx=3/33
+wise.qccd.route INFO: [PatchRoute] _route_round_sequence: idx=4/33
+wise.qccd.route INFO: [PatchRoute] _route_round_sequence: idx=5/33
+wise.qccd.route INFO: [PatchRoute] _route_round_sequence: idx=6/33
+wise.qccd.route INFO: [PatchRoute] _route_round_sequence: idx=7/33
+wise.qccd.route INFO: [PatchRoute] _route_round_sequence: idx=8/33
+wise.qccd.route INFO: [PatchRoute] _route_round_sequence: idx=9/33
+wise.qccd.route INFO: [PatchRoute] _route_round_sequence: idx=10/33
+wise.qccd.route INFO: [PatchRoute] _route_round_sequence: idx=11/33
+wise.qccd.route INFO: [PatchRoute] _route_round_sequence: idx=12/33
+wise.qccd.route INFO: [PatchRoute] _route_round_sequence: idx=13/33
+wise.qccd.route INFO: [PatchRoute] _route_round_sequence: idx=14/33
+wise.qccd.route INFO: [PatchRoute] _route_round_sequence: idx=15/33
+wise.qccd.route INFO: [PatchRoute] _route_round_sequence: idx=16/33
+wise.qccd.route INFO: [PatchRoute] _route_round_sequence: idx=17/33
+wise.qccd.route INFO: [PatchRoute] _route_round_sequence: idx=18/33
+wise.qccd.route INFO: [PatchRoute] _route_round_sequence: idx=19/33
+wise.qccd.route INFO: [PatchRoute] _route_round_sequence: idx=20/33
+wise.qccd.route INFO: [PatchRoute] _route_round_sequence: idx=21/33
+wise.qccd.route INFO: [PatchRoute] _route_round_sequence: idx=22/33
+wise.qccd.route INFO: [PatchRoute] _route_round_sequence: idx=23/33
+wise.qccd.route INFO: [PatchRoute] _route_round_sequence: idx=24/33
+wise.qccd.route INFO: [PatchRoute] _route_round_sequence: idx=25/33
+wise.qccd.route INFO: [PatchRoute] _route_round_sequence: idx=26/33
+wise.qccd.route INFO: [PatchRoute] _route_round_sequence: idx=27/33
+wise.qccd.route INFO: [PatchRoute] _route_round_sequence: idx=28/33
+wise.qccd.route INFO: [PatchRoute] _route_round_sequence: idx=29/33
+wise.qccd.route INFO: [PatchRoute] _route_round_sequence: idx=30/33
+wise.qccd.route INFO: [PatchRoute] _route_round_sequence: idx=31/33
+wise.qccd.route INFO: [PatchRoute] _route_round_sequence: idx=32/33
+wise.qccd.route INFO: [PatchRoute] schedule-only rebuild: initial mismatch cells=26
+wise.qccd.route INFO: [PatchRoute] schedule-only rebuild: cycle 0 tiling 1/3 offset=(0,0)
+wise.qccd.route INFO: [PatchRoute] rebuilding schedule-only patch (cycle 0, tiling 0) r[0:6] c[0:8] (no gates, BT pins=40)
+wise.qccd.route INFO: [PatchRoute] rebuilding schedule-only patch (cycle 0, tiling 0) r[6:7] c[0:8] (no gates, BT pins=8)
+wise.qccd.route INFO: [PatchRoute] schedule-only rebuild: cycle 0 tiling 2/3 offset=(3,0)
+wise.qccd.route INFO: [PatchRoute] rebuilding schedule-only patch (cycle 0, tiling 1) r[3:7] c[0:8] (no gates, BT pins=27)
+wise.qccd.route INFO: [PatchRoute] schedule-only rebuild: cycle 0 tiling 3/3 offset=(0,4)
+wise.qccd.route INFO: [PatchRoute] rebuilding schedule-only patch (cycle 0, tiling 2) r[0:6] c[4:8] (no gates, BT pins=23)
+wise.qccd.route INFO: [PatchRoute] rebuilding schedule-only patch (cycle 0, tiling 2) r[6:7] c[4:8] (no gates, BT pins=4)
+wise.qccd.route INFO: [PatchRoute] schedule-only rebuild: finished cycle 0; layout_matches_target=False, mismatch_before=26, mismatch_after=8
+wise.qccd.route INFO: [PatchRoute] schedule-only rebuild: cycle 1 tiling 1/3 offset=(0,0)
+wise.qccd.route INFO: [PatchRoute] rebuilding schedule-only patch (cycle 1, tiling 0) r[0:7] c[0:8] (no gates, BT pins=51)
+wise.qccd.route INFO: [PatchRoute] schedule-only rebuild: cycle 1 tiling 2/3 offset=(3,0)
+wise.qccd.route INFO: [PatchRoute] rebuilding schedule-only patch (cycle 1, tiling 1) r[3:7] c[0:8] (no gates, BT pins=32)

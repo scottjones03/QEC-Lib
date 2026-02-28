@@ -1,0 +1,8 @@
+[DIAG-GADGET] phase_pair_counts=[0, 12, 0, 12, 0, 0, 8], sum=32, len(parallelPairs)=32
+[DIAG-GADGET] phases=7, types=['stabilizer_round_pre', 'gadget', 'gadget', 'gadget', 'gadget', 'gadget', 'stabilizer_round_post']
+wise.qccd.gadget_routing INFO: [PhaseSteps] routing 7 phases, grid=6x8, k=2, blocks=3
+INFO:wise.qccd.gadget_routing:[PhaseSteps] routing 7 phases, grid=6x8, k=2, blocks=3
+wise.qccd.gadget_routing DEBUG: [PhaseSteps] gadget phase 1: blocks not in single row band (2 distinct row ranges) — using bounding-box extraction
+DEBUG:wise.qccd.gadget_routing:[PhaseSteps] gadget phase 1: blocks not in single row band (2 distinct row ranges) — using bounding-box extraction
+wise.qccd.gadget_routing DEBUG: [PhaseSteps] gadget phase 1: bbox extraction 6x8 (rows 0-6, trap cols 0-4)
+DEBUG:wise.qccd.gadget_routing:[PhaseSteps] gadget phase 1: bbox extraction 6x8 (rows 0-6, trap cols 0-4)

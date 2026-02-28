@@ -1,0 +1,9 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.11.5, pytest-9.0.1, pluggy-1.6.0 -- /Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim/my_venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/scottjones_admin/Library/Mobile Documents/com~apple~CloudDocs/Mac files/Repos/QECToStim
+configfile: pyproject.toml
+collecting ... collected 1 item
+
+tests/test_css_surgery_pipeline.py::TestBatchIntegrity::test_ms_gates_exist [DIAG-GADGET] phase_pair_counts=[0, 12, 0, 12, 0, 0, 8], sum=32, len(parallelPairs)=32
+[DIAG-GADGET] phases=7, types=['stabilizer_round_pre', 'gadget', 'gadget', 'gadget', 'gadget', 'gadget', 'stabilizer_round_post']

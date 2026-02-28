@@ -654,11 +654,25 @@ def make_triple_tqdm_progress_callback(
                 sat_bar.refresh()
                 _last_sat = state
 
+        # ── Reconfig bar ──────────────────────────────────────────
+        # Transition/return reconfigs happen AFTER MS rounds complete.
+        # Show the reconfig message on the round bar so users see
+        # ongoing progress instead of a stalled 40/40 display.
+        elif stage == STAGE_RECONFIG:
+            if round_bar is not None:
+                round_bar.set_postfix_str(
+                    p.message[:60] if p.message else "reconfig"
+                )
+                round_bar.refresh()
+
         # ── Complete ──────────────────────────────────────────────
         elif stage == STAGE_COMPLETE:
             if round_bar is not None:
                 round_bar.total = max(p.total, 1)
                 round_bar.n = round_bar.total
+                round_bar.set_postfix_str(
+                    p.message[:60] if p.message else "done"
+                )
                 round_bar.refresh()
 
     def _close() -> None:
@@ -796,6 +810,23 @@ def make_nested_tqdm_progress_callback(
                 inner_bar.set_postfix_str(new_state[2])
                 inner_bar.refresh()
                 _last_inner_state = new_state
+
+        elif stage == STAGE_RECONFIG:
+            # Transition/return reconfigs: show message on outer bar
+            if outer_bar is not None:
+                outer_bar.set_postfix_str(
+                    p.message[:60] if p.message else "reconfig"
+                )
+                outer_bar.refresh()
+
+        elif stage == STAGE_COMPLETE:
+            if outer_bar is not None:
+                outer_bar.total = max(p.total, 1)
+                outer_bar.n = outer_bar.total
+                outer_bar.set_postfix_str(
+                    p.message[:60] if p.message else "done"
+                )
+                outer_bar.refresh()
     
     def _close() -> None:
         nonlocal outer_bar, inner_bar
