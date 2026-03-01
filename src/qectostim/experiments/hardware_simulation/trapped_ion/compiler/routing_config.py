@@ -93,6 +93,7 @@ STAGE_PATCH_SOLVE = "patch_solve"
 STAGE_PATCH_DONE = "patch_done"
 STAGE_TILING_CYCLE = "tiling_cycle"
 STAGE_RECONFIG = "reconfig"
+STAGE_RECONFIG_PROGRESS = "reconfig_progress"
 STAGE_COMPLETE = "complete"
 
 # Fine-grained stages for detailed progress tracking within SAT solver

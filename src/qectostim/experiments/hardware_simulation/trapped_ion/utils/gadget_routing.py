@@ -949,6 +949,7 @@ def _compute_return_reconfig(
     base_pmax_in: int = 1,
     stop_event=None,
     max_inner_workers=None,
+    progress_callback=None,
 ) -> list:
     """Compute return-round reconfiguration as a **separate** SAT call.
 
@@ -1012,6 +1013,7 @@ def _compute_return_reconfig(
         base_pmax_in=base_pmax_in,
         stop_event=stop_event,
         max_inner_workers=max_inner_workers or 1,
+        progress_callback=progress_callback,
     )
 
     steps = []
@@ -2226,6 +2228,7 @@ def _compute_transition_reconfig_steps(
     base_pmax_in: int = 1,
     max_inner_workers: int | None = None,
     stop_event: Any = None,
+    progress_callback: Any = None,
 ) -> List:
     """Compute SAT-based transition reconfig from current to target layout.
 
@@ -2376,6 +2379,7 @@ def _compute_transition_reconfig_steps(
                 base_pmax_in=base_pmax_in,
                 stop_event=stop_event,
                 max_inner_workers=1,
+                progress_callback=progress_callback,
             )
             per_block_steps[bname] = _snapshots_to_steps(snaps)
 
@@ -2401,6 +2405,7 @@ def _compute_transition_reconfig_steps(
             base_pmax_in=base_pmax_in,
             stop_event=stop_event,
             max_inner_workers=max_inner_workers,
+            progress_callback=progress_callback,
         )
         # Consolidate multiple transition steps into one reconfiguration
         return _consolidate_transition_steps(_snapshots_to_steps(snaps))
@@ -2604,6 +2609,7 @@ def route_full_experiment_as_steps(
         RoutingProgress,
         STAGE_ROUTING,
         STAGE_RECONFIG,
+        STAGE_RECONFIG_PROGRESS,
         STAGE_COMPLETE,
     )
     from .qccd_nodes import QCCDWiseArch
@@ -2625,6 +2631,13 @@ def route_full_experiment_as_steps(
         for p in plans
         if len(p.ms_pairs_per_round) > 0
     )
+    # Estimate reconfig work units (return + transition reconfigs
+    # that run *after* all MS rounds finish).  Each phase with MS
+    # pairs needs at least one return or transition reconfig.
+    _total_reconfig_estimate = sum(
+        1 for _p in plans if len(_p.ms_pairs_per_round) > 0
+    )
+    _total_work_units = _total_global_rounds + _total_reconfig_estimate
     _global_round_offset = 0  # accumulated after each phase
     _route_emit_hwm = 0       # suppress backward Route emissions
 
@@ -2634,15 +2647,16 @@ def route_full_experiment_as_steps(
     _reconfig_count = 0
 
     def _emit_reconfig_progress(message: str) -> None:
-        """Emit a STAGE_RECONFIG progress event."""
+        """Emit a STAGE_RECONFIG_PROGRESS event with advancing counter."""
         nonlocal _reconfig_count
         _reconfig_count += 1
         if progress_callback is None:
             return
         progress_callback(RoutingProgress(
-            stage=STAGE_RECONFIG,
-            current=_total_global_rounds,
-            total=_total_global_rounds,
+            stage=STAGE_RECONFIG_PROGRESS,
+            current=min(_total_global_rounds + _reconfig_count,
+                        _total_work_units),
+            total=_total_work_units,
             message=message,
         ))
 
@@ -2663,14 +2677,14 @@ def route_full_experiment_as_steps(
             _route_emit_hwm = global_current
             progress_callback(RoutingProgress(
                 stage=p.stage if p.stage != STAGE_COMPLETE else STAGE_ROUTING,
-                current=min(global_current, _total_global_rounds),
-                total=_total_global_rounds,
+                current=min(global_current, _total_work_units),
+                total=_total_work_units,
                 gates_remaining=p.gates_remaining,
                 elapsed_seconds=p.elapsed_seconds,
-                message=f"Phase routing: {global_current}/{_total_global_rounds}",
+                message=f"Phase routing: {global_current}/{_total_work_units}",
                 extra=p.extra,
             ))
-        elif p.stage == STAGE_RECONFIG:
+        elif p.stage in (STAGE_RECONFIG, STAGE_RECONFIG_PROGRESS):
             # Reconfig events: pass through directly
             progress_callback(p)
         else:
@@ -2680,12 +2694,12 @@ def route_full_experiment_as_steps(
     _phase_cb = _global_progress_wrapper if progress_callback is not None else None
 
     # Emit initial Route bar state so the widget shows the total immediately
-    if progress_callback is not None and _total_global_rounds > 0:
+    if progress_callback is not None and _total_work_units > 0:
         progress_callback(RoutingProgress(
             stage=STAGE_ROUTING,
             current=0,
-            total=_total_global_rounds,
-            message=f"Starting: 0/{_total_global_rounds} MS rounds",
+            total=_total_work_units,
+            message=f"Starting: 0/{_total_work_units} steps ({_total_global_rounds} MS + {_total_reconfig_estimate} reconfig)",
         ))
 
     # Per-block EC layouts for gadget exit BT
@@ -2724,7 +2738,7 @@ def route_full_experiment_as_steps(
 
     # ── Diagnostic: initial layout purity check ──────────────────
     if ion_to_block and block_sub_grids:
-        logger.warning(
+        logger.debug(
             "[BlockPurity-DIAG] grid shape=%s, ion_to_block=%s",
             current_layout.shape,
             {b: sorted(ions) for b, ions in
@@ -2734,7 +2748,7 @@ def route_full_experiment_as_steps(
         for _bname, _sg in block_sub_grids.items():
             _r0, _c0, _r1, _c1 = _sg.grid_region
             _c0i, _c1i = _c0 * k, _c1 * k
-            logger.warning(
+            logger.debug(
                 "[BlockPurity-DIAG] %s: region=(%d,%d,%d,%d), ion_cols=(%d,%d), "
                 "ion_indices=%s, grid_slice=\n%s",
                 _bname, _r0, _c0, _r1, _c1, _c0i, _c1i,
@@ -2773,7 +2787,7 @@ def route_full_experiment_as_steps(
                     len(_unmapped), sorted(_unmapped),
                 )
         else:
-            logger.warning(
+            logger.debug(
                 "[BlockPurity] INITIAL LAYOUT PURE — all %d ions in home blocks",
                 len(ion_to_block),
             )
@@ -2909,6 +2923,7 @@ def route_full_experiment_as_steps(
                         base_pmax_in=base_pmax_in or 1,
                         stop_event=stop_event,
                         max_inner_workers=max_inner_workers,
+                        progress_callback=_phase_cb,
                     )
                     per_block_steps[bname] = list(blk_steps) + _return_steps
 
@@ -3000,6 +3015,7 @@ def route_full_experiment_as_steps(
                                 base_pmax_in=base_pmax_in or 1,
                                 stop_event=stop_event,
                                 max_inner_workers=max_inner_workers,
+                                progress_callback=_phase_cb,
                             )
                             _xb_steps = list(_xb_steps) + _xb_return
                             # Re-embed bbox results into global layout
@@ -3056,6 +3072,7 @@ def route_full_experiment_as_steps(
                     base_pmax_in=base_pmax_in or 1,
                     stop_event=stop_event,
                     max_inner_workers=max_inner_workers,
+                    progress_callback=_phase_cb,
                 )
                 sr_merged = list(sr_merged) + _sr_return
 
@@ -3120,6 +3137,7 @@ def route_full_experiment_as_steps(
                     base_pmax_in=_transition_pmax,
                     max_inner_workers=max_inner_workers,
                     stop_event=stop_event,
+                    progress_callback=_phase_cb,
                 )
             except Exception as exc:
                 logger.warning(
@@ -3134,6 +3152,7 @@ def route_full_experiment_as_steps(
                     base_pmax_in=_transition_pmax,
                     stop_event=stop_event,
                     max_inner_workers=max_inner_workers,
+                    progress_callback=_phase_cb,
                 )
         except Exception as exc_final:
             logger.warning(
@@ -3252,6 +3271,7 @@ def route_full_experiment_as_steps(
                             base_pmax_in=base_pmax_in or 1,
                             max_inner_workers=max_inner_workers,
                             stop_event=stop_event,
+                            progress_callback=_phase_cb,
                         )
                     except Exception as exc:
                         logger.warning(
@@ -3390,6 +3410,7 @@ def route_full_experiment_as_steps(
                             base_pmax_in=base_pmax_in or 1,
                             max_inner_workers=max_inner_workers,
                             stop_event=stop_event,
+                            progress_callback=_phase_cb,
                         )
                     except Exception as exc:
                         logger.warning(

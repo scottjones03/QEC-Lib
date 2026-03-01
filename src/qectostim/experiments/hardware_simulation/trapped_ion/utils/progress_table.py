@@ -262,26 +262,28 @@ def make_shared_progress_callback(
         _PATCH_STAGES,
         STAGE_ROUTING,
         STAGE_COMPLETE,
+        STAGE_RECONFIG_PROGRESS,
     )
     
     # Stages that update the route (MS round) progress bar
     _ROUTE_STAGES = frozenset({
         STAGE_ROUTING,
         STAGE_COMPLETE,
+        STAGE_RECONFIG_PROGRESS,
     })
     
     def _callback(p) -> None:
         """Update shared memory with progress.
         
         Routes updates to the appropriate progress bar based on stage:
-        - Route stages → route_current/route_total (MS rounds)
+        - Route stages → route_current/route_total (MS rounds + reconfigs)
         - Patch stages → patch_current/patch_total (patches in cycle)
         - Inner stages → sat_current/sat_total (SAT configs)
         """
         stage = p.stage
         
         if stage in _ROUTE_STAGES:
-            # Update route (MS round) progress bar
+            # Update route (MS round + reconfig) progress bar
             slot.route_current = p.current
             slot.route_total = max(p.total, 1)
             if p.message:
@@ -335,8 +337,9 @@ def make_notebook_widget_progress_callback(
         _PATCH_STAGES,
         STAGE_ROUTING,
         STAGE_COMPLETE,
+        STAGE_RECONFIG_PROGRESS,
     )
-    _ROUTE_STAGES = frozenset({STAGE_ROUTING, STAGE_COMPLETE})
+    _ROUTE_STAGES = frozenset({STAGE_ROUTING, STAGE_COMPLETE, STAGE_RECONFIG_PROGRESS})
 
     import ipywidgets as widgets
 
@@ -484,10 +487,18 @@ def make_notebook_widget_progress_callback(
                 _route_hwm = cur
                 _s_route_max = total
                 _s_route_val = cur
-                _s_route_text = (
-                    f"<span style='color:#3498db; font-size:11px;'>"
-                    f"MS Rounds: {cur}/{total}</span>"
-                )
+                # Switch label between "MS Rounds" and "Reconfig" based
+                # on stage so users can see what is happening.
+                if stage == STAGE_RECONFIG_PROGRESS:
+                    _s_route_text = (
+                        f"<span style='color:#9b59b6; font-size:11px;'>"
+                        f"Reconfig: {cur}/{total}</span>"
+                    )
+                else:
+                    _s_route_text = (
+                        f"<span style='color:#3498db; font-size:11px;'>"
+                        f"Steps: {cur}/{total}</span>"
+                    )
                 # Only reset sub-bars when Route truly advances
                 if cur > old_route:
                     _s_patch_val = 0
@@ -525,6 +536,7 @@ def make_notebook_widget_progress_callback(
                     "<span style='color:#2ecc71; font-size:11px;'>"
                     "SAT: waiting</span>"
                 )
+            force_push = True  # Patch updates should be visible immediately
 
         elif stage in _INNER_STAGES:
             total = max(p.total, 1)
@@ -536,6 +548,7 @@ def make_notebook_widget_progress_callback(
                 f"<span style='color:#2ecc71; font-size:11px;'>"
                 f"SAT: {cur}/{total}</span>"
             )
+            force_push = True  # SAT updates should be visible immediately
 
         _push_to_widgets(force=force_push)
 

@@ -2226,6 +2226,9 @@ def run_sat_with_timeout_file(
     _is_pool_worker = mp.current_process().daemon
     if _in_notebook_env() or _is_pool_worker or sys.platform == "darwin" or len(cnf.clauses) <= _SAT_INPROCESS_CLAUSE_LIMIT:
         _ip_timeout = timeout_s if (timeout_s is not None and timeout_s > 0) else 60.0
+        # Cap timeout in notebook to avoid multi-hour hangs on hard SAT instances
+        if _in_notebook_env() and _ip_timeout > 60.0:
+            _ip_timeout = 60.0
         wise_logger.debug(
             "%s SAT in-process: clauses=%d, vars=%d, timeout=%.1fs",
             debug_prefix, len(cnf.clauses), cnf.nv, _ip_timeout,
@@ -3658,9 +3661,6 @@ def optimal_QMR_for_WISE(
     )
 
     # --- Generate configs for SAT pool ---
-    # Ensure upper limit covers at least R + n + m so that lookahead > 1
-    # has enough scheduling headroom (matches old module behaviour).
-    limit_pmax = max(base_pmax + n + m, R + n + m)
 
     # Raise the P_max floor when low values are guaranteed UNSAT.
     # With many gates per round, P_max=1 (or similarly tiny values)
@@ -3677,6 +3677,12 @@ def optimal_QMR_for_WISE(
     # Use prev_pmax - 1 as a floor to avoid wasted SAT attempts.
     if prev_pmax is not None and prev_pmax > 1:
         base_pmax = max(base_pmax, prev_pmax - 1)
+
+    # Ensure upper limit covers at least R + n + m so that lookahead > 1
+    # has enough scheduling headroom (matches old module behaviour).
+    # IMPORTANT: must be computed AFTER base_pmax adjustments above so
+    # that limit_pmax >= base_pmax always holds.
+    limit_pmax = max(base_pmax + n + m, R + n + m)
 
     # When no boundary is adjacent (full-grid patch), the capacity factor
     # has no effect on the CNF — all values produce identical formulas.
@@ -3740,6 +3746,26 @@ def optimal_QMR_for_WISE(
     # total process count stays bounded across all nesting levels.
     if max_inner_workers is not None and max_inner_workers > 0:
         max_workers = min(max_workers, max_inner_workers)
+    
+    # On macOS with ThreadPoolExecutor, limit workers to reduce GIL contention.
+    # PySAT's add_clause/append holds the GIL during CNF building, but the
+    # actual solve() call RELEASES the GIL.  This means:
+    # - CNF building is serialized (only 1 thread can build at a time)
+    # - SAT solving is truly parallel (multiple threads can solve simultaneously)
+    # With 4 threads, we get good pipelining: while threads A,B solve their
+    # CNFs (GIL released), threads C,D build their CNFs (1 at a time).
+    # Fewer threads = less GIL contention during build, but less solve parallelism.
+    # More threads = more solve parallelism, but more GIL contention during build.
+    # 4 is a good balance for typical WISE problems where solve >> build time.
+    if sys.platform == "darwin":
+        _MACOS_THREAD_CAP = int(os.environ.get("WISE_MACOS_THREAD_CAP", "4"))
+        if max_workers > _MACOS_THREAD_CAP:
+            wise_logger.debug(
+                "[WISE] macOS: capping ThreadPool workers from %d to %d "
+                "(PySAT GIL contention mitigation)",
+                max_workers, _MACOS_THREAD_CAP,
+            )
+            max_workers = _MACOS_THREAD_CAP
 
     results: List[Dict[str, Any]] = []
     solver_timeout = max_rc2_time if bt_soft_enabled else max_sat_time
@@ -3764,51 +3790,41 @@ def optimal_QMR_for_WISE(
         global_budget_s = max(_MIN_POOL_BUDGET_S, global_budget_s)
 
     # Create a Manager for shared state (stop_event, children dicts).
-    # Skip Manager on macOS (spawn-context Manager() deadlocks) and when
-    # serial mode is requested (max_inner_workers <= 1).
-    # When max_inner_workers is set, the worker count is already capped
-    # at line ~3630 via min(max_workers, max_inner_workers).
-    _force_serial = (max_inner_workers is not None and max_inner_workers <= 1)
+    # Skip Manager on macOS (spawn-context Manager() deadlocks).
+    # Never force serial mode — always use ThreadPoolExecutor on macOS
+    # so that SAT configs run in parallel (PySAT releases the GIL)
+    # and progress events are emitted via the poll loop.
     _notebook_env = _in_notebook_env()
     # On macOS, spawn-context Manager() deadlocks even from the terminal
     # (not just notebooks).  Skip Manager for ALL macOS environments.
     _skip_manager = _notebook_env or sys.platform == "darwin"
-    if _force_serial:
-        # Serial mode requested: skip Manager entirely to avoid
-        # spawning a subprocess (hangs on macOS with spawn context).
+    if _skip_manager:
+        # Skip Manager() — its server subprocess deadlocks on
+        # macOS with spawn context (both notebook and terminal).
+        # ThreadPoolExecutor: workers are threads sharing memory,
+        # so threading.Event works for cooperative stop signaling.
+        # Always create a FRESH stop_event — never alias
+        # parent_stop_event.  Aliasing caused the parent event to
+        # be set when global_budget_s expired, poisoning ALL
+        # subsequent patch calls that share the same parent event.
+        # The poll loop checks parent_stop_event separately.
         manager = None
         sat_children = {}
         rc2_children = {}
-        stop_event = None
+        stop_event = _threading.Event()
     else:
-        if _skip_manager:
-            # Skip Manager() — its server subprocess deadlocks on
-            # macOS with spawn context (both notebook and terminal).
-            manager = None
-        else:
+        try:
+            manager = pool_context.Manager()
+        except RuntimeError:
             try:
-                manager = pool_context.Manager()
-            except RuntimeError:
-                try:
-                    manager = mp.Manager()
-                except Exception:
-                    manager = None
+                manager = mp.Manager()
+            except Exception:
+                manager = None
 
         if manager is not None:
             sat_children = manager.dict()
             rc2_children = manager.dict()
             stop_event = manager.Event()
-        elif _skip_manager:
-            # ThreadPoolExecutor: workers are threads sharing memory,
-            # so threading.Event works for cooperative stop signaling.
-            # Always create a FRESH stop_event — never alias
-            # parent_stop_event.  Aliasing caused the parent event to
-            # be set when global_budget_s expired, poisoning ALL
-            # subsequent patch calls that share the same parent event.
-            # The poll loop checks parent_stop_event separately.
-            sat_children = {}
-            rc2_children = {}
-            stop_event = _threading.Event()
         else:
             sat_children = {}
             rc2_children = {}
@@ -3817,16 +3833,13 @@ def optimal_QMR_for_WISE(
     start_pool = time.time()
     progress_dir = tempfile.mkdtemp(prefix="wise_sat_pool_")
     progress_paths: Dict[int, str] = {}
-    
-    # Parallelism decision: when _force_serial is set (max_inner_workers
-    # <= 1), skip the pool.  Otherwise use ProcessPoolExecutor for true
-    # multiprocessing.  The worker count is already capped by
+
+    # Parallelism decision: always use a pool executor.  On macOS
+    # (_skip_manager) use ThreadPoolExecutor; otherwise
+    # ProcessPoolExecutor.  The worker count is already capped by
     # max_inner_workers at line ~3630, so total CPU usage stays bounded
     # even for nested calls.
-    if _force_serial:
-        use_multiprocessing = False
-    else:
-        use_multiprocessing = True if _skip_manager else manager is not None
+    use_multiprocessing = True if _skip_manager else manager is not None
     
     if use_multiprocessing:
         try:
@@ -3987,7 +4000,7 @@ def optimal_QMR_for_WISE(
                 # (e.g. management thread crashed).  Break out to
                 # avoid hanging indefinitely.
                 if (time.time() - _last_progress_time) >= _STALL_TIMEOUT_S:
-                    wise_logger.warning(
+                    wise_logger.info(
                         "[WISE] SAT pool stalled for %.0fs with "
                         "%d/%d completed; breaking out.",
                         _STALL_TIMEOUT_S, _poll_completed_count,
@@ -4121,8 +4134,20 @@ def optimal_QMR_for_WISE(
             )
             use_multiprocessing = False  # flag for downstream logging
 
-    # -- Sequential fallback (when _force_serial or all MP workers failed) --
+    # -- Sequential fallback (when all MP workers failed) --
     if not results and configs:
+        # Emit SAT pool start so the progress bar initialises
+        if progress_callback is not None:
+            try:
+                progress_callback(RoutingProgress(
+                    stage=STAGE_SAT_POOL_START,
+                    current=0,
+                    total=len(configs),
+                    message=f"SAT sequential fallback: 0/{len(configs)} configs",
+                ))
+            except Exception:
+                pass
+
         for idx, cfg in enumerate(configs):
             if parent_stop_event is not None:
                 try:
@@ -4148,6 +4173,20 @@ def optimal_QMR_for_WISE(
                     stop_event=stop_event,
                 )
                 results.append(res)
+
+                # Emit per-config progress so the SAT bar updates
+                if progress_callback is not None:
+                    try:
+                        progress_callback(RoutingProgress(
+                            stage=STAGE_SAT_CONFIG_DONE,
+                            current=idx + 1,
+                            total=len(configs),
+                            message=(f"SAT sequential: config {idx + 1}/{len(configs)} "
+                                     f"({'SAT' if res.get('sat') else 'UNSAT'})"),
+                        ))
+                    except Exception:
+                        pass
+
                 if res.get("sat") and res.get("status") == "ok":
                     break  # one SAT result is enough for serial mode
             except Exception:

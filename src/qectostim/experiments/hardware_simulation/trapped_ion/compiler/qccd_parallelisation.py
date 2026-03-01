@@ -52,43 +52,43 @@ def calculateDephasingFidelity(time: float) -> float:
 # Rotation reordering for batching (RX/RY between MS rounds)
 # ---------------------------------------------------------------------------
 
-# Type priority when grouping rotations for batching.
-# Lower value = scheduled first.  We group all ops of one rotation type
-# across different ions before moving to the next type, which maximises
+# INV-R1: Type priority when grouping operations for batching.
+# Lower value = scheduled first.  We group all ops of one type across
+# different ions before moving to the next type, which maximises
 # parallelism on WISE (where only one QubitOperation type can execute at
-# a time) and also helps the augmented-grid scheduler.
-_ROTATION_TYPE_PRIORITY: Dict[type, int] = {
-    XRotation: 0,
-    YRotation: 1,
+# a time).  The order follows the natural QEC phase:
+# RESET → RX → RY → MEAS.
+_OP_TYPE_PRIORITY: Dict[type, int] = {
+    QubitReset: 0,
+    XRotation: 1,
+    YRotation: 2,
+    Measurement: 3,
 }
+
+# Backward compatibility alias
+_ROTATION_TYPE_PRIORITY = _OP_TYPE_PRIORITY
 
 
 def reorder_rotations_for_batching(
     operations: List[Operation],
 ) -> List[Operation]:
-    """Reorder single-qubit rotations between MS-round boundaries to group
-    by type, maximising same-type parallel batches.
+    """Reorder single-qubit operations between MS-round boundaries to
+    group by type, maximising same-type parallel batches.
+
+    **INV-R1: Expanded type grouping** — ALL single-qubit operation
+    types (RESET, RX, RY, MEAS) are grouped by type within each
+    hard-barrier window.  The group order follows the natural QEC
+    phase: RESET → RX → RY → MEAS.
 
     **Boundary rules**:
 
     * **MS gates** (``TwoQubitMSGate``) and transport operations are
-      *hard barriers* — no rotation may cross them.  All rotations
-      before an MS round must be emitted before the MS round starts,
-      and all rotations after one MS round but before the next stay in
-      their own window.
-    * **Measurement / QubitReset** are *per-ion barriers* — a rotation
-      on ion *X* cannot be moved past a measurement or reset on ion *X*,
-      but rotations on *other* ions may freely reorder across that
-      measurement/reset.  This allows batching optimisations while
-      preserving correct per-qubit sequencing.
-
-    Within each *rotation window* (delimited by the above barrier rules),
-    rotations on **different ions** are rearranged so that all ops of
-    one type (e.g. all ``XRotation``) come before all ops of the next
-    type (e.g. all ``YRotation``).
-
-    **Per-ion ordering is preserved** — RX and RY on the same ion are
-    never swapped relative to each other, because they do not commute.
+      *hard barriers* — no operation may cross them.  (INV-R4)
+    * **Per-ion ordering is preserved** — ops on the same ion are
+      never reordered relative to each other (INV-R2).  E.g. if
+      ion A has MEAS → RESET → RX, this sequence is preserved.
+    * **Cross-ion freedom** — ops on different ions may be freely
+      rearranged by type within a window (INV-R3).
 
     Parameters
     ----------
@@ -99,16 +99,20 @@ def reorder_rotations_for_batching(
     -------
     list[Operation]
         A new list with the same operations, potentially reordered within
-        rotation windows.
+        windows.
     """
     if not operations:
         return list(operations)
 
-    def _is_rotation(op: Operation) -> bool:
-        return type(op) in _ROTATION_TYPE_PRIORITY
+    def _is_reorderable(op: Operation) -> bool:
+        """INV-R1: All single-qubit op types are reorderable within windows."""
+        return type(op) in _OP_TYPE_PRIORITY
+
+    # Backward compatibility alias
+    _is_rotation = _is_reorderable
 
     def _is_hard_barrier(op: Operation) -> bool:
-        """MS gates and transport ops are hard barriers for ALL rotations."""
+        """INV-R4: MS gates and transport ops are hard barriers."""
         if isinstance(op, TwoQubitMSGate):
             return True
         # Non-QubitOperation = transport op = hard barrier
@@ -116,151 +120,29 @@ def reorder_rotations_for_batching(
             return True
         return False
 
-    def _is_per_ion_barrier(op: Operation) -> bool:
-        """Measurement/Reset are barriers only for the involved ion."""
-        return isinstance(op, (Measurement, QubitReset))
-
     result: List[Operation] = []
-    # Window: rotations that can be freely reordered, plus per-ion
-    # barriers that sit between them.  We track which ions are
-    # barrier-constrained.
-    window_rotations: List[Operation] = []
-    # Per-ion barriers accumulated: (position_in_stream, op)
-    # When we encounter a per-ion barrier, we flush rotations for
-    # that specific ion, emit the barrier, then continue.
-    pending_per_ion_barriers: List[Operation] = []
+    # INV-R1: Window of reorderable ops (all single-qubit types).
+    # All RESET, RX, RY, MEAS ops within a hard-barrier window are
+    # collected here and emitted type-grouped.
+    window_ops: List[Operation] = []
 
     def _flush_all() -> None:
-        """Drain all pending rotations + per-ion barriers into result."""
-        if not window_rotations and not pending_per_ion_barriers:
+        """Drain all pending reorderable ops into result, type-grouped."""
+        if not window_ops:
             return
-        _emit_reordered(window_rotations, pending_per_ion_barriers)
-        window_rotations.clear()
-        pending_per_ion_barriers.clear()
+        _emit_type_grouped(window_ops)
+        window_ops.clear()
 
-    def _emit_reordered(
-        rotations: List[Operation],
-        per_ion_barriers: List[Operation],
-    ) -> None:
-        """Emit rotations type-grouped, interleaving per-ion barriers
-        at the correct points."""
-        if not rotations and not per_ion_barriers:
-            return
-        if not rotations:
-            result.extend(per_ion_barriers)
-            return
-        if not per_ion_barriers:
-            # Pure rotation window — group by type
-            _emit_type_grouped(rotations)
-            return
-
-        # Mixed: rotations + per-ion barriers.
-        # Strategy: build per-ion FIFO queues that include both
-        # rotations and barriers.  Group rotations by type across
-        # ions, but when a barrier is at the front of an ion's queue,
-        # it must be emitted before any more rotations on that ion.
-        #
-        # Per-ion barriers whose ion has NO rotations in this window
-        # are "unrelated" — they are emitted at the boundary between
-        # rotation type groups (preserving their relative order among
-        # the window's ops but NOT blocking rotations on other ions).
-        rotation_ion_ids: Set[int] = {id(op.ions[0]) for op in rotations}
-
-        # Separate barriers into related (ion has rotations) vs unrelated
-        related_barriers: List[Operation] = []
-        unrelated_barriers: List[Operation] = []
-        for barrier in per_ion_barriers:
-            barrier_ion_ids = {id(ion) for ion in barrier.ions}
-            if barrier_ion_ids & rotation_ion_ids:
-                related_barriers.append(barrier)
-            else:
-                unrelated_barriers.append(barrier)
-
-        if not related_barriers:
-            # No barriers constrain any rotation ion — group rotations
-            # by type and emit unrelated barriers at the end
-            _emit_type_grouped(rotations)
-            result.extend(unrelated_barriers)
-            return
-
-        # Build per-ion queues with rotations + related barriers
-        all_ops = rotations + related_barriers
-        # Reconstruct original order to build per-ion queues
-        _orig_pos: Dict[int, int] = {id(op): i for i, op in enumerate(operations)}
-        all_ops.sort(key=lambda op: _orig_pos.get(id(op), 0))
-
-        ion_queues: Dict[int, deque] = defaultdict(deque)
-        for op in all_ops:
-            if _is_rotation(op):
-                ion_key = id(op.ions[0])
-                ion_queues[ion_key].append(op)
-            elif _is_per_ion_barrier(op):
-                for ion in op.ions:
-                    ion_key = id(ion)
-                    if ion_key in rotation_ion_ids:
-                        ion_queues[ion_key].append(op)
-
-        # Track which barriers have been emitted
-        emitted_barriers: Set[int] = set()
-        # Track whether unrelated barriers have been emitted
-        unrelated_emitted = False
-
-        while any(q for q in ion_queues.values()):
-            # First, emit per-ion barriers at the front of any queue
-            emitted_any_barrier = True
-            while emitted_any_barrier:
-                emitted_any_barrier = False
-                for ion_key in list(ion_queues.keys()):
-                    q = ion_queues[ion_key]
-                    while q and _is_per_ion_barrier(q[0]):
-                        barrier_op = q.popleft()
-                        if id(barrier_op) not in emitted_barriers:
-                            result.append(barrier_op)
-                            emitted_barriers.add(id(barrier_op))
-                        emitted_any_barrier = True
-
-            # Group rotations by type
-            best_tp: Optional[int] = None
-            for q in ion_queues.values():
-                if q and _is_rotation(q[0]):
-                    tp = _ROTATION_TYPE_PRIORITY.get(type(q[0]), 99)
-                    if best_tp is None or tp < best_tp:
-                        best_tp = tp
-            if best_tp is None:
-                break
-
-            # Emit unrelated barriers between type groups (once)
-            if not unrelated_emitted and best_tp > 0:
-                result.extend(unrelated_barriers)
-                unrelated_emitted = True
-
-            for ion_key in list(ion_queues.keys()):
-                q = ion_queues[ion_key]
-                while (
-                    q
-                    and _is_rotation(q[0])
-                    and _ROTATION_TYPE_PRIORITY.get(type(q[0]), 99) == best_tp
-                ):
-                    result.append(q.popleft())
-
-        # Emit unrelated barriers if not yet emitted
-        if not unrelated_emitted:
-            result.extend(unrelated_barriers)
-
-        # Safety: emit any remaining ops
-        for q in ion_queues.values():
-            for op in q:
-                if id(op) not in emitted_barriers:
-                    result.append(op)
-                    emitted_barriers.add(id(op))
-
-    def _emit_type_grouped(rotations: List[Operation]) -> None:
-        """Emit rotations grouped by type, preserving per-ion order."""
-        if len(rotations) <= 1:
-            result.extend(rotations)
+    def _emit_type_grouped(ops_to_group: List[Operation]) -> None:
+        """INV-R1 + INV-R2: Emit ops grouped by type, preserving
+        per-ion order.  Per-ion queues ensure that e.g. MEAS→RESET→RX
+        on the same ion stays in that order, while ops on different
+        ions are freely grouped by type."""
+        if len(ops_to_group) <= 1:
+            result.extend(ops_to_group)
             return
         ion_queues: Dict[int, deque] = defaultdict(deque)
-        for op in rotations:
+        for op in ops_to_group:
             ion_key = id(op.ions[0])
             ion_queues[ion_key].append(op)
 
@@ -268,29 +150,29 @@ def reorder_rotations_for_batching(
             best_tp: Optional[int] = None
             for q in ion_queues.values():
                 if q:
-                    tp = _ROTATION_TYPE_PRIORITY.get(type(q[0]), 99)
+                    tp = _OP_TYPE_PRIORITY.get(type(q[0]), 99)
                     if best_tp is None or tp < best_tp:
                         best_tp = tp
             if best_tp is None:
                 break
             for ion_key in list(ion_queues.keys()):
                 q = ion_queues[ion_key]
-                while q and _ROTATION_TYPE_PRIORITY.get(type(q[0]), 99) == best_tp:
+                while q and _OP_TYPE_PRIORITY.get(type(q[0]), 99) == best_tp:
                     result.append(q.popleft())
 
         for q in ion_queues.values():
             result.extend(q)
 
     # --- Walk operations ---
+    # INV-R1: ALL single-qubit op types go into the window.
+    # Only MS gates and transport ops are hard barriers.
     for op in operations:
-        if _is_rotation(op):
-            window_rotations.append(op)
+        if _is_reorderable(op):
+            # RESET, RX, RY, MEAS — all go into the reorderable window
+            window_ops.append(op)
         elif _is_hard_barrier(op):
             _flush_all()
             result.append(op)
-        elif _is_per_ion_barrier(op):
-            # Measurement/Reset: only barrier for the specific ion(s)
-            pending_per_ion_barriers.append(op)
         else:
             # Other QubitOperation types (shouldn't normally occur)
             _flush_all()
@@ -550,22 +432,42 @@ def paralleliseOperations(
                     count = len(ops)
                     max_cw = max(critical_weight[o] for o in ops)
                     lookahead = _near_ready_of_type(type(ops[0]))
-                    # Type continuity bonus: bias toward staying with the
-                    # previous type to reduce type-switch overhead.
-                    # A 2x multiplier makes the scheduler prefer continuity
-                    # unless a different type has significantly more ops.
-                    continuity = 2.0 if (
+                    # INV-S3: Reduced continuity bonus (1.2x, not 2.0x).
+                    # A mild bias toward type continuity avoids thrashing,
+                    # but does not override a significantly larger batch of
+                    # a different type.
+                    continuity = 1.2 if (
                         prev_chosen_type is not None
                         and type(ops[0]) is prev_chosen_type
                     ) else 1.0
+                    # INV-S2: Type-priority tie-break.  When scores are
+                    # equal, prefer the type with lower _OP_TYPE_PRIORITY
+                    # (RESET < RX < RY < MEAS) for natural QEC ordering.
+                    type_prio = _OP_TYPE_PRIORITY.get(type(ops[0]), 99)
                     return (
                         (count + lookahead) * max_cw * continuity,
                         count + lookahead,
+                        -type_prio,  # higher is better in max(); negate so lower prio wins
                     )
 
                 chosen_type = max(
                     type_groups, key=lambda t: _type_score(type_groups[t])
                 )
+
+                # INV-S4: Exhaustion override — if the chosen type has
+                # very few frontier ops (≤2) but another type has
+                # substantially more (≥3×), switch to the larger type.
+                # This prevents a nearly-exhausted type from starving a
+                # much larger group.
+                chosen_count = len(type_groups[chosen_type])
+                if chosen_count <= 2:
+                    for alt_type, alt_ops in type_groups.items():
+                        if alt_type is chosen_type:
+                            continue
+                        if len(alt_ops) >= chosen_count * 3:
+                            chosen_type = alt_type
+                            break
+
                 prev_chosen_type = chosen_type
             else:
                 # Only transport ops in frontier — no type constraint

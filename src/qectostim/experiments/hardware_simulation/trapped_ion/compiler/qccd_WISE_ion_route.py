@@ -196,6 +196,47 @@ def _compute_cross_boundary_prefs(
     return prefs
 
 
+def _simulate_schedule_replay(
+    initial_layout: np.ndarray,
+    schedule: List[Dict[str, Any]],
+) -> np.ndarray:
+    """Simulate replaying a merged schedule on a layout, returning the result.
+
+    Used to verify that a schedule actually produces the expected layout
+    without executing physicalOperation.  This catches mismatches between
+    SAT-model layouts (decoded from assignment variables) and merged
+    schedule outputs (decoded from swap variables) that can arise when
+    multiple patch schedules are combined.
+
+    Parameters
+    ----------
+    initial_layout : np.ndarray
+        The starting ion arrangement (will not be mutated).
+    schedule : list of dict
+        Pass-info dicts with ``"phase"`` (``"H"``/``"V"``), ``"h_swaps"``,
+        and ``"v_swaps"`` keys.  Swap coordinates are global (row, col).
+
+    Returns
+    -------
+    np.ndarray
+        The layout that results from applying every swap in *schedule*
+        sequentially.
+    """
+    A = initial_layout.copy()
+    n_rows, n_cols = A.shape
+    for pass_info in schedule:
+        phase = pass_info.get("phase", "H")
+        if phase == "H":
+            for (r, c) in pass_info.get("h_swaps", []):
+                if 0 <= r < n_rows and 0 <= c < n_cols - 1:
+                    A[r, c], A[r, c + 1] = A[r, c + 1], A[r, c]
+        elif phase == "V":
+            for (r, c) in pass_info.get("v_swaps", []):
+                if 0 <= r < n_rows - 1 and 0 <= c < n_cols:
+                    A[r, c], A[r + 1, c] = A[r + 1, c], A[r, c]
+    return A
+
+
 def _pass_has_swaps(pass_info: Dict[str, Any]) -> bool:
     if pass_info["phase"] == "H":
         return bool(pass_info.get("h_swaps"))
@@ -504,6 +545,9 @@ def _patch_and_route(
             if all(len(rp) == 0 for rp in remaining_pairs):
                 break
 
+            # Capture pre-tiling layouts for replay verification
+            layouts_before_tiling = [la.copy() for la in layouts_after]
+
             ion_positions: Dict[int, Tuple[int, int]] = {
                 int(layouts_after[0][r][c]): (r, c)
                 for r in range(n_rows)
@@ -601,10 +645,7 @@ def _patch_and_route(
                     and any(pref_round for pref_round in cross_boundary_prefs)
                 )
 
-                if patch_gate_count == 0:
-                    # No gates to solve in this patch — always skip.
-                    # Boundary prefs alone cannot produce a valid SAT
-                    # schedule (P_arr is empty → NoFeasibleLayoutError).
+                if patch_gate_count == 0 and not has_boundary_prefs:
                     remaining_pairs = new_remaining
                     # Still count this patch so the patch progress bar advances
                     if progress_callback is not None:
@@ -817,6 +858,30 @@ def _patch_and_route(
 
             merged_tiling_schedule = _merge_patch_schedules(patch_schedules_this_tiling, R)
 
+            # ── Replay verification (per round) ────────────────────
+            # Verify that the merged schedule, when replayed on the
+            # pre-tiling layout, actually produces the SAT-model
+            # layout.  If they diverge, use the replay result so
+            # that the snapshot is self-consistent.
+            for ridx in range(R):
+                if merged_tiling_schedule[ridx]:
+                    replay_r = _simulate_schedule_replay(
+                        layouts_before_tiling[ridx],
+                        merged_tiling_schedule[ridx],
+                    )
+                    if not np.array_equal(replay_r, layouts_after[ridx]):
+                        diff_count = int(
+                            np.count_nonzero(replay_r != layouts_after[ridx])
+                        )
+                        logger.warning(
+                            "%s patch-and-route round %d: merged schedule "
+                            "replay diverges from SAT model layout "
+                            "(%d/%d cells differ). Using replay result.",
+                            PATCH_LOG_PREFIX, ridx, diff_count,
+                            layouts_after[ridx].size,
+                        )
+                        layouts_after[ridx] = replay_r
+
             # Compute which pairs were solved in this tiling, per round
             solved_pairs_per_round: List[List[Tuple[int, int]]] = []
             for ridx in range(R):
@@ -861,14 +926,14 @@ def _patch_and_route(
             # When inc==0, retrying with identical params is futile — break after
             # one no-progress cycle instead of wasting max_cycles * SAT-solver time.
             if inc == 0 and no_progress_cycles >= 1:
-                logger.warning(
+                logger.info(
                     "%s no progress in cycle %d with inc=0; stopping (retrying identical config is futile)",
                     PATCH_LOG_PREFIX,
                     cycle_idx + 1,
                 )
                 break
             if no_progress_cycles >= max_cycles or fully_global_patch:
-                logger.warning(
+                logger.info(
                     "%s no progress in cycle %d; stopping patch routing loop",
                     PATCH_LOG_PREFIX,
                     cycle_idx + 1,
@@ -890,7 +955,7 @@ def _patch_and_route(
                     break
             if len(sample) >= 5:
                 break
-        logger.warning(
+        logger.info(
             "%s %d gate(s) remain unresolved after patch routing. Example (round, (ion_a, ion_b)): %s",
             PATCH_LOG_PREFIX,
             unresolved,
@@ -1055,19 +1120,21 @@ def _rebuild_schedule_for_layout(
                 used_keys: Dict[Tuple[int, int], int] = {}
                 used_targets: Dict[Tuple[int, int], int] = {}  # (target_row, target_col) → ion
 
+                # Build row_of from patch_grid (same as SAT validator does)
+                # This ensures conflict detection matches what the validator sees.
+                patch_row_of: Dict[int, int] = {}
+                for lr in range(r1 - r0):
+                    for lc in range(c1 - c0):
+                        ion_id = int(patch_grid[lr, lc])
+                        patch_row_of[ion_id] = lr
+
                 for dr in range(r1 - r0):
                     for dc in range(c1 - c0):
                         ionidx_target = int(target_layout[r0 + dr, c0 + dc])
-                        pos = ion_positions.get(ionidx_target)
-                        if pos is None:
-                            continue
-                        start_row_global, start_col_global = pos
-                        start_row_local = start_row_global - r0
-                        if not (0 <= start_row_local < (r1 - r0)):
-                            continue
-                        start_col_local = start_col_global - c0
-                        if not (0 <= start_col_local < (c1 - c0)):
-                            continue
+                        # Use patch_grid to find ion's current row (not ion_positions)
+                        start_row_local = patch_row_of.get(ionidx_target)
+                        if start_row_local is None:
+                            continue  # Ion not in this patch
 
                         key = (start_row_local, dc)  # SAT precondition: (start_row, target_col) uniqueness
                         existing_ion = used_keys.get(key)
@@ -1237,7 +1304,7 @@ def _rebuild_schedule_for_layout(
                                     max_inner_workers=max_inner_workers,
                                 )
                             except NoFeasibleLayoutError:
-                                logger.warning(
+                                logger.info(
                                     "%s schedule-only patch (cycle %d, tiling %d) r[%d:%d] c[%d:%d]: "
                                     "all BT strategies failed, skipping patch",
                                     PATCH_LOG_PREFIX, cycle_idx, tiling_idx,
@@ -1245,7 +1312,7 @@ def _rebuild_schedule_for_layout(
                                 )
                                 continue
                         else:
-                            logger.warning(
+                            logger.info(
                                 "%s schedule-only patch (cycle %d, tiling %d) r[%d:%d] c[%d:%d]: "
                                 "soft BT also infeasible, skipping patch",
                                 PATCH_LOG_PREFIX, cycle_idx, tiling_idx,
@@ -1272,6 +1339,23 @@ def _rebuild_schedule_for_layout(
             merged_schedule_all_rounds = _merge_patch_schedules(patch_schedules_this_tiling, R)
             merged_schedule_round0 = merged_schedule_all_rounds[0] if merged_schedule_all_rounds else []
 
+            # ── Replay verification ──────────────────────────────
+            # Verify the merged schedule actually produces the expected
+            # layout by simulating the replay on the pre-tiling layout.
+            # If they diverge, use the replay result (which is guaranteed
+            # self-consistent with the schedule) so that downstream
+            # execution never encounters a layout/schedule mismatch.
+            replay_result = _simulate_schedule_replay(current_layout, merged_schedule_round0)
+            if not np.array_equal(replay_result, layouts_after_local[0]):
+                diff_count = int(np.count_nonzero(replay_result != layouts_after_local[0]))
+                logger.warning(
+                    "%s schedule-only rebuild: merged schedule replay diverges "
+                    "from SAT model layout (%d/%d cells differ). Using replay "
+                    "result as snapshot layout for self-consistency.",
+                    PATCH_LOG_PREFIX, diff_count, current_layout.size,
+                )
+                layouts_after_local[0] = replay_result
+
             current_layout = layouts_after_local[0]
             snapshots.append(
                 (current_layout.copy(), merged_schedule_round0, [])
@@ -1288,7 +1372,7 @@ def _rebuild_schedule_for_layout(
         )
 
         if cycle_total_pins == 0:
-            logger.warning(
+            logger.info(
                 "%s schedule-only rebuild made no progress in cycle %d "
                 "(total_pins=%d); stopping early.",
                 PATCH_LOG_PREFIX,
@@ -1302,7 +1386,7 @@ def _rebuild_schedule_for_layout(
         fully_global = (patch_h >= n_rows) and (patch_w >= n_cols)
         if mismatch_after >= mismatch_before:
             if fully_global:
-                logger.warning(
+                logger.info(
                     "%s schedule-only rebuild: no improvement with full-grid patch "
                     "in cycle %d (mismatch %d -> %d); stopping.",
                     PATCH_LOG_PREFIX,
@@ -1426,7 +1510,9 @@ def _apply_layout_as_reconfiguration(
     _ion_counts = _Counter(int(v) for v in _flat_new if int(v) != 0)
     _duplicates = {ion for ion, cnt in _ion_counts.items() if cnt > 1}
 
+    _reconciliation_needed = False
     if old_ions != new_ions or _duplicates:
+        _reconciliation_needed = True
         missing = old_ions - new_ions   # in old, not in new target
         extra   = new_ions - old_ions   # in new target, not in old
 
@@ -1495,6 +1581,21 @@ def _apply_layout_as_reconfiguration(
                     "%s could not place missing ion %d — no empty cells",
                     PATCH_LOG_PREFIX, ion,
                 )
+
+    # ── If reconciliation changed the target, drop the SAT schedule ──
+    # The existing schedule was computed to transform 
+    # oldArrangementArr → original layout_after.  Reconciliation
+    # changed the target to the modified newArrangementArr, so the
+    # schedule can no longer reach it.  Dropping it (schedule=None)
+    # forces Phase B/C/D heuristic for just this step, which
+    # prevents a cascading layout mismatch for all subsequent steps.
+    if _reconciliation_needed and schedule is not None:
+        logger.info(
+            "%s ion reconciliation changed target layout; dropping SAT "
+            "schedule to force heuristic (Phase B/C/D) for this step.",
+            PATCH_LOG_PREFIX,
+        )
+        schedule = None
 
     # ── Build trap → ion mapping for physicalOperation ───────────
     for d in range(wiseArch.n):
@@ -2317,10 +2418,14 @@ def ionRoutingWISEArch(
     # Extracted into a callable so it can run once per MS round AND
     # once after all MS rounds to drain remaining 1-qubit ops.
     # ------------------------------------------------------------------
+    # INV-D1: Type-monotone drain order.  RESET first (prepare
+    # qubits), then rotations grouped by type, MEAS last.  This
+    # ensures the natural QEC phase ordering RESET→RX→RY→MEAS
+    # within each drain window.
     _TYPE_ORDER = {
-        XRotation: 0,
-        YRotation: 1,
-        QubitReset: 2,
+        QubitReset: 0,
+        XRotation: 1,
+        YRotation: 2,
         Measurement: 3,
     }
 
@@ -2446,15 +2551,10 @@ def ionRoutingWISEArch(
             for op in epoch_buckets[epoch]:
                 ion_queues[op.ions[0]].append(op)
 
-        # Drain loop: pick the fastest (lowest _TYPE_ORDER) type
-        # among all ion queue fronts, drain matching ions, repeat.
-        # Fix 9: rotation types (XRotation, YRotation) are treated as
-        # one commuting group — they can be batched together when they
-        # operate on disjoint ions.
-        _ROTATION_TKS = {
-            _TYPE_ORDER.get(XRotation, 99),
-            _TYPE_ORDER.get(YRotation, 99),
-        }
+        # INV-D2: Single-type drain — each pass processes exactly
+        # ONE type.  RX and RY are NOT coalesced.  This produces
+        # type-monotone output that the downstream reorderer and
+        # paralleliser can group into contiguous same-type batches.
         while any(q for q in ion_queues.values()):
             best_tk = None
             for q in ion_queues.values():
@@ -2466,14 +2566,10 @@ def ionRoutingWISEArch(
             if best_tk is None:
                 break
 
-            # Determine which type-keys to drain together.
-            # When the best type is a rotation, also drain the other
-            # rotation type — they commute on different qubits/ions.
+            # INV-D2: drain exactly one type at a time (no coalescing).
             drain_tks = {best_tk}
-            if best_tk in _ROTATION_TKS:
-                drain_tks = _ROTATION_TKS
 
-            # Drain all ions whose front matches any drainable type
+            # Drain all ions whose front matches the single drainable type
             grp_ops: List[Operation] = []
             for ion in list(ion_queues.keys()):
                 q = ion_queues[ion]
@@ -2514,14 +2610,14 @@ def ionRoutingWISEArch(
 
                 group_count += 1
 
-            # Fix A: ONE barrier per type group, not per greedy pass.
-            # All ops in this group share the same hardware operation
-            # type (rotations / resets / measurements), so the
-            # downstream paralleliser can schedule ion-disjoint ops
-            # within a single barrier-bounded region.  Moving the
-            # barrier here collapses N greedy passes into 1 step.
-            if grp_ops:
-                barriers.append(len(allOps))
+            # Fix A revised: no per-type-group barrier.  The
+            # downstream paralleliser enforces WISE single-type
+            # batching via its type-selection heuristic, and the
+            # happens-before DAG orders same-ion ops correctly.
+            # Removing these barriers lets the paralleliser see
+            # the full rotation+reset+measurement window and make
+            # globally optimal type-batch decisions.
+            pass
 
         if single_qubit_executed:
             logger.info(
@@ -2535,10 +2631,9 @@ def ionRoutingWISEArch(
                 len(allOps),
             )
 
-        if not group_count:
-            # No single-qubit ops executed — still need a barrier for the
-            # downstream scheduler to know this segment boundary exists.
-            barriers.append(len(allOps))
+        # No per-drain barrier needed — the caller inserts barriers
+        # at transport boundaries (before/after reconfigs).  The
+        # paralleliser's DAG handles ordering within segments.
 
         return single_qubit_executed, group_count
 
@@ -2721,6 +2816,7 @@ def ionRoutingWISEArch(
     routing_steps = sorted(routing_steps, key=lambda s: s.ms_round_index)
 
     _total_unmatched_pairs = 0  # Cumulative count of unmatched MS pairs
+    _last_round_had_ms = True    # INV-E2: track if MS ran since last reconfig
 
     for ms_round_idx, round_steps_iter in _groupby(
         routing_steps, key=lambda s: s.ms_round_index
@@ -2740,36 +2836,45 @@ def ionRoutingWISEArch(
         # 4a) Apply reconfiguration from the first routing step
         first_step = round_steps[0]
 
-        oldArrangementArr = _apply_layout_as_reconfiguration(
-            arch,
-            wiseArch,
-            oldArrangementArr,
-            newArrangementArr,
-            first_step.layout_after,
-            allOps,
-            first_step.schedule,
-            initial_placement=first_step.is_initial_placement,
-        )
-        barriers.append(len(allOps))
-        last_reconfig_time = getattr(allOps[-1], "_reconfigTime", 0.0)
-        reconfigTime += last_reconfig_time
-        logger.info(
-            "%s ms_round=%d: reconfig applied; dt=%.6f, total_reconfig=%.6f, total_ops=%d",
-            PATCH_LOG_PREFIX,
-            ms_round_idx,
-            last_reconfig_time,
-            reconfigTime,
-            len(allOps),
-        )
+        # INV-E1: No-op reconfig elision — skip reconfig when the
+        # target layout is identical to the current layout.
+        if np.array_equal(oldArrangementArr, first_step.layout_after):
+            logger.info(
+                "%s ms_round=%d: skipping no-op reconfig (layout unchanged)",
+                PATCH_LOG_PREFIX,
+                ms_round_idx,
+            )
+        else:
+            oldArrangementArr = _apply_layout_as_reconfiguration(
+                arch,
+                wiseArch,
+                oldArrangementArr,
+                newArrangementArr,
+                first_step.layout_after,
+                allOps,
+                first_step.schedule,
+                initial_placement=first_step.is_initial_placement,
+            )
+            barriers.append(len(allOps))
+            last_reconfig_time = getattr(allOps[-1], "_reconfigTime", 0.0)
+            reconfigTime += last_reconfig_time
+            logger.info(
+                "%s ms_round=%d: reconfig applied; dt=%.6f, total_reconfig=%.6f, total_ops=%d",
+                PATCH_LOG_PREFIX,
+                ms_round_idx,
+                last_reconfig_time,
+                reconfigTime,
+                len(allOps),
+            )
 
         # 4b) Run as many single-qubit operations as possible without routing
         _drain_single_qubit_ops(ms_round_idx)
 
-        # Fix B: barrier AFTER drain, BEFORE MS gates.
-        # This forces the downstream paralleliser to schedule ALL
-        # drained 1q ops into batches that complete BEFORE any MS
-        # gate batch in this round.
-        barriers.append(len(allOps))
+        # No explicit drain↔MS barrier needed: the happens-before DAG
+        # from happensBeforeForOperations() orders same-ion rotations
+        # before MS gates (shared-component edges), and the WISE
+        # type-selection heuristic ensures rotation batches and MS
+        # batches are in separate time-steps.
 
         if not operationsLeft:
             break
@@ -2782,8 +2887,6 @@ def ionRoutingWISEArch(
         # (e.g. aligned -> offset tiling transitions).
         # NOTE: Do NOT break on empty solved_pairs — a step with 0 pairs may
         # still carry a layout change needed by later steps that DO have pairs.
-        # Old code: ``if not any(t[2] for t in tiling_step): break`` checked
-        # ALL remaining entries, not just the immediate next one.
         remaining_subsequent = round_steps[1:]
         for sub_idx, subsequent_step in enumerate(remaining_subsequent):
             # Layout transition steps (is_layout_transition) ALWAYS carry
@@ -2795,26 +2898,34 @@ def ionRoutingWISEArch(
                 for s in remaining_subsequent[sub_idx:]
             ):
                 break
-            oldArrangementArr = _apply_layout_as_reconfiguration(
-                arch,
-                wiseArch,
-                oldArrangementArr,
-                newArrangementArr,
-                subsequent_step.layout_after,
-                allOps,
-                subsequent_step.schedule,
-                initial_placement=False,
-            )
-            barriers.append(len(allOps))
-            last_reconfig_time = getattr(allOps[-1], "_reconfigTime", 0.0)
-            reconfigTime += last_reconfig_time
+            # INV-E1: No-op reconfig elision for subsequent steps too
+            if np.array_equal(oldArrangementArr, subsequent_step.layout_after):
+                logger.info(
+                    "%s ms_round=%d sub=%d: skipping no-op subsequent reconfig",
+                    PATCH_LOG_PREFIX,
+                    ms_round_idx,
+                    sub_idx,
+                )
+            else:
+                oldArrangementArr = _apply_layout_as_reconfiguration(
+                    arch,
+                    wiseArch,
+                    oldArrangementArr,
+                    newArrangementArr,
+                    subsequent_step.layout_after,
+                    allOps,
+                    subsequent_step.schedule,
+                    initial_placement=False,
+                )
+                barriers.append(len(allOps))
+                last_reconfig_time = getattr(allOps[-1], "_reconfigTime", 0.0)
+                reconfigTime += last_reconfig_time
 
             # Fix A/D: drain single-qubit ops before subsequent-step
             # MS gates.  After a reconfig, new 1q ops may be eligible
-            # (their ions are now in traps).  The drain + barrier
-            # ensures they are scheduled BEFORE the MS gates.
+            # (their ions are now in traps).
             _drain_single_qubit_ops(ms_round_idx)
-            barriers.append(len(allOps))  # barrier between drain and MS
+            # No drain↔MS barrier: DAG handles ordering.
 
             _sub_exec, _sub_unmatched = _execute_ms_gates(
                 ms_round_idx, subsequent_step.solved_pairs
@@ -2823,6 +2934,7 @@ def ionRoutingWISEArch(
             _total_unmatched_pairs += _sub_unmatched
 
         if ms_gates_executed:
+            _last_round_had_ms = True
             # Count solved pairs across all steps in this round as the
             # expected gate count.  We do NOT index toMoves[ms_round_idx]
             # because the routing phase order may differ from the stim
@@ -2840,7 +2952,10 @@ def ionRoutingWISEArch(
                 len(allOps),
             )
 
-        barriers.append(len(allOps))
+        # No end-of-round barrier: the next round's post-reconfig
+        # barrier (L2854 pattern) already separates rounds.  The DAG
+        # orders current-round MS gates before next-round reconfig via
+        # shared-trap component edges.
 
     # Final drain of any remaining single-qubit ops after all MS rounds
     if operationsLeft:
@@ -2874,45 +2989,51 @@ def ionRoutingWISEArch(
         )
 
     # ------------------------------------------------------------------
-    # Fix 8: Coalesce adjacent GlobalReconfigurations operations.
-    # When multiple reconfig ops appear consecutively (no MS or single-
-    # qubit ops in between), merge them into a single reconfig.  This
-    # reduces animation frames and avoids "3 reconfigs before first CX".
-    #
-    # Safety: Only coalesce reconfigs within the same barrier group.
-    # Consecutive reconfigs separated by a barrier belong to different
-    # routing rounds and must not be merged (the intermediate layout
-    # transition may be needed by downstream animation consumers).
+    # Fix 8 (revised) + INV-E2: Coalesce reconfigs that have no MS
+    # gate between them.  This handles both:
+    # (a) directly adjacent reconfigs (original Fix 8)
+    # (b) reconfigs separated only by single-qubit ops (INV-E2)
+    # The second reconfig's target layout supersedes the first's.
+    # Single-qubit ops between them are preserved but the first
+    # reconfig is removed — its transport was unnecessary since the
+    # second reconfig will produce the final layout anyway.
     #
     # skip_coalesce=True preserves all intermediate reconfigs so that
-    # animation consumers retain per-step barrier semantics.
+    # animation consumers retain per-step semantics.
     # ------------------------------------------------------------------
     if not skip_coalesce:
-        _barrier_set = set(barriers)
         _coalesced_allOps: List[Operation] = []
-        _coalesced_barriers: List[int] = []
         i = 0
         while i < len(allOps):
             op = allOps[i]
             if isinstance(op, GlobalReconfigurations):
-                # Look ahead for consecutive GlobalReconfigurations that
-                # are NOT separated by a barrier index.
+                # Look ahead: find the next GlobalReconfigurations.
+                # If there is no MS gate (TwoQubitMSGate) between
+                # this reconfig and the next, coalesce them: drop this
+                # reconfig and keep only the later one.
                 j = i + 1
-                while (
-                    j < len(allOps)
-                    and isinstance(allOps[j], GlobalReconfigurations)
-                    and j not in _barrier_set
-                ):
+                next_reconfig_idx = None
+                has_ms_between = False
+                while j < len(allOps):
+                    if isinstance(allOps[j], TwoQubitMSGate):
+                        has_ms_between = True
+                        break
+                    if isinstance(allOps[j], GlobalReconfigurations):
+                        next_reconfig_idx = j
+                        break
                     j += 1
-                if j > i + 1:
-                    # Multiple consecutive reconfigs in same barrier group —
-                    # keep only the last (it establishes the final layout)
-                    _coalesced_allOps.append(allOps[j - 1])
+
+                if next_reconfig_idx is not None and not has_ms_between:
+                    # INV-E2: Drop the current reconfig.  Any 1q ops
+                    # between are kept — they execute before the next
+                    # reconfig.  The next reconfig establishes the
+                    # correct final layout.
                     logger.debug(
-                        "%s coalesced %d consecutive reconfigs into 1 (ops %d-%d)",
-                        PATCH_LOG_PREFIX, j - i, i, j - 1,
+                        "%s INV-E2: dropping reconfig at op %d (no MS before next reconfig at op %d)",
+                        PATCH_LOG_PREFIX, i, next_reconfig_idx,
                     )
-                    i = j
+                    # Skip this reconfig, continue from i+1
+                    i += 1
                 else:
                     _coalesced_allOps.append(op)
                     i += 1
@@ -2920,9 +3041,10 @@ def ionRoutingWISEArch(
                 _coalesced_allOps.append(op)
                 i += 1
 
-        # Rebuild barrier indices: keep barriers that still point to valid
-        # positions in the coalesced list (at each reconfig/type switch).
-        _coalesced_barriers = [0]
+        # Rebuild barrier indices from scratch based on type transitions.
+        # A barrier is placed wherever the operation type changes or at
+        # each GlobalReconfigurations boundary (transport must be isolated).
+        _coalesced_barriers: List[int] = [0]
         for idx in range(1, len(_coalesced_allOps)):
             prev_type = type(_coalesced_allOps[idx - 1])
             curr_type = type(_coalesced_allOps[idx])
