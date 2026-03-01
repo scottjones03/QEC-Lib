@@ -1017,6 +1017,10 @@ class TrappedIonCompiler(HardwareCompiler):
                     block_sub_grids=_block_sub_grids,
                     toMove_phase_tags=_toMove_phase_tags,
                     _compiler_q2i=_compiler_q2i,
+                    replay_level=(
+                        self._routing_config.replay_level
+                        if self._routing_config else 1
+                    ),
                     **kwargs
                 )
             else:

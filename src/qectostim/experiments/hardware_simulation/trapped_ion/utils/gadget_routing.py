@@ -2530,6 +2530,7 @@ def route_full_experiment_as_steps(
     stop_event: Any = None,
     cx_per_ec_round: Optional[int] = None,
     cache_ec_rounds: bool = True,
+    replay_level: int = 1,
     progress_callback: Any = None,
 ) -> Tuple[List, np.ndarray]:
     """Phase-aware routing returning ``RoutingStep`` objects.
@@ -2709,6 +2710,15 @@ def route_full_experiment_as_steps(
     # so that replays can compute a transition reconfig instead of
     # re-routing every step heuristically.
     ec_cache: Dict[Tuple, Tuple[np.ndarray, List[RoutingStep]]] = {}
+
+    # ── replay_level semantics ───────────────────────────────────
+    # replay_level=0 → disable all caching and route-back;
+    #                   every round solved fresh with SAT.
+    # replay_level≥1 → caching enabled; route-back groups of
+    #                   replay_level stabiliser rounds.
+    # Override cache_ec_rounds when replay_level=0.
+    if replay_level == 0:
+        cache_ec_rounds = False
 
     wiseArch = QCCDWiseArch(n=n, m=m, k=k)
 
@@ -2914,23 +2924,37 @@ def route_full_experiment_as_steps(
                         stop_event=stop_event,
                         max_inner_workers=max_inner_workers,
                         progress_callback=_phase_cb,
+                        replay_level=replay_level,
                     )
-                    # Separate return-round: move ions back to starting
-                    # positions via an independent SAT call.
-                    _return_steps = _compute_return_reconfig(
-                        _blk_final, block_layout,
-                        block_arch, subgridsize,
-                        base_pmax_in=base_pmax_in or 1,
-                        stop_event=stop_event,
-                        max_inner_workers=max_inner_workers,
-                        progress_callback=_phase_cb,
-                    )
-                    per_block_steps[bname] = list(blk_steps) + _return_steps
+                    # When replay_level == 0 we skip per-block return
+                    # reconfig entirely — no route-back at all.
+                    # When replay_level > 0 we defer route-back to a
+                    # single batched full-grid call after merging all
+                    # blocks (see below).
+                    per_block_steps[bname] = list(blk_steps)
 
                 sr_merged, current = _merge_block_routing_steps(
                     per_block_steps, block_sub_grids,
                     current, k,
                 )
+
+                # ── Batched full-grid return reconfig ──
+                # Instead of returning ions per-block independently,
+                # compute a single full-grid return reconfig across
+                # all blocks.  This coordinates ion movements at block
+                # boundaries and reduces total swap cost.
+                if replay_level > 0 and not np.array_equal(current, start_layout):
+                    _return_steps = _compute_return_reconfig(
+                        current, start_layout,
+                        wiseArch, subgridsize,
+                        base_pmax_in=base_pmax_in or 1,
+                        stop_event=stop_event,
+                        max_inner_workers=max_inner_workers,
+                        progress_callback=_phase_cb,
+                    )
+                    sr_merged.extend(_return_steps)
+                    if _return_steps:
+                        current = _return_steps[-1].layout_after.copy()
 
                 # --- P5: Route cross-block pairs on merged bbox grid ---
                 if _has_cross_block:
@@ -3008,16 +3032,20 @@ def route_full_experiment_as_steps(
                                 max_inner_workers=max_inner_workers,
                                 progress_callback=_phase_cb,
                             )
-                            # Separate return-round reconfig
-                            _xb_return = _compute_return_reconfig(
-                                _xb_final, _xb_layout,
-                                _xb_wise, subgridsize,
-                                base_pmax_in=base_pmax_in or 1,
-                                stop_event=stop_event,
-                                max_inner_workers=max_inner_workers,
-                                progress_callback=_phase_cb,
-                            )
-                            _xb_steps = list(_xb_steps) + _xb_return
+                            # Return reconfig for cross-block pairs:
+                            # skip when replay_level == 0 (no route-back).
+                            if replay_level > 0:
+                                _xb_return = _compute_return_reconfig(
+                                    _xb_final, _xb_layout,
+                                    _xb_wise, subgridsize,
+                                    base_pmax_in=base_pmax_in or 1,
+                                    stop_event=stop_event,
+                                    max_inner_workers=max_inner_workers,
+                                    progress_callback=_phase_cb,
+                                )
+                                _xb_steps = list(_xb_steps) + _xb_return
+                            else:
+                                _xb_steps = list(_xb_steps)
                             # Re-embed bbox results into global layout
                             _sched_row_off = _xb_r0
                             _sched_col_off = _xb_c0p
@@ -3065,16 +3093,19 @@ def route_full_experiment_as_steps(
                     max_inner_workers=max_inner_workers,
                     progress_callback=_phase_cb,
                 )
-                # Separate return-round reconfig
-                _sr_return = _compute_return_reconfig(
-                    _sr_final, current,
-                    wiseArch, subgridsize,
-                    base_pmax_in=base_pmax_in or 1,
-                    stop_event=stop_event,
-                    max_inner_workers=max_inner_workers,
-                    progress_callback=_phase_cb,
-                )
-                sr_merged = list(sr_merged) + _sr_return
+                # Separate return-round reconfig (skip when replay_level == 0)
+                if replay_level > 0:
+                    _sr_return = _compute_return_reconfig(
+                        _sr_final, current,
+                        wiseArch, subgridsize,
+                        base_pmax_in=base_pmax_in or 1,
+                        stop_event=stop_event,
+                        max_inner_workers=max_inner_workers,
+                        progress_callback=_phase_cb,
+                    )
+                    sr_merged = list(sr_merged) + _sr_return
+                else:
+                    sr_merged = list(sr_merged)
 
             for step in sr_merged:
                 if step.ms_round_index >= sr_pair_count:
@@ -3711,6 +3742,7 @@ def route_full_experiment_as_steps(
                         stop_event=stop_event,
                         max_inner_workers=max_inner_workers,
                         progress_callback=_phase_cb,
+                        replay_level=replay_level,
                     )
                     phase_steps = list(phase_steps_raw)
 
@@ -3829,6 +3861,7 @@ def route_full_experiment_as_steps(
                                         max_inner_workers
                                     ),
                                     progress_callback=_phase_cb,
+                                    replay_level=replay_level,
                                 )
                                 _nb_r0 = r0
                                 _nb_c0 = c0i
@@ -3887,6 +3920,7 @@ def route_full_experiment_as_steps(
                         stop_event=stop_event,
                         max_inner_workers=max_inner_workers,
                         progress_callback=_phase_cb,
+                        replay_level=replay_level,
                     )
                     phase_steps = list(phase_steps_raw)
 
@@ -3922,6 +3956,7 @@ def route_full_experiment_as_steps(
                 stop_event=stop_event,
                 max_inner_workers=max_inner_workers,
                 progress_callback=_phase_cb,
+                replay_level=replay_level,
             )
             phase_steps = list(phase_steps_raw)
 

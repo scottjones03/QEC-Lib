@@ -173,6 +173,7 @@ class GlobalReconfigurations(Operation):
         newAssignment: Sequence[Sequence[int]],
         schedule: Optional[List[Dict[str, Any]]] = None,
         initial_placement: bool = False,
+        context: str = "unknown",
     ):
         # DEBUG: trace usage of schedule/sat_schedule for reconfiguration
         # print("[DEBUG GlobalReconfigurations.physicalOperation] initial_placement =", initial_placement)
@@ -193,6 +194,7 @@ class GlobalReconfigurations(Operation):
             newAssignment,
             sat_schedule=schedule,
             initial_placement=initial_placement,
+            context=context,
         )
         reconfigTime = 1e-20 if initial_placement else reconfigTime
         def run():
@@ -225,7 +227,8 @@ class GlobalReconfigurations(Operation):
         newAssignment: Sequence[Sequence[int]],
         ignoreSpectators: bool = False,
         sat_schedule: Optional[List[Dict[str, Any]]] = None,   # NEW: decoded schedule from RC2
-        initial_placement: bool = False
+        initial_placement: bool = False,
+        context: str = "unknown",
     ) -> Tuple[Mapping[int, float], float]:
         # DEBUG: entry into _runOddEvenReconfig
         # print("[DEBUG _runOddEvenReconfig] called")
@@ -391,13 +394,23 @@ class GlobalReconfigurations(Operation):
             if not np.array_equal(A, T):
                 diff_count = int(np.sum(A != T))
                 import logging as _logging
-                _logging.getLogger("wise.qccd.reconfig").warning(
-                    "SAT schedule did not fully realise target layout "
-                    "(%d/%d cells differ, schedule_len=%d); "
-                    "falling through to heuristic odd-even reconfig "
-                    "for remaining mismatches.",
-                    diff_count, A.size, len(sat_schedule),
-                )
+                _reconfig_logger = _logging.getLogger("wise.qccd.reconfig")
+                if context == "ms_gate":
+                    _reconfig_logger.warning(
+                        "SAT schedule did not fully realise target layout "
+                        "(%d/%d cells differ, schedule_len=%d) during "
+                        "MS-gate reconfiguration (context=%s); "
+                        "falling through to heuristic — investigate!",
+                        diff_count, A.size, len(sat_schedule), context,
+                    )
+                else:
+                    _reconfig_logger.warning(
+                        "SAT schedule did not fully realise target layout "
+                        "(%d/%d cells differ, schedule_len=%d, context=%s); "
+                        "falling through to heuristic odd-even reconfig "
+                        "for remaining mismatches.",
+                        diff_count, A.size, len(sat_schedule), context,
+                    )
                 # Do NOT return — fall through to Phase B/C/D heuristic
                 # which will finish sorting A → T.
             else:

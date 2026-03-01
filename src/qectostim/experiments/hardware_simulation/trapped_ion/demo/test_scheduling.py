@@ -1285,8 +1285,10 @@ class TestReorderRotationsForBatching:
         # So window 2 → [rx0, ry1]
         assert result == [rx1, ry0, ms, rx0, ry1]
 
-    def test_measurement_acts_as_barrier(self):
-        """Measurement is not a rotation — must split the window."""
+    def test_measurement_is_reorderable(self):
+        """INV-R1: Measurement is reorderable (not a barrier).
+        Cross-ion MEAS should be grouped by type with other 1q ops.
+        Per-ion ordering is preserved (INV-R2)."""
         ion0 = _make_ion(0)
         ion1 = _make_ion(1)
         trap = _make_trap(10, [ion0, ion1])
@@ -1296,8 +1298,12 @@ class TestReorderRotationsForBatching:
         rx = _make_xrot(ion0, trap)
 
         result = reorder_rotations_for_batching([ry, m, rx])
-        # ry is alone in window 1, m is barrier, rx alone in window 2
-        assert result == [ry, m, rx]
+        # INV-R1: All 1q types are reorderable within a window.
+        # Per-ion order (INV-R2): ion0 has [ry, rx] — ry must precede rx.
+        # Cross-ion (INV-R3): meas on ion1 is independent of ion0 ops.
+        # Type-group drain picks lowest-prio front: ry(2) before meas(3),
+        # then rx(1), then meas(3).
+        assert result == [ry, rx, m]
 
     def test_three_ions_cx_pre_ms_pattern(self):
         """Three CX controls → 3x[RY,RX] interleaved → grouped by type."""

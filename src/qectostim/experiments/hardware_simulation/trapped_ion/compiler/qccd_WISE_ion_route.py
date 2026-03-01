@@ -975,6 +975,7 @@ def _rebuild_schedule_for_layout(
     stop_event: Optional[Any] = None,
     progress_callback: Optional[Any] = None,
     max_inner_workers: int | None = None,
+    allow_heuristic_fallback: bool = True,
 ) -> List[Tuple[np.ndarray, List[Dict[str, Any]], List[Tuple[int, int]]]]:
     """
     Given a current global layout (oldArrangementArr) and a desired global layout
@@ -1416,6 +1417,65 @@ def _rebuild_schedule_for_layout(
 
     if not np.array_equal(current_layout, target_layout):
         mismatch_remaining = int(np.count_nonzero(current_layout != target_layout))
+
+        if not allow_heuristic_fallback:
+            # ── MS-gate context: heuristic fallback is NOT allowed ──
+            # Retry with a full-grid SAT solve covering the entire
+            # grid at escalating pmax values.  This is expensive but
+            # guarantees optimal SAT-based routing.
+            logger.warning(
+                "%s schedule-only rebuild could not converge "
+                "(%d/%d cells mismatched after %d cycle(s)). "
+                "allow_heuristic_fallback=False — retrying with "
+                "full-grid SAT at escalating pmax.",
+                PATCH_LOG_PREFIX,
+                mismatch_remaining,
+                current_layout.size,
+                len(snapshots),
+            )
+            _escalation_pmax = max(base_pmax_in or 1, 2)
+            for _esc_attempt in range(3):
+                _esc_pmax = _escalation_pmax + _esc_attempt * 2
+                try:
+                    _esc_snapshots = _patch_and_route(
+                        np.array(current_layout, copy=True),
+                        wiseArch,
+                        [[]],  # no MS pairs — BT-only
+                        target_layout,
+                        subgridsize=(n_rows, n_cols, 1),  # full grid as one patch
+                        base_pmax_in=_esc_pmax,
+                        stop_event=stop_event,
+                        enable_bt=True,
+                        progress_callback=progress_callback,
+                        max_inner_workers=max_inner_workers,
+                    )
+                except Exception:
+                    _esc_snapshots = []
+                if _esc_snapshots:
+                    _esc_layout = _esc_snapshots[-1][0]
+                    if np.array_equal(_esc_layout, target_layout):
+                        snapshots.extend(_esc_snapshots)
+                        logger.info(
+                            "%s full-grid SAT retry succeeded at "
+                            "pmax=%d (attempt %d).",
+                            PATCH_LOG_PREFIX, _esc_pmax,
+                            _esc_attempt + 1,
+                        )
+                        return snapshots
+                    else:
+                        snapshots.extend(_esc_snapshots)
+                        current_layout = np.array(_esc_layout, copy=True)
+                        if np.array_equal(current_layout, target_layout):
+                            return snapshots
+
+            # If escalation still failed, fall through to heuristic
+            # as last resort (better than crashing).
+            logger.error(
+                "%s full-grid SAT escalation failed after 3 attempts. "
+                "Falling back to heuristic as last resort.",
+                PATCH_LOG_PREFIX,
+            )
+
         logger.error(
             "%s schedule-only rebuild could not fully converge to target layout "
             "(%d/%d cells still mismatched after %d cycle(s)). "
@@ -1451,6 +1511,7 @@ def _apply_layout_as_reconfiguration(
     schedule: Optional[List[Dict[str, Any]]]=None,
     initial_placement: bool = False,
     sorted_traps: Optional[List] = None,
+    is_ms_reconfig: bool = False,
 ) -> np.ndarray:
     """
     Internal helper: take the first layout in layouts_after (round 0 layout of
@@ -1590,11 +1651,24 @@ def _apply_layout_as_reconfiguration(
     # forces Phase B/C/D heuristic for just this step, which
     # prevents a cascading layout mismatch for all subsequent steps.
     if _reconciliation_needed and schedule is not None:
-        logger.info(
-            "%s ion reconciliation changed target layout; dropping SAT "
-            "schedule to force heuristic (Phase B/C/D) for this step.",
-            PATCH_LOG_PREFIX,
-        )
+        if is_ms_reconfig:
+            # MS-gate context: heuristic fallback is undesirable.
+            # Log a warning but still drop the schedule — the
+            # alternative (using an incorrect schedule) is worse.
+            # The SAT escalation in _rebuild_schedule_for_layout
+            # should minimise how often we get here.
+            logger.warning(
+                "%s ion reconciliation changed target layout during "
+                "MS-gate reconfiguration; dropping SAT schedule. "
+                "This should be rare — investigate if frequent.",
+                PATCH_LOG_PREFIX,
+            )
+        else:
+            logger.info(
+                "%s ion reconciliation changed target layout; dropping SAT "
+                "schedule to force heuristic (Phase B/C/D) for this step.",
+                PATCH_LOG_PREFIX,
+            )
         schedule = None
 
     # ── Build trap → ion mapping for physicalOperation ───────────
@@ -1620,7 +1694,9 @@ def _apply_layout_as_reconfiguration(
                 newArrangement[trap].append(arch.ions[ionidx])
 
     reconfig = GlobalReconfigurations.physicalOperation(
-        newArrangement, wiseArch, oldArrangementArr, newArrangementArr, schedule=schedule, initial_placement=initial_placement
+        newArrangement, wiseArch, oldArrangementArr, newArrangementArr,
+        schedule=schedule, initial_placement=initial_placement,
+        context="ms_gate" if is_ms_reconfig else "route_back",
     )
     allOps.append(reconfig)
     reconfig.run()
@@ -1725,6 +1801,7 @@ def _route_round_sequence(
     progress_callback: Optional[Callable] = None,
     max_inner_workers: Optional[int] = None,
     initial_BTs: Optional[List] = None,
+    replay_level: int = 1,
 ) -> Tuple[List[RoutingStep], np.ndarray]:
     """Pure-array routing engine extracted from ``ionRoutingWISEArch``.
 
@@ -1812,7 +1889,9 @@ def _route_round_sequence(
     blk_idx: int = 0
     blk_end: int = 0
     recheck_cache: bool = True
-    BLOCK_LEN = 4
+    # When replay_level == 0 we disable block caching entirely so
+    # every round is solved fresh with SAT (no replayed schedules).
+    BLOCK_LEN = 4 if replay_level > 0 else float('inf')
     cache_for_block: Dict = {}
 
     # Track current layout (updated after each routing step)
@@ -2921,6 +3000,7 @@ def ionRoutingWISEArch(
                 allOps,
                 first_step.schedule,
                 initial_placement=first_step.is_initial_placement,
+                is_ms_reconfig=True,
             )
             barriers.append(len(allOps))
             last_reconfig_time = getattr(allOps[-1], "_reconfigTime", 0.0)
@@ -2997,6 +3077,7 @@ def ionRoutingWISEArch(
                     allOps,
                     subsequent_step.schedule,
                     initial_placement=False,
+                    is_ms_reconfig=not subsequent_step.is_layout_transition,
                 )
                 barriers.append(len(allOps))
                 last_reconfig_time = getattr(allOps[-1], "_reconfigTime", 0.0)
@@ -3371,6 +3452,7 @@ def ionRoutingGadgetArch(
     _compiler_q2i: Optional[Dict[int, int]] = None,
     skip_coalesce: bool = False,
     allow_flat_fallback: bool = True,
+    replay_level: int = 1,
 ) -> Tuple[Sequence[Operation], Sequence[int], float]:
     """Phase-aware routing for fault-tolerant gadget experiments.
 
@@ -3854,6 +3936,9 @@ def ionRoutingGadgetArch(
         cx_per_ec_round=_cx_per_ec_round,
         cache_ec_rounds=(
             routing_config.cache_ec_rounds if routing_config else True
+        ),
+        replay_level=(
+            routing_config.replay_level if routing_config else replay_level
         ),
         progress_callback=routing_config.progress_callback if routing_config else None,
     )

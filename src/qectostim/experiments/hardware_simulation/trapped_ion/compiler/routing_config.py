@@ -253,6 +253,7 @@ class WISERoutingConfig:
     block_aware_patching: bool = True
     base_pmax_in: Optional[int] = None
     cache_ec_rounds: bool = True
+    replay_level: int = 1
     progress_callback: Optional[ProgressCallback] = None
     solver_params: Optional[WISESolverParams] = None
 
@@ -267,6 +268,7 @@ class WISERoutingConfig:
         timeout_seconds: Optional[float] = None,
         show_progress: bool = True,
         cache_ec_rounds: bool = True,
+        replay_level: int = 1,
     ) -> "WISERoutingConfig":
         """Create a routing config with production defaults.
 
@@ -293,6 +295,23 @@ class WISERoutingConfig:
             Cache and replay identical EC stabilizer rounds.
             ``True`` by default for performance; set ``False`` to
             force fresh SAT routing on every EC phase.
+        replay_level : int
+            Controls cache-replay granularity and route-back behaviour.
+
+            - ``0``: No replay.  Every routing round is solved fresh
+              with SAT.  No caching, no route-back reconfigurations.
+              Guarantees optimal SAT-based routing everywhere at the
+              cost of longer compilation.
+            - ``1`` (default): Maximal replay.  Cache every single
+              MS round and replay whenever the same ``round_signature``
+              is seen.  Route-back after every sub-round.
+            - *d* (code distance): Minimal replay.  Cache once per
+              full EC block (all *d* stabiliser rounds).  Route-back
+              only at EC-block and gadget–EC boundaries.
+
+            In general, ``replay_level`` in ``[0, d]``: cache every
+            ``replay_level`` stabiliser rounds as a unit and
+            route-back after each cached unit.
 
         Returns
         -------
@@ -326,6 +345,7 @@ class WISERoutingConfig:
             sat_workers=sat_workers,
             base_pmax_in=base_pmax_in,
             cache_ec_rounds=cache_ec_rounds,
+            replay_level=replay_level,
             solver_params=solver_params,
             progress_callback=progress_cb,
         )
