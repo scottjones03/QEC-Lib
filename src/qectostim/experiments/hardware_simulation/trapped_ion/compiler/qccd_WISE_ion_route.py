@@ -2429,7 +2429,11 @@ def ionRoutingWISEArch(
         Measurement: 3,
     }
 
-    def _drain_single_qubit_ops(round_idx: int) -> Tuple[int, int]:
+    def _drain_single_qubit_ops(
+        round_idx: int,
+        *,
+        max_drainable_round: Optional[int] = None,
+    ) -> Tuple[int, int]:
         """Execute eligible single-qubit ops using epoch-aware drain.
 
         Correctness constraints (ported from committed ionRoutingWISEArch §4b):
@@ -2444,6 +2448,13 @@ def ionRoutingWISEArch(
             *blocked-ions* scan: once we see a multi-qubit gate on an
             ion in operationsLeft, all later single-qubit ops on that
             ion are ineligible this round.
+
+        Round-bounded drain (Fix 1):
+            When *max_drainable_round* is set, only 1q ops whose
+            ``_routing_round`` ≤ *max_drainable_round* are eligible.
+            This prevents pre-MS rotations from future routing rounds
+            (on non-conflicting ions) from draining early, which would
+            scatter one CX instruction's ops across many segments.
 
         Type-aware sub-barriers:
             Within each epoch's eligible ops, we group by type using a
@@ -2488,6 +2499,14 @@ def ionRoutingWISEArch(
                 # C2: skip ops on ions already seen in a 2q gate
                 if ion in seen_2q_ions:
                     continue
+                # Fix 1: Round-bounded drain — skip ops whose CX
+                # instruction belongs to a routing round beyond the
+                # current round.  This keeps each CX instruction's
+                # pre-MS ops in their own round's drain window.
+                if max_drainable_round is not None:
+                    op_round = getattr(op, '_routing_round', None)
+                    if op_round is not None and op_round > max_drainable_round:
+                        continue
                 # Fix C: Relaxed getTrapForIons for single-qubit ops.
                 # After reconfiguration the ion IS in a trap, but the
                 # helper may return None due to stale parent refs.
@@ -2818,6 +2837,54 @@ def ionRoutingWISEArch(
     _total_unmatched_pairs = 0  # Cumulative count of unmatched MS pairs
     _last_round_had_ms = True    # INV-E2: track if MS ran since last reconfig
 
+    # ------------------------------------------------------------------
+    # Fix 1: Tag every 1q op with _routing_round so the drain can
+    # restrict itself to ops from rounds ≤ current.  This prevents
+    # pre-MS rotations on non-conflicting ions from draining early
+    # (the primary cause of cross-segment fragmentation).
+    # ------------------------------------------------------------------
+    # Step 1: ion-pair → earliest routing round from solved_pairs
+    _pair_to_round: Dict[frozenset, int] = {}
+    for _step in routing_steps:
+        for _a_idx, _d_idx in _step.solved_pairs:
+            _pk = frozenset((_a_idx, _d_idx))
+            if _pk not in _pair_to_round:
+                _pair_to_round[_pk] = _step.ms_round_index
+            else:
+                _pair_to_round[_pk] = min(
+                    _pair_to_round[_pk], _step.ms_round_index
+                )
+
+    # Step 2: MS gates → routing round; collect _stim_origin → round
+    _origin_to_round: Dict[int, int] = {}
+    for _op in operationsLeft:
+        if len(_op.ions) >= 2:
+            _pk = frozenset(ion.idx for ion in _op.ions)
+            _rd = _pair_to_round.get(_pk)
+            if _rd is not None:
+                _op._routing_round = _rd  # type: ignore[attr-defined]
+                _ori = getattr(_op, '_stim_origin', -1)
+                if _ori >= 0:
+                    _prev = _origin_to_round.get(_ori)
+                    _origin_to_round[_ori] = (
+                        min(_prev, _rd) if _prev is not None else _rd
+                    )
+
+    # Step 3: Tag 1q ops with the routing round of their CX instruction
+    for _op in operationsLeft:
+        if len(_op.ions) == 1:
+            _ori = getattr(_op, '_stim_origin', -1)
+            _rd = _origin_to_round.get(_ori)
+            if _rd is not None:
+                _op._routing_round = _rd  # type: ignore[attr-defined]
+
+    logger.info(
+        "%s Fix1: tagged %d origins → routing rounds; %d operationsLeft ops tagged",
+        PATCH_LOG_PREFIX,
+        len(_origin_to_round),
+        sum(1 for _op in operationsLeft if hasattr(_op, '_routing_round')),
+    )
+
     for ms_round_idx, round_steps_iter in _groupby(
         routing_steps, key=lambda s: s.ms_round_index
     ):
@@ -2868,7 +2935,11 @@ def ionRoutingWISEArch(
             )
 
         # 4b) Run as many single-qubit operations as possible without routing
-        _drain_single_qubit_ops(ms_round_idx)
+        # Fix 1: round-bounded drain — only drain ops whose CX
+        # instruction belongs to routing round ≤ current.
+        _drain_single_qubit_ops(
+            ms_round_idx, max_drainable_round=ms_round_idx,
+        )
 
         # No explicit drain↔MS barrier needed: the happens-before DAG
         # from happensBeforeForOperations() orders same-ion rotations
@@ -2882,6 +2953,16 @@ def ionRoutingWISEArch(
         # 4c) Execute MS gates for this round
         ms_gates_executed, _unmatched = _execute_ms_gates(ms_round_idx, first_step.solved_pairs)
         _total_unmatched_pairs += _unmatched
+
+        # 4d) Fix 2: Post-MS drain — after MS execution removes 2q
+        # gates from operationsLeft, their post-MS rotations become
+        # unblocked by D5.  Draining them NOW keeps post-MS ops in
+        # the SAME segment as their MS gate, eliminating the
+        # cross-segment gap that caused non-contiguous batch ranges.
+        if operationsLeft:
+            _drain_single_qubit_ops(
+                ms_round_idx, max_drainable_round=ms_round_idx,
+            )
 
         # Handle subsequent routing steps for the same MS round
         # (e.g. aligned -> offset tiling transitions).
@@ -2924,7 +3005,9 @@ def ionRoutingWISEArch(
             # Fix A/D: drain single-qubit ops before subsequent-step
             # MS gates.  After a reconfig, new 1q ops may be eligible
             # (their ions are now in traps).
-            _drain_single_qubit_ops(ms_round_idx)
+            _drain_single_qubit_ops(
+                ms_round_idx, max_drainable_round=ms_round_idx,
+            )
             # No drain↔MS barrier: DAG handles ordering.
 
             _sub_exec, _sub_unmatched = _execute_ms_gates(
@@ -2932,6 +3015,12 @@ def ionRoutingWISEArch(
             )
             ms_gates_executed += _sub_exec
             _total_unmatched_pairs += _sub_unmatched
+
+            # Fix 2: Post-MS drain for subsequent steps too
+            if operationsLeft:
+                _drain_single_qubit_ops(
+                    ms_round_idx, max_drainable_round=ms_round_idx,
+                )
 
         if ms_gates_executed:
             _last_round_had_ms = True

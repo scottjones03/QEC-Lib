@@ -450,23 +450,34 @@ def paralleliseOperations(
                         -type_prio,  # higher is better in max(); negate so lower prio wins
                     )
 
-                chosen_type = max(
-                    type_groups, key=lambda t: _type_score(type_groups[t])
-                )
+                # INV-S1: Type exhaustion — keep scheduling the
+                # previous type until no more ops of that type are in
+                # the frontier.  Only re-evaluate type selection when
+                # the previous type is fully exhausted.  This prevents
+                # A-B-A type interleaving (e.g. XR→YR→XR) within a
+                # segment, ensuring contiguous same-type batch runs.
+                if (prev_chosen_type is not None
+                        and prev_chosen_type in type_groups
+                        and type_groups[prev_chosen_type]):
+                    chosen_type = prev_chosen_type
+                else:
+                    chosen_type = max(
+                        type_groups, key=lambda t: _type_score(type_groups[t])
+                    )
 
-                # INV-S4: Exhaustion override — if the chosen type has
-                # very few frontier ops (≤2) but another type has
-                # substantially more (≥3×), switch to the larger type.
-                # This prevents a nearly-exhausted type from starving a
-                # much larger group.
-                chosen_count = len(type_groups[chosen_type])
-                if chosen_count <= 2:
-                    for alt_type, alt_ops in type_groups.items():
-                        if alt_type is chosen_type:
-                            continue
-                        if len(alt_ops) >= chosen_count * 3:
-                            chosen_type = alt_type
-                            break
+                    # INV-S4: Exhaustion override — if the chosen type has
+                    # very few frontier ops (≤2) but another type has
+                    # substantially more (≥3×), switch to the larger type.
+                    # This prevents a nearly-exhausted type from starving a
+                    # much larger group.
+                    chosen_count = len(type_groups[chosen_type])
+                    if chosen_count <= 2:
+                        for alt_type, alt_ops in type_groups.items():
+                            if alt_type is chosen_type:
+                                continue
+                            if len(alt_ops) >= chosen_count * 3:
+                                chosen_type = alt_type
+                                break
 
                 prev_chosen_type = chosen_type
             else:
