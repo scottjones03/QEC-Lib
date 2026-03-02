@@ -1184,6 +1184,40 @@ class TrappedIonCompiler(HardwareCompiler):
                     # Different qubit-op type — new segment
                     merged.append((dt, list(ops)))
 
+            # ── Post-process: clean up RECONFIG placement ────────
+            # RECONFIGs (transport-only segments) should only appear
+            # directly before/after MS rounds.  Transport between
+            # rotation blocks is absorbed into the adjacent block.
+            # Then merge any consecutive same-type segments.
+            _stable = False
+            while not _stable:
+                _stable = True
+                _i = 0
+                while _i < len(merged):
+                    _dt = merged[_i][0]
+                    if _dt is None:
+                        _next_dt = merged[_i + 1][0] if _i + 1 < len(merged) else None
+                        _prev_dt = merged[_i - 1][0] if _i > 0 else None
+                        if _next_dt is TwoQubitMSGate or _prev_dt is TwoQubitMSGate:
+                            _i += 1          # keep RECONFIG around MS
+                        elif _i > 0:
+                            merged[_i - 1][1].extend(merged[_i][1])
+                            merged.pop(_i)
+                            _stable = False
+                        elif _i + 1 < len(merged):
+                            merged[_i + 1] = (merged[_i + 1][0],
+                                              merged[_i][1] + merged[_i + 1][1])
+                            merged.pop(_i)
+                            _stable = False
+                        else:
+                            _i += 1
+                    elif _i > 0 and merged[_i - 1][0] == _dt:
+                        merged[_i - 1][1].extend(merged[_i][1])
+                        merged.pop(_i)
+                        _stable = False
+                    else:
+                        _i += 1
+
             reordered: list = []
             wise_barriers: list = []
             for _, ops in merged:

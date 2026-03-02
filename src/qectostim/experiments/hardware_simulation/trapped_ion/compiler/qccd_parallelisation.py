@@ -21,41 +21,51 @@ def _wise_parallel_pack(
 ) -> List["ParallelOperation"]:
     """Pack operations into minimal parallel batches for WISE.
 
-    Within a barrier segment all operations are independent — the only
-    constraint is that no two operations in the same batch may share a
-    hardware component (trap, junction, ion).
+    Within a contiguous same-type section all operations are independent
+    — the only constraint is that no two operations in the same batch
+    may share a hardware component (trap, junction, ion).
 
     Unlike :func:`paralleliseOperationsSimple`, **input ordering is NOT
     a constraint**.  Operations are freely reordered to minimise the
-    number of batches (greedy first-fit bin packing by component
-    conflicts).
+    number of batches.
+
+    Algorithm: **most-constrained-first greedy bin-packing**.
+
+    1. Pre-compute component sets for every operation.
+    2. Sort operations by *decreasing* number of involved components
+       (most-constrained first) — ops that use more hardware are harder
+       to place, so placing them first yields fewer total batches.
+    3. Greedily assign each operation to the first batch whose used
+       component set does not conflict, or start a new batch.
+
+    This is the standard "first-fit decreasing" heuristic for bin-packing,
+    adapted for set-intersection conflicts instead of size-based bins.
     """
     if not ops:
         return []
 
-    remaining = list(ops)
-    batches: List[ParallelOperation] = []
+    # Pre-compute component sets and sort most-constrained first
+    ops_with_comps = [(op, set(op.involvedComponents)) for op in ops]
+    ops_with_comps.sort(key=lambda x: -len(x[1]))
 
-    while remaining:
-        batch: List[Operation] = []
-        used_components: Set["QCCDComponent"] = set()
-        still_remaining: List[Operation] = []
+    # First-fit decreasing into batches
+    batches_data: List[Tuple[List[Operation], Set]] = []  # (ops, used_components)
 
-        for op in remaining:
-            comps = set(op.involvedComponents)
+    for op, comps in ops_with_comps:
+        placed = False
+        for batch_ops, used_components in batches_data:
             if comps.isdisjoint(used_components):
-                batch.append(op)
+                batch_ops.append(op)
                 used_components.update(comps)
-            else:
-                still_remaining.append(op)
+                placed = True
+                break
+        if not placed:
+            batches_data.append(([op], set(comps)))
 
-        remaining = still_remaining
-        if batch:
-            batches.append(
-                ParallelOperation.physicalOperation(batch, [])
-            )
-
-    return batches
+    return [
+        ParallelOperation.physicalOperation(batch_ops, [])
+        for batch_ops, _ in batches_data
+    ]
 
 
 def paralleliseOperationsSimple(
@@ -332,19 +342,29 @@ def _barrier_reorder_non_ms(
 ) -> Tuple[List[Operation], List[int]]:
     """Apply steps 2-5 of the barrier algorithm to a non-MS window.
 
-    Buckets operations by type and emits them in priority order.
-    The ordering depends on ``position`` in the cycle:
+    Uses **priority-driven layered emission** to group same-type
+    operations across different ions while preserving per-ion ordering.
+    In each pass, only the *highest-priority* available type is emitted;
+    lower-priority types are deferred.  This lets ops from different ions
+    accumulate at queue heads and merge into contiguous same-type blocks
+    (e.g. two separate MEAS groups merge into one when intervening
+    rotations are emitted first).
+
+    Critical for MRX decompositions where one ion has
+    ``XRot → YRot → Meas → Reset → YRot → XRot``.
+
+    Algorithm:
+      1. Build per-ion operation queues (preserving original order per ion).
+      2. Iteratively: peek at each ion's next unplaced op, group available
+         ops by type, emit **only the highest-priority type**, repeat.
+      3. Insert barriers at every type transition.
+
+    The priority ordering depends on ``position`` in the cycle:
 
     * ``"first"`` (before first MS):
       ``QubitReset → XRotation → YRotation → Measurement``
     * ``"middle"`` / ``"last"`` (between or after MS layers):
       ``XRotation → YRotation → Measurement → QubitReset``
-
-    At the end of a cycle MEAS must precede RESET (MRX decomposition
-    is M → R on each qubit), so rotations come first, then MEAS, then
-    RESET.
-
-    Barriers are inserted at every type transition.
 
     Returns (reordered_ops, barrier_positions).
     """
@@ -353,29 +373,91 @@ def _barrier_reorder_non_ms(
     if len(ops) == 1:
         return list(ops), []
 
-    # ── Bucket ops by type ───────────────────────────────────────────
-    type_buckets: Dict[type, List[Operation]] = defaultdict(list)
-    seen: Set[int] = set()
-    for op in ops:
-        oid = id(op)
-        if oid not in seen:
-            seen.add(oid)
-            type_buckets[type(op)].append(op)
-
-    # ── Emit in priority order (position-aware) ──────────────────────
+    # ── Priority map (position-aware) ────────────────────────────────
     if position == "first":
-        # Beginning of cycle: RESET first (initial prep)
         _priority = {QubitReset: 0, XRotation: 1, YRotation: 2, Measurement: 3}
     else:
-        # Middle / end of cycle: rotations first, then M before R
         _priority = {XRotation: 0, YRotation: 1, Measurement: 2, QubitReset: 3}
+
+    # ── Build per-ion operation queues ────────────────────────────────
+    # Each ion gets an ordered deque of its ops (preserving original
+    # order within the phase for that ion).
+    ion_queues: Dict[int, deque] = {}   # ion id(obj) → deque[op]
+    no_ion_ops: List[Operation] = []    # ops without ion info (fallback)
+    seen: Set[int] = set()
+
+    for op in ops:
+        oid = id(op)
+        if oid in seen:
+            continue
+        seen.add(oid)
+        ions = getattr(op, 'ions', None) or getattr(op, '_ions', [])
+        if ions:
+            ion_id = id(ions[0])
+            if ion_id not in ion_queues:
+                ion_queues[ion_id] = deque()
+            ion_queues[ion_id].append(op)
+        else:
+            no_ion_ops.append(op)
+
+    # ── Layered emission ─────────────────────────────────────────────
+    # Each pass examines the HEAD of every ion's queue, groups the
+    # available ops by type, and emits ONLY the highest-priority type.
+    #
+    # By deferring lower-priority types we give ops from different
+    # ions time to align at the queue heads, enabling natural merging
+    # of same-type blocks (e.g. MEAS from ion A + MEAS from ion B
+    # merge into one MEAS block when we defer MEAS until all higher-
+    # priority rotations have been emitted first).
     result: List[Operation] = []
-    sorted_types = sorted(
-        type_buckets.keys(),
-        key=lambda t: _priority.get(t, 99),
-    )
-    for tp in sorted_types:
-        result.extend(type_buckets[tp])
+    placed: Set[int] = set()
+
+    while any(q for q in ion_queues.values()):
+        # Clean up queue heads that were already placed (handles
+        # multi-ion ops that appear in more than one queue).
+        for _ion_id, q in ion_queues.items():
+            while q and id(q[0]) in placed:
+                q.popleft()
+
+        # Collect the next available op from each ion
+        available: Dict[type, List[Operation]] = defaultdict(list)
+        available_ids: Set[int] = set()
+        for _ion_id, q in ion_queues.items():
+            if not q:
+                continue
+            op = q[0]
+            oid = id(op)
+            if oid not in available_ids:
+                available_ids.add(oid)
+                available[type(op)].append(op)
+
+        if not available:
+            break  # shouldn't happen, but safety valve
+
+        # Emit ONLY the highest-priority available type.  This
+        # maximises same-type block merging: lower-priority ops are
+        # deferred to later passes where they may accumulate with
+        # newly-available same-type ops from other ions.
+        sorted_types = sorted(
+            available.keys(),
+            key=lambda t: _priority.get(t, 99),
+        )
+        tp = sorted_types[0]
+        for op in available[tp]:
+            oid = id(op)
+            if oid in placed:
+                continue
+            placed.add(oid)
+            result.append(op)
+            # Pop from all ion queues that have this op at head
+            for _ion_id2, q2 in ion_queues.items():
+                if q2 and id(q2[0]) == oid:
+                    q2.popleft()
+
+    # Append any ops without ion info at the end
+    for op in no_ion_ops:
+        if id(op) not in placed:
+            result.append(op)
 
     # ── Insert barriers at type transitions ──────────────────────────
     barriers: List[int] = []
@@ -784,21 +866,26 @@ def paralleliseOperationsWithBarriers(
             continue
 
         if isWiseArch:
-            # ── Simplified WISE scheduling ───────────────────────────
-            # Each barrier segment is type-homogeneous (all ops are the
-            # same QubitOperation type, or all transport).  Barriers
-            # enforce happens-before, so no DAG is needed.  Just
-            # serialise within a trap and parallelise between traps
-            # using component-conflict-only greedy bin packing.
-            batches = _wise_parallel_pack(list(seg_ops))
-            for batch in batches:
-                while t in time_schedule:
-                    t += max(abs(t) * 1e-9, 1e-15)
-                time_schedule[t] = batch
-                batch_dur = max(
-                    op.operationTime() for op in batch.operations
-                )
-                t += batch_dur
+            # ── WISE: separate transport from QubitOps ────────────
+            # Transport ops (shuttling / reconfiguration) must be in
+            # their own batches so they don't fragment QubitOp
+            # packing.  Schedule transport first, then QubitOps.
+            qubit_ops = [op for op in seg_ops
+                         if isinstance(op, QubitOperation)]
+            transport_ops = [op for op in seg_ops
+                             if not isinstance(op, QubitOperation)]
+            for sub_ops in (transport_ops, qubit_ops):
+                if not sub_ops:
+                    continue
+                batches = _wise_parallel_pack(sub_ops)
+                for batch in batches:
+                    while t in time_schedule:
+                        t += max(abs(t) * 1e-9, 1e-15)
+                    time_schedule[t] = batch
+                    batch_dur = max(
+                        op.operationTime() for op in batch.operations
+                    )
+                    t += batch_dur
         else:
             seg_schedule = paralleliseOperations(
                 seg_ops, isWISEArch=False, epoch_mode=epoch_mode,

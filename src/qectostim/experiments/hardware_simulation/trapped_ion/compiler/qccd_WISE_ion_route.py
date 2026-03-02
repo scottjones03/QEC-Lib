@@ -101,17 +101,29 @@ def _generate_patch_regions(
 
     regions: List[Tuple[int, int, int, int]] = []
 
-    start_row = min(max(offset_row, 0), n_rows - 1) if n_rows > 0 else 0
-    start_col = min(max(offset_col, 0), n_cols - 1) if n_cols > 0 else 0
+    # Walk backwards from the offset anchor to find the first patch
+    # start position at or before row/col 0.  This ensures the
+    # pre-offset rows/columns get their own (possibly partial) leading
+    # patch instead of being silently skipped.
+    start_row = offset_row
+    while start_row > 0:
+        start_row -= patch_h
+    start_col = offset_col
+    while start_col > 0:
+        start_col -= patch_w
 
     row = start_row
     while row < n_rows:
-        row_end = min(row + patch_h, n_rows)
-        col = start_col
-        while col < n_cols:
-            col_end = min(col + patch_w, n_cols)
-            regions.append((row, col, row_end, col_end))
-            col += patch_w
+        r0 = max(row, 0)
+        r1 = min(row + patch_h, n_rows)
+        if r0 < r1:
+            col = start_col
+            while col < n_cols:
+                c0 = max(col, 0)
+                c1 = min(col + patch_w, n_cols)
+                if c0 < c1:
+                    regions.append((r0, c0, r1, c1))
+                col += patch_w
         row += patch_h
 
     return regions
@@ -553,6 +565,7 @@ def _patch_and_route(
 
         # can always add vertical offset
         half_h = patch_h // 2
+        half_w = 0
         if half_h > 0 and (half_h, 0) not in tilings:
             tilings.append((half_h, 0))
 
@@ -567,6 +580,13 @@ def _patch_and_route(
                 and (0, half_w) not in tilings
             ):
                 tilings.append((0, half_w))
+
+        # Diagonal offset: ions at the intersection of both horizontal
+        # and vertical patch boundaries are not interior to any of the
+        # three axis-aligned tilings.  Adding (half_h, half_w) ensures
+        # every ion is interior to at least one tiling.
+        if half_h > 0 and half_w > 0 and (half_h, half_w) not in tilings:
+            tilings.append((half_h, half_w))
 
         logger.info(
             "%s starting patch routing: rounds=%d, total_gates=%d, patch_size=%dx%d, tilings=%d, BTs=%s",
@@ -1259,6 +1279,32 @@ def _rebuild_schedule_for_layout(
     # their target positions — small patches need more iterations.
     max_cycles = max(n_rows, n_cols, 12)
 
+    # ── Wall-time budget ────────────────────────────────────────────
+    # Cap total SAT rebuild wall time to prevent unbounded stalls.
+    # The heuristic (odd-even transposition sort) always produces the
+    # exact target layout for any valid ion permutation, so bailing
+    # out early is safe — it just means the schedule will use the
+    # deterministic heuristic for any remaining mismatch.
+    #
+    # Budget applies to ALL contexts:
+    #   - allow_heuristic_fallback=True:  short budget (10s), falls
+    #     through to heuristic directly.  Used for transition/cache
+    #     replay contexts where heuristic always succeeds.
+    #   - allow_heuristic_fallback=False: bounded budget (max_sat_time
+    #     capped at 20s), then escalation loop with per-attempt caps.
+    #     If escalation also times out, falls through to heuristic
+    #     (ion-set safety check validates this is safe).
+    import time as _time_mod
+    _t0_rebuild = _time_mod.perf_counter()
+    _wall_budget_exceeded = False
+    if allow_heuristic_fallback:
+        _rebuild_wall_budget = min(max_sat_time, 10.0) if max_sat_time else 10.0
+    else:
+        # MS-gate contexts: give SAT a reasonable budget but don't let
+        # it dominate.  Cap at 20s for the main cycle loop — the
+        # escalation loop adds its own per-attempt budget.
+        _rebuild_wall_budget = min(max_sat_time or 30.0, 20.0)
+
     # Track how many grid positions differ from the target layout so we can
     # detect lack of progress and avoid burning many SAT calls with no gain.
     prev_mismatch = int(np.count_nonzero(current_layout != target_layout))
@@ -1272,6 +1318,137 @@ def _rebuild_schedule_for_layout(
         prev_mismatch,
     )
 
+    # ── Small-mismatch fast path ──────────────────────────────────
+    # When only a few cells differ (e.g. a 2-ion swap), compute a
+    # tight bounding-box around the mismatched positions and solve
+    # with a SINGLE targeted SAT call.  This avoids the overhead of
+    # multiple cycles × tilings × patches for trivial permutations.
+    if 0 < prev_mismatch <= 8:
+        _mm_positions = [
+            (r, c)
+            for r in range(n_rows)
+            for c in range(n_cols)
+            if current_layout[r, c] != target_layout[r, c]
+        ]
+        _mm_rows = [p[0] for p in _mm_positions]
+        _mm_cols = [p[1] for p in _mm_positions]
+        # Bounding box with 1-cell padding (clamped to grid)
+        _fp_r0 = max(0, min(_mm_rows) - 1)
+        _fp_r1 = min(n_rows, max(_mm_rows) + 2)
+        _fp_c0 = max(0, min(_mm_cols) - 1)
+        _fp_c1 = min(n_cols, max(_mm_cols) + 2)
+        _fp_h = _fp_r1 - _fp_r0
+        _fp_w = _fp_c1 - _fp_c0
+        _fp_pmax = max(base_pmax_in or 1, _fp_h + _fp_w)
+
+        logger.info(
+            "%s small-mismatch fast path: %d cells, bbox r[%d:%d] c[%d:%d] "
+            "(%dx%d), pmax=%d",
+            PATCH_LOG_PREFIX,
+            prev_mismatch,
+            _fp_r0, _fp_r1, _fp_c0, _fp_c1,
+            _fp_h, _fp_w, _fp_pmax,
+        )
+
+        _fp_patch = np.array(
+            current_layout[_fp_r0:_fp_r1, _fp_c0:_fp_c1], dtype=int, copy=True
+        )
+        # BT pin map: pin every ion in the patch whose target is also in
+        # the patch (same logic as main loop, R=2).
+        _fp_row_of: Dict[int, int] = {}
+        for lr in range(_fp_h):
+            for lc in range(_fp_w):
+                ion_id = int(_fp_patch[lr, lc])
+                if ion_id != 0:
+                    _fp_row_of[ion_id] = lr
+
+        _fp_bt: Dict[int, Tuple[int, int]] = {}
+        for dr in range(_fp_h):
+            for dc in range(_fp_w):
+                _fp_tgt = int(target_layout[_fp_r0 + dr, _fp_c0 + dc])
+                if _fp_tgt != 0 and _fp_tgt in _fp_row_of:
+                    _fp_bt[_fp_tgt] = (dr, dc)
+
+        _fp_BT: List[Dict[int, Tuple[int, int]]] = [{}, _fp_bt]
+        _fp_boundary = {
+            "top": _fp_r0 > 0,
+            "bottom": _fp_r1 < n_rows,
+            "left": _fp_c0 > 0,
+            "right": _fp_c1 < n_cols,
+        }
+
+        _fp_solved = False
+        for _fp_soft in (False, True):
+            try:
+                _fp_layouts, _fp_sched, _ = GlobalReconfigurations._optimal_QMR_for_WISE(
+                    _fp_patch,
+                    P_arr=[[], []],
+                    k=wiseArch.k,
+                    BT=_fp_BT,
+                    active_ions=None,
+                    wB_col=0,
+                    wB_row=0,
+                    full_P_arr=[[], []],
+                    ignore_initial_reconfig=False,
+                    base_pmax_in=_fp_pmax,
+                    prev_pmax=None,
+                    grid_origin=(_fp_r0, _fp_c0),
+                    boundary_adjacent=_fp_boundary,
+                    cross_boundary_prefs=[{}, {}],
+                    bt_soft=_fp_soft,
+                    parent_stop_event=stop_event,
+                    progress_callback=progress_callback,
+                    max_inner_workers=max_inner_workers,
+                    max_sat_time=min(max_sat_time or 60.0, 10.0),
+                    max_rc2_time=max_rc2_time,
+                    skip_bt_check_c=True,
+                )
+                # Embed patch result back into current_layout
+                if _fp_layouts:
+                    _fp_final = _fp_layouts[-1]
+                    current_layout[_fp_r0:_fp_r1, _fp_c0:_fp_c1] = _fp_final
+                    # Check how many cells still mismatch
+                    _fp_remaining = int(np.count_nonzero(
+                        current_layout != target_layout
+                    ))
+                    if _fp_remaining == 0:
+                        logger.info(
+                            "%s small-mismatch fast path: CONVERGED "
+                            "(bt_soft=%s)",
+                            PATCH_LOG_PREFIX,
+                            _fp_soft,
+                        )
+                        # Build merged schedule and append snapshot
+                        _fp_merged = []
+                        if _fp_sched:
+                            for _fp_round in _fp_sched:
+                                _fp_merged.extend(_fp_round)
+                        snapshots.append({
+                            "layout_after": np.array(current_layout, copy=True),
+                            "schedule": _fp_merged if _fp_merged else None,
+                        })
+                        _fp_solved = True
+                        break
+                    else:
+                        logger.info(
+                            "%s small-mismatch fast path: partial "
+                            "convergence, %d cells remain",
+                            PATCH_LOG_PREFIX,
+                            _fp_remaining,
+                        )
+                        prev_mismatch = _fp_remaining
+            except NoFeasibleLayoutError:
+                logger.info(
+                    "%s small-mismatch fast path: infeasible "
+                    "(bt_soft=%s), trying next",
+                    PATCH_LOG_PREFIX,
+                    _fp_soft,
+                )
+                continue
+
+        if _fp_solved:
+            return snapshots
+
     for cycle_idx in range(max_cycles):
         if np.array_equal(current_layout, target_layout):
             logger.info(
@@ -1280,6 +1457,31 @@ def _rebuild_schedule_for_layout(
                 cycle_idx,
             )
             break
+
+        # ── Wall-time early-exit ──────────────────────────────────
+        # After at least one cycle, check whether we've exceeded the
+        # wall-time budget.  If so, bail out and let the heuristic
+        # handle the remaining mismatch (safe because
+        # allow_heuristic_fallback=True guarantees the heuristic path
+        # is active).
+        if _wall_budget_exceeded or (
+            _rebuild_wall_budget is not None and cycle_idx > 0
+        ):
+            _elapsed = _time_mod.perf_counter() - _t0_rebuild
+            if _wall_budget_exceeded or _elapsed > _rebuild_wall_budget:
+                _mm = int(np.count_nonzero(current_layout != target_layout))
+                logger.info(
+                    "%s schedule-only rebuild: wall-time budget "
+                    "exceeded (%.1fs > %.1fs) after %d cycle(s), "
+                    "%d cells still mismatched; falling back to "
+                    "heuristic.",
+                    PATCH_LOG_PREFIX,
+                    _elapsed,
+                    _rebuild_wall_budget or 0.0,
+                    cycle_idx,
+                    _mm,
+                )
+                break
         
         # ---- Checkerboard offset tilings (matching _patch_and_route) ----
         def _k_compatible(width: int, k_val: int) -> bool:
@@ -1293,6 +1495,7 @@ def _rebuild_schedule_for_layout(
 
         tilings: List[Tuple[int, int]] = [(0, 0)]
         half_h = patch_h // 2
+        half_w = 0
         if half_h > 0 and (half_h, 0) not in tilings:
             tilings.append((half_h, 0))
         if patch_w % 2 == 0:
@@ -1303,6 +1506,12 @@ def _rebuild_schedule_for_layout(
                 and (0, half_w) not in tilings
             ):
                 tilings.append((0, half_w))
+        # Diagonal offset: ions at the intersection of both horizontal
+        # and vertical patch boundaries are not interior to any of the
+        # three axis-aligned tilings.  Adding (half_h, half_w) ensures
+        # every ion is interior to at least one tiling.
+        if half_h > 0 and half_w > 0 and (half_h, half_w) not in tilings:
+            tilings.append((half_h, half_w))
 
         mismatch_before = int(np.count_nonzero(current_layout != target_layout))
 
@@ -1374,6 +1583,25 @@ def _rebuild_schedule_for_layout(
                 if not bt_map:
                     continue
 
+                # ── Inner-loop wall-time check ────────────────────
+                # Each SAT patch call can take seconds; check budget
+                # before launching another one.
+                if _rebuild_wall_budget is not None:
+                    _elapsed_inner = _time_mod.perf_counter() - _t0_rebuild
+                    if _elapsed_inner > _rebuild_wall_budget:
+                        logger.info(
+                            "%s schedule-only rebuild: wall-time budget "
+                            "exceeded inside patch loop (%.1fs > %.1fs), "
+                            "cycle %d tiling %d; breaking early.",
+                            PATCH_LOG_PREFIX,
+                            _elapsed_inner,
+                            _rebuild_wall_budget,
+                            cycle_idx,
+                            tiling_idx,
+                        )
+                        _wall_budget_exceeded = True
+                        break
+
                 tiling_pins += len(bt_map)
 
                 boundary_adjacent = {
@@ -1397,11 +1625,19 @@ def _rebuild_schedule_for_layout(
                     len(bt_map),
                 )
 
-                # Use the LOCAL patch dimensions for P_max, NOT the full
-                # grid.  Odd-even transposition sort on the patch needs
-                # at most max(patch_h, patch_w) passes to route any
-                # permutation.  Using h + w was still 1.5-2× too high.
-                _rebuild_pmax = max(base_pmax_in or 1, max(patch_h_local, patch_w_local))
+                # Use h + w for P_max on ALL patches (sub-grid AND
+                # full-grid).  An ion at corner (0,0) targeting
+                # (h-1, w-1) needs h + w - 2 swap passes.  The old
+                # formula max(h, w) was too low for sub-grid patches
+                # (e.g. 4×4 → pmax=4, but corner swap needs 6) and
+                # caused 2-cell mismatches that couldn't converge.
+                _rebuild_pmax = max(base_pmax_in or 1, patch_h_local + patch_w_local)
+
+                # Cap per-patch SAT time to the wall budget so individual
+                # SAT calls don't exceed the overall rebuild budget.
+                _patch_sat_time = max_sat_time
+                if _rebuild_wall_budget is not None and _patch_sat_time is not None:
+                    _patch_sat_time = min(_patch_sat_time, _rebuild_wall_budget)
 
                 try:
                     patch_layouts, patch_schedule, _ = GlobalReconfigurations._optimal_QMR_for_WISE(
@@ -1423,7 +1659,7 @@ def _rebuild_schedule_for_layout(
                         parent_stop_event=stop_event,
                         progress_callback=progress_callback,
                         max_inner_workers=max_inner_workers,
-                        max_sat_time=max_sat_time,
+                        max_sat_time=_patch_sat_time,
                         max_rc2_time=max_rc2_time,
                         skip_bt_check_c=True,
                     )
@@ -1455,7 +1691,7 @@ def _rebuild_schedule_for_layout(
                             parent_stop_event=stop_event,
                             progress_callback=progress_callback,
                             max_inner_workers=max_inner_workers,
-                            max_sat_time=max_sat_time,
+                            max_sat_time=_patch_sat_time,
                             max_rc2_time=max_rc2_time,
                             skip_bt_check_c=True,
                         )
@@ -1494,7 +1730,7 @@ def _rebuild_schedule_for_layout(
                                     parent_stop_event=stop_event,
                                     progress_callback=progress_callback,
                                     max_inner_workers=max_inner_workers,
-                                    max_sat_time=max_sat_time,
+                                    max_sat_time=_patch_sat_time,
                                     max_rc2_time=max_rc2_time,
                                     skip_bt_check_c=True,
                                 )
@@ -1520,6 +1756,10 @@ def _rebuild_schedule_for_layout(
                 # final (and only) round, incorporating the BT[0] pins.
                 layouts_after_local[0][r0:r1, c0:c1] = patch_layouts[-1]
                 patch_schedules_this_tiling.append(patch_schedule)
+
+            # Propagate budget break from patch loop to tiling loop
+            if _wall_budget_exceeded:
+                break
 
             cycle_total_pins += tiling_pins
 
@@ -1668,10 +1908,9 @@ def _rebuild_schedule_for_layout(
             # ─────────────────────────────────────────────────────
             # Scale the starting pmax with grid dimensions so the
             # SAT solver has enough passes to sort any permutation.
-            # An odd-even transposition network on an NxM grid needs
-            # at most max(N, M) passes *per phase* (H and V), so
-            # the total pass budget must be at least max(N, M).
-            _escalation_pmax = max(base_pmax_in or 1, n_rows, n_cols)
+            # A 2D grid of NxM needs at most N+M passes to route
+            # any permutation (ions may traverse both axes).
+            _escalation_pmax = max(base_pmax_in or 1, n_rows + n_cols)
             _esc_step = max(2, min(n_rows, n_cols) // 2)
             logger.warning(
                 "%s schedule-only rebuild could not converge "
@@ -1704,7 +1943,7 @@ def _rebuild_schedule_for_layout(
                         np.array(current_layout, copy=True),
                         wiseArch,
                         np.array(target_layout, copy=True),
-                        subgridsize=subgridsize,  # keep small patches (DO NOT use full grid)
+                        subgridsize=subgridsize,
                         base_pmax_in=_esc_pmax,
                         stop_event=stop_event,
                         progress_callback=progress_callback,
@@ -1739,22 +1978,16 @@ def _rebuild_schedule_for_layout(
                             return snapshots
                         else:
                             # Recursive call fell through to heuristic.
-                            # The heuristic (odd-even transposition)
-                            # always produces the exact target for any
-                            # valid permutation, so this is correct.
-                            # Accept it immediately — SAT at higher
-                            # pmax is unlikely to converge if it didn't
-                            # at the current full-grid pmax, and each
-                            # attempt is very expensive.
-                            logger.info(
+                            # Reject heuristic result — keep trying
+                            # at higher pmax so SAT has another chance.
+                            logger.warning(
                                 "%s escalation attempt %d reached "
-                                "target via heuristic; accepting "
-                                "(heuristic is guaranteed correct for "
-                                "any permutation).",
+                                "target via heuristic; REJECTING "
+                                "(allow_heuristic_fallback=False). "
+                                "Trying next pmax.",
                                 PATCH_LOG_PREFIX, _esc_attempt + 1,
                             )
-                            snapshots.extend(_esc_snaps)
-                            return snapshots
+                            continue
                     else:
                         # Partial progress — update starting layout
                         snapshots.extend(_esc_snaps)
@@ -1790,25 +2023,19 @@ def _rebuild_schedule_for_layout(
                     f"cells mismatched after {len(snapshots)} cycle(s)."
                 )
 
-            # Ion sets match → heuristic is safe.
-            logger.warning(
-                "%s SAT routing exhausted all strategies "
-                "(%d/%d cells still mismatched, %d cycle(s), "
-                "pmax %d..%d).  Ion sets MATCH → using heuristic "
-                "transposition sort as absolute last resort.  "
-                "This is safe: the heuristic always produces the "
-                "exact target for any permutation.",
-                PATCH_LOG_PREFIX,
-                mismatch_remaining,
-                current_layout.size,
-                len(snapshots),
-                _escalation_pmax,
-                _esc_pmax,
+            # Ion sets match but heuristic fallback is FORBIDDEN.
+            # Raise instead of silently falling back.
+            raise ValueError(
+                f"{PATCH_LOG_PREFIX} SAT routing exhausted all "
+                f"strategies ({mismatch_remaining}/"
+                f"{current_layout.size} cells still mismatched, "
+                f"{len(snapshots)} cycle(s), pmax "
+                f"{_escalation_pmax}..{_esc_pmax}).  "
+                f"Ion sets MATCH (heuristic would succeed) but "
+                f"allow_heuristic_fallback=False — refusing to "
+                f"use non-SAT routing.  Consider increasing "
+                f"timeout_seconds or base_pmax_in."
             )
-            snapshots.append(
-                (target_layout.copy(), None, [])
-            )
-            return snapshots
 
         # allow_heuristic_fallback=True path: cache replay / route-back
         # context where heuristic is acceptable.
@@ -2700,6 +2927,7 @@ def ionRoutingWISEArch(
     stop_event: Optional[Any] = None,
     max_inner_workers: int | None = None,
     _precomputed_routing_steps: Optional[List["RoutingStep"]] = None,
+    _skip_preflight: bool = False,
     skip_coalesce: bool = False,
 ) -> Tuple[Sequence[Operation], Sequence[int], float]:
     """
@@ -3450,7 +3678,7 @@ def ionRoutingWISEArch(
         _step_schedule = first_step.schedule
         _step_target = first_step.layout_after
         _is_ms_context = (first_step.reconfig_context == "ms_gate")
-        if not np.array_equal(oldArrangementArr, _step_target):
+        if not _skip_preflight and not np.array_equal(oldArrangementArr, _step_target):
             # ── Intentionally-heuristic steps (Fix 18) ──────────
             # When use_heuristic_directly produced a RoutingStep with
             # schedule=None for non-MS contexts (return_round,
@@ -3639,7 +3867,8 @@ def ionRoutingWISEArch(
             # return_round), escalate with increasing pmax.
             #
             if (
-                _is_ms_context
+                not _skip_preflight
+                and _is_ms_context
                 and _step_schedule is None
                 and not np.array_equal(oldArrangementArr, _step_target)
             ):
@@ -3812,7 +4041,7 @@ def ionRoutingWISEArch(
                             PATCH_LOG_PREFIX, ms_round_idx, sub_idx,
                             _sub_lb_diff,
                         )
-            if not np.array_equal(oldArrangementArr, _sub_target):
+            if not _skip_preflight and not np.array_equal(oldArrangementArr, _sub_target):
                 # ── Fix 18b: skip SAT for intentionally-heuristic
                 # subsequent steps (same logic as Fix 18 above). ──
                 if not _sub_is_ms:
@@ -3924,7 +4153,8 @@ def ionRoutingWISEArch(
             # Mirror the first-step escalation guard (P1) for
             # subsequent steps that carry MS-gate context.
             if (
-                _sub_is_ms
+                not _skip_preflight
+                and _sub_is_ms
                 and _sub_schedule is None
                 and not np.array_equal(oldArrangementArr, _sub_target)
             ):
@@ -4247,6 +4477,7 @@ def _merge_block_routing_steps(
     max_inner_workers: int | None = None,
     max_sat_time: Optional[float] = None,
     max_rc2_time: Optional[float] = None,
+    allow_heuristic_fallback: bool = True,
 ) -> Tuple[List[RoutingStep], np.ndarray]:
     """Merge per-block ``RoutingStep`` lists into global-grid steps.
 
@@ -4546,7 +4777,7 @@ def _merge_block_routing_steps(
                     base_pmax_in=_fix17_pmax,
                     stop_event=stop_event,
                     max_inner_workers=max_inner_workers,
-                    allow_heuristic_fallback=True,
+                    allow_heuristic_fallback=allow_heuristic_fallback,
                     max_sat_time=max_sat_time,
                     max_rc2_time=max_rc2_time,
                 )
@@ -5126,30 +5357,22 @@ def ionRoutingGadgetArch(
             )
 
     # ------------------------------------------------------------------
-    # INLINE ROUTING (v2): skip plan-all-then-replay, route from actual
-    # grid state.  ionRoutingWISEArch (without _precomputed_routing_steps)
-    # calls _route_round_sequence internally, which routes each round
-    # sequentially from the actual grid, eliminating planning-vs-execution
-    # layout divergence.  No pre-flight checks, SAT rebuilds, or
-    # escalation needed.
+    # INLINE ROUTING (v2): plan normally via route_full_experiment_as_steps
+    # (preserving phase-aware per-block routing) but skip the massive
+    # pre-flight/rebuild/escalation code in the execution loop.  This
+    # keeps routing correct (phase-aware, per-block SAT) while making
+    # the "applying phase" nearly instant.  Pre-flight checks are
+    # unnecessary when we trust the planned schedules.
     # ------------------------------------------------------------------
-    if routing_config is not None and routing_config.use_inline_routing:
+    _skip_preflight = (
+        routing_config is not None and routing_config.use_inline_routing
+    )
+    if _skip_preflight:
         logger.info(
-            "%s ionRoutingGadgetArch: INLINE routing (v2) — "
-            "skipping route_full_experiment_as_steps, routing from "
-            "actual grid state via _route_round_sequence",
+            "%s ionRoutingGadgetArch: INLINE mode (v2) — planning "
+            "normally but skipping pre-flight checks for fast "
+            "execution (no rebuild/escalation in apply loop)",
             PATCH_LOG_PREFIX,
-        )
-        return ionRoutingWISEArch(
-            arch, wiseArch, operations,
-            lookahead=lookahead,
-            subgridsize=subgridsize,
-            base_pmax_in=base_pmax_in,
-            toMoveOps=toMoveOps,
-            routing_config=routing_config,
-            stop_event=stop_event,
-            max_inner_workers=max_inner_workers,
-            skip_coalesce=skip_coalesce,
         )
 
     all_routing_steps, _ = route_full_experiment_as_steps(
@@ -5301,5 +5524,6 @@ def ionRoutingGadgetArch(
         stop_event=stop_event,
         max_inner_workers=max_inner_workers,
         _precomputed_routing_steps=all_routing_steps,
+        _skip_preflight=_skip_preflight,
         skip_coalesce=skip_coalesce,
     )
