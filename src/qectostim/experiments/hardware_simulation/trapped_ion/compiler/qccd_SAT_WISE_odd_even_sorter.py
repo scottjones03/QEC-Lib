@@ -2226,9 +2226,11 @@ def run_sat_with_timeout_file(
     _is_pool_worker = mp.current_process().daemon
     if _in_notebook_env() or _is_pool_worker or sys.platform == "darwin" or len(cnf.clauses) <= _SAT_INPROCESS_CLAUSE_LIMIT:
         _ip_timeout = timeout_s if (timeout_s is not None and timeout_s > 0) else 60.0
-        # Cap timeout in notebook to avoid multi-hour hangs on hard SAT instances
-        if _in_notebook_env() and _ip_timeout > 60.0:
-            _ip_timeout = 60.0
+        # Cap timeout in notebook to avoid multi-hour hangs on hard SAT instances.
+        # Override via WISE_NOTEBOOK_SAT_TIMEOUT env var (seconds).
+        _NB_SAT_CAP = float(os.environ.get("WISE_NOTEBOOK_SAT_TIMEOUT", "120"))
+        if _in_notebook_env() and _ip_timeout > _NB_SAT_CAP:
+            _ip_timeout = _NB_SAT_CAP
         wise_logger.debug(
             "%s SAT in-process: clauses=%d, vars=%d, timeout=%.1fs",
             debug_prefix, len(cnf.clauses), cnf.nv, _ip_timeout,
@@ -2620,9 +2622,11 @@ def run_rc2_with_timeout_file(
     _is_pool_worker = mp.current_process().daemon
     if _in_notebook_env() or _is_pool_worker or sys.platform == "darwin" or len(wcnf.hard) <= _SAT_INPROCESS_CLAUSE_LIMIT:
         _ip_timeout = timeout_s if (timeout_s is not None and timeout_s > 0) else 60.0
-        # Cap timeout in notebook to avoid 600s hangs on hard RC2 instances
-        if _in_notebook_env() and _ip_timeout > 30.0:
-            _ip_timeout = 30.0
+        # Cap timeout in notebook to avoid very long hangs on hard RC2 instances.
+        # Override via WISE_NOTEBOOK_RC2_TIMEOUT env var (seconds).
+        _NB_RC2_CAP = float(os.environ.get("WISE_NOTEBOOK_RC2_TIMEOUT", "180"))
+        if _in_notebook_env() and _ip_timeout > _NB_RC2_CAP:
+            _ip_timeout = _NB_RC2_CAP
         wise_logger.debug(
             "%s RC2 in-process: hard=%d, soft=%d, vars=%d, timeout=%.1fs",
             debug_prefix, len(wcnf.hard), len(wcnf.soft), wcnf.nv, _ip_timeout,
@@ -2877,6 +2881,7 @@ def _wise_validate_bt_preconditions(
     n: int,
     k: int,
     bt_soft_enabled: bool,
+    skip_check_c: bool = False,
 ) -> None:
     """Validate BT preconditions, raise ValueError on hard conflicts.
 
@@ -2884,6 +2889,8 @@ def _wise_validate_bt_preconditions(
     (a) No two ions pinned to the same (d,c) in a round
     (b) Pair vs BT conflicts: same round, incompatible BT rows/blocks
     (c) Round-0: same source row & same target column among reserved ions
+        (skipped when *skip_check_c* is True — the caller guarantees
+        enough P_max to handle routing around collisions)
     (d) Column oversubscription from BT
     """
     R = len(P_arr)
@@ -2938,7 +2945,9 @@ def _wise_validate_bt_preconditions(
                     raise ValueError(f"UNSAT: {msg}")
 
     # (c) Round-0: same source row & same target column among reserved ions
-    if len(BT) >= 1:
+    #     Skipped when skip_check_c is True — caller guarantees enough P_max
+    #     to handle routing around (source_row, target_col) collisions.
+    if len(BT) >= 1 and not skip_check_c:
         buckets = {}
         for i, (d0, c0) in BT[0].items():
             if i not in ions_all:
@@ -3470,6 +3479,7 @@ def optimal_QMR_for_WISE(
     parent_stop_event: Optional[Any] = None,
     progress_callback: Optional[Callable] = None,
     max_inner_workers: int | None = None,
+    skip_bt_check_c: bool = False,
 ) -> Tuple[List[np.ndarray], List[List[Dict[str, Any]]], int]:
     """Find the minimum-pass ion schedule for a (possibly patched) grid.
 
@@ -3613,6 +3623,7 @@ def optimal_QMR_for_WISE(
         n=n,
         k=k,
         bt_soft_enabled=bt_soft_enabled,
+        skip_check_c=skip_bt_check_c,
     )
 
     ions = sorted(ions_all)
@@ -3671,6 +3682,26 @@ def optimal_QMR_for_WISE(
     if _max_gates_per_round > 1:
         base_pmax = max(base_pmax, _max_gates_per_round)
 
+    # ── Pure-routing detection ────────────────────────────────────
+    # When ALL rounds have zero MS-gate pairs, the SAT problem is
+    # pure permutation routing: no pair-colocation constraints, no
+    # V-penalty benefit.  We exploit this to:
+    #   (a) raise base_pmax to max(n, m) — the minimum passes needed
+    #       for odd-even transposition sorting of an n×m grid;
+    #   (b) collapse capacity variants (boundary capacity has no
+    #       interaction with pairs);
+    #   (c) cap pool budget tightly (routing-only problems converge
+    #       fast once pmax is adequate);
+    #   (d) skip V-penalty MaxSAT (no pairs → H/V ratio irrelevant).
+    _pure_routing = all(len(rp) == 0 for rp in P_arr)
+    if _pure_routing and R >= 2:
+        base_pmax = max(base_pmax, max(n, m))
+        if DEBUG_DIAG:
+            wise_logger.info(
+                "[WISE] pure-routing mode: raised base_pmax to %d (n=%d, m=%d)",
+                base_pmax, n, m,
+            )
+
     # --- Fix E: Warm-start from prev_pmax to skip known-UNSAT configs ---
     # If a previous solve in this routing sequence found P_max=N, then
     # P_max < N-1 is very likely UNSAT for similar sub-problems.
@@ -3678,17 +3709,42 @@ def optimal_QMR_for_WISE(
     if prev_pmax is not None and prev_pmax > 1:
         base_pmax = max(base_pmax, prev_pmax - 1)
 
-    # Ensure upper limit covers at least R + n + m so that lookahead > 1
-    # has enough scheduling headroom (matches old module behaviour).
+    # Upper limit: base_pmax + max(n, m).  Odd-even transposition sort
+    # needs at most max(n, m) extra passes beyond the base floor to
+    # route any permutation.  The old formula (base + n + m) was overly
+    # generous and produced many unnecessary SAT configs.
     # IMPORTANT: must be computed AFTER base_pmax adjustments above so
     # that limit_pmax >= base_pmax always holds.
-    limit_pmax = max(base_pmax + n + m, R + n + m)
+    limit_pmax = max(base_pmax + max(n, m), R + max(n, m))
+
+    # For pure R>=2 routing, the solver only needs enough passes to sort
+    # the permutation.  An odd-even transposition network on a grid
+    # of max(n,m) cells needs at most max(n,m) passes per phase.
+    # When skip_bt_check_c is set, (source_row, target_col) collisions
+    # require extra passes to route around — use a wider limit.
+    # Gate on R >= 2: R=1 patches with empty pairs still need full
+    # pmax range for boundary-adjacent capacity constraints.
+    if _pure_routing and R >= 2:
+        if skip_bt_check_c:
+            # BT check (c) bypassed — ions can collide on (start_row,
+            # target_col) which sometimes needs extra passes.  But with
+            # BT[0]={} the first round is unconstrained, so the solver
+            # can stage ions freely.  Cap to base_pmax + 2.
+            limit_pmax = min(limit_pmax, base_pmax + 2)
+        else:
+            limit_pmax = min(limit_pmax, base_pmax + 1)
 
     # When no boundary is adjacent (full-grid patch), the capacity factor
     # has no effect on the CNF — all values produce identical formulas.
     # Collapse to a single factor to avoid redundant SAT calls.
     has_boundary = any(boundary_adjacent.get(d, False) for d in ("top", "bottom", "left", "right"))
     eff_capacity_steps = 6 if has_boundary else 1
+
+    # For pure R>=2 routing, boundary capacity has no interaction
+    # with pair constraints — collapse to a single variant.
+    # Gate on R >= 2: R=1 patches need capacity variants for boundary.
+    if _pure_routing and R >= 2:
+        eff_capacity_steps = 1
 
     # For large round counts the SAT problems are already very heavy.
     # Reduce capacity variants to avoid spawning 18+ parallel instances
@@ -3788,6 +3844,20 @@ def optimal_QMR_for_WISE(
         global_budget_s = _MIN_POOL_BUDGET_S
     else:
         global_budget_s = max(_MIN_POOL_BUDGET_S, global_budget_s)
+
+    # ── Pure-routing budget cap ──────────────────────────────────
+    # Routing-only problems (no MS pairs) converge fast once pmax is
+    # adequate.  Cap the total pool budget so we don't waste hours on
+    # a problem that should solve in seconds.  The cap is generous
+    # enough for the solver to try all configs at reasonable pmax.
+    _PURE_ROUTING_MAX_BUDGET_S: float = 60.0
+    if _pure_routing and R >= 2:
+        global_budget_s = min(global_budget_s, _PURE_ROUTING_MAX_BUDGET_S)
+        if DEBUG_DIAG:
+            wise_logger.info(
+                "[WISE] pure-routing: capped pool budget to %.0f s",
+                global_budget_s,
+            )
 
     # Create a Manager for shared state (stop_event, children dicts).
     # Skip Manager on macOS (spawn-context Manager() deadlocks).
@@ -4337,114 +4407,137 @@ def optimal_QMR_for_WISE(
     # Boundary-crossing soft clauses are included when the subgrid is
     # boundary-adjacent, so both objectives are optimised jointly.
     has_boundary_adj = any(boundary_adjacent.values())
+
+    # ── Pure-routing shortcut: skip V-penalty MaxSAT ─────────────
+    # When there are no MS-gate pairs, the H/V pass ratio has no
+    # effect on gate fidelity or pair co-location.  The SAT worker
+    # model is already optimal for total passes — skip the expensive
+    # (and potentially unbounded) RC2 MaxSAT refinement entirely.
+    # Set defaults; the try block below overrides them when V-penalty
+    # MaxSAT actually runs (i.e., when _pure_routing is False).
+    model_used = sat_model_star
+    vpool_used = vpool_sat
+    var_a_used = var_a_sat
+    ions_used = ions_sat
+
+    if _pure_routing and R >= 2:
+        if DEBUG_DIAG:
+            wise_logger.info(
+                "[WISE] pure-routing R>=%d: skipping V-penalty MaxSAT "
+                "(no MS pairs → H/V ratio irrelevant)", R
+            )
+
     try:
-        if DEBUG_DIAG:
-            print(f"[DIAG] V-penalty MaxSAT: P_max={pass_horizon}, sum_bound_B={sum_bound_B}, "
-                  f"best_sum_bound={best_sum_bound}, worker_sum_bound={worker_sum_bound}, "
-                  f"opt_round_start={optimize_round_start}", file=_sys.stderr)
-        t_build_start = time.time()
-        wcnf, vpool_w, ions_w, var_a_w, _, _ = _wise_build_structural_cnf(
-            builder_ctx,
-            pass_horizon,
-            sum_bound_B=sum_bound_B,
-            use_wcnf=True,
-            add_boundary_soft=has_boundary_adj,
-            phase_label=f"ΣP<={sum_bound_B}/V_OPT",
-            optimize_round_start=optimize_round_start,
-            debug_skip_cardinality=False,
-            boundary_adjacent=boundary_adjacent,
-            cross_boundary_prefs=cross_boundary_prefs,
-            boundary_capacity_factor=chosen_boundary_capacity_factor,
-            bt_soft_weight=bt_soft_weight_value,
-        )
-
-        # Add V-penalty soft clauses: prefer H passes (phase=False).
-        # The phase variable is True ⇔ V pass.  Adding [-phase_var]
-        # as a soft clause penalises each V-phase pass by *v_penalty*.
-        # Weight is set so that eliminating one V pass is always worth
-        # more than any boundary soft clause (those use weight ≤ wB_col).
-        cal = DEFAULT_CALIBRATION
-        # H pass cost: Move + Merge + Rotation + Split + Move
-        _row_swap = (
-            cal.shuttle_time + cal.merge_time + cal.rotation_time
-            + cal.split_time + cal.shuttle_time
-        )
-        # V pass cost: 2×Junction + (4×Junction + Move) × 2
-        _col_swap = (2 * cal.junction_time) + (
-            4 * cal.junction_time + cal.shuttle_time
-        ) * 2
-        # Weight in µs (integer): extra cost of V over H
-        v_penalty = int(round((_col_swap - _row_swap) * 1e6))  # ≈ 298 µs
-        if v_penalty < 1:
-            v_penalty = 1
-
-        P_bounds_opt = [pass_horizon] * R
-        v_soft_count = 0
-        start_round = optimize_round_start if R > 1 else 0
-        for r in range(start_round, R):
-            for p in range(P_bounds_opt[r]):
-                phase_var = vpool_w.id(("phase", r, p))
-                if phase_var <= vpool_w.top:
-                    wcnf.append([-phase_var], weight=v_penalty)
-                    v_soft_count += 1
-
-        t_build_end = time.time()
-
-        if DEBUG_DIAG:
-            print(f"[DIAG] WCNF built: vars={wcnf.nv}, hard={len(wcnf.hard)}, "
-                  f"soft={len(wcnf.soft)} (V-penalty={v_soft_count}, weight={v_penalty}), "
-                  f"time={t_build_end - t_build_start:.3f}s", file=_sys.stderr)
-
-        rc2 = RC2(wcnf)
-        model_rc2 = rc2.compute()
-        cost_rc2 = rc2.cost if model_rc2 is not None else None
-        status_rc2 = "ok" if model_rc2 is not None else "error"
-
-        if DEBUG_DIAG:
-            print(f"[DIAG] RC2 status={status_rc2}, opt_cost={cost_rc2}", file=_sys.stderr)
-
-        if status_rc2 == "ok" and model_rc2 is not None:
-            # Compare estimated reconfig cost: RC2 vs worker SAT model
-            schedule_worker = _wise_decode_schedule_from_model(
-                sat_model_star, vpool_sat, n, m, R, P_max,
-                ignore_initial_reconfig,
+        if _pure_routing and R >= 2:
+            pass  # Defaults (model_used etc.) already set above.
+        else:
+            if DEBUG_DIAG:
+                print(f"[DIAG] V-penalty MaxSAT: P_max={pass_horizon}, sum_bound_B={sum_bound_B}, "
+                      f"best_sum_bound={best_sum_bound}, worker_sum_bound={worker_sum_bound}, "
+                      f"opt_round_start={optimize_round_start}", file=_sys.stderr)
+            t_build_start = time.time()
+            wcnf, vpool_w, ions_w, var_a_w, _, _ = _wise_build_structural_cnf(
+                builder_ctx,
+                pass_horizon,
+                sum_bound_B=sum_bound_B,
+                use_wcnf=True,
+                add_boundary_soft=has_boundary_adj,
+                phase_label=f"ΣP<={sum_bound_B}/V_OPT",
+                optimize_round_start=optimize_round_start,
+                debug_skip_cardinality=False,
+                boundary_adjacent=boundary_adjacent,
+                cross_boundary_prefs=cross_boundary_prefs,
+                boundary_capacity_factor=chosen_boundary_capacity_factor,
+                bt_soft_weight=bt_soft_weight_value,
             )
-            schedule_rc2 = _wise_decode_schedule_from_model(
-                model_rc2, vpool_w, n, m, R, P_max,
-                ignore_initial_reconfig,
+
+            # Add V-penalty soft clauses: prefer H passes (phase=False).
+            # The phase variable is True ⇔ V pass.  Adding [-phase_var]
+            # as a soft clause penalises each V-phase pass by *v_penalty*.
+            # Weight is set so that eliminating one V pass is always worth
+            # more than any boundary soft clause (those use weight ≤ wB_col).
+            cal = DEFAULT_CALIBRATION
+            # H pass cost: Move + Merge + Rotation + Split + Move
+            _row_swap = (
+                cal.shuttle_time + cal.merge_time + cal.rotation_time
+                + cal.split_time + cal.shuttle_time
             )
-            opt_start = optimize_round_start if R > 1 else 0
-            cost_worker = _wise_estimate_reconfig_cost(
-                schedule_worker[opt_start:]
-            )
-            cost_rc2_est = _wise_estimate_reconfig_cost(
-                schedule_rc2[opt_start:]
-            )
+            # V pass cost: 2×Junction + (4×Junction + Move) × 2
+            _col_swap = (2 * cal.junction_time) + (
+                4 * cal.junction_time + cal.shuttle_time
+            ) * 2
+            # Weight in µs (integer): extra cost of V over H
+            v_penalty = int(round((_col_swap - _row_swap) * 1e6))  # ≈ 298 µs
+            if v_penalty < 1:
+                v_penalty = 1
+
+            P_bounds_opt = [pass_horizon] * R
+            v_soft_count = 0
+            start_round = optimize_round_start if R > 1 else 0
+            for r in range(start_round, R):
+                for p in range(P_bounds_opt[r]):
+                    phase_var = vpool_w.id(("phase", r, p))
+                    if phase_var <= vpool_w.top:
+                        wcnf.append([-phase_var], weight=v_penalty)
+                        v_soft_count += 1
+
+            t_build_end = time.time()
 
             if DEBUG_DIAG:
-                print(f"[DIAG] reconfig cost: worker={cost_worker:.6f}, RC2={cost_rc2_est:.6f}", file=_sys.stderr)
+                print(f"[DIAG] WCNF built: vars={wcnf.nv}, hard={len(wcnf.hard)}, "
+                      f"soft={len(wcnf.soft)} (V-penalty={v_soft_count}, weight={v_penalty}), "
+                      f"time={t_build_end - t_build_start:.3f}s", file=_sys.stderr)
 
-            if cost_rc2_est <= cost_worker:
-                model_used = model_rc2
-                vpool_used = vpool_w
-                var_a_used = var_a_w
-                ions_used = ions_w
+            rc2 = RC2(wcnf)
+            model_rc2 = rc2.compute()
+            cost_rc2 = rc2.cost if model_rc2 is not None else None
+            status_rc2 = "ok" if model_rc2 is not None else "error"
+
+            if DEBUG_DIAG:
+                print(f"[DIAG] RC2 status={status_rc2}, opt_cost={cost_rc2}", file=_sys.stderr)
+
+            if status_rc2 == "ok" and model_rc2 is not None:
+                # Compare estimated reconfig cost: RC2 vs worker SAT model
+                schedule_worker = _wise_decode_schedule_from_model(
+                    sat_model_star, vpool_sat, n, m, R, P_max,
+                    ignore_initial_reconfig,
+                )
+                schedule_rc2 = _wise_decode_schedule_from_model(
+                    model_rc2, vpool_w, n, m, R, P_max,
+                    ignore_initial_reconfig,
+                )
+                opt_start = optimize_round_start if R > 1 else 0
+                cost_worker = _wise_estimate_reconfig_cost(
+                    schedule_worker[opt_start:]
+                )
+                cost_rc2_est = _wise_estimate_reconfig_cost(
+                    schedule_rc2[opt_start:]
+                )
+
                 if DEBUG_DIAG:
-                    print(f"[DIAG] using RC2 V-optimised model (saved {(cost_worker - cost_rc2_est)*1e6:.1f} µs)", file=_sys.stderr)
+                    print(f"[DIAG] reconfig cost: worker={cost_worker:.6f}, RC2={cost_rc2_est:.6f}", file=_sys.stderr)
+
+                if cost_rc2_est <= cost_worker:
+                    model_used = model_rc2
+                    vpool_used = vpool_w
+                    var_a_used = var_a_w
+                    ions_used = ions_w
+                    if DEBUG_DIAG:
+                        print(f"[DIAG] using RC2 V-optimised model (saved {(cost_worker - cost_rc2_est)*1e6:.1f} µs)", file=_sys.stderr)
+                else:
+                    model_used = sat_model_star
+                    vpool_used = vpool_sat
+                    var_a_used = var_a_sat
+                    ions_used = ions_sat
+                    if DEBUG_DIAG:
+                        print("[DIAG] RC2 model worse; keeping worker SAT model", file=_sys.stderr)
             else:
                 model_used = sat_model_star
                 vpool_used = vpool_sat
                 var_a_used = var_a_sat
                 ions_used = ions_sat
                 if DEBUG_DIAG:
-                    print("[DIAG] RC2 model worse; keeping worker SAT model", file=_sys.stderr)
-        else:
-            model_used = sat_model_star
-            vpool_used = vpool_sat
-            var_a_used = var_a_sat
-            ions_used = ions_sat
-            if DEBUG_DIAG:
-                print(f"[DIAG] MaxSAT unavailable (status={status_rc2}); falling back to SAT model.", file=_sys.stderr)
+                    print(f"[DIAG] MaxSAT unavailable (status={status_rc2}); falling back to SAT model.", file=_sys.stderr)
     except Exception as maxsat_exc:
         # MaxSAT refinement is best-effort; never block the pipeline.
         model_used = sat_model_star

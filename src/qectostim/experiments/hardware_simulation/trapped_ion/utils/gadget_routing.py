@@ -951,21 +951,22 @@ def _compute_return_reconfig(
     max_inner_workers=None,
     progress_callback=None,
     allow_heuristic_fallback: bool = False,
+    use_heuristic_directly: bool = False,
+    max_sat_time: Optional[float] = None,
+    max_rc2_time: Optional[float] = None,
 ) -> list:
-    """Compute return-round reconfiguration as a **separate** SAT call.
+    """Compute return-round reconfiguration.
 
-    Instead of bundling the return round as an extra empty round with BT
-    pins in the main MS-gate SAT instance (which inflates *R* and can cause
-    UNSAT), this function solves the pure reconfiguration problem: move all
-    ions from *final_layout* back to *target_layout*.
+    When ``use_heuristic_directly=True``, skips SAT entirely and produces
+    a single RoutingStep with ``schedule=None``.  This causes
+    ``physicalOperation`` to use the deterministic Phase B/C/D heuristic
+    (odd-even transposition sort) which always succeeds.  This is the
+    correct behaviour when ``heuristic_route_back=True`` — the plan
+    phase (MS routing) is complete and all that remains is returning
+    ions to start positions, which does not require SAT.
 
-    Uses ``_rebuild_schedule_for_layout`` which iteratively applies
-    SAT-based patch reconfiguration with BT pins until convergence.
-    If SAT cannot fully converge to the target layout, the final
-    snapshot will have ``schedule=None``, causing ``physicalOperation``
-    to fall through to the deterministic Phase B/C/D heuristic
-    (odd-even transposition sort on the full grid) which always
-    succeeds.
+    When ``use_heuristic_directly=False``, uses
+    ``_rebuild_schedule_for_layout`` for SAT-based convergence (as before).
 
     Parameters
     ----------
@@ -979,6 +980,8 @@ def _compute_return_reconfig(
         Patch dimensions for SAT tiling.
     base_pmax_in : int
         Base P_max for SAT solver.
+    use_heuristic_directly : bool
+        If True, skip SAT and use heuristic (schedule=None) immediately.
     stop_event, max_inner_workers : optional
         Threading controls.
 
@@ -998,11 +1001,38 @@ def _compute_return_reconfig(
         return []
 
     _logger = logging.getLogger("wise.qccd.gadget_routing")
+    _mismatch = int(np.sum(final_layout != target_layout))
     _logger.debug(
         "[ReturnRound] computing separate return reconfig "
-        "(%d non-matching cells)",
-        int(np.sum(final_layout != target_layout)),
+        "(%d non-matching cells, use_heuristic_directly=%s)",
+        _mismatch, use_heuristic_directly,
     )
+
+    # ── Fast path: skip SAT entirely when heuristic is requested ──
+    # The plan phase (MS routing) is already complete; all that remains
+    # is moving ions back to their start positions.  The heuristic
+    # (odd-even transposition sort) is O(m+n) passes and always
+    # succeeds for any permutation — no need to invoke SAT.
+    if use_heuristic_directly:
+        _logger.info(
+            "[ReturnRound] skipping SAT — using heuristic directly "
+            "(%d non-matching cells)",
+            _mismatch,
+        )
+        return [RoutingStep(
+            layout_after=np.array(target_layout, copy=True),
+            schedule=None,
+            solved_pairs=[],
+            ms_round_index=-1,
+            from_cache=False,
+            tiling_meta=(0, 0),
+            can_merge_with_next=False,
+            is_initial_placement=False,
+            is_layout_transition=True,
+            reconfig_context="return_round",
+            layout_before=np.array(final_layout, copy=True),
+        )]
+
     # Route-back / cache-replay context: heuristic fallback is acceptable.
     # If SAT cannot fully converge, _rebuild_schedule_for_layout
     # appends a final snapshot with schedule=None, which causes
@@ -1017,9 +1047,12 @@ def _compute_return_reconfig(
         max_inner_workers=max_inner_workers or 1,
         progress_callback=progress_callback,
         allow_heuristic_fallback=allow_heuristic_fallback,
+        max_sat_time=max_sat_time,
+        max_rc2_time=max_rc2_time,
     )
 
     steps = []
+    _prev_layout = np.array(final_layout, copy=True)
     for i, (layout, schedule, _pairs) in enumerate(snaps):
         steps.append(RoutingStep(
             layout_after=np.array(layout, copy=True),
@@ -1032,7 +1065,9 @@ def _compute_return_reconfig(
             is_initial_placement=False,
             is_layout_transition=True,
             reconfig_context="return_round",
+            layout_before=_prev_layout,
         ))
+        _prev_layout = np.array(layout, copy=True)
     return steps
 
 
@@ -2265,6 +2300,9 @@ def _compute_transition_reconfig_steps(
     stop_event: Any = None,
     progress_callback: Any = None,
     allow_heuristic_fallback: bool = False,
+    use_heuristic_directly: bool = False,
+    max_sat_time: Optional[float] = None,
+    max_rc2_time: Optional[float] = None,
 ) -> List:
     """Compute SAT-based transition reconfig from current to target layout.
 
@@ -2298,9 +2336,35 @@ def _compute_transition_reconfig_steps(
 
     n_rows, n_cols = current_layout.shape
 
+    # ── Fast path: skip SAT entirely when heuristic is requested ──
+    # The plan phase (MS routing) is already complete.  The heuristic
+    # (odd-even transposition sort) always produces the exact target
+    # for any valid permutation — no need to invoke SAT.
+    if use_heuristic_directly:
+        _mismatch = int(np.count_nonzero(current_layout != target_layout))
+        _logger.info(
+            "[TransitionReconfig] skipping SAT — using heuristic directly "
+            "(%d non-matching cells)",
+            _mismatch,
+        )
+        return [RoutingStep(
+            layout_after=np.array(target_layout, copy=True),
+            schedule=None,
+            solved_pairs=[],
+            ms_round_index=-1,
+            from_cache=False,
+            tiling_meta=(0, 0),
+            can_merge_with_next=False,
+            is_initial_placement=False,
+            is_layout_transition=True,
+            reconfig_context="cache_replay",
+            layout_before=np.array(current_layout, copy=True),
+        )]
+
     def _snapshots_to_steps(snaps, step_offset=0):
         """Convert _rebuild_schedule_for_layout snapshots to RoutingStep list."""
         steps = []
+        _prev_lay = np.array(current_layout, copy=True)
         for i, (layout, schedule, _) in enumerate(snaps):
             steps.append(RoutingStep(
                 layout_after=np.array(layout, copy=True),
@@ -2313,7 +2377,9 @@ def _compute_transition_reconfig_steps(
                 is_initial_placement=False,
                 is_layout_transition=True,
                 reconfig_context="cache_replay",
+                layout_before=_prev_lay,
             ))
+            _prev_lay = np.array(layout, copy=True)
         return steps
 
     def _consolidate_transition_steps(steps):
@@ -2350,6 +2416,10 @@ def _compute_transition_reconfig_steps(
                 is_initial_placement=False,
                 is_layout_transition=True,
                 reconfig_context="cache_replay",
+                layout_before=(
+                    np.array(steps[0].layout_before, copy=True)
+                    if steps[0].layout_before is not None else None
+                ),
             )]
         merged_schedule = []
         for s in steps:
@@ -2366,6 +2436,10 @@ def _compute_transition_reconfig_steps(
             is_initial_placement=False,
             is_layout_transition=True,
             reconfig_context="cache_replay",
+            layout_before=(
+                np.array(steps[0].layout_before, copy=True)
+                if steps[0].layout_before is not None else None
+            ),
         )]
 
     # --- Check block purity ---
@@ -2412,6 +2486,8 @@ def _compute_transition_reconfig_steps(
         max_inner_workers=max_inner_workers,
         progress_callback=progress_callback,
         allow_heuristic_fallback=allow_heuristic_fallback,
+        max_sat_time=max_sat_time,
+        max_rc2_time=max_rc2_time,
     )
     # Consolidate multiple transition steps into one reconfiguration
     return _consolidate_transition_steps(_snapshots_to_steps(snaps))
@@ -2542,6 +2618,8 @@ def route_full_experiment_as_steps(
     heuristic_route_back: bool = False,
     heuristic_fallback_for_noncache: bool = False,
     progress_callback: Any = None,
+    max_sat_time: Optional[float] = None,
+    max_rc2_time: Optional[float] = None,
 ) -> Tuple[List, np.ndarray]:
     """Phase-aware routing returning ``RoutingStep`` objects.
 
@@ -2616,6 +2694,7 @@ def route_full_experiment_as_steps(
         _merge_block_routing_steps,
         _remap_schedule_to_global,
         _rebuild_schedule_for_layout,
+        _simulate_schedule_replay,
     )
     from ..compiler.routing_config import (
         RoutingProgress,
@@ -2625,6 +2704,10 @@ def route_full_experiment_as_steps(
         STAGE_COMPLETE,
     )
     from .qccd_nodes import QCCDWiseArch
+
+    # Resolve subgridsize=None → full grid (no patching)
+    if subgridsize is None:
+        subgridsize = (m * k, n, 1)
 
     import logging
     logger = logging.getLogger("wise.qccd.gadget_routing")
@@ -2937,6 +3020,8 @@ def route_full_experiment_as_steps(
                         max_inner_workers=max_inner_workers,
                         progress_callback=_phase_cb,
                         replay_level=replay_level,
+                        max_sat_time=max_sat_time,
+                        max_rc2_time=max_rc2_time,
                     )
                     # When replay_level == 0 we skip per-block return
                     # reconfig entirely — no route-back at all.
@@ -2948,6 +3033,13 @@ def route_full_experiment_as_steps(
                 sr_merged, current = _merge_block_routing_steps(
                     per_block_steps, block_sub_grids,
                     current, k,
+                    wiseArch=wiseArch,
+                    subgridsize=subgridsize,
+                    base_pmax_in=base_pmax_in,
+                    stop_event=stop_event,
+                    max_inner_workers=max_inner_workers,
+                    max_sat_time=max_sat_time,
+                    max_rc2_time=max_rc2_time,
                 )
 
                 # ── Batched full-grid return reconfig ──
@@ -2958,8 +3050,12 @@ def route_full_experiment_as_steps(
                 # When replay_level >= num_stab_rounds (the "d" case),
                 # only route-back at the end of the full EC block, not
                 # after each stabilizer round.
+                # When cache_ec_rounds is False, skip return entirely —
+                # there is no cached schedule to replay, so routing
+                # ions back to a starting layout is pure overhead.
                 _do_per_round_return = (
-                    replay_level > 0
+                    cache_ec_rounds
+                    and replay_level > 0
                     and replay_level < num_stab_rounds
                     and not np.array_equal(current, start_layout)
                 )
@@ -2971,7 +3067,16 @@ def route_full_experiment_as_steps(
                         stop_event=stop_event,
                         max_inner_workers=max_inner_workers,
                         progress_callback=_phase_cb,
-                        allow_heuristic_fallback=heuristic_fallback_for_noncache,
+                        allow_heuristic_fallback=(
+                            heuristic_route_back
+                            or heuristic_fallback_for_noncache
+                        ),
+                        use_heuristic_directly=(
+                            heuristic_route_back
+                            or heuristic_fallback_for_noncache
+                        ),
+                        max_sat_time=max_sat_time,
+                        max_rc2_time=max_rc2_time,
                     )
                     sr_merged.extend(_return_steps)
                     if _return_steps:
@@ -3052,6 +3157,8 @@ def route_full_experiment_as_steps(
                                 stop_event=stop_event,
                                 max_inner_workers=max_inner_workers,
                                 progress_callback=_phase_cb,
+                                max_sat_time=max_sat_time,
+                                max_rc2_time=max_rc2_time,
                             )
                             # P4: Cross-block route-back is deferred
                             # to a full-grid return below (after re-
@@ -3062,6 +3169,16 @@ def route_full_experiment_as_steps(
                             _sched_row_off = _xb_r0
                             _sched_col_off = _xb_c0p
                             for step in _xb_steps:
+                                # Re-embed layout_before into global grid
+                                if step.layout_before is not None:
+                                    _gl_before = np.array(current, copy=True)
+                                    _gl_before[
+                                        _xb_r0:_xb_r1,
+                                        _xb_c0p:_xb_c1p,
+                                    ] = step.layout_before
+                                    step.layout_before = _gl_before
+                                else:
+                                    step.layout_before = np.array(current, copy=True)
                                 _gl = np.array(current, copy=True)
                                 _gl[
                                     _xb_r0:_xb_r1,
@@ -3081,8 +3198,11 @@ def route_full_experiment_as_steps(
                             # P4: Full-grid return after cross-block
                             # routing — all blocks route back together
                             # on the full grid (P5).
+                            # Skip when cache_ec_rounds is False — no
+                            # cached schedule needs a known start layout.
                             if (
-                                replay_level > 0
+                                cache_ec_rounds
+                                and replay_level > 0
                                 and not np.array_equal(
                                     current, start_layout,
                                 )
@@ -3100,8 +3220,15 @@ def route_full_experiment_as_steps(
                                         ),
                                         progress_callback=_phase_cb,
                                         allow_heuristic_fallback=(
-                                            heuristic_fallback_for_noncache
+                                            heuristic_route_back
+                                            or heuristic_fallback_for_noncache
                                         ),
+                                        use_heuristic_directly=(
+                                            heuristic_route_back
+                                            or heuristic_fallback_for_noncache
+                                        ),
+                                        max_sat_time=max_sat_time,
+                                        max_rc2_time=max_rc2_time,
                                     )
                                 )
                                 sr_merged.extend(_xb_fg_return)
@@ -3136,12 +3263,17 @@ def route_full_experiment_as_steps(
                     stop_event=stop_event,
                     max_inner_workers=max_inner_workers,
                     progress_callback=_phase_cb,
+                    max_sat_time=max_sat_time,
+                    max_rc2_time=max_rc2_time,
                 )
                 # Separate return-round reconfig (skip when replay_level == 0
                 # or when replay_level >= num_stab_rounds, i.e. route-back
                 # only at EC block boundary).
+                # Also skip when cache_ec_rounds is False — return serves
+                # no purpose without a cache to replay into.
                 _do_per_round_return = (
-                    replay_level > 0
+                    cache_ec_rounds
+                    and replay_level > 0
                     and replay_level < num_stab_rounds
                 )
                 if _do_per_round_return:
@@ -3152,7 +3284,16 @@ def route_full_experiment_as_steps(
                         stop_event=stop_event,
                         max_inner_workers=max_inner_workers,
                         progress_callback=_phase_cb,
-                        allow_heuristic_fallback=heuristic_fallback_for_noncache,
+                        allow_heuristic_fallback=(
+                            heuristic_route_back
+                            or heuristic_fallback_for_noncache
+                        ),
+                        use_heuristic_directly=(
+                            heuristic_route_back
+                            or heuristic_fallback_for_noncache
+                        ),
+                        max_sat_time=max_sat_time,
+                        max_rc2_time=max_rc2_time,
                     )
                     sr_merged = list(sr_merged) + _sr_return
                 else:
@@ -3233,6 +3374,12 @@ def route_full_experiment_as_steps(
                         heuristic_route_back
                         or heuristic_fallback_for_noncache
                     ),
+                    use_heuristic_directly=(
+                        heuristic_route_back
+                        or heuristic_fallback_for_noncache
+                    ),
+                    max_sat_time=max_sat_time,
+                    max_rc2_time=max_rc2_time,
                 )
             except Exception as exc:
                 logger.warning(
@@ -3255,6 +3402,12 @@ def route_full_experiment_as_steps(
                         heuristic_route_back
                         or heuristic_fallback_for_noncache
                     ),
+                    use_heuristic_directly=(
+                        heuristic_route_back
+                        or heuristic_fallback_for_noncache
+                    ),
+                    max_sat_time=max_sat_time,
+                    max_rc2_time=max_rc2_time,
                 )
         except Exception as exc_final:
             # FM5 fix: only swallow the exception if all ions happen to
@@ -3442,6 +3595,12 @@ def route_full_experiment_as_steps(
                             stop_event=stop_event,
                             progress_callback=_phase_cb,
                             allow_heuristic_fallback=True,
+                            use_heuristic_directly=(
+                                heuristic_route_back
+                                or heuristic_fallback_for_noncache
+                            ),
+                            max_sat_time=max_sat_time,
+                            max_rc2_time=max_rc2_time,
                         )
                     except Exception as exc:
                         logger.warning(
@@ -3511,6 +3670,7 @@ def route_full_experiment_as_steps(
                             else:
                                 # Try SAT from current → first target
                                 # (skip SAT if heuristic_cache_replay)
+                                _sat_snaps = []
                                 if heuristic_cache_replay:
                                     _sched = None
                                     logger.info(
@@ -3530,6 +3690,8 @@ def route_full_experiment_as_steps(
                                             stop_event=stop_event,
                                             max_inner_workers=max_inner_workers,
                                             allow_heuristic_fallback=True,
+                                            max_sat_time=max_sat_time,
+                                            max_rc2_time=max_rc2_time,
                                         )
                                     except Exception as _sat_exc:
                                         logger.warning(
@@ -3678,6 +3840,12 @@ def route_full_experiment_as_steps(
                             stop_event=stop_event,
                             progress_callback=_phase_cb,
                             allow_heuristic_fallback=True,
+                            use_heuristic_directly=(
+                                heuristic_route_back
+                                or heuristic_fallback_for_noncache
+                            ),
+                            max_sat_time=max_sat_time,
+                            max_rc2_time=max_rc2_time,
                         )
                     except Exception as exc:
                         logger.warning(
@@ -3743,6 +3911,8 @@ def route_full_experiment_as_steps(
                                             stop_event=stop_event,
                                             max_inner_workers=max_inner_workers,
                                             allow_heuristic_fallback=True,
+                                            max_sat_time=max_sat_time,
+                                            max_rc2_time=max_rc2_time,
                                         )
                                     except Exception as _sat_exc:
                                         logger.warning(
@@ -4063,6 +4233,8 @@ def route_full_experiment_as_steps(
                         max_inner_workers=max_inner_workers,
                         progress_callback=_phase_cb,
                         replay_level=replay_level,
+                        max_sat_time=max_sat_time,
+                        max_rc2_time=max_rc2_time,
                     )
                     phase_steps = list(phase_steps_raw)
 
@@ -4090,6 +4262,18 @@ def route_full_experiment_as_steps(
                                 _bb_r0:_bb_r1, _bb_c0_phys:_bb_c1_phys
                             ] = step.layout_after
                             step.layout_after = global_after
+                            # Re-embed layout_before into global grid
+                            # (without this, execution-loop pre-flight
+                            # check crashes on shape mismatch).
+                            if step.layout_before is not None:
+                                global_before = np.array(
+                                    current_layout, copy=True,
+                                )
+                                global_before[
+                                    _bb_r0:_bb_r1,
+                                    _bb_c0_phys:_bb_c1_phys,
+                                ] = step.layout_before
+                                step.layout_before = global_before
                             if step.schedule is not None:
                                 step.schedule = _remap_schedule_to_global(
                                     step.schedule,
@@ -4118,6 +4302,28 @@ def route_full_experiment_as_steps(
                                     r0_m:r0_m + rows, c0_m:c0_m + cols
                                 ]
                             step.layout_after = global_after
+                            # Re-embed layout_before into global grid
+                            if step.layout_before is not None:
+                                global_before = np.array(
+                                    current_layout, copy=True,
+                                )
+                                for sg in interacting_sgs:
+                                    region = block_regions[sg.block_name]
+                                    r0_m, c0_m, r1_m, c1_m = region
+                                    r0_g, c0_g, r1_g, c1_g = sg.grid_region
+                                    c0_gi = c0_g * k
+                                    rows = min(r1_m - r0_m, r1_g - r0_g)
+                                    cols = min(
+                                        c1_m - c0_m, (c1_g - c0_g) * k,
+                                    )
+                                    global_before[
+                                        r0_g:r0_g + rows,
+                                        c0_gi:c0_gi + cols,
+                                    ] = step.layout_before[
+                                        r0_m:r0_m + rows,
+                                        c0_m:c0_m + cols,
+                                    ]
+                                step.layout_before = global_before
                             if step.schedule is not None:
                                 step.schedule = _remap_schedule_to_global(
                                     step.schedule,
@@ -4182,6 +4388,8 @@ def route_full_experiment_as_steps(
                                     ),
                                     progress_callback=_phase_cb,
                                     replay_level=replay_level,
+                                    max_sat_time=max_sat_time,
+                                    max_rc2_time=max_rc2_time,
                                 )
                                 _nb_r0 = r0
                                 _nb_c0 = c0i
@@ -4193,6 +4401,15 @@ def route_full_experiment_as_steps(
                                         r0:r1, c0i:c1i
                                     ] = step.layout_after
                                     step.layout_after = _gl
+                                    # Re-embed layout_before
+                                    if step.layout_before is not None:
+                                        _gl_b = np.array(
+                                            current_layout, copy=True,
+                                        )
+                                        _gl_b[
+                                            r0:r1, c0i:c1i
+                                        ] = step.layout_before
+                                        step.layout_before = _gl_b
                                     if step.schedule is not None:
                                         step.schedule = (
                                             _remap_schedule_to_global(
@@ -4241,6 +4458,8 @@ def route_full_experiment_as_steps(
                         max_inner_workers=max_inner_workers,
                         progress_callback=_phase_cb,
                         replay_level=replay_level,
+                        max_sat_time=max_sat_time,
+                        max_rc2_time=max_rc2_time,
                     )
                     phase_steps = list(phase_steps_raw)
 
@@ -4277,6 +4496,8 @@ def route_full_experiment_as_steps(
                 max_inner_workers=max_inner_workers,
                 progress_callback=_phase_cb,
                 replay_level=replay_level,
+                max_sat_time=max_sat_time,
+                max_rc2_time=max_rc2_time,
             )
             phase_steps = list(phase_steps_raw)
 
@@ -4329,6 +4550,162 @@ def route_full_experiment_as_steps(
         _phase_span = max(n_pairs, _max_local_idx + 1)
         round_cursor += _phase_span
         _global_round_offset += _phase_span
+
+    # ── Fix 16: Post-planning chain verification ─────────────────
+    # Walk the step chain with the initial layout, verify that each
+    # step's schedule transforms the current layout to layout_after.
+    # Rebuild broken schedules DURING PLANNING so the execution loop
+    # never needs to invoke SAT.
+    #
+    # Catches:
+    #   - Schedules dropped by ion conservation repair in merge
+    #   - Stale schedules from cache replay on drifted layouts
+    #   - Missing layout_before on transition/return steps
+    #   - Chain continuity breaks at phase boundaries
+    _chain_layout = np.array(initial_layout, copy=True)
+    _chain_rebuilds = 0
+    _chain_skipped = 0
+    _chain_continuity_fixes = 0
+    _chain_verified: List[RoutingStep] = []
+
+    for _si, _step in enumerate(all_routing_steps):
+        # 1. Fix layout_before
+        if _step.layout_before is None:
+            _step.layout_before = np.array(_chain_layout, copy=True)
+        elif (
+            _step.layout_before.shape == _chain_layout.shape
+            and not np.array_equal(_step.layout_before, _chain_layout)
+        ):
+            _lb_diff = int(np.sum(_step.layout_before != _chain_layout))
+            logger.debug(
+                "[ChainVerify] step %d (ms_round=%d): layout_before "
+                "differs from chain by %d cells — updating",
+                _si, _step.ms_round_index, _lb_diff,
+            )
+            _step.layout_before = np.array(_chain_layout, copy=True)
+            _chain_continuity_fixes += 1
+
+        # 2. No-op: layouts already match — no reconfig needed
+        if np.array_equal(_chain_layout, _step.layout_after):
+            _chain_verified.append(_step)
+            continue
+
+        # 3. Verify schedule produces the target layout
+        _cv_need_rebuild = _step.schedule is None
+        if not _cv_need_rebuild:
+            _cv_replay = _simulate_schedule_replay(
+                _chain_layout, _step.schedule,
+            )
+            _cv_need_rebuild = not np.array_equal(
+                _cv_replay, _step.layout_after,
+            )
+
+        if _cv_need_rebuild:
+            # 4. Rebuild schedule during planning
+            _cv_allow_heuristic = (
+                _step.reconfig_context != "ms_gate"
+            )
+            _cv_diff = int(
+                np.sum(_chain_layout != _step.layout_after)
+            )
+            logger.info(
+                "[ChainVerify] step %d (ms_round=%d, ctx=%s): "
+                "rebuilding schedule (%s, %d/%d cells to target)",
+                _si, _step.ms_round_index,
+                _step.reconfig_context,
+                "schedule=None" if _step.schedule is None
+                else "replay mismatch",
+                _cv_diff, _chain_layout.size,
+            )
+            try:
+                _cv_snaps = _rebuild_schedule_for_layout(
+                    _chain_layout.copy(), wiseArch,
+                    _step.layout_after,
+                    subgridsize=subgridsize,
+                    base_pmax_in=base_pmax_in or 1,
+                    stop_event=stop_event,
+                    max_inner_workers=max_inner_workers,
+                    allow_heuristic_fallback=_cv_allow_heuristic,
+                    max_sat_time=max_sat_time,
+                    max_rc2_time=max_rc2_time,
+                )
+            except Exception as _cv_exc:
+                logger.warning(
+                    "[ChainVerify] step %d: rebuild failed: %s",
+                    _si, _cv_exc,
+                )
+                _cv_snaps = []
+
+            if _cv_snaps:
+                # Insert intermediate SAT cycles as extra steps
+                for _cv_lay, _cv_sched, _ in _cv_snaps[:-1]:
+                    _chain_verified.append(RoutingStep(
+                        layout_after=np.array(_cv_lay, copy=True),
+                        schedule=_cv_sched,
+                        solved_pairs=[],
+                        ms_round_index=_step.ms_round_index,
+                        from_cache=_step.from_cache,
+                        tiling_meta=_step.tiling_meta,
+                        can_merge_with_next=True,
+                        is_initial_placement=False,
+                        is_layout_transition=True,
+                        layout_before=np.array(
+                            _chain_layout, copy=True,
+                        ),
+                        reconfig_context=_step.reconfig_context,
+                    ))
+                    _chain_layout = np.array(_cv_lay, copy=True)
+
+                # Use last cycle's schedule for this step
+                _cv_last_lay, _cv_last_sched, _ = _cv_snaps[-1]
+                _step.schedule = _cv_last_sched
+                _step.layout_before = np.array(
+                    _chain_layout, copy=True,
+                )
+                # Verify last schedule matches target
+                if _cv_last_sched is not None:
+                    _cv_final = _simulate_schedule_replay(
+                        _chain_layout, _cv_last_sched,
+                    )
+                    if not np.array_equal(
+                        _cv_final, _step.layout_after,
+                    ):
+                        # Use SAT's actual result layout
+                        _step.layout_after = np.array(
+                            _cv_last_lay, copy=True,
+                        )
+                _chain_rebuilds += 1
+                logger.info(
+                    "[ChainVerify] step %d: rebuilt via %d SAT "
+                    "cycle(s)",
+                    _si, len(_cv_snaps),
+                )
+            else:
+                # Rebuild failed — leave as-is for execution fallback
+                _chain_skipped += 1
+                logger.warning(
+                    "[ChainVerify] step %d: rebuild returned 0 "
+                    "snapshots — deferring to execution fallback",
+                    _si,
+                )
+
+        _chain_verified.append(_step)
+        _chain_layout = np.array(_step.layout_after, copy=True)
+
+    if _chain_rebuilds > 0 or _chain_skipped > 0:
+        logger.info(
+            "[ChainVerify] rebuilt %d schedules, %d deferred to "
+            "execution, %d continuity fixes; steps: %d → %d",
+            _chain_rebuilds, _chain_skipped,
+            _chain_continuity_fixes,
+            len(all_routing_steps), len(_chain_verified),
+        )
+    else:
+        logger.info(
+            "[ChainVerify] all %d steps verified — no rebuilds needed",
+            len(all_routing_steps),
+        )
+    all_routing_steps = _chain_verified
 
     logger.info(
         "[PhaseSteps] total %d routing steps across %d phases",

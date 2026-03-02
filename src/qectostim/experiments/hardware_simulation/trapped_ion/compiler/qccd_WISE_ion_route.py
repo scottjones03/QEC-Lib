@@ -427,8 +427,11 @@ def _merge_patch_schedules(
         return merged
 
     for r in range(R):
-        round_scheds = [sched[r] for sched in patch_schedules]
-        merged[r] = _merge_patch_round_schedules(round_scheds)
+        # Guard: some patches may return fewer than R rounds
+        # (e.g. when the SAT solver found no operations needed).
+        round_scheds = [sched[r] for sched in patch_schedules if r < len(sched)]
+        if round_scheds:
+            merged[r] = _merge_patch_round_schedules(round_scheds)
 
     return merged
 
@@ -445,6 +448,8 @@ def _patch_and_route(
     stop_event: Optional[Any] = None,
     progress_callback: Optional[Any] = None,
     max_inner_workers: int | None = None,
+    max_sat_time: Optional[float] = None,
+    max_rc2_time: Optional[float] = None,
 ) -> List[Tuple[int, int, List[Tuple[np.ndarray, List[Dict[str, Any]], List[Tuple[int, int]]]]]]:
     """
     Patch-based Level-1 slicer. Partition the device into checkerboard patches and
@@ -464,6 +469,10 @@ def _patch_and_route(
 
     n_rows = wiseArch.n
     n_cols = wiseArch.m * wiseArch.k
+
+    # Resolve subgridsize=None → full grid (no patching)
+    if subgridsize is None:
+        subgridsize = (n_cols, n_rows, 1)
 
     n_c = max(subgridsize[0], 1)
     n_r = max(subgridsize[1], 1)
@@ -803,6 +812,8 @@ def _patch_and_route(
                         parent_stop_event=stop_event,
                         progress_callback=progress_callback,
                         max_inner_workers=max_inner_workers,
+                        max_sat_time=max_sat_time,
+                        max_rc2_time=max_rc2_time,
                     )
                 except NoFeasibleLayoutError as exc:
                     logger.warning(
@@ -1077,6 +1088,8 @@ def _escalate_sat_for_ms_reconfig(
     progress_callback: Optional[Any] = None,
     max_inner_workers: Optional[int] = None,
     max_attempts: int = 3,
+    max_sat_time: Optional[float] = None,
+    max_rc2_time: Optional[float] = None,
 ) -> Optional[List[Tuple[np.ndarray, Optional[List[Dict[str, Any]]], list]]]:
     """Try full-grid SAT with escalating *pmax* for MS-gate reconfig.
 
@@ -1109,6 +1122,8 @@ def _escalate_sat_for_ms_reconfig(
                 stop_event=stop_event,
                 progress_callback=progress_callback,
                 max_inner_workers=max_inner_workers,
+                max_sat_time=max_sat_time,
+                max_rc2_time=max_rc2_time,
             )
         except Exception as exc:
             logger.warning(
@@ -1139,6 +1154,8 @@ def _rebuild_schedule_for_layout(
     progress_callback: Optional[Any] = None,
     max_inner_workers: int | None = None,
     allow_heuristic_fallback: bool = True,
+    max_sat_time: Optional[float] = None,
+    max_rc2_time: Optional[float] = None,
 ) -> List[Tuple[np.ndarray, List[Dict[str, Any]], List[Tuple[int, int]]]]:
     """
     Given a current global layout (oldArrangementArr) and a desired global layout
@@ -1167,10 +1184,25 @@ def _rebuild_schedule_for_layout(
 
     The caller should apply these schedules in order to reach target_layout.
     """
-    R = 1  # single logical "round" per cycle (no MS gates, only BT pins)
+    # ── Single-round SAT (R=1) strategy ────────────────────────────
+    # BT[0] = {all local-target ions → exact positions}.
+    # ── Multi-round SAT (R=2) strategy ────────────────────────────
+    # Round 0: BT[0] = {} (no pins) — solver finds optimal intermediate.
+    #   check(c) trivially passes since BT[0] is empty.
+    # Round 1: BT[1] = {all local-target ions → exact positions}.
+    #   R=2 gives the solver an intermediate layout as a free variable,
+    #   which dramatically improves SAT convergence vs R=1 (single-round).
+    #
+    # The limit_pmax cap (pure-routing mode) is raised when
+    # skip_bt_check_c=True so that P_max can reach 23+ passes
+    # (needed for complex 7×8 grid permutations).
+    R = 2
     n_rows = wiseArch.n
     n_cols = wiseArch.m * wiseArch.k
-    inc = 1
+
+    # Resolve subgridsize=None → full grid (no patching)
+    if subgridsize is None:
+        subgridsize = (n_cols, n_rows, 1)
 
     if target_layout.shape != oldArrangementArr.shape:
         raise ValueError(
@@ -1180,6 +1212,14 @@ def _rebuild_schedule_for_layout(
     # Derive patch size from subgridsize (same convention as _patch_and_route)
     n_c = max(subgridsize[0], 1)
     n_r = max(subgridsize[1], 1)
+    inc = subgridsize[2]
+
+    # k-compatibility adjustment (must match _patch_and_route)
+    if n_c < wiseArch.k and (wiseArch.k % n_c != 0):
+        n_c += int(np.mod(wiseArch.k, n_c))
+    elif n_c > wiseArch.k and (n_c % wiseArch.k != 0):
+        n_c = (n_c // wiseArch.k) * wiseArch.k
+
     patch_w = min(n_c, n_cols)
     patch_h = min(n_r, n_rows)
 
@@ -1194,23 +1234,23 @@ def _rebuild_schedule_for_layout(
     }
 
     snapshots: List[Tuple[np.ndarray, List[Dict[str, Any]], List[Tuple[int, int]]]] = []
-    max_cycles = max(n_rows, n_cols)
+    # Allow enough cycles for iterative convergence with small patches.
+    # Each cycle applies multiple tilings that each move ions closer to
+    # their target positions — small patches need more iterations.
+    max_cycles = max(n_rows, n_cols, 12)
 
     # Track how many grid positions differ from the target layout so we can
     # detect lack of progress and avoid burning many SAT calls with no gain.
     prev_mismatch = int(np.count_nonzero(current_layout != target_layout))
+    # Plateau counter: how many consecutive cycles had no mismatch decrease.
+    # When inc == 0 (fixed patches), break after 1 no-progress cycle.
+    # When inc > 0 (growing patches), keep going — growth enables progress.
+    _plateau_count = 0
     logger.info(
         "%s schedule-only rebuild: initial mismatch cells=%d",
         PATCH_LOG_PREFIX,
         prev_mismatch,
     )
-
-    # ── Pin reduction mode (Fix FM3) ─────────────────────────────
-    # When convergence stalls, BT pins overconstrain the SAT solver
-    # (e.g. 50 pins on 56 cells → only 6 free → no routing slack).
-    # Reduce pins to mismatch_count + buffer so the solver has room
-    # to route the remaining mismatched ions through adjacent cells.
-    _pin_reduction_mode = False
 
     for cycle_idx in range(max_cycles):
         if np.array_equal(current_layout, target_layout):
@@ -1248,10 +1288,6 @@ def _rebuild_schedule_for_layout(
 
         cycle_total_pins = 0
 
-        # FM2 fix: track per-ion nudge direction across tilings within
-        # this cycle to prevent oscillation.
-        nudge_history: Dict[int, Tuple[int, int]] = {}
-
         for tiling_idx, (off_r, off_c) in enumerate(tilings):
             if np.array_equal(current_layout, target_layout):
                 break
@@ -1285,160 +1321,35 @@ def _rebuild_schedule_for_layout(
                     layouts_after_local[0][r0:r1, c0:c1], dtype=int, copy=True
                 )
 
-                # ══ FM1+FM2 fix: Distance-sorted BT pin assignment ══
-                # Build ALL candidate pins (exact-target + directional nudge)
-                # into a single list, sort by Manhattan distance (shortest
-                # first — cheapest to pin), then greedily assign respecting
-                # both uniqueness constraints.  This maximises pin count
-                # and prevents boundary-clamping oscillation.
-                BT_patch: List[Dict[int, Tuple[int, int]]] = [dict()]
-                bt_map = BT_patch[0]
-                used_keys: Dict[Tuple[int, int], int] = {}
-                used_targets: Dict[Tuple[int, int], int] = {}
-
-                # Build row_of from patch_grid (same as SAT validator does)
+                # ══ R=2 Multi-round BT pin assignment ══════════════
+                # Round 0: BT[0] = {} — no pins, so the SAT solver
+                #   freely finds the optimal intermediate layout.
+                #   check(c) trivially passes since BT[0] is empty.
+                # Round 1: BT[1] = {ion → (local_r, local_c)} for every
+                #   ion whose global target falls inside this patch.
+                #   R=2 gives the solver an intermediate degree of
+                #   freedom, dramatically improving convergence.
                 patch_row_of: Dict[int, int] = {}
-                patch_col_of: Dict[int, int] = {}
                 for lr in range(r1 - r0):
                     for lc in range(c1 - c0):
                         ion_id = int(patch_grid[lr, lc])
                         if ion_id != 0:
                             patch_row_of[ion_id] = lr
-                            patch_col_of[ion_id] = lc
 
                 patch_h_local = r1 - r0
                 patch_w_local = c1 - c0
 
-                # Collect ALL candidate pins: (manhattan_dist, ion, start_row, target_row, target_col, is_nudge)
-                _candidates: list = []
-
-                # Pass 1 candidates: ions whose global target is INSIDE this patch
+                bt_map: Dict[int, Tuple[int, int]] = {}
                 for dr in range(patch_h_local):
                     for dc in range(patch_w_local):
-                        ionidx_target = int(target_layout[r0 + dr, c0 + dc])
-                        if ionidx_target == 0:
+                        ion_target_here = int(target_layout[r0 + dr, c0 + dc])
+                        if ion_target_here == 0:
                             continue
-                        start_row = patch_row_of.get(ionidx_target)
-                        if start_row is None:
-                            continue  # Ion not in this patch
-                        start_col = patch_col_of.get(ionidx_target, 0)
-                        dist = abs(start_row - dr) + abs(start_col - dc)
-                        _candidates.append((dist, ionidx_target, start_row, dr, dc, False))
+                        if ion_target_here in patch_row_of:
+                            # Ion IS in this patch AND its target IS in this patch
+                            bt_map[ion_target_here] = (dr, dc)
 
-                # Pass 2 candidates: ions in this patch whose global target
-                # is OUTSIDE — compute directional nudge toward target
-                for lr in range(patch_h_local):
-                    for lc in range(patch_w_local):
-                        ion_here = int(patch_grid[lr, lc])
-                        if ion_here == 0:
-                            continue
-                        tgt_global = ion_target_pos.get(ion_here)
-                        if tgt_global is None:
-                            continue
-                        tgt_r, tgt_c = tgt_global
-                        # Skip if target is inside this patch (handled by Pass 1)
-                        if r0 <= tgt_r < r1 and c0 <= tgt_c < c1:
-                            continue
-                        # Skip if already at global target
-                        if tgt_r == r0 + lr and tgt_c == c0 + lc:
-                            continue
-
-                        # FM2 fix: directional nudge — move TOWARD
-                        # target by max distance within patch
-                        dir_r = 1 if tgt_r > r0 + lr else (-1 if tgt_r < r0 + lr else 0)
-                        dir_c = 1 if tgt_c > c0 + lc else (-1 if tgt_c < c0 + lc else 0)
-
-                        # Anti-oscillation: skip if this would reverse
-                        # the previous nudge direction on BOTH axes
-                        prev_dir = nudge_history.get(ion_here)
-                        if prev_dir is not None:
-                            prev_dr, prev_dc = prev_dir
-                            if (prev_dr != 0 and dir_r != 0 and prev_dr == -dir_r and
-                                    prev_dc != 0 and dir_c != 0 and prev_dc == -dir_c):
-                                continue
-
-                        # Compute nudge target: move toward global target
-                        # by as much as possible within patch bounds
-                        nudge_r = lr + dir_r * min(
-                            abs(tgt_r - (r0 + lr)), patch_h_local - 1)
-                        nudge_c = lc + dir_c * min(
-                            abs(tgt_c - (c0 + lc)), patch_w_local - 1)
-                        nudge_r = max(0, min(nudge_r, patch_h_local - 1))
-                        nudge_c = max(0, min(nudge_c, patch_w_local - 1))
-
-                        if nudge_r == lr and nudge_c == lc:
-                            continue
-
-                        dist = abs(tgt_r - (r0 + lr)) + abs(tgt_c - (c0 + lc))
-                        _candidates.append((dist, ion_here, lr, nudge_r, nudge_c, True))
-
-                # Sort by: (1) ions that NEED to move first (dist > 0),
-                # then (2) ions already at their target (dist == 0).
-                # Within each group, sort by ascending distance.
-                #
-                # RATIONALE: The greedy loop below consumes
-                # (start_row, target_col) uniqueness slots.  If we pin
-                # already-correct ions first, they eat all the slots
-                # and leave mismatched ions unpinnable — the SAT solver
-                # then returns ΣP=0 (zero swaps) because moving the
-                # correct ions is a no-op.  By pinning MISMATCHED ions
-                # first, we guarantee the SAT solver has targets for
-                # the ions that actually need routing.
-                _candidates.sort(key=lambda x: (0 if x[0] > 0 else 1, x[0]))
-
-                # ── Pin cap when in reduction mode (Fix FM3) ────────
-                # When convergence has stalled, cap BT pins so the SAT
-                # solver has routing slack through unpinned cells.
-                # Pin budget: all mismatched ions + a small buffer of
-                # correct ions (at most half of patch cells).
-                if _pin_reduction_mode:
-                    _max_bt_pins = min(
-                        mismatch_before + max(4, mismatch_before),
-                        (patch_h_local * patch_w_local) // 2,
-                    )
-                else:
-                    _max_bt_pins = patch_h_local * patch_w_local  # no cap
-
-                # Greedy assignment respecting both uniqueness constraints
-                for _dist, _ion, _sr, _tr, _tc, _is_nudge in _candidates:
-                    if len(bt_map) >= _max_bt_pins:
-                        break  # pin cap reached
-                    if _ion in bt_map:
-                        continue  # already pinned
-                    key = (_sr, _tc)  # SAT precondition: (start_row, target_col)
-                    if key in used_keys and used_keys[key] != _ion:
-                        continue
-                    tgt_key = (_tr, _tc)  # target position uniqueness
-                    if tgt_key in used_targets and used_targets[tgt_key] != _ion:
-                        continue
-                    used_keys[key] = _ion
-                    used_targets[tgt_key] = _ion
-                    bt_map[_ion] = (_tr, _tc)
-                    # Record nudge direction for anti-oscillation
-                    if _is_nudge:
-                        dir_r = 1 if _tr > _sr else (-1 if _tr < _sr else 0)
-                        dir_c = 1 if _tc > patch_col_of.get(_ion, 0) else (
-                            -1 if _tc < patch_col_of.get(_ion, 0) else 0)
-                        nudge_history[_ion] = (dir_r, dir_c)
-
-                # Debug: count how many mismatched ions got pinned vs
-                # how many couldn't be pinned due to slot conflicts.
-                _n_mismatched_pinned = sum(
-                    1 for _d, _ion, _, _, _, _ in _candidates
-                    if _d > 0 and _ion in bt_map
-                )
-                _n_mismatched_unpinned = sum(
-                    1 for _d, _ion, _, _, _, _ in _candidates
-                    if _d > 0 and _ion not in bt_map
-                )
-                if _n_mismatched_unpinned > 0:
-                    logger.info(
-                        "%s BT pin stats (cycle %d, tiling %d, patch r[%d:%d] c[%d:%d]): "
-                        "total_pins=%d, mismatched_pinned=%d, mismatched_unpinned=%d",
-                        PATCH_LOG_PREFIX, cycle_idx, tiling_idx,
-                        r0, r1, c0, c1,
-                        len(bt_map), _n_mismatched_pinned, _n_mismatched_unpinned,
-                    )
+                BT_patch: List[Dict[int, Tuple[int, int]]] = [{}, bt_map]
 
                 if not bt_map:
                     continue
@@ -1451,10 +1362,11 @@ def _rebuild_schedule_for_layout(
                     "left": c0 > 0,
                     "right": c1 < n_cols,
                 }
-                cross_boundary_prefs: List[Dict[int, Set[str]]] = [dict()]
+                cross_boundary_prefs: List[Dict[int, Set[str]]] = [{}, {}]
 
                 logger.info(
-                    "%s rebuilding schedule-only patch (cycle %d, tiling %d) r[%d:%d] c[%d:%d] (no gates, BT pins=%d)",
+                    "%s rebuilding schedule-only patch (cycle %d, tiling %d) "
+                    "r[%d:%d] c[%d:%d] (R=2, BT[1] pins=%d, raised limit_pmax)",
                     PATCH_LOG_PREFIX,
                     cycle_idx,
                     tiling_idx,
@@ -1465,18 +1377,24 @@ def _rebuild_schedule_for_layout(
                     len(bt_map),
                 )
 
+                # Use the LOCAL patch dimensions for P_max, NOT the full
+                # grid.  Odd-even transposition sort on the patch needs
+                # at most max(patch_h, patch_w) passes to route any
+                # permutation.  Using h + w was still 1.5-2× too high.
+                _rebuild_pmax = max(base_pmax_in or 1, max(patch_h_local, patch_w_local))
+
                 try:
                     patch_layouts, patch_schedule, _ = GlobalReconfigurations._optimal_QMR_for_WISE(
                         patch_grid,
-                        P_arr=[[]],  # no MS gates; layout-only reconfig
+                        P_arr=[[], []],  # R=2: two rounds, no MS gates
                         k=wiseArch.k,
                         BT=BT_patch,
                         active_ions=None,
                         wB_col=0,
                         wB_row=0,
-                        full_P_arr=[[]],
+                        full_P_arr=[[], []],
                         ignore_initial_reconfig=False,
-                        base_pmax_in=base_pmax_in,
+                        base_pmax_in=_rebuild_pmax,
                         prev_pmax=None,
                         grid_origin=(r0, c0),
                         boundary_adjacent=boundary_adjacent,
@@ -1485,27 +1403,30 @@ def _rebuild_schedule_for_layout(
                         parent_stop_event=stop_event,
                         progress_callback=progress_callback,
                         max_inner_workers=max_inner_workers,
+                        max_sat_time=max_sat_time,
+                        max_rc2_time=max_rc2_time,
+                        skip_bt_check_c=True,
                     )
                 except NoFeasibleLayoutError:
                     # Retry with soft BT constraints (relaxable pins)
                     logger.info(
                         "%s schedule-only patch (cycle %d, tiling %d) r[%d:%d] c[%d:%d]: "
-                        "hard BT infeasible, retrying with bt_soft=True",
+                        "hard BT infeasible (R=2), retrying with bt_soft=True",
                         PATCH_LOG_PREFIX, cycle_idx, tiling_idx,
                         r0, r1, c0, c1,
                     )
                     try:
                         patch_layouts, patch_schedule, _ = GlobalReconfigurations._optimal_QMR_for_WISE(
                             patch_grid,
-                            P_arr=[[]],
+                            P_arr=[[], []],
                             k=wiseArch.k,
                             BT=BT_patch,
                             active_ions=None,
                             wB_col=0,
                             wB_row=0,
-                            full_P_arr=[[]],
+                            full_P_arr=[[], []],
                             ignore_initial_reconfig=False,
-                            base_pmax_in=base_pmax_in,
+                            base_pmax_in=_rebuild_pmax,
                             prev_pmax=None,
                             grid_origin=(r0, c0),
                             boundary_adjacent=boundary_adjacent,
@@ -1514,11 +1435,13 @@ def _rebuild_schedule_for_layout(
                             parent_stop_event=stop_event,
                             progress_callback=progress_callback,
                             max_inner_workers=max_inner_workers,
+                            max_sat_time=max_sat_time,
+                            max_rc2_time=max_rc2_time,
+                            skip_bt_check_c=True,
                         )
                     except NoFeasibleLayoutError:
                         # Even soft BT failed – try with fewer pins
-                        # Reduce to only pins where the ion is already in the
-                        # correct row (most likely to succeed).
+                        # (only ions already in the correct row)
                         reduced_bt: Dict[int, Tuple[int, int]] = {}
                         for ion_id, (tr, tc) in bt_map.items():
                             pos = ion_positions.get(ion_id)
@@ -1528,21 +1451,21 @@ def _rebuild_schedule_for_layout(
                                     reduced_bt[ion_id] = (tr, tc)
                         if reduced_bt and len(reduced_bt) < len(bt_map):
                             logger.info(
-                                "%s retrying with reduced pins (%d -> %d)",
+                                "%s retrying with reduced R=2 pins (%d -> %d)",
                                 PATCH_LOG_PREFIX, len(bt_map), len(reduced_bt),
                             )
                             try:
                                 patch_layouts, patch_schedule, _ = GlobalReconfigurations._optimal_QMR_for_WISE(
                                     patch_grid,
-                                    P_arr=[[]],
+                                    P_arr=[[], []],
                                     k=wiseArch.k,
-                                    BT=[reduced_bt],
+                                    BT=[{}, reduced_bt],
                                     active_ions=None,
                                     wB_col=0,
                                     wB_row=0,
-                                    full_P_arr=[[]],
+                                    full_P_arr=[[], []],
                                     ignore_initial_reconfig=False,
-                                    base_pmax_in=base_pmax_in,
+                                    base_pmax_in=_rebuild_pmax,
                                     prev_pmax=None,
                                     grid_origin=(r0, c0),
                                     boundary_adjacent=boundary_adjacent,
@@ -1551,6 +1474,9 @@ def _rebuild_schedule_for_layout(
                                     parent_stop_event=stop_event,
                                     progress_callback=progress_callback,
                                     max_inner_workers=max_inner_workers,
+                                    max_sat_time=max_sat_time,
+                                    max_rc2_time=max_rc2_time,
+                                    skip_bt_check_c=True,
                                 )
                             except NoFeasibleLayoutError:
                                 logger.info(
@@ -1569,8 +1495,10 @@ def _rebuild_schedule_for_layout(
                             )
                             continue
 
-                # Update the global layout snapshot with this patch's result.
-                layouts_after_local[0][r0:r1, c0:c1] = patch_layouts[0]
+                # Update the global layout snapshot with this patch's
+                # result.  patch_layouts[-1] is the layout after the
+                # final (and only) round, incorporating the BT[0] pins.
+                layouts_after_local[0][r0:r1, c0:c1] = patch_layouts[-1]
                 patch_schedules_this_tiling.append(patch_schedule)
 
             cycle_total_pins += tiling_pins
@@ -1586,7 +1514,16 @@ def _rebuild_schedule_for_layout(
 
             # Merge patch schedules into a single global schedule for this tiling.
             merged_schedule_all_rounds = _merge_patch_schedules(patch_schedules_this_tiling, R)
-            merged_schedule_round0 = merged_schedule_all_rounds[0] if merged_schedule_all_rounds else []
+
+            # Flatten all rounds into a single pass-dict list.
+            # R=2 produces [round0_passes, round1_passes]; the hardware
+            # execution layer (_runOddEvenReconfig) iterates a flat list
+            # of {"phase": "H"|"V", "h_swaps": [...], "v_swaps": [...]}
+            # dicts, so concatenation is fully compatible.
+            merged_schedule_flat: List[Dict[str, Any]] = []
+            for _mr in range(R):
+                if _mr < len(merged_schedule_all_rounds):
+                    merged_schedule_flat.extend(merged_schedule_all_rounds[_mr])
 
             # ── Replay verification ──────────────────────────────
             # Verify the merged schedule actually produces the expected
@@ -1594,7 +1531,7 @@ def _rebuild_schedule_for_layout(
             # If they diverge, use the replay result (which is guaranteed
             # self-consistent with the schedule) so that downstream
             # execution never encounters a layout/schedule mismatch.
-            replay_result = _simulate_schedule_replay(current_layout, merged_schedule_round0)
+            replay_result = _simulate_schedule_replay(current_layout, merged_schedule_flat)
             if not np.array_equal(replay_result, layouts_after_local[0]):
                 diff_count = int(np.count_nonzero(replay_result != layouts_after_local[0]))
                 logger.warning(
@@ -1607,7 +1544,7 @@ def _rebuild_schedule_for_layout(
 
             current_layout = layouts_after_local[0]
             snapshots.append(
-                (current_layout.copy(), merged_schedule_round0, [])
+                (current_layout.copy(), merged_schedule_flat, [])
             )
 
         mismatch_after = int(np.count_nonzero(current_layout != target_layout))
@@ -1630,55 +1567,72 @@ def _rebuild_schedule_for_layout(
             )
             break
 
-        # If mismatch is not strictly decreasing, grow patches and retry.
-        # Only stop if the patch already covers the full grid (nowhere to expand).
+        # If mismatch is not strictly decreasing, check whether to stop.
+        # Behaviour matches _patch_and_route:
+        #   inc == 0  → break after 1 no-progress cycle (fixed patches)
+        #   inc >  0  → allow growth to expand patches; break only
+        #               when fully_global or max_cycles exceeded
         fully_global = (patch_h >= n_rows) and (patch_w >= n_cols)
         if mismatch_after >= mismatch_before:
+            _plateau_count += 1
             if fully_global:
-                if not _pin_reduction_mode:
-                    # Before giving up, retry with reduced BT pins.
-                    # This gives the solver routing slack through
-                    # unpinned cells.
-                    _pin_reduction_mode = True
-                    logger.info(
-                        "%s schedule-only rebuild: stalled with full-grid patch "
-                        "in cycle %d (mismatch %d -> %d); enabling pin "
-                        "reduction mode and retrying.",
-                        PATCH_LOG_PREFIX,
-                        cycle_idx,
-                        mismatch_before,
-                        mismatch_after,
-                    )
-                    # Don't break — continue to next cycle with reduced pins
-                else:
-                    logger.info(
-                        "%s schedule-only rebuild: no improvement with full-grid "
-                        "patch + pin reduction in cycle %d (mismatch %d -> %d); "
-                        "stopping.",
-                        PATCH_LOG_PREFIX,
-                        cycle_idx,
-                        mismatch_before,
-                        mismatch_after,
-                    )
-                    break
-            else:
                 logger.info(
-                    "%s schedule-only rebuild: plateau in cycle %d "
-                    "(mismatch %d -> %d); growing patches.",
+                    "%s schedule-only rebuild: no improvement with full-grid "
+                    "patch in cycle %d (mismatch %d -> %d); stopping.",
                     PATCH_LOG_PREFIX,
                     cycle_idx,
                     mismatch_before,
                     mismatch_after,
                 )
+                break
+            elif inc == 0 and _plateau_count >= 1:
+                # Fixed patch size (inc=0): retrying identical patches
+                # is futile — break immediately (matching _patch_and_route).
+                logger.info(
+                    "%s schedule-only rebuild: no progress with inc=0 "
+                    "in cycle %d (mismatch %d -> %d, patch %dx%d); "
+                    "breaking — retrying identical config is futile.",
+                    PATCH_LOG_PREFIX,
+                    cycle_idx,
+                    mismatch_before,
+                    mismatch_after,
+                    patch_h,
+                    patch_w,
+                )
+                break
+            else:
+                logger.info(
+                    "%s schedule-only rebuild: plateau in cycle %d "
+                    "(mismatch %d -> %d, plateau_count=%d, inc=%d); "
+                    "growing patches and retrying.",
+                    PATCH_LOG_PREFIX,
+                    cycle_idx,
+                    mismatch_before,
+                    mismatch_after,
+                    _plateau_count,
+                    inc,
+                )
+        else:
+            # Progress was made — reset the plateau counter.
+            _plateau_count = 0
 
         prev_mismatch = mismatch_after
-        # Grow patches towards full grid; k-align column width
-        patch_h = min(patch_h + 1, n_rows)
-        new_w = patch_w + max(1, wiseArch.k)
-        # Round up to k boundary for WISE compatibility
-        if new_w % wiseArch.k != 0:
-            new_w = ((new_w // wiseArch.k) + 1) * wiseArch.k
-        patch_w = min(new_w, n_cols)
+
+        # ── Patch growth (matching _patch_and_route) ────────────
+        # When inc > 0, grow patches each cycle so that larger SAT
+        # windows can resolve cross-boundary permutations that small
+        # patches cannot.  This is the designed convergence mechanism:
+        # start small (fast SAT) and grow only as needed.
+        if inc > 0:
+            n_c += max(inc, min(n_c, wiseArch.k))
+            n_r += inc
+            # Re-apply k-compatibility adjustment after growth
+            if n_c < wiseArch.k and (wiseArch.k % n_c != 0):
+                n_c += int(np.mod(wiseArch.k, n_c))
+            elif n_c > wiseArch.k and (n_c % wiseArch.k != 0):
+                n_c = (n_c // wiseArch.k) * wiseArch.k
+            patch_w = min(n_c, n_cols)
+            patch_h = min(n_r, n_rows)
 
     if not np.array_equal(current_layout, target_layout):
         mismatch_remaining = int(np.count_nonzero(current_layout != target_layout))
@@ -1730,7 +1684,7 @@ def _rebuild_schedule_for_layout(
                         np.array(current_layout, copy=True),
                         wiseArch,
                         np.array(target_layout, copy=True),
-                        subgridsize=(n_rows, n_cols, 1),  # full grid
+                        subgridsize=subgridsize,  # keep small patches (DO NOT use full grid)
                         base_pmax_in=_esc_pmax,
                         stop_event=stop_event,
                         progress_callback=progress_callback,
@@ -1738,6 +1692,8 @@ def _rebuild_schedule_for_layout(
                         # Use heuristic fallback so the recursive call
                         # does NOT itself recurse into escalation again.
                         allow_heuristic_fallback=True,
+                        max_sat_time=max_sat_time,
+                        max_rc2_time=max_rc2_time,
                     )
                 except Exception as _esc_exc:
                     logger.warning(
@@ -1763,19 +1719,22 @@ def _rebuild_schedule_for_layout(
                             return snapshots
                         else:
                             # Recursive call fell through to heuristic.
-                            # If the layout matches, accept it but keep
-                            # trying for a SAT-only solution at higher
-                            # pmax.  Update current_layout so the next
-                            # attempt starts from a closer position.
+                            # The heuristic (odd-even transposition)
+                            # always produces the exact target for any
+                            # valid permutation, so this is correct.
+                            # Accept it immediately — SAT at higher
+                            # pmax is unlikely to converge if it didn't
+                            # at the current full-grid pmax, and each
+                            # attempt is very expensive.
                             logger.info(
                                 "%s escalation attempt %d reached "
-                                "target via heuristic; trying higher "
-                                "pmax for SAT solution.",
+                                "target via heuristic; accepting "
+                                "(heuristic is guaranteed correct for "
+                                "any permutation).",
                                 PATCH_LOG_PREFIX, _esc_attempt + 1,
                             )
-                            # We can use this as a fallback if no SAT
-                            # solution is found at any pmax.
-                            _best_heuristic_snaps = _esc_snaps
+                            snapshots.extend(_esc_snaps)
+                            return snapshots
                     else:
                         # Partial progress — update starting layout
                         snapshots.extend(_esc_snaps)
@@ -1811,9 +1770,7 @@ def _rebuild_schedule_for_layout(
                     f"cells mismatched after {len(snapshots)} cycle(s)."
                 )
 
-            # Ion sets match → heuristic is safe.  Prefer any
-            # heuristic snapshot found during escalation; otherwise
-            # create a new one.
+            # Ion sets match → heuristic is safe.
             logger.warning(
                 "%s SAT routing exhausted all strategies "
                 "(%d/%d cells still mismatched, %d cycle(s), "
@@ -1828,12 +1785,6 @@ def _rebuild_schedule_for_layout(
                 _escalation_pmax,
                 _esc_pmax,
             )
-            try:
-                if _best_heuristic_snaps:
-                    snapshots.extend(_best_heuristic_snaps)
-                    return snapshots
-            except NameError:
-                pass
             snapshots.append(
                 (target_layout.copy(), None, [])
             )
@@ -2191,6 +2142,8 @@ def _route_round_sequence(
     max_inner_workers: Optional[int] = None,
     initial_BTs: Optional[List] = None,
     replay_level: int = 1,
+    max_sat_time: Optional[float] = None,
+    max_rc2_time: Optional[float] = None,
 ) -> Tuple[List[RoutingStep], np.ndarray]:
     """Pure-array routing engine extracted from ``ionRoutingWISEArch``.
 
@@ -2361,6 +2314,8 @@ def _route_round_sequence(
                     stop_event=stop_event,
                     progress_callback=progress_callback,
                     max_inner_workers=max_inner_workers,
+                    max_sat_time=max_sat_time,
+                    max_rc2_time=max_rc2_time,
                 )
                 if len(cache_for_block) < BLOCK_LEN:
                     cache_for_block[blk_idx] = deepcopy(tiling_steps_meta)
@@ -2478,6 +2433,8 @@ def _route_round_sequence(
                         stop_event=stop_event,
                         progress_callback=progress_callback,
                         max_inner_workers=max_inner_workers,
+                        max_sat_time=max_sat_time,
+                        max_rc2_time=max_rc2_time,
                     )
                     tiling_steps = [snapshot for (_cy, _ti, snapshot) in tiling_steps_meta]
                 if not tiling_steps:
@@ -2802,6 +2759,32 @@ def ionRoutingWISEArch(
     )
     newArrangementArr = np.zeros_like(oldArrangementArr)
 
+    # ------------------------------------------------------------------
+    # Resolve routing_config overrides
+    # ------------------------------------------------------------------
+    # subgridsize=None → full grid (no patching)
+    if subgridsize is None:
+        subgridsize = (wiseArch.m * wiseArch.k, wiseArch.n, 1)
+
+    # sat_workers → max_inner_workers
+    if max_inner_workers is None and routing_config is not None:
+        _cfg_workers = getattr(routing_config, 'sat_workers', None)
+        if _cfg_workers is not None:
+            max_inner_workers = _cfg_workers
+
+    # timeout_seconds → max_sat_time / max_rc2_time
+    _max_sat_time: Optional[float] = None
+    _max_rc2_time: Optional[float] = None
+    if routing_config is not None:
+        _sp = getattr(routing_config, 'solver_params', None)
+        if _sp is not None:
+            _max_sat_time = getattr(_sp, 'max_sat_time', None)
+            _max_rc2_time = getattr(_sp, 'max_rc2_time', None)
+        if _max_sat_time is None:
+            _max_sat_time = getattr(routing_config, 'timeout_seconds', None)
+        if _max_rc2_time is None:
+            _max_rc2_time = _max_sat_time
+
     logger.info(
         "%s ionRoutingWISEArch: ops=%d, MS_rounds=%d, lookahead=%d, subgrid=(%d,%d,%d), active_ions=%d",
         PATCH_LOG_PREFIX,
@@ -2871,6 +2854,8 @@ def ionRoutingWISEArch(
             stop_event=stop_event,
             progress_callback=routing_config.progress_callback if routing_config else None,
             max_inner_workers=max_inner_workers,
+            max_sat_time=_max_sat_time,
+            max_rc2_time=_max_rc2_time,
         )
 
     reconfigTime = 0.0
@@ -3428,21 +3413,58 @@ def ionRoutingWISEArch(
         # cascade, cache replay on drifted layout).
         _step_schedule = first_step.schedule
         _step_target = first_step.layout_after
-        _is_ms_context = False  # default; set inside rebuild block
-        _rebuild_approved_heuristic = False  # FM3: set when rebuild verified heuristic is safe
+        _is_ms_context = (first_step.reconfig_context == "ms_gate")
         if not np.array_equal(oldArrangementArr, _step_target):
-            # Decide whether we need to rebuild the schedule.
-            # Rebuild is needed when schedule is None (dropped by
-            # _merge_block_routing_steps Fix 15) or when replay
-            # doesn't produce the target layout.
-            _needs_rebuild = _step_schedule is None
-            if not _needs_rebuild:
-                _replay = _simulate_schedule_replay(
-                    oldArrangementArr, _step_schedule,
-                )
-                _needs_rebuild = not np.array_equal(
-                    _replay, _step_target,
-                )
+            # ── Intentionally-heuristic steps (Fix 18) ──────────
+            # When use_heuristic_directly produced a RoutingStep with
+            # schedule=None for non-MS contexts (return_round,
+            # cache_replay), this is intentional — the downstream
+            # _apply_layout_as_reconfiguration handles None by using
+            # the heuristic odd-even transposition sort.  Do NOT
+            # trigger a SAT rebuild for these steps.
+            if not _is_ms_context:
+                # ── Non-MS contexts: avoid SAT rebuilds (Fix 19) ──
+                # For return_round, cache_replay, transition contexts,
+                # never trigger an expensive SAT rebuild.  If the
+                # schedule is None (intentional heuristic from Fix 18)
+                # or if the cached schedule doesn't replay to the
+                # correct target (layout drift from execution), drop
+                # the schedule and let the downstream heuristic
+                # odd-even transposition sort handle it.
+                if _step_schedule is not None:
+                    _replay = _simulate_schedule_replay(
+                        oldArrangementArr, _step_schedule,
+                    )
+                    if not np.array_equal(_replay, _step_target):
+                        logger.info(
+                            "%s ms_round=%d: non-MS step "
+                            "(context=%s) schedule replay mismatch "
+                            "— dropping schedule, using heuristic "
+                            "instead of SAT rebuild (Fix 19)",
+                            PATCH_LOG_PREFIX, ms_round_idx,
+                            first_step.reconfig_context,
+                        )
+                        _step_schedule = None
+                else:
+                    logger.info(
+                        "%s ms_round=%d: intentionally heuristic "
+                        "step (context=%s, schedule=None) — "
+                        "skipping SAT rebuild",
+                        PATCH_LOG_PREFIX, ms_round_idx,
+                        first_step.reconfig_context,
+                    )
+                _needs_rebuild = False
+            else:
+                # MS-gate context: must rebuild if schedule is
+                # missing or replay doesn't match target.
+                _needs_rebuild = _step_schedule is None
+                if not _needs_rebuild:
+                    _replay = _simulate_schedule_replay(
+                        oldArrangementArr, _step_schedule,
+                    )
+                    _needs_rebuild = not np.array_equal(
+                        _replay, _step_target,
+                    )
             if _needs_rebuild:
                 if _step_schedule is not None:
                     _pf_diff = int(np.sum(_replay != _step_target))
@@ -3462,15 +3484,25 @@ def ionRoutingWISEArch(
                 )
                 # Also log layout_before from planning for diagnostics
                 if first_step.layout_before is not None:
-                    _lb_diff = int(np.sum(
-                        oldArrangementArr != first_step.layout_before
-                    ))
-                    if _lb_diff:
+                    if first_step.layout_before.shape == oldArrangementArr.shape:
+                        _lb_diff = int(np.sum(
+                            oldArrangementArr != first_step.layout_before
+                        ))
+                        if _lb_diff:
+                            logger.warning(
+                                "%s ms_round=%d: planning layout_before "
+                                "differs from execution oldArrangementArr "
+                                "by %d cells",
+                                PATCH_LOG_PREFIX, ms_round_idx, _lb_diff,
+                            )
+                    else:
                         logger.warning(
                             "%s ms_round=%d: planning layout_before "
-                            "differs from execution oldArrangementArr "
-                            "by %d cells",
-                            PATCH_LOG_PREFIX, ms_round_idx, _lb_diff,
+                            "shape %s differs from oldArrangementArr "
+                            "shape %s (sub-block route?)",
+                            PATCH_LOG_PREFIX, ms_round_idx,
+                            first_step.layout_before.shape,
+                            oldArrangementArr.shape,
                         )
                 # Rebuild via SAT from actual starting layout.
                 # ── HEURISTIC FALLBACK POLICY (DO NOT MODIFY) ────
@@ -3495,6 +3527,8 @@ def ionRoutingWISEArch(
                         progress_callback=_progress_callback,
                         max_inner_workers=max_inner_workers,
                         allow_heuristic_fallback=_allow_heuristic,
+                        max_sat_time=_max_sat_time,
+                        max_rc2_time=_max_rc2_time,
                     )
                 except Exception as _rb_exc:
                     logger.error(
@@ -3555,11 +3589,6 @@ def ionRoutingWISEArch(
                         PATCH_LOG_PREFIX, ms_round_idx,
                         len(_rb_snaps),
                     )
-                    # FM3: If rebuild returned heuristic (schedule=None),
-                    # the rebuild has already verified ion sets match and
-                    # heuristic is safe.  Skip the SAT-only guard below.
-                    if _step_schedule is None:
-                        _rebuild_approved_heuristic = True
                 else:
                     logger.error(
                         "%s ms_round=%d: schedule rebuild returned 0 "
@@ -3580,14 +3609,9 @@ def ionRoutingWISEArch(
             # this is an MS-gate reconfig (not cache_replay or
             # return_round), escalate with increasing pmax.
             #
-            # FM3: Skip guard when _rebuild_approved_heuristic is set.
-            # The rebuild already verified that ion sets match and
-            # heuristic is mathematically guaranteed to produce the
-            # exact target layout.
             if (
                 _is_ms_context
                 and _step_schedule is None
-                and not _rebuild_approved_heuristic
                 and not np.array_equal(oldArrangementArr, _step_target)
             ):
                 _escalated = _escalate_sat_for_ms_reconfig(
@@ -3597,6 +3621,8 @@ def ionRoutingWISEArch(
                     stop_event=stop_event,
                     progress_callback=_progress_callback,
                     max_inner_workers=max_inner_workers,
+                    max_sat_time=_max_sat_time,
+                    max_rc2_time=_max_rc2_time,
                 )
                 if _escalated:
                     # Apply intermediate cycles, keep last as schedule
@@ -3646,35 +3672,13 @@ def ionRoutingWISEArch(
                         len(_escalated),
                     )
                 else:
-                    # FM3: Ion-set check before raising — if ion sets
-                    # match, heuristic is safe as absolute last resort.
-                    _esc_cur_ions = set(oldArrangementArr.flatten()) - {0}
-                    _esc_tgt_ions = set(_step_target.flatten()) - {0}
-                    if _esc_cur_ions == _esc_tgt_ions:
-                        logger.warning(
-                            "%s ms_round=%d: SAT escalation failed "
-                            "but ion sets MATCH — using heuristic "
-                            "as absolute last resort (diff=%d/%d).",
-                            PATCH_LOG_PREFIX, ms_round_idx,
-                            int(np.sum(oldArrangementArr != _step_target)),
-                            oldArrangementArr.size,
-                        )
-                        _step_schedule = None
-                        _rebuild_approved_heuristic = True
-                    else:
-                        _esc_missing = _esc_tgt_ions - _esc_cur_ions
-                        _esc_extra = _esc_cur_ions - _esc_tgt_ions
-                        raise ValueError(
-                            f"[WISE Routing] Cannot produce SAT "
-                            f"schedule for MS-gate reconfig at "
-                            f"ms_round={ms_round_idx} and ion sets "
-                            f"DIFFER (missing={sorted(_esc_missing)}, "
-                            f"extra={sorted(_esc_extra)}).  "
-                            f"diff={int(np.sum(oldArrangementArr != _step_target))}"
-                            f"/{oldArrangementArr.size} cells.  "
-                            f"This indicates ion reconciliation "
-                            f"corruption."
-                        )
+                    raise ValueError(
+                        f"[WISE Routing] Cannot produce SAT "
+                        f"schedule for MS-gate reconfig at "
+                        f"ms_round={ms_round_idx}; "
+                        f"diff={int(np.sum(oldArrangementArr != _step_target))}"
+                        f"/{oldArrangementArr.size} cells."
+                    )
 
         # INV-E1: No-op reconfig elision — skip reconfig when the
         # target layout is identical to the current layout.
@@ -3763,14 +3767,48 @@ def ionRoutingWISEArch(
                 subsequent_step.reconfig_context == "ms_gate"
             )
             if not np.array_equal(oldArrangementArr, _sub_target):
-                _sub_needs_rebuild = _sub_schedule is None
-                if not _sub_needs_rebuild:
-                    _sub_replay = _simulate_schedule_replay(
-                        oldArrangementArr, _sub_schedule,
-                    )
-                    _sub_needs_rebuild = not np.array_equal(
-                        _sub_replay, _sub_target,
-                    )
+                # ── Fix 18b: skip SAT for intentionally-heuristic
+                # subsequent steps (same logic as Fix 18 above). ──
+                if not _sub_is_ms:
+                    # ── Fix 19b: same as Fix 19 for subsequent
+                    # steps.  Non-MS → drop bad schedule, use
+                    # heuristic instead of SAT rebuild. ──
+                    if _sub_schedule is not None:
+                        _sub_replay = _simulate_schedule_replay(
+                            oldArrangementArr, _sub_schedule,
+                        )
+                        if not np.array_equal(
+                            _sub_replay, _sub_target,
+                        ):
+                            logger.info(
+                                "%s ms_round=%d sub=%d: non-MS "
+                                "step (context=%s) schedule "
+                                "replay mismatch — dropping "
+                                "schedule, using heuristic "
+                                "(Fix 19b)",
+                                PATCH_LOG_PREFIX, ms_round_idx,
+                                sub_idx,
+                                subsequent_step.reconfig_context,
+                            )
+                            _sub_schedule = None
+                    else:
+                        logger.info(
+                            "%s ms_round=%d sub=%d: intentionally "
+                            "heuristic step (context=%s, "
+                            "schedule=None) — skipping SAT",
+                            PATCH_LOG_PREFIX, ms_round_idx, sub_idx,
+                            subsequent_step.reconfig_context,
+                        )
+                    _sub_needs_rebuild = False
+                else:
+                    _sub_needs_rebuild = _sub_schedule is None
+                    if not _sub_needs_rebuild:
+                        _sub_replay = _simulate_schedule_replay(
+                            oldArrangementArr, _sub_schedule,
+                        )
+                        _sub_needs_rebuild = not np.array_equal(
+                            _sub_replay, _sub_target,
+                        )
                 if _sub_needs_rebuild:
                     if _sub_schedule is not None:
                         _sub_pf_diff = int(
@@ -3805,6 +3843,8 @@ def ionRoutingWISEArch(
                             stop_event=stop_event,
                             max_inner_workers=max_inner_workers,
                             allow_heuristic_fallback=_sub_allow_heuristic,
+                            max_sat_time=_max_sat_time,
+                            max_rc2_time=_max_rc2_time,
                         )
                     except Exception as _sub_exc:
                         logger.error(
@@ -3856,6 +3896,8 @@ def ionRoutingWISEArch(
                     stop_event=stop_event,
                     progress_callback=_progress_callback,
                     max_inner_workers=max_inner_workers,
+                    max_sat_time=_max_sat_time,
+                    max_rc2_time=_max_rc2_time,
                 )
                 if _sub_escalated:
                     for _se_layout, _se_sched, _ in _sub_escalated[:-1]:
@@ -4167,6 +4209,13 @@ def _merge_block_routing_steps(
     block_sub_grids: Dict[str, "BlockSubGrid"],
     base_layout: np.ndarray,
     k: int,
+    wiseArch: Optional[Any] = None,
+    subgridsize: Optional[Tuple[int, int, int]] = None,
+    base_pmax_in: Optional[int] = None,
+    stop_event: Optional[Any] = None,
+    max_inner_workers: int | None = None,
+    max_sat_time: Optional[float] = None,
+    max_rc2_time: Optional[float] = None,
 ) -> Tuple[List[RoutingStep], np.ndarray]:
     """Merge per-block ``RoutingStep`` lists into global-grid steps.
 
@@ -4186,6 +4235,20 @@ def _merge_block_routing_steps(
         Global layout before this set of steps.
     k : int
         Ions per trap.
+    wiseArch : QCCDWiseArch, optional
+        Architecture object (needed for immediate schedule rebuild).
+    subgridsize : tuple, optional
+        Sub-grid size for SAT solver.
+    base_pmax_in : int, optional
+        Base P_max for SAT solver.
+    stop_event : optional
+        Stop event for cancellation.
+    max_inner_workers : int, optional
+        Max inner workers for SAT pool.
+    max_sat_time : float, optional
+        Max SAT solve time.
+    max_rc2_time : float, optional
+        Max RC2 solve time.
 
     Returns
     -------
@@ -4362,6 +4425,35 @@ def _merge_block_routing_steps(
                         PATCH_LOG_PREFIX, _mi,
                     )
 
+        # ── Ion conservation assertion (post-repair) ─────────────
+        # After Fix C repair (or when no repair was needed), the
+        # merged layout MUST have the exact same set of non-zero ion
+        # IDs as current_global.  If not, it indicates a bug in the
+        # merge or repair logic that would cascade into layout drift.
+        _post_old_ions = set(int(v) for v in current_global.flatten() if int(v) != 0)
+        _post_new_ions = set(
+            int(v) for v in merged_layout.flatten() if int(v) != 0
+        )
+        if _post_old_ions != _post_new_ions:
+            _post_missing = _post_old_ions - _post_new_ions
+            _post_extra = _post_new_ions - _post_old_ions
+            # Also check for duplicates post-repair
+            _post_flat = merged_layout.flatten()
+            _post_counts = _Counter(
+                int(v) for v in _post_flat if int(v) != 0
+            )
+            _post_dups = {
+                ion for ion, cnt in _post_counts.items() if cnt > 1
+            }
+            logger.error(
+                "%s _merge_block_routing_steps step=%d: ION CONSERVATION "
+                "VIOLATED after repair! missing=%s, extra=%s, "
+                "duplicates=%s",
+                PATCH_LOG_PREFIX, step_idx,
+                sorted(_post_missing), sorted(_post_extra),
+                sorted(_post_dups),
+            )
+
         # ── Fix B: Post-merge schedule verification ──────────────
         # Replay the merged schedule on current_global and compare
         # with merged_layout.  If they don't match, drop the
@@ -4395,6 +4487,80 @@ def _merge_block_routing_steps(
             )
             merged_schedule = None
             _merged_reconfig_context = "cache_replay"
+
+        # ── Fix 17: Immediate schedule rebuild ──────────────────
+        # When the merged schedule is dropped (due to ion conservation
+        # repair or replay mismatch), rebuild it immediately during
+        # planning instead of deferring to execution-time SAT.
+        # This is the ROOT CAUSE fix: without this, dropped schedules
+        # flow through ChainVerify (which may fail) and then trigger
+        # expensive SAT rebuilds at execution time.
+        if (
+            merged_schedule is None
+            and wiseArch is not None
+            and not np.array_equal(current_global, merged_layout)
+        ):
+            _fix17_subgridsize = subgridsize or (
+                wiseArch.m * wiseArch.k, wiseArch.n, 1,
+            )
+            _fix17_pmax = base_pmax_in or max(
+                wiseArch.n, wiseArch.m * wiseArch.k,
+            )
+            try:
+                _rb_snaps = _rebuild_schedule_for_layout(
+                    current_global.copy(),
+                    wiseArch,
+                    merged_layout.copy(),
+                    subgridsize=_fix17_subgridsize,
+                    base_pmax_in=_fix17_pmax,
+                    stop_event=stop_event,
+                    max_inner_workers=max_inner_workers,
+                    allow_heuristic_fallback=True,
+                    max_sat_time=max_sat_time,
+                    max_rc2_time=max_rc2_time,
+                )
+            except Exception as _rb_exc:
+                logger.warning(
+                    "%s _merge step=%d: Fix 17 immediate rebuild "
+                    "failed: %s",
+                    PATCH_LOG_PREFIX, step_idx, _rb_exc,
+                )
+                _rb_snaps = []
+
+            if _rb_snaps:
+                _rb_last_layout, _rb_last_sched, _ = _rb_snaps[-1]
+                if _rb_last_sched is not None:
+                    # Verify rebuilt schedule
+                    _rb_verify = _simulate_schedule_replay(
+                        current_global, _rb_last_sched,
+                    )
+                    if np.array_equal(_rb_verify, merged_layout):
+                        merged_schedule = _rb_last_sched
+                        _merged_reconfig_context = "ms_gate"
+                        logger.info(
+                            "%s _merge step=%d: Fix 17 rebuild OK "
+                            "(%d SAT cycle(s))",
+                            PATCH_LOG_PREFIX, step_idx, len(_rb_snaps),
+                        )
+                    elif np.array_equal(_rb_verify, _rb_last_layout):
+                        # SAT converged to a different layout — use it
+                        merged_schedule = _rb_last_sched
+                        merged_layout = np.array(
+                            _rb_last_layout, copy=True,
+                        )
+                        _merged_reconfig_context = "ms_gate"
+                        logger.info(
+                            "%s _merge step=%d: Fix 17 rebuild "
+                            "converged to different layout "
+                            "(%d SAT cycle(s))",
+                            PATCH_LOG_PREFIX, step_idx, len(_rb_snaps),
+                        )
+                    else:
+                        logger.warning(
+                            "%s _merge step=%d: Fix 17 rebuild "
+                            "schedule doesn't match any target",
+                            PATCH_LOG_PREFIX, step_idx,
+                        )
 
         merged_steps.append(RoutingStep(
             layout_after=merged_layout,
@@ -4569,6 +4735,32 @@ def ionRoutingGadgetArch(
         arch, wiseArch,
     )
     active_ions_set = set(active_ions)
+
+    # ------------------------------------------------------------------
+    # Resolve routing_config overrides
+    # ------------------------------------------------------------------
+    # subgridsize=None → full grid (no patching)
+    if subgridsize is None:
+        subgridsize = (wiseArch.m * wiseArch.k, wiseArch.n, 1)
+
+    # sat_workers → max_inner_workers
+    if max_inner_workers is None and routing_config is not None:
+        _cfg_workers = getattr(routing_config, 'sat_workers', None)
+        if _cfg_workers is not None:
+            max_inner_workers = _cfg_workers
+
+    # timeout_seconds → max_sat_time / max_rc2_time
+    _max_sat_time: Optional[float] = None
+    _max_rc2_time: Optional[float] = None
+    if routing_config is not None:
+        _sp = getattr(routing_config, 'solver_params', None)
+        if _sp is not None:
+            _max_sat_time = getattr(_sp, 'max_sat_time', None)
+            _max_rc2_time = getattr(_sp, 'max_rc2_time', None)
+        if _max_sat_time is None:
+            _max_sat_time = getattr(routing_config, 'timeout_seconds', None)
+        if _max_rc2_time is None:
+            _max_rc2_time = _max_sat_time
 
     # ------------------------------------------------------------------
     # 1) Determine phase boundaries from qec_metadata.phases
@@ -4935,6 +5127,8 @@ def ionRoutingGadgetArch(
             routing_config.heuristic_fallback_for_noncache if routing_config else False
         ),
         progress_callback=routing_config.progress_callback if routing_config else None,
+        max_sat_time=_max_sat_time,
+        max_rc2_time=_max_rc2_time,
     )
 
     # ------------------------------------------------------------------
