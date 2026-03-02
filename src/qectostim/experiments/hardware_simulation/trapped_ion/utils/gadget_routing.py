@@ -3200,7 +3200,7 @@ def route_full_experiment_as_steps(
         # reconfig must explicitly permute ions to distant targets.
         # Scale pmax with grid dimensions so ions can traverse the
         # full grid span in a single SAT cycle.
-        _transition_pmax = max(base_pmax_in or 1, n, m * k // 2, 3)
+        _transition_pmax = max(base_pmax_in or 1, n, m * k, 3)
         _transition_skipped = False
         # Primary: per-block or full-grid SAT transition reconfig.
         # If this fails, try the simpler return-reconfig SAT approach.
@@ -3225,6 +3225,10 @@ def route_full_experiment_as_steps(
                     max_inner_workers=max_inner_workers,
                     stop_event=stop_event,
                     progress_callback=_phase_cb,
+                    # ── HEURISTIC FALLBACK POLICY (DO NOT MODIFY) ──
+                    # Only allowed if user explicitly set the flag.
+                    # Do NOT relax this to always-True.
+                    # ───────────────────────────────────────────────
                     allow_heuristic_fallback=(
                         heuristic_route_back
                         or heuristic_fallback_for_noncache
@@ -3244,6 +3248,9 @@ def route_full_experiment_as_steps(
                     stop_event=stop_event,
                     max_inner_workers=max_inner_workers,
                     progress_callback=_phase_cb,
+                    # ── HEURISTIC FALLBACK POLICY (DO NOT MODIFY) ──
+                    # Only allowed if user explicitly set the flag.
+                    # ───────────────────────────────────────────────
                     allow_heuristic_fallback=(
                         heuristic_route_back
                         or heuristic_fallback_for_noncache

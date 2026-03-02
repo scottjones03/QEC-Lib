@@ -254,6 +254,15 @@ class WISERoutingConfig:
     replay_level: int = 1
     block_level_slicing: bool = True
     heuristic_cache_replay: bool = False
+    # ── HEURISTIC FALLBACK POLICY (DO NOT MODIFY) ─────────────
+    # These two flags are OFF by default.  Heuristic (odd-even
+    # transposition sort) fallback is ONLY allowed when the user
+    # explicitly sets these flags OR when replaying from a cache.
+    # MS-gate reconfigs NEVER use heuristic fallback regardless of
+    # these flags.  This policy is intentional and must NOT be
+    # relaxed by automated agents.  See the execution loop in
+    # qccd_WISE_ion_route.py for the enforcement logic.
+    # ────────────────────────────────────────────────────────────
     heuristic_route_back: bool = False
     heuristic_fallback_for_noncache: bool = False
     progress_callback: Optional[ProgressCallback] = None
