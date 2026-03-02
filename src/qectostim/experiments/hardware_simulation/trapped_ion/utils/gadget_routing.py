@@ -950,6 +950,7 @@ def _compute_return_reconfig(
     stop_event=None,
     max_inner_workers=None,
     progress_callback=None,
+    allow_heuristic_fallback: bool = False,
 ) -> list:
     """Compute return-round reconfiguration as a **separate** SAT call.
 
@@ -1002,6 +1003,7 @@ def _compute_return_reconfig(
         "(%d non-matching cells)",
         int(np.sum(final_layout != target_layout)),
     )
+    # Route-back / cache-replay context: heuristic fallback is acceptable.
     # If SAT cannot fully converge, _rebuild_schedule_for_layout
     # appends a final snapshot with schedule=None, which causes
     # physicalOperation to use the heuristic odd-even sort instead.
@@ -1014,6 +1016,7 @@ def _compute_return_reconfig(
         stop_event=stop_event,
         max_inner_workers=max_inner_workers or 1,
         progress_callback=progress_callback,
+        allow_heuristic_fallback=allow_heuristic_fallback,
     )
 
     steps = []
@@ -1028,6 +1031,7 @@ def _compute_return_reconfig(
             can_merge_with_next=False,
             is_initial_placement=False,
             is_layout_transition=True,
+            reconfig_context="return_round",
         ))
     return steps
 
@@ -2190,24 +2194,55 @@ def _reconstruct_ec_target(
 
     # 4. Place active ions at their EC-initial positions.
     #    If a spectator sits there, displace it.
-    displaced: list = []
+    #    Track which block the displaced spectator belongs to so we can
+    #    relocate it within its home block (FM4 fix).
+    displaced_with_home: list = []  # (ion_idx, home_block_name_or_None)
     for ion_idx, (tr, tc) in active_targets.items():
         occupant = int(target[tr, tc])
         if occupant != 0:
-            displaced.append(occupant)
+            home_block = ion_to_block.get(occupant)  # may be None for spectators
+            displaced_with_home.append((occupant, home_block))
             target[tr, tc] = 0
         target[tr, tc] = ion_idx
 
-    # 5. Relocate displaced spectators to any empty cell
-    for spec_ion in displaced:
-        for r in range(target.shape[0]):
-            for c in range(target.shape[1]):
-                if target[r, c] == 0:
-                    target[r, c] = spec_ion
+    # 5. Relocate displaced spectators to empty cells IN THEIR HOME BLOCK.
+    #    This prevents spectators from being placed in foreign block
+    #    regions, which would make the target layout itself block-impure
+    #    and cause all downstream route-back to fail (FM4 root cause).
+    # Pre-build block → grid region lookup (ion-column coordinates)
+    _block_regions: Dict[str, Tuple[int, int, int, int]] = {}
+    for _bname, _sg in block_sub_grids.items():
+        _r0, _c0, _r1, _c1 = _sg.grid_region
+        _block_regions[_bname] = (_r0, _c0 * k, _r1, _c1 * k)
+
+    for spec_ion, home_block in displaced_with_home:
+        placed = False
+        # Try home block first (if the spectator is mapped to a block)
+        if home_block and home_block in _block_regions:
+            hr0, hc0, hr1, hc1 = _block_regions[home_block]
+            for r in range(hr0, hr1):
+                for c in range(hc0, hc1):
+                    if target[r, c] == 0:
+                        target[r, c] = spec_ion
+                        placed = True
+                        break
+                if placed:
                     break
-            else:
-                continue
-            break
+        if not placed:
+            # Unmapped spectator or no space in home block — any empty cell
+            for r in range(target.shape[0]):
+                for c in range(target.shape[1]):
+                    if target[r, c] == 0:
+                        target[r, c] = spec_ion
+                        placed = True
+                        break
+                if placed:
+                    break
+        if not placed:
+            raise ValueError(
+                f"_reconstruct_ec_target: no empty cell for displaced "
+                f"spectator ion {spec_ion} (home_block={home_block})"
+            )
 
     return target
 
@@ -2229,6 +2264,7 @@ def _compute_transition_reconfig_steps(
     max_inner_workers: int | None = None,
     stop_event: Any = None,
     progress_callback: Any = None,
+    allow_heuristic_fallback: bool = False,
 ) -> List:
     """Compute SAT-based transition reconfig from current to target layout.
 
@@ -2276,6 +2312,7 @@ def _compute_transition_reconfig_steps(
                 can_merge_with_next=False,
                 is_initial_placement=False,
                 is_layout_transition=True,
+                reconfig_context="cache_replay",
             ))
         return steps
 
@@ -2312,6 +2349,7 @@ def _compute_transition_reconfig_steps(
                 can_merge_with_next=False,
                 is_initial_placement=False,
                 is_layout_transition=True,
+                reconfig_context="cache_replay",
             )]
         merged_schedule = []
         for s in steps:
@@ -2327,6 +2365,7 @@ def _compute_transition_reconfig_steps(
             can_merge_with_next=False,
             is_initial_placement=False,
             is_layout_transition=True,
+            reconfig_context="cache_replay",
         )]
 
     # --- Check block purity ---
@@ -2351,64 +2390,31 @@ def _compute_transition_reconfig_steps(
         if not blocks_pure:
             break
 
-    if blocks_pure and len(block_sub_grids) > 1:
-        # --- Per-block spatial slicing ---
-        _logger.info(
-            "[TransitionReconfig] blocks pure, using per-block slicing "
-            "(%d blocks)", len(block_sub_grids),
-        )
+    # --- Always use full-grid routing for transitions ---
+    # Route-back should be batched across ALL blocks simultaneously
+    # on the full grid to minimise cost and coordinate ion movements
+    # at block boundaries. Per-block slicing is not used for route-back.
+    _logger.info(
+        "[TransitionReconfig] using full-grid batched routing across "
+        "all blocks (%d blocks, blocks_pure=%s)",
+        len(block_sub_grids), blocks_pure,
+    )
 
-        per_block_steps: Dict[str, List] = {}
-        for bname, sg in block_sub_grids.items():
-            r0, c0, r1, c1 = sg.grid_region
-            c0i, c1i = c0 * k, c1 * k
-            block_current = current_layout[r0:r1, c0i:c1i].copy()
-            block_target = target_layout[r0:r1, c0i:c1i].copy()
-
-            if np.array_equal(block_current, block_target):
-                per_block_steps[bname] = []
-                continue
-
-            block_rows, block_cols = block_current.shape
-            block_wise = _WA(n=block_rows, m=block_cols // k, k=k)
-
-            # If SAT cannot fully converge, fallback to heuristic sort.
-            snaps = _rebuild_schedule_for_layout(
-                block_current, block_wise, block_target,
-                subgridsize=subgridsize,
-                base_pmax_in=base_pmax_in,
-                stop_event=stop_event,
-                max_inner_workers=1,
-                progress_callback=progress_callback,
-            )
-            per_block_steps[bname] = _snapshots_to_steps(snaps)
-
-        # Merge per-block steps into global steps
-        merged, _ = _merge_block_routing_steps(
-            per_block_steps, block_sub_grids,
-            current_layout, k,
-        )
-        # Consolidate multiple transition steps into one reconfiguration
-        return _consolidate_transition_steps(list(merged))
-
-    else:
-        # --- Full-grid routing (blocks impure or single block) ---
-        _logger.info(
-            "[TransitionReconfig] blocks impure or single-block, "
-            "using full-grid routing via _rebuild_schedule_for_layout",
-        )
-
-        # If SAT cannot fully converge, fallback to heuristic sort.
-        snaps = _rebuild_schedule_for_layout(
-            current_layout.copy(), wiseArch, target_layout,
-            subgridsize=subgridsize,
-            base_pmax_in=base_pmax_in,
-            stop_event=stop_event,
-            max_inner_workers=max_inner_workers,
-            progress_callback=progress_callback,
-        )
-        # Consolidate multiple transition steps into one reconfiguration
-        return _consolidate_transition_steps(_snapshots_to_steps(snaps))
+    # FM6: SAT-first transition reconfig.  Heuristic fallback is controlled
+    # by the caller: cache-replay contexts pass allow_heuristic_fallback=True
+    # (the heuristic always converges and is acceptable per P2); non-cache
+    # contexts (e.g. return-reconfig) pass False and rely on SAT escalation.
+    snaps = _rebuild_schedule_for_layout(
+        current_layout.copy(), wiseArch, target_layout,
+        subgridsize=subgridsize,
+        base_pmax_in=base_pmax_in,
+        stop_event=stop_event,
+        max_inner_workers=max_inner_workers,
+        progress_callback=progress_callback,
+        allow_heuristic_fallback=allow_heuristic_fallback,
+    )
+    # Consolidate multiple transition steps into one reconfiguration
+    return _consolidate_transition_steps(_snapshots_to_steps(snaps))
 
 
 def _is_ec_phase_type(phase_type: str) -> bool:
@@ -2523,7 +2529,7 @@ def route_full_experiment_as_steps(
     plans: List[PhaseRoutingPlan],
     block_sub_grids: Dict[str, BlockSubGrid],
     *,
-    subgridsize: Tuple[int, int, int] = (6, 4, 1),
+    subgridsize: Optional[Tuple[int, int, int]] = None,
     base_pmax_in: int = 1,
     lookahead: int = 4,
     max_inner_workers: int | None = None,
@@ -2531,6 +2537,10 @@ def route_full_experiment_as_steps(
     cx_per_ec_round: Optional[int] = None,
     cache_ec_rounds: bool = True,
     replay_level: int = 1,
+    block_level_slicing: bool = True,
+    heuristic_cache_replay: bool = False,
+    heuristic_route_back: bool = False,
+    heuristic_fallback_for_noncache: bool = False,
     progress_callback: Any = None,
 ) -> Tuple[List, np.ndarray]:
     """Phase-aware routing returning ``RoutingStep`` objects.
@@ -2605,6 +2615,7 @@ def route_full_experiment_as_steps(
         _route_round_sequence,
         _merge_block_routing_steps,
         _remap_schedule_to_global,
+        _rebuild_schedule_for_layout,
     )
     from ..compiler.routing_config import (
         RoutingProgress,
@@ -2723,7 +2734,8 @@ def route_full_experiment_as_steps(
     wiseArch = QCCDWiseArch(n=n, m=m, k=k)
 
     _use_per_block = (
-        block_sub_grids is not None
+        block_level_slicing
+        and block_sub_grids is not None
         and len(block_sub_grids) >= 2
     )
 
@@ -2943,7 +2955,15 @@ def route_full_experiment_as_steps(
                 # compute a single full-grid return reconfig across
                 # all blocks.  This coordinates ion movements at block
                 # boundaries and reduces total swap cost.
-                if replay_level > 0 and not np.array_equal(current, start_layout):
+                # When replay_level >= num_stab_rounds (the "d" case),
+                # only route-back at the end of the full EC block, not
+                # after each stabilizer round.
+                _do_per_round_return = (
+                    replay_level > 0
+                    and replay_level < num_stab_rounds
+                    and not np.array_equal(current, start_layout)
+                )
+                if _do_per_round_return:
                     _return_steps = _compute_return_reconfig(
                         current, start_layout,
                         wiseArch, subgridsize,
@@ -2951,6 +2971,7 @@ def route_full_experiment_as_steps(
                         stop_event=stop_event,
                         max_inner_workers=max_inner_workers,
                         progress_callback=_phase_cb,
+                        allow_heuristic_fallback=heuristic_fallback_for_noncache,
                     )
                     sr_merged.extend(_return_steps)
                     if _return_steps:
@@ -3032,20 +3053,11 @@ def route_full_experiment_as_steps(
                                 max_inner_workers=max_inner_workers,
                                 progress_callback=_phase_cb,
                             )
-                            # Return reconfig for cross-block pairs:
-                            # skip when replay_level == 0 (no route-back).
-                            if replay_level > 0:
-                                _xb_return = _compute_return_reconfig(
-                                    _xb_final, _xb_layout,
-                                    _xb_wise, subgridsize,
-                                    base_pmax_in=base_pmax_in or 1,
-                                    stop_event=stop_event,
-                                    max_inner_workers=max_inner_workers,
-                                    progress_callback=_phase_cb,
-                                )
-                                _xb_steps = list(_xb_steps) + _xb_return
-                            else:
-                                _xb_steps = list(_xb_steps)
+                            # P4: Cross-block route-back is deferred
+                            # to a full-grid return below (after re-
+                            # embedding), so that all blocks route back
+                            # simultaneously on the full grid.
+                            _xb_steps = list(_xb_steps)
                             # Re-embed bbox results into global layout
                             _sched_row_off = _xb_r0
                             _sched_col_off = _xb_c0p
@@ -3066,6 +3078,38 @@ def route_full_experiment_as_steps(
                                     )
                                 sr_merged.append(step)
                                 current = _gl
+                            # P4: Full-grid return after cross-block
+                            # routing — all blocks route back together
+                            # on the full grid (P5).
+                            if (
+                                replay_level > 0
+                                and not np.array_equal(
+                                    current, start_layout,
+                                )
+                            ):
+                                _xb_fg_return = (
+                                    _compute_return_reconfig(
+                                        current, start_layout,
+                                        wiseArch, subgridsize,
+                                        base_pmax_in=(
+                                            base_pmax_in or 1
+                                        ),
+                                        stop_event=stop_event,
+                                        max_inner_workers=(
+                                            max_inner_workers
+                                        ),
+                                        progress_callback=_phase_cb,
+                                        allow_heuristic_fallback=(
+                                            heuristic_fallback_for_noncache
+                                        ),
+                                    )
+                                )
+                                sr_merged.extend(_xb_fg_return)
+                                if _xb_fg_return:
+                                    current = (
+                                        _xb_fg_return[-1]
+                                        .layout_after.copy()
+                                    )
                             logger.info(
                                 "[PhaseSteps] EC cross-block pairs "
                                 "routed: %d steps on %dx%d merged grid",
@@ -3093,8 +3137,14 @@ def route_full_experiment_as_steps(
                     max_inner_workers=max_inner_workers,
                     progress_callback=_phase_cb,
                 )
-                # Separate return-round reconfig (skip when replay_level == 0)
-                if replay_level > 0:
+                # Separate return-round reconfig (skip when replay_level == 0
+                # or when replay_level >= num_stab_rounds, i.e. route-back
+                # only at EC block boundary).
+                _do_per_round_return = (
+                    replay_level > 0
+                    and replay_level < num_stab_rounds
+                )
+                if _do_per_round_return:
                     _sr_return = _compute_return_reconfig(
                         _sr_final, current,
                         wiseArch, subgridsize,
@@ -3102,6 +3152,7 @@ def route_full_experiment_as_steps(
                         stop_event=stop_event,
                         max_inner_workers=max_inner_workers,
                         progress_callback=_phase_cb,
+                        allow_heuristic_fallback=heuristic_fallback_for_noncache,
                     )
                     sr_merged = list(sr_merged) + _sr_return
                 else:
@@ -3113,6 +3164,11 @@ def route_full_experiment_as_steps(
                 step.ms_round_index += intra_offset
             result_steps.extend(sr_merged)
             intra_offset += sr_pair_count
+
+        # ── End-of-EC-block route-back REMOVED ──
+        # The next phase's transition reconfig (or ec_cache replay
+        # transition) already handles any layout difference, so an
+        # explicit route-back here just wastes SAT calls.
 
         return result_steps, current
 
@@ -3169,6 +3225,10 @@ def route_full_experiment_as_steps(
                     max_inner_workers=max_inner_workers,
                     stop_event=stop_event,
                     progress_callback=_phase_cb,
+                    allow_heuristic_fallback=(
+                        heuristic_route_back
+                        or heuristic_fallback_for_noncache
+                    ),
                 )
             except Exception as exc:
                 logger.warning(
@@ -3184,17 +3244,50 @@ def route_full_experiment_as_steps(
                     stop_event=stop_event,
                     max_inner_workers=max_inner_workers,
                     progress_callback=_phase_cb,
+                    allow_heuristic_fallback=(
+                        heuristic_route_back
+                        or heuristic_fallback_for_noncache
+                    ),
                 )
         except Exception as exc_final:
-            logger.warning(
-                "[PhaseSteps] gadget phase %d (%s): BOTH transition "
-                "reconfig attempts failed (%s); continuing with "
-                "current layout (ions may be in non-home blocks — "
-                "EC routing will handle via merged-grid path)",
-                phase_idx, label, exc_final,
-            )
-            transition = []
-            _transition_skipped = True
+            # FM5 fix: only swallow the exception if all ions happen to
+            # be in their home blocks already (transition was cosmetic).
+            # If ions are genuinely misplaced, raise immediately with
+            # full diagnostics instead of silently continuing.
+            _misplaced_count = 0
+            if ion_to_block and block_sub_grids:
+                _fm5_regions: Dict[str, Tuple[int, int, int, int]] = {}
+                for _bname, _sg in block_sub_grids.items():
+                    _r0, _c0, _r1, _c1 = _sg.grid_region
+                    _fm5_regions[_bname] = (_r0, _c0 * k, _r1, _c1 * k)
+                for _r in range(cur_layout.shape[0]):
+                    for _c in range(cur_layout.shape[1]):
+                        _ion = int(cur_layout[_r, _c])
+                        if _ion == 0 or _ion not in ion_to_block:
+                            continue
+                        _home = ion_to_block[_ion]
+                        _hr0, _hc0, _hr1, _hc1 = _fm5_regions.get(
+                            _home, (0, 0, 0, 0))
+                        if not (_hr0 <= _r < _hr1 and _hc0 <= _c < _hc1):
+                            _misplaced_count += 1
+
+            if _misplaced_count > 0:
+                raise ValueError(
+                    f"[PhaseSteps] gadget phase {phase_idx} ({label}): "
+                    f"BOTH transition reconfig attempts failed "
+                    f"({exc_final}). {_misplaced_count} ions are in "
+                    f"non-home blocks. Cannot continue — EC routing "
+                    f"would produce incorrect circuits."
+                ) from exc_final
+            else:
+                logger.warning(
+                    "[PhaseSteps] gadget phase %d (%s): transition "
+                    "reconfig failed (%s) but all ions are in home "
+                    "blocks — continuing.",
+                    phase_idx, label, exc_final,
+                )
+                transition = []
+                _transition_skipped = True
         for ts in transition:
             ts.ms_round_index = n_pairs
         phase_steps.extend(transition)
@@ -3267,6 +3360,44 @@ def route_full_experiment_as_steps(
         phase_pairs = _merge_phase_pairs(phase_pairs)
         n_pairs = len(phase_pairs)
 
+        # ── Block purity gate: assert all ions in home blocks ────
+        # After a return-reconfig (phase_idx > 0) every ion MUST be
+        # back inside its owning block's sub-grid.  A violation here
+        # means the previous return-reconfig failed to converge and
+        # per-block routing would silently produce corrupted layouts
+        # (duplicate / missing ions after merge overlay).
+        if phase_idx > 0 and ion_to_block and _use_per_block:
+            _entry_misplaced: Dict[str, List[int]] = {}
+            for _bname, _sg in block_sub_grids.items():
+                _r0, _c0, _r1, _c1 = _sg.grid_region
+                _c0i, _c1i = _c0 * k, _c1 * k
+                _blk_slice = current_layout[_r0:_r1, _c0i:_c1i]
+                for _ri in range(_blk_slice.shape[0]):
+                    for _ci in range(_blk_slice.shape[1]):
+                        _ion = int(_blk_slice[_ri, _ci])
+                        if (
+                            _ion != 0
+                            and _ion in ion_to_block
+                            and ion_to_block[_ion] != _bname
+                        ):
+                            _entry_misplaced.setdefault(_bname, []).append(_ion)
+            if _entry_misplaced:
+                _pt_label = getattr(plan.phase_type, 'name', plan.phase_type)
+                raise ValueError(
+                    f"[BlockPurity] Phase {phase_idx + 1}/{len(plans)} "
+                    f"({_pt_label}): ions in wrong blocks at phase entry "
+                    f"(return-reconfig failed to converge). "
+                    f"Misplaced: {({b: sorted(ions) for b, ions in _entry_misplaced.items()})}. "
+                    f"This means the previous phase's route-back did not "
+                    f"restore all ions to their home sub-grids."
+                )
+            else:
+                logger.debug(
+                    "[BlockPurity] Phase %d/%d: entry check PASSED — "
+                    "all %d ions in home blocks",
+                    phase_idx + 1, len(plans), len(ion_to_block),
+                )
+
         # =============================================================
         # EC Phase
         # =============================================================
@@ -3303,6 +3434,7 @@ def route_full_experiment_as_steps(
                             max_inner_workers=max_inner_workers,
                             stop_event=stop_event,
                             progress_callback=_phase_cb,
+                            allow_heuristic_fallback=True,
                         )
                     except Exception as exc:
                         logger.warning(
@@ -3344,21 +3476,117 @@ def route_full_experiment_as_steps(
                         phase_steps.extend(fresh_steps)
 
                 if _cache_replayed:
-                    # Replay cached steps with their original SAT schedules.
-                    for step in cached_steps:
+                    # Replay cached steps.
+                    #
+                    # Change 2 (P2, P6): For the first step, attempt a
+                    # SAT-based schedule rebuild from current_layout →
+                    # step.layout_after.  This avoids the unconditional
+                    # heuristic fallback of the old approach (schedule=None).
+                    # If SAT can't converge, fall back to schedule=None
+                    # (heuristic is acceptable for cache_replay per P2).
+                    #
+                    # Subsequent steps chain correctly because step N's
+                    # layout_after == step N+1's expected starting layout.
+                    _replay_layout = np.array(current_layout, copy=True)
+                    for _ci, step in enumerate(cached_steps):
+                        if _ci == 0:
+                            # ── SAT-first for first cached step ──
+                            _first_target = np.array(
+                                step.layout_after, copy=True,
+                            )
+                            if np.array_equal(_replay_layout, _first_target):
+                                # Layouts match — use cached schedule
+                                _sched = (
+                                    [dict(p) for p in step.schedule]
+                                    if step.schedule is not None
+                                    else None
+                                )
+                            else:
+                                # Try SAT from current → first target
+                                # (skip SAT if heuristic_cache_replay)
+                                if heuristic_cache_replay:
+                                    _sched = None
+                                    logger.info(
+                                        "[PhaseSteps] phase=%d (EC cached): "
+                                        "heuristic_cache_replay=True — using "
+                                        "heuristic for first step",
+                                        phase_idx,
+                                    )
+                                else:
+                                    try:
+                                        _sat_snaps = _rebuild_schedule_for_layout(
+                                            np.array(_replay_layout, copy=True),
+                                            wiseArch,
+                                            _first_target,
+                                            subgridsize=subgridsize,
+                                            base_pmax_in=base_pmax_in or 1,
+                                            stop_event=stop_event,
+                                            max_inner_workers=max_inner_workers,
+                                            allow_heuristic_fallback=True,
+                                        )
+                                    except Exception as _sat_exc:
+                                        logger.warning(
+                                            "[PhaseSteps] phase=%d (EC cached): "
+                                            "SAT rebuild for first step failed: %s",
+                                            phase_idx, _sat_exc,
+                                        )
+                                        _sat_snaps = []
+                                if _sat_snaps:
+                                    # Insert intermediate SAT cycles as
+                                    # extra cache_replay steps.
+                                    for _sl, _ss, _ in _sat_snaps[:-1]:
+                                        phase_steps.append(RoutingStep(
+                                            layout_after=np.array(_sl, copy=True),
+                                            schedule=_ss,
+                                            solved_pairs=[],
+                                            ms_round_index=-1,
+                                            from_cache=True,
+                                            tiling_meta=(0, 0),
+                                            can_merge_with_next=False,
+                                            is_layout_transition=True,
+                                            layout_before=np.array(
+                                                _replay_layout, copy=True,
+                                            ),
+                                            reconfig_context="cache_replay",
+                                        ))
+                                        _replay_layout = np.array(
+                                            _sl, copy=True,
+                                        )
+                                    _sched = _sat_snaps[-1][1]
+                                    logger.info(
+                                        "[PhaseSteps] phase=%d (EC cached): "
+                                        "SAT rebuilt first step via %d cycle(s)",
+                                        phase_idx, len(_sat_snaps),
+                                    )
+                                else:
+                                    # Fall back to None → heuristic (P2)
+                                    _sched = None
+                                    logger.info(
+                                        "[PhaseSteps] phase=%d (EC cached): "
+                                        "SAT rebuild returned 0 snapshots; "
+                                        "falling back to heuristic for first step",
+                                        phase_idx,
+                                    )
+                        else:
+                            # Subsequent steps: use cached schedule
+                            _sched = (
+                                [dict(p) for p in step.schedule]
+                                if step.schedule is not None
+                                else None
+                            )
                         phase_steps.append(RoutingStep(
                             layout_after=np.array(step.layout_after, copy=True),
-                            schedule=(
-                                [dict(p) for p in step.schedule]
-                                if step.schedule is not None else None
-                            ),
+                            schedule=_sched,
                             solved_pairs=step.solved_pairs,
                             ms_round_index=step.ms_round_index,
                             from_cache=True,
                             tiling_meta=step.tiling_meta,
                             can_merge_with_next=step.can_merge_with_next,
                             is_initial_placement=False,
+                            layout_before=np.array(_replay_layout, copy=True),
+                            reconfig_context="cache_replay",
                         ))
+                        _replay_layout = np.array(step.layout_after, copy=True)
                     logger.info(
                         "[PhaseSteps] phase=%d (EC cached): replaying %d steps",
                         phase_idx, len(phase_steps),
@@ -3442,6 +3670,7 @@ def route_full_experiment_as_steps(
                             max_inner_workers=max_inner_workers,
                             stop_event=stop_event,
                             progress_callback=_phase_cb,
+                            allow_heuristic_fallback=True,
                         )
                     except Exception as exc:
                         logger.warning(
@@ -3471,20 +3700,104 @@ def route_full_experiment_as_steps(
                     _gadget_cache_hit = True
 
                 if _gadget_cache_hit:
-                    for step in cached_steps:
+                    # Change 2 (P2, P6): SAT-first replay for gadget
+                    # cache — same logic as EC cache replay above.
+                    _replay_layout = np.array(current_layout, copy=True)
+                    for _ci, step in enumerate(cached_steps):
+                        if _ci == 0:
+                            # ── SAT-first for first cached step ──
+                            _first_target = np.array(
+                                step.layout_after, copy=True,
+                            )
+                            if np.array_equal(_replay_layout, _first_target):
+                                _sched = (
+                                    [dict(p) for p in step.schedule]
+                                    if step.schedule is not None
+                                    else None
+                                )
+                            else:
+                                # Skip SAT if heuristic_cache_replay
+                                if heuristic_cache_replay:
+                                    _sched = None
+                                    logger.info(
+                                        "[PhaseSteps] phase=%d (gadget cached): "
+                                        "heuristic_cache_replay=True — using "
+                                        "heuristic for first step",
+                                        phase_idx,
+                                    )
+                                else:
+                                    try:
+                                        _sat_snaps = _rebuild_schedule_for_layout(
+                                            np.array(_replay_layout, copy=True),
+                                            wiseArch,
+                                            _first_target,
+                                            subgridsize=subgridsize,
+                                            base_pmax_in=base_pmax_in or 1,
+                                            stop_event=stop_event,
+                                            max_inner_workers=max_inner_workers,
+                                            allow_heuristic_fallback=True,
+                                        )
+                                    except Exception as _sat_exc:
+                                        logger.warning(
+                                            "[PhaseSteps] phase=%d (gadget cached): "
+                                            "SAT rebuild for first step failed: %s",
+                                            phase_idx, _sat_exc,
+                                        )
+                                        _sat_snaps = []
+                                if _sat_snaps:
+                                    for _sl, _ss, _ in _sat_snaps[:-1]:
+                                        phase_steps.append(RoutingStep(
+                                            layout_after=np.array(
+                                                _sl, copy=True,
+                                            ),
+                                            schedule=_ss,
+                                            solved_pairs=[],
+                                            ms_round_index=-1,
+                                            from_cache=True,
+                                            tiling_meta=(0, 0),
+                                            can_merge_with_next=False,
+                                            is_layout_transition=True,
+                                            layout_before=np.array(
+                                                _replay_layout, copy=True,
+                                            ),
+                                            reconfig_context="cache_replay",
+                                        ))
+                                        _replay_layout = np.array(
+                                            _sl, copy=True,
+                                        )
+                                    _sched = _sat_snaps[-1][1]
+                                    logger.info(
+                                        "[PhaseSteps] phase=%d (gadget cached): "
+                                        "SAT rebuilt first step via %d cycle(s)",
+                                        phase_idx, len(_sat_snaps),
+                                    )
+                                else:
+                                    _sched = None
+                                    logger.info(
+                                        "[PhaseSteps] phase=%d (gadget cached): "
+                                        "SAT rebuild returned 0 snapshots; "
+                                        "falling back to heuristic for first step",
+                                        phase_idx,
+                                    )
+                        else:
+                            _sched = (
+                                [dict(p) for p in step.schedule]
+                                if step.schedule is not None
+                                else None
+                            )
                         phase_steps.append(RoutingStep(
                             layout_after=np.array(step.layout_after, copy=True),
-                            schedule=(
-                                [dict(p) for p in step.schedule]
-                                if step.schedule is not None else None
-                            ),
+                            schedule=_sched,
                             solved_pairs=step.solved_pairs,
                             ms_round_index=step.ms_round_index,
                             from_cache=True,
                             tiling_meta=step.tiling_meta,
                             can_merge_with_next=step.can_merge_with_next,
                             is_initial_placement=False,
+                            layout_before=np.array(_replay_layout, copy=True),
+                            reconfig_context="cache_replay",
                         ))
+                        _replay_layout = np.array(step.layout_after, copy=True)
                     if phase_steps:
                         current_layout = np.array(
                             phase_steps[-1].layout_after, copy=True,
@@ -3983,10 +4296,13 @@ def route_full_experiment_as_steps(
                             _misplaced.setdefault(_bname, []).append(_ion)
             _pt_label = getattr(plan.phase_type, 'name', plan.phase_type)
             if _misplaced:
-                logger.warning(
-                    "[BlockPurity] Phase %d/%d (%s): IMPURE — misplaced ions: %s",
-                    phase_idx + 1, len(plans), _pt_label,
-                    {b: sorted(ions) for b, ions in _misplaced.items()},
+                raise ValueError(
+                    f"[BlockPurity] Phase {phase_idx + 1}/{len(plans)} "
+                    f"({_pt_label}): IMPURE after routing — ions in wrong "
+                    f"blocks at phase exit: "
+                    f"{({b: sorted(ions) for b, ions in _misplaced.items()})}. "
+                    f"The merge or route-back produced a layout with ions "
+                    f"outside their home sub-grids."
                 )
             else:
                 logger.info(

@@ -400,10 +400,12 @@ def compile_gadget_for_animation(
     qubit_allocation: Any = None,
     trap_capacity: int = 2,
     lookahead: int = 2,
-    subgridsize: Tuple[int, int, int] = (4, 3, 0),
+    subgridsize: Optional[Tuple[int, int, int]] = None,
     base_pmax_in: int = 1,
     max_inner_workers: int | None = None,
     show_progress: bool = False,
+    routing_config: Optional["WISERoutingConfig"] = None,
+    replay_level: Optional[int] = None,
 ) -> Tuple[Any, TrappedIonCompiler, Any, List[Any], Dict[int, str], Dict[int, int], Dict[int, int]]:
     """Compile a gadget circuit through the full WISE pipeline for animation.
 
@@ -430,15 +432,26 @@ def compile_gadget_for_animation(
     trap_capacity : int
         Ions per trap (k).
     lookahead : int
-        SAT solver lookahead window.
-    subgridsize : tuple
+        SAT solver lookahead window.  Ignored if *routing_config* is set.
+    subgridsize : tuple or None
         ``(width, height, increment)`` for patch decomposition.
+        ``None`` means no cap (full-grid SAT).  Ignored if *routing_config* is set.
     base_pmax_in : int
-        Base pass horizon for SAT solver.
+        Base pass horizon for SAT solver.  Ignored if *routing_config* is set.
     max_inner_workers : int | None
         Max parallel SAT workers per patch (None = all cores, 1 = serial).
     show_progress : bool
         Display tqdm progress bars during routing.
+    routing_config : WISERoutingConfig, optional
+        Pre-built routing config.  When provided, *lookahead*,
+        *subgridsize*, *base_pmax_in*, and *replay_level* are ignored.
+    replay_level : int, optional
+        Cache replay aggressiveness.  ``0`` = no caching (pure SAT,
+        slowest, guaranteed optimal); ``1`` = per-round caching
+        (fastest, good approximation); ``d`` (e.g. ``2`` for d=2) =
+        cache per EC block.  Default (``None``) inherits from
+        *routing_config*, or ``1`` if constructing a fresh config.
+        Ignored when *routing_config* is provided.
 
     Returns
     -------
@@ -540,21 +553,28 @@ def compile_gadget_for_animation(
     else:
         _user_cb = None
 
-    compiler.routing_kwargs = dict(
-        routing_config=WISERoutingConfig.default(
+    # Build or reuse routing config
+    if routing_config is not None:
+        _rc = routing_config
+    else:
+        _rc_kwargs: dict = dict(
             lookahead=lookahead,
-            subgridsize=subgridsize,
+            subgridsize=subgridsize if subgridsize is not None else (4, 3, 0),
             base_pmax_in=base_pmax_in,
             show_progress=False,  # Disable internal tqdm — we set our own
-        ),
+        )
+        if replay_level is not None:
+            _rc_kwargs["replay_level"] = replay_level
+        _rc = WISERoutingConfig.default(**_rc_kwargs)
+    compiler.routing_kwargs = dict(
+        routing_config=_rc,
         max_inner_workers=max_inner_workers,
     )
 
     # Inject our widget/tqdm callback into the routing config
     if _user_cb is not None:
-        rc = compiler.routing_kwargs["routing_config"]
-        rc.progress_callback = _user_cb
-        rc._progress_close = _progress_close_fn
+        _rc.progress_callback = _user_cb
+        _rc._progress_close = _progress_close_fn
 
     # Run compiler pipeline MANUALLY so we can inject gadget metadata
     # into the NativeCircuit's metadata dict before route() reads it.

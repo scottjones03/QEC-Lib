@@ -94,6 +94,7 @@ STAGE_PATCH_DONE = "patch_done"
 STAGE_TILING_CYCLE = "tiling_cycle"
 STAGE_RECONFIG = "reconfig"
 STAGE_RECONFIG_PROGRESS = "reconfig_progress"
+STAGE_APPLYING = "applying"          # Execution phase: applying precomputed steps
 STAGE_COMPLETE = "complete"
 
 # Fine-grained stages for detailed progress tracking within SAT solver
@@ -224,8 +225,6 @@ class WISERoutingConfig:
         Enable patch-based decomposition of the grid.
     debug_mode : bool
         Emit verbose SAT-level logging.
-    block_aware_patching : bool
-        Use block-aware patch boundaries.
     base_pmax_in : Optional[int]
         Base pmax value for SAT solver (None for auto).
     cache_ec_rounds : bool
@@ -242,7 +241,7 @@ class WISERoutingConfig:
         ``WISESolverParams.from_grid(...)`` for auto-tuned values.
     """
     timeout_seconds: Optional[float] = None
-    subgridsize: Tuple[int, int, int] = (6, 4, 1)
+    subgridsize: Optional[Tuple[int, int, int]] = None
     lookahead: int = 2
     max_passes: int = 10
     use_maxsat: bool = True
@@ -250,10 +249,13 @@ class WISERoutingConfig:
     sat_workers: int = 4
     patch_enabled: bool = False
     debug_mode: bool = False
-    block_aware_patching: bool = True
     base_pmax_in: Optional[int] = None
     cache_ec_rounds: bool = True
     replay_level: int = 1
+    block_level_slicing: bool = True
+    heuristic_cache_replay: bool = False
+    heuristic_route_back: bool = False
+    heuristic_fallback_for_noncache: bool = False
     progress_callback: Optional[ProgressCallback] = None
     solver_params: Optional[WISESolverParams] = None
 
@@ -262,13 +264,17 @@ class WISERoutingConfig:
         cls,
         *,
         lookahead: int = 2,
-        subgridsize: Tuple[int, int, int] = (6, 4, 1),
+        subgridsize: Optional[Tuple[int, int, int]] = None,
         base_pmax_in: int = 1,
         sat_workers: Optional[int] = None,
         timeout_seconds: Optional[float] = None,
         show_progress: bool = True,
         cache_ec_rounds: bool = True,
         replay_level: int = 1,
+        block_level_slicing: bool = True,
+        heuristic_cache_replay: bool = False,
+        heuristic_route_back: bool = False,
+        heuristic_fallback_for_noncache: bool = False,
     ) -> "WISERoutingConfig":
         """Create a routing config with production defaults.
 
@@ -294,7 +300,9 @@ class WISERoutingConfig:
         cache_ec_rounds : bool
             Cache and replay identical EC stabilizer rounds.
             ``True`` by default for performance; set ``False`` to
-            force fresh SAT routing on every EC phase.
+            force fresh SAT routing on every EC phase.  Note: when
+            ``replay_level=0`` this is forced to ``False``
+            automatically.
         replay_level : int
             Controls cache-replay granularity and route-back behaviour.
 
@@ -312,11 +320,36 @@ class WISERoutingConfig:
             In general, ``replay_level`` in ``[0, d]``: cache every
             ``replay_level`` stabiliser rounds as a unit and
             route-back after each cached unit.
+        block_level_slicing : bool
+            If ``True`` (default), EC phases are routed per-block on
+            disjoint sub-grids.  Each block's stabiliser rounds are
+            solved independently and merged.  If ``False``, all
+            routing uses the full grid — no spatial block-level
+            slicing.  Useful for small grids or debugging.
 
         Returns
         -------
         WISERoutingConfig
         """
+        # ── Validation ───────────────────────────────────────────
+        if replay_level < 0:
+            raise ValueError(
+                f"replay_level must be >= 0, got {replay_level}"
+            )
+        if lookahead < 1:
+            raise ValueError(
+                f"lookahead must be >= 1, got {lookahead}"
+            )
+        if subgridsize is not None:
+            if len(subgridsize) != 3 or any(d <= 0 for d in subgridsize):
+                raise ValueError(
+                    f"subgridsize must be a 3-tuple of positive ints "
+                    f"or None, got {subgridsize}"
+                )
+        # When replay_level=0, force cache_ec_rounds off.
+        if replay_level == 0:
+            cache_ec_rounds = False
+
         import multiprocessing as mp
 
         if sat_workers is None:
@@ -346,6 +379,10 @@ class WISERoutingConfig:
             base_pmax_in=base_pmax_in,
             cache_ec_rounds=cache_ec_rounds,
             replay_level=replay_level,
+            block_level_slicing=block_level_slicing,
+            heuristic_cache_replay=heuristic_cache_replay,
+            heuristic_route_back=heuristic_route_back,
+            heuristic_fallback_for_noncache=heuristic_fallback_for_noncache,
             solver_params=solver_params,
             progress_callback=progress_cb,
         )
@@ -475,6 +512,7 @@ def make_logging_progress_callback(
 # Stages that belong to the outer (WISE ion route) progress bar
 _OUTER_STAGES = frozenset({
     STAGE_ROUTING,
+    STAGE_APPLYING,
     STAGE_PATCHING,
     STAGE_TILING_CYCLE,
     STAGE_PATCH_START,
@@ -618,7 +656,7 @@ def make_triple_tqdm_progress_callback(
         stage = p.stage
 
         # ── MS round bar ──────────────────────────────────────────
-        if stage == STAGE_ROUTING:
+        if stage == STAGE_ROUTING or stage == STAGE_APPLYING:
             state = (p.current, p.total, p.message[:50] if p.message else "")
             if round_bar is None:
                 round_bar = tqdm(
@@ -628,7 +666,8 @@ def make_triple_tqdm_progress_callback(
             if state != _last_round:
                 round_bar.total = max(p.total, 1)
                 round_bar.n = min(p.current, round_bar.total)
-                round_bar.set_postfix_str(state[2])
+                _lbl = "applying" if stage == STAGE_APPLYING else state[2]
+                round_bar.set_postfix_str(_lbl)
                 round_bar.refresh()
                 _last_round = state
             # Reset patch bar when a new round starts
@@ -788,7 +827,7 @@ def make_nested_tqdm_progress_callback(
                 _last_outer_state = new_state
             
             # If we're starting a new phase, reset inner bar
-            if stage in (STAGE_ROUTING, STAGE_PATCHING, STAGE_TILING_CYCLE):
+            if stage in (STAGE_ROUTING, STAGE_APPLYING, STAGE_PATCHING, STAGE_TILING_CYCLE):
                 if inner_bar is not None and not leave_inner:
                     inner_bar.close()
                     inner_bar = None

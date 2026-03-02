@@ -49,19 +49,23 @@ def calculateDephasingFidelity(time: float) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Rotation reordering for batching (RX/RY between MS rounds)
+# Type-priority ordering for operation grouping
 # ---------------------------------------------------------------------------
 
-# INV-R1: Type priority when grouping operations for batching.
+# Type priority when grouping operations for batching.
 # Lower value = scheduled first.  We group all ops of one type across
 # different ions before moving to the next type, which maximises
 # parallelism on WISE (where only one QubitOperation type can execute at
-# a time).  The order follows the natural QEC phase:
-# RESET → RX → RY → MEAS.
+# a time).
+#
+# RY before RX: the standard CX decomposition is
+#   RY(ctrl) → RX(ctrl) → RX(tgt) → MS → RY(ctrl)
+# so per-ion ordering requires RY before RX on the ctrl ion.
+# Putting RY first in the priority allows clean type separation.
 _OP_TYPE_PRIORITY: Dict[type, int] = {
     QubitReset: 0,
-    XRotation: 1,
-    YRotation: 2,
+    YRotation: 1,
+    XRotation: 2,
     Measurement: 3,
 }
 
@@ -69,115 +73,275 @@ _OP_TYPE_PRIORITY: Dict[type, int] = {
 _ROTATION_TYPE_PRIORITY = _OP_TYPE_PRIORITY
 
 
-def reorder_rotations_for_batching(
+# ---------------------------------------------------------------------------
+# Phase-based barrier reordering (pre-routing, called from decompose_to_native)
+# ---------------------------------------------------------------------------
+
+def reorder_with_type_barriers(
     operations: List[Operation],
-) -> List[Operation]:
-    """Reorder single-qubit operations between MS-round boundaries to
-    group by type, maximising same-type parallel batches.
+) -> Tuple[List[Operation], List[int]]:
+    """Reorder operations into type-grouped phases with barriers.
 
-    **INV-R1: Expanded type grouping** — ALL single-qubit operation
-    types (RESET, RX, RY, MEAS) are grouped by type within each
-    hard-barrier window.  The group order follows the natural QEC
-    phase: RESET → RX → RY → MEAS.
+    This is the **pre-routing** reordering step, called at the end of
+    ``decompose_to_native``.  It rearranges the flat operation list so
+    that operations are grouped by type between MS rounds, producing the
+    structure::
 
-    **Boundary rules**:
+        RESET | RY | RX | {MS | RY | RX}×n | MEAS | RESET
 
-    * **MS gates** (``TwoQubitMSGate``) and transport operations are
-      *hard barriers* — no operation may cross them.  (INV-R4)
-    * **Per-ion ordering is preserved** — ops on the same ion are
-      never reordered relative to each other (INV-R2).  E.g. if
-      ion A has MEAS → RESET → RX, this sequence is preserved.
-    * **Cross-ion freedom** — ops on different ions may be freely
-      rearranged by type within a window (INV-R3).
+    with barriers (``|``) at every type-group transition.
+
+    **Algorithm**:
+
+    1. Identify *MS layers* — unique ``(_tick_epoch, _stim_origin)``
+       pairs, sorted by epoch then origin.  Each layer corresponds to
+       one contiguous MS block.
+    2. Assign each operation to a *phase*:
+
+       * Phase ``2k+1`` (odd) — MS layer *k*.
+       * Phase ``2k`` (even) — gap between MS layer *k-1* and *k*
+         (phase 0 = before all MS, phase ``2N`` = after all MS).
+
+       The phase of a non-MS operation is determined by which MS gates
+       it falls between *on its own ion*, ensuring per-ion ordering is
+       preserved.
+    3. Sort operations by ``(phase, original_index)``.
+    4. Within each even (non-MS) phase, type-group operations using
+       per-ion queues (RESET → RY → RX → MEAS), preserving per-ion
+       ordering.
+    5. Insert barriers between phases and between type groups within
+       each phase.
 
     Parameters
     ----------
     operations : list[Operation]
-        The operation sequence (may contain any mix of operation types).
+        Flat list of native ``QubitOperation``s from ``decompose_to_native``
+        (no transport ops at this stage).
 
     Returns
     -------
-    list[Operation]
-        A new list with the same operations, potentially reordered within
-        windows.
+    reordered : list[Operation]
+        Operations reordered with type grouping.
+    barriers : list[int]
+        Barrier positions (indices into *reordered*) at type and phase
+        transitions.
+    """
+    if not operations:
+        return [], []
+
+    # ── 1. Identify MS layers ────────────────────────────────────────
+    # Each unique (tick_epoch, stim_origin) with an MS gate is one layer.
+    # Sorting by (epoch, origin) ensures temporal ordering.
+    ms_layer_keys: List[Tuple[int, int]] = []  # ordered unique keys
+    ms_layer_set: Set[Tuple[int, int]] = set()
+    for op in operations:
+        if isinstance(op, TwoQubitMSGate):
+            key = (
+                getattr(op, '_tick_epoch', 0),
+                getattr(op, '_stim_origin', 0),
+            )
+            if key not in ms_layer_set:
+                ms_layer_set.add(key)
+                ms_layer_keys.append(key)
+    ms_layer_keys.sort()
+    ms_layer_map: Dict[Tuple[int, int], int] = {
+        k: i for i, k in enumerate(ms_layer_keys)
+    }
+    num_ms_layers = len(ms_layer_keys)
+
+    if num_ms_layers == 0:
+        # No MS gates — just type-group everything
+        return _type_group_with_sub_barriers(operations)
+
+    # ── 2. Build per-ion operation sequences ─────────────────────────
+    ion_ops: Dict[int, List[Tuple[int, Operation]]] = defaultdict(list)
+    for i, op in enumerate(operations):
+        if isinstance(op, QubitOperation):
+            for ion in op.ions:
+                ion_ops[id(ion)].append((i, op))
+
+    # ── 3. Assign each operation to a phase ──────────────────────────
+    #
+    # Phase numbering:
+    #   0          — before first MS (initial RESET / rotations)
+    #   2k+1       — MS layer k (odd)
+    #   2(k+1)     — gap between MS layer k and k+1 (even)
+    #   2N         — after last MS layer (final MEAS / RESET)
+    #
+    # For each ion, walk its operations in order.  MS gates set the
+    # "current layer": the phase of subsequent non-MS ops is the even
+    # gap after that layer.  Operations before the first MS get phase 0.
+    #
+    # When an MS gate is shared by two ions (two-qubit), we take the
+    # MAX phase assigned by either ion.  In practice both ions assign
+    # the same phase (determined by stim_origin), but max() guards
+    # against edge-case ordering mismatches.
+
+    op_phase: Dict[int, int] = {}  # id(op) → phase
+
+    for _ion_id, ops_list in ion_ops.items():
+        prev_layer = -1
+        for _orig_idx, op in ops_list:
+            oid = id(op)
+            if isinstance(op, TwoQubitMSGate):
+                key = (
+                    getattr(op, '_tick_epoch', 0),
+                    getattr(op, '_stim_origin', 0),
+                )
+                layer = ms_layer_map[key]
+                phase = 2 * layer + 1
+                op_phase[oid] = max(op_phase.get(oid, phase), phase)
+                prev_layer = layer
+            else:
+                if prev_layer == -1:
+                    phase = 0
+                else:
+                    phase = 2 * (prev_layer + 1)
+                op_phase[oid] = max(op_phase.get(oid, phase), phase)
+
+    # ── 4. Sort operations by (phase, original_index) ────────────────
+    ops_with_phase = [
+        (op_phase.get(id(op), 0), i, op)
+        for i, op in enumerate(operations)
+    ]
+    ops_with_phase.sort(key=lambda x: (x[0], x[1]))
+
+    # Group by phase
+    phase_ops: Dict[int, List[Operation]] = defaultdict(list)
+    for phase, _orig_idx, op in ops_with_phase:
+        phase_ops[phase].append(op)
+
+    # ── 5. Emit phases with type grouping and barriers ───────────────
+    total_phases = 2 * num_ms_layers  # phases 0 .. 2*N
+    result: List[Operation] = []
+    barriers: List[int] = []
+
+    for phase in range(total_phases + 1):
+        ops = phase_ops.get(phase)
+        if not ops:
+            continue
+
+        if phase % 2 == 1:
+            # ── Odd phase: MS layer — emit as-is ──
+            # All MS gates in this layer are already contiguous by
+            # stim_origin (decompose_to_native processes instructions
+            # in order).  A barrier separates them from adjacent phases.
+            if result:
+                barriers.append(len(result))
+            result.extend(ops)
+            barriers.append(len(result))
+        else:
+            # ── Even phase: rotation / reset / meas window ──
+            # Type-group ops preserving per-ion order and insert
+            # sub-barriers at type transitions.
+            if result:
+                barriers.append(len(result))
+            grouped, sub_barriers = _type_group_with_sub_barriers(ops)
+            offset = len(result)
+            result.extend(grouped)
+            for b in sub_barriers:
+                barriers.append(offset + b)
+
+    # Deduplicate and remove out-of-range barriers
+    barriers = sorted(set(b for b in barriers if 0 < b < len(result)))
+    return result, barriers
+
+
+def _type_group_with_sub_barriers(
+    ops: List[Operation],
+) -> Tuple[List[Operation], List[int]]:
+    """Group operations by type preserving per-ion order.
+
+    Uses per-ion queues: in each iteration, the globally lowest-priority
+    type that appears at the *front* of any ion queue is chosen, and all
+    ions whose queue front matches that type are drained.  This ensures
+    per-ion ordering is never violated while maximising type contiguity.
+
+    Returns the grouped list and barrier positions at type transitions.
+    """
+    if not ops:
+        return [], []
+    if len(ops) == 1:
+        return list(ops), []
+
+    # Per-ion queues (keyed by first ion identity)
+    ion_queues: Dict[int, deque] = {}
+    ion_order: List[int] = []  # insertion-order keys for determinism
+    for op in ops:
+        key = id(op.ions[0]) if isinstance(op, QubitOperation) else id(op)
+        if key not in ion_queues:
+            ion_queues[key] = deque()
+            ion_order.append(key)
+        ion_queues[key].append(op)
+
+    result: List[Operation] = []
+
+    while any(ion_queues[k] for k in ion_order):
+        # Find lowest-priority type at front of any queue
+        best_tp: Optional[int] = None
+        for k in ion_order:
+            q = ion_queues[k]
+            if q:
+                tp = _OP_TYPE_PRIORITY.get(type(q[0]), 99)
+                if best_tp is None or tp < best_tp:
+                    best_tp = tp
+        if best_tp is None:
+            break
+
+        # Emit all ops of this type from queues where they're at front
+        for k in ion_order:
+            q = ion_queues[k]
+            while q and _OP_TYPE_PRIORITY.get(type(q[0]), 99) == best_tp:
+                result.append(q.popleft())
+
+    # Drain any remaining (types not in _OP_TYPE_PRIORITY)
+    for k in ion_order:
+        result.extend(ion_queues[k])
+
+    # Compute barrier positions at type transitions
+    barriers: List[int] = []
+    for i in range(1, len(result)):
+        if type(result[i]) is not type(result[i - 1]):
+            barriers.append(i)
+
+    return result, barriers
+
+
+# ---------------------------------------------------------------------------
+# Legacy reordering (kept for backward compatibility, superseded by
+# reorder_with_type_barriers for pre-routing use)
+# ---------------------------------------------------------------------------
+
+def reorder_rotations_for_batching(
+    operations: List[Operation],
+) -> List[Operation]:
+    """Reorder single-qubit operations between MS-round boundaries.
+
+    .. deprecated::
+        Use :func:`reorder_with_type_barriers` in ``decompose_to_native``
+        instead.  This function is kept for backward compatibility with
+        callers that operate on post-routing operation lists.
     """
     if not operations:
         return list(operations)
 
-    def _is_reorderable(op: Operation) -> bool:
-        """INV-R1: All single-qubit op types are reorderable within windows."""
-        return type(op) in _OP_TYPE_PRIORITY
-
-    # Backward compatibility alias
-    _is_rotation = _is_reorderable
-
-    def _is_hard_barrier(op: Operation) -> bool:
-        """INV-R4: MS gates and transport ops are hard barriers."""
-        if isinstance(op, TwoQubitMSGate):
-            return True
-        # Non-QubitOperation = transport op = hard barrier
-        if not isinstance(op, QubitOperation):
-            return True
-        return False
-
     result: List[Operation] = []
-    # INV-R1: Window of reorderable ops (all single-qubit types).
-    # All RESET, RX, RY, MEAS ops within a hard-barrier window are
-    # collected here and emitted type-grouped.
     window_ops: List[Operation] = []
 
-    def _flush_all() -> None:
-        """Drain all pending reorderable ops into result, type-grouped."""
+    def _flush() -> None:
         if not window_ops:
             return
-        _emit_type_grouped(window_ops)
+        grouped, _ = _type_group_with_sub_barriers(window_ops)
+        result.extend(grouped)
         window_ops.clear()
 
-    def _emit_type_grouped(ops_to_group: List[Operation]) -> None:
-        """INV-R1 + INV-R2: Emit ops grouped by type, preserving
-        per-ion order.  Per-ion queues ensure that e.g. MEAS→RESET→RX
-        on the same ion stays in that order, while ops on different
-        ions are freely grouped by type."""
-        if len(ops_to_group) <= 1:
-            result.extend(ops_to_group)
-            return
-        ion_queues: Dict[int, deque] = defaultdict(deque)
-        for op in ops_to_group:
-            ion_key = id(op.ions[0])
-            ion_queues[ion_key].append(op)
-
-        while any(q for q in ion_queues.values()):
-            best_tp: Optional[int] = None
-            for q in ion_queues.values():
-                if q:
-                    tp = _OP_TYPE_PRIORITY.get(type(q[0]), 99)
-                    if best_tp is None or tp < best_tp:
-                        best_tp = tp
-            if best_tp is None:
-                break
-            for ion_key in list(ion_queues.keys()):
-                q = ion_queues[ion_key]
-                while q and _OP_TYPE_PRIORITY.get(type(q[0]), 99) == best_tp:
-                    result.append(q.popleft())
-
-        for q in ion_queues.values():
-            result.extend(q)
-
-    # --- Walk operations ---
-    # INV-R1: ALL single-qubit op types go into the window.
-    # Only MS gates and transport ops are hard barriers.
     for op in operations:
-        if _is_reorderable(op):
-            # RESET, RX, RY, MEAS — all go into the reorderable window
+        if type(op) in _OP_TYPE_PRIORITY:
             window_ops.append(op)
-        elif _is_hard_barrier(op):
-            _flush_all()
-            result.append(op)
         else:
-            # Other QubitOperation types (shouldn't normally occur)
-            _flush_all()
+            _flush()
             result.append(op)
-    _flush_all()
+    _flush()
 
     return result
 

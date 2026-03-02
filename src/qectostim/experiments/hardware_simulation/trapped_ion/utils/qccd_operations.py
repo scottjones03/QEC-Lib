@@ -225,7 +225,6 @@ class GlobalReconfigurations(Operation):
         arrangement: Mapping["Trap", Sequence["Ion"]],
         oldAssignment: Sequence[Sequence[int]],
         newAssignment: Sequence[Sequence[int]],
-        ignoreSpectators: bool = False,
         sat_schedule: Optional[List[Dict[str, Any]]] = None,   # NEW: decoded schedule from RC2
         initial_placement: bool = False,
         context: str = "unknown",
@@ -353,13 +352,16 @@ class GlobalReconfigurations(Operation):
                 if phase == "H":
                     # All horizontal swaps in this pass are parallel
                     for (r, c) in h_swaps:
+                        if not (0 <= r < n and 0 <= c < m - 1):
+                            import logging as _logging
+                            _logging.getLogger("wise.qccd.reconfig").warning(
+                                "Skipping out-of-bounds H swap (%d,%d) "
+                                "on %dx%d grid", r, c, n, m,
+                            )
+                            continue
                         a = int(A[r, c])
                         b = int(A[r, c + 1])
-                        # Optionally respect ignoreSpectators here, but that
-                        # can deviate from the SAT layout. Safer to ignore it
-                        # when using a SAT schedule:
-                        if ignoreSpectators and (a in spectatorIons and b in spectatorIons):
-                            continue
+
                         # Perform swap
                         A[r, c], A[r, c + 1] = b, a
                         heatingRates[a] += row_swap_heating
@@ -373,10 +375,16 @@ class GlobalReconfigurations(Operation):
                 elif phase == "V":
                     # All vertical swaps in this pass are parallel
                     for (r, c) in v_swaps:
+                        if not (0 <= r < n - 1 and 0 <= c < m):
+                            import logging as _logging
+                            _logging.getLogger("wise.qccd.reconfig").warning(
+                                "Skipping out-of-bounds V swap (%d,%d) "
+                                "on %dx%d grid", r, c, n, m,
+                            )
+                            continue
                         a = int(A[r, c])
                         b = int(A[r + 1, c])
-                        if ignoreSpectators and (a in spectatorIons and b in spectatorIons):
-                            continue
+
                         A[r, c], A[r + 1, c] = b, a
                         heatingRates[a] += col_swap_heating_rate
                         heatingRates[b] += col_swap_heating_rate
@@ -393,25 +401,75 @@ class GlobalReconfigurations(Operation):
             # After executing the SAT schedule, check we reached the target.
             if not np.array_equal(A, T):
                 diff_count = int(np.sum(A != T))
+                if context == "ms_gate":
+                    # ── Diagnostic dump for root cause analysis ──
+                    import logging as _diag_log
+                    _dl = _diag_log.getLogger("wise.qccd.reconfig.DIAG")
+                    _dl.error("=== MS-GATE SCHEDULE MISMATCH DIAGNOSTIC ===")
+                    _dl.error("Grid shape: %s, diff_count: %d/%d, schedule_len: %d",
+                              A.shape, diff_count, A.size, len(sat_schedule))
+                    # Show which cells differ
+                    _diff_mask = (A != T)
+                    for _dr in range(A.shape[0]):
+                        for _dc in range(A.shape[1]):
+                            if _diff_mask[_dr, _dc]:
+                                _dl.error("  DIFF cell (%d,%d): schedule_produced=%d, target=%d, original=%d",
+                                          _dr, _dc, int(A[_dr, _dc]), int(T[_dr, _dc]),
+                                          int(np.array(oldAssignment, dtype=int)[_dr, _dc]))
+                    # Show all swap coordinates in the schedule
+                    for _si, _sinfo in enumerate(sat_schedule):
+                        _ph = _sinfo.get("phase", "?")
+                        _hs = _sinfo.get("h_swaps", [])
+                        _vs = _sinfo.get("v_swaps", [])
+                        _dl.error("  Pass %d: phase=%s, h_swaps=%s, v_swaps=%s",
+                                  _si, _ph, _hs[:20], _vs[:20])
+                    # Cross-check: replay with bounds checking
+                    _A2 = np.array(oldAssignment, dtype=int)
+                    _n_rows, _n_cols = _A2.shape
+                    _skipped_swaps = []
+                    for _si2, _sinfo2 in enumerate(sat_schedule):
+                        _ph2 = _sinfo2.get("phase", "H")
+                        if _ph2 == "H":
+                            for (_sr, _sc) in _sinfo2.get("h_swaps", []):
+                                if not (0 <= _sr < _n_rows and 0 <= _sc < _n_cols - 1):
+                                    _skipped_swaps.append(("H", _sr, _sc, _si2))
+                                else:
+                                    _A2[_sr, _sc], _A2[_sr, _sc + 1] = _A2[_sr, _sc + 1], _A2[_sr, _sc]
+                        elif _ph2 == "V":
+                            for (_sr, _sc) in _sinfo2.get("v_swaps", []):
+                                if not (0 <= _sr < _n_rows - 1 and 0 <= _sc < _n_cols):
+                                    _skipped_swaps.append(("V", _sr, _sc, _si2))
+                                else:
+                                    _A2[_sr, _sc], _A2[_sr + 1, _sc] = _A2[_sr + 1, _sc], _A2[_sr, _sc]
+                    if _skipped_swaps:
+                        _dl.error("  BOUNDS-CHECK SKIPPED SWAPS: %s", _skipped_swaps)
+                    _bc_match = np.array_equal(_A2, A)
+                    _dl.error("  Bounds-checked replay matches no-bounds replay: %s", _bc_match)
+                    if not _bc_match:
+                        _bc_diff = int(np.sum(_A2 != A))
+                        _dl.error("  Bounds-checked replay differs by %d cells — THIS IS THE BUG (out-of-bounds swaps!)", _bc_diff)
+                    _bc_target_match = np.array_equal(_A2, T)
+                    _dl.error("  Bounds-checked replay matches target: %s", _bc_target_match)
+                    _dl.error("  Old layout:\n%s", np.array(oldAssignment, dtype=int))
+                    _dl.error("  Target layout:\n%s", T)
+                    _dl.error("  Schedule-produced layout:\n%s", A)
+                    _dl.error("=== END DIAGNOSTIC ===")
+                    raise ValueError(
+                        f"SAT schedule did not fully realise target layout "
+                        f"({diff_count}/{A.size} cells differ, "
+                        f"schedule_len={len(sat_schedule)}) during "
+                        f"MS-gate reconfiguration (context={context})"
+                    )
                 import logging as _logging
                 _reconfig_logger = _logging.getLogger("wise.qccd.reconfig")
-                if context == "ms_gate":
-                    _reconfig_logger.warning(
-                        "SAT schedule did not fully realise target layout "
-                        "(%d/%d cells differ, schedule_len=%d) during "
-                        "MS-gate reconfiguration (context=%s); "
-                        "falling through to heuristic — investigate!",
-                        diff_count, A.size, len(sat_schedule), context,
-                    )
-                else:
-                    _reconfig_logger.warning(
-                        "SAT schedule did not fully realise target layout "
-                        "(%d/%d cells differ, schedule_len=%d, context=%s); "
-                        "falling through to heuristic odd-even reconfig "
-                        "for remaining mismatches.",
-                        diff_count, A.size, len(sat_schedule), context,
-                    )
-                # Do NOT return — fall through to Phase B/C/D heuristic
+                _reconfig_logger.warning(
+                    "SAT schedule did not fully realise target layout "
+                    "(%d/%d cells differ, schedule_len=%d, context=%s); "
+                    "falling through to heuristic odd-even reconfig "
+                    "for remaining mismatches.",
+                    diff_count, A.size, len(sat_schedule), context,
+                )
+                # Fall through to Phase B/C/D heuristic
                 # which will finish sorting A → T.
             else:
                 # if not initial_placement:

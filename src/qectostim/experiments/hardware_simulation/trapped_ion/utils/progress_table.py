@@ -261,6 +261,7 @@ def make_shared_progress_callback(
         _INNER_STAGES,
         _PATCH_STAGES,
         STAGE_ROUTING,
+        STAGE_APPLYING,
         STAGE_COMPLETE,
         STAGE_RECONFIG_PROGRESS,
     )
@@ -268,6 +269,7 @@ def make_shared_progress_callback(
     # Stages that update the route (MS round) progress bar
     _ROUTE_STAGES = frozenset({
         STAGE_ROUTING,
+        STAGE_APPLYING,
         STAGE_COMPLETE,
         STAGE_RECONFIG_PROGRESS,
     })
@@ -336,10 +338,11 @@ def make_notebook_widget_progress_callback(
         _INNER_STAGES,
         _PATCH_STAGES,
         STAGE_ROUTING,
+        STAGE_APPLYING,
         STAGE_COMPLETE,
         STAGE_RECONFIG_PROGRESS,
     )
-    _ROUTE_STAGES = frozenset({STAGE_ROUTING, STAGE_COMPLETE, STAGE_RECONFIG_PROGRESS})
+    _ROUTE_STAGES = frozenset({STAGE_ROUTING, STAGE_APPLYING, STAGE_COMPLETE, STAGE_RECONFIG_PROGRESS})
 
     import ipywidgets as widgets
 
@@ -481,18 +484,29 @@ def make_notebook_widget_progress_callback(
         if stage in _ROUTE_STAGES:
             total = max(p.total, 1)
             cur = min(p.current, total)
+            # STAGE_APPLYING signals the start of the execution phase
+            # (applying precomputed routing steps).  Reset the HWM so
+            # execution progress can show on the bar instead of being
+            # blocked by the planning-phase high-water mark.
+            if stage == STAGE_APPLYING:
+                _route_hwm = -1          # reset HWM for execution phase
             # Only allow forward progress (HWM blocks per-block re-emissions)
             if total > _s_route_max or cur >= _route_hwm:
                 old_route = _s_route_val
                 _route_hwm = cur
                 _s_route_max = total
                 _s_route_val = cur
-                # Switch label between "MS Rounds" and "Reconfig" based
-                # on stage so users can see what is happening.
+                # Switch label between planning / applying / reconfig
+                # based on stage so users can see what is happening.
                 if stage == STAGE_RECONFIG_PROGRESS:
                     _s_route_text = (
                         f"<span style='color:#9b59b6; font-size:11px;'>"
                         f"Reconfig: {cur}/{total}</span>"
+                    )
+                elif stage == STAGE_APPLYING:
+                    _s_route_text = (
+                        f"<span style='color:#8e44ad; font-size:11px;'>"
+                        f"Applying: {cur}/{total}</span>"
                     )
                 else:
                     _s_route_text = (

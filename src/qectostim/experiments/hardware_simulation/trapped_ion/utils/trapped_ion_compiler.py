@@ -63,6 +63,7 @@ from ..compiler.qccd_parallelisation import (
     paralleliseOperations,
     paralleliseOperationsWithBarriers,
     reorder_rotations_for_batching,
+    reorder_with_type_barriers,
 )
 from ..compiler.qccd_ion_routing import ionRouting
 from ..compiler.qccd_WISE_ion_route import ionRoutingWISEArch, ionRoutingGadgetArch
@@ -661,6 +662,20 @@ class TrappedIonCompiler(HardwareCompiler):
         self._barriers = barriers
         self._toMoveOps = toMoveOps
 
+        # ── Pre-routing barrier reordering ───────────────────────────
+        # Group operations by type between MS rounds so the router and
+        # scheduler see a clean phase structure:
+        #   RESET | RY | RX | {MS | RY | RX}×n | MEAS | RESET
+        # Per-ion ordering is preserved.  Barriers mark every type and
+        # phase transition.  This replaces the post-routing reordering
+        # that was previously done in schedule().
+        if self.is_wise:
+            operations, barriers = reorder_with_type_barriers(operations)
+            self._instructions = operations
+            self._barriers = barriers
+            # toMoveOps references are unchanged — same MS gate objects,
+            # same grouping; only their position in the flat list moved.
+
         return NativeCircuit(
             operations=operations,
             num_qubits=len(self._ion_mapping),
@@ -1018,8 +1033,12 @@ class TrappedIonCompiler(HardwareCompiler):
                     toMove_phase_tags=_toMove_phase_tags,
                     _compiler_q2i=_compiler_q2i,
                     replay_level=(
-                        self._routing_config.replay_level
-                        if self._routing_config else 1
+                        kwargs.get("routing_config").replay_level
+                        if kwargs.get("routing_config") else 1
+                    ),
+                    block_level_slicing=(
+                        kwargs.get("routing_config").block_level_slicing
+                        if kwargs.get("routing_config") else True
                     ),
                     **kwargs
                 )
@@ -1074,31 +1093,27 @@ class TrappedIonCompiler(HardwareCompiler):
         is_wise = circuit.metadata.get("is_wise", False)
         allOps = circuit.operations
 
-        # ── Pre-scheduling: reorder rotations for better batching ──
-        # Rotations between MS rounds are grouped by type (all RX before
-        # all RY) to maximise same-type parallel batches on WISE.
-        # Rotations can cross resets/measurements on different qubits
-        # but cannot cross MS-round boundaries.
+        # ── Barrier detection for WISE ───────────────────────────────
+        # Operations were already type-grouped pre-routing in
+        # decompose_to_native (via reorder_with_type_barriers).  After
+        # routing, transport ops (non-QubitOperation) have been inserted.
+        # We rebuild barriers at:
+        #   (a) non-QubitOp boundaries (transport / reconfig ops), AND
+        #   (b) QubitOp type transitions (RY→RX, RX→MS, MS→RY, etc.)
+        # This gives each scheduling segment a single operation type,
+        # so the scheduler trivially parallelises all ops in each segment.
         if is_wise:
-            allOps = reorder_rotations_for_batching(list(allOps))
-            # Rebuild barriers at type-transition boundaries after
-            # reordering.  The original barrier positions (computed on
-            # the pre-reorder sequence) become stale when ops move.
-            if barriers:
-                new_barriers: list[int] = []
-                for i in range(1, len(allOps)):
-                    prev_op = allOps[i - 1]
-                    curr_op = allOps[i]
-                    # Barrier ONLY at transport (non-QubitOperation)
-                    # boundaries.  MS ↔ rotation type separation is
-                    # enforced by the WISE type-matching constraint in
-                    # paralleliseOperations, so we do NOT insert barriers
-                    # at MS ↔ non-MS transitions — doing so would isolate
-                    # each MS gate in a singleton segment and prevent the
-                    # scheduler from packing independent MS gates together.
-                    if not isinstance(curr_op, QubitOperation) or not isinstance(prev_op, QubitOperation):
-                        new_barriers.append(i)
-                barriers = sorted(set(new_barriers))
+            new_barriers: list[int] = []
+            for i in range(1, len(allOps)):
+                prev_op = allOps[i - 1]
+                curr_op = allOps[i]
+                # Non-QubitOp boundary (transport / reconfig)
+                if not isinstance(curr_op, QubitOperation) or not isinstance(prev_op, QubitOperation):
+                    new_barriers.append(i)
+                # QubitOp type transition
+                elif type(curr_op) is not type(prev_op):
+                    new_barriers.append(i)
+            barriers = sorted(set(new_barriers))
 
         if barriers:
             parallelOpsMap = paralleliseOperationsWithBarriers(
