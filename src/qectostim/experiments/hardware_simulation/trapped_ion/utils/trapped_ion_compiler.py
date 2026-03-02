@@ -1093,29 +1093,109 @@ class TrappedIonCompiler(HardwareCompiler):
         is_wise = circuit.metadata.get("is_wise", False)
         allOps = circuit.operations
 
-        # ── Barrier detection for WISE ───────────────────────────────
-        # Operations were already type-grouped pre-routing in
-        # decompose_to_native (via reorder_with_type_barriers).  After
-        # routing, transport ops (non-QubitOperation) have been inserted.
-        # We rebuild barriers at:
-        #   (a) non-QubitOp boundaries (transport / reconfig ops), AND
-        #   (b) QubitOp type transitions (RY→RX, RX→MS, MS→RY, etc.)
-        # This gives each scheduling segment a single operation type,
-        # so the scheduler trivially parallelises all ops in each segment.
         if is_wise:
-            new_barriers: list[int] = []
-            for i in range(1, len(allOps)):
-                prev_op = allOps[i - 1]
-                curr_op = allOps[i]
-                # Non-QubitOp boundary (transport / reconfig)
-                if not isinstance(curr_op, QubitOperation) or not isinstance(prev_op, QubitOperation):
-                    new_barriers.append(i)
-                # QubitOp type transition
-                elif type(curr_op) is not type(prev_op):
-                    new_barriers.append(i)
-            barriers = sorted(set(new_barriers))
+            # ── Barrier-driven scheduling for WISE ───────────────────
+            # The pre-routing reorder (reorder_with_type_barriers) tagged
+            # each QubitOp with _barrier_group — an integer that changes
+            # at every barrier boundary.
+            #
+            # The router may interleave QubitOps from different barrier
+            # groups (because different ions are routed in different
+            # orders).  We must reorder the post-routing list so that
+            # all ops belonging to barrier_group N come before any ops
+            # from barrier_group N+1.
+            #
+            # Transport ops are assigned to the barrier_group of the
+            # NEXT QubitOp in the list (they bring ions into position
+            # for that QubitOp).  This preserves the happens-before
+            # relationship since the DAG already encodes component
+            # dependencies.
 
-        if barriers:
+            from collections import defaultdict as _defaultdict
+
+            # 1. Walk the post-routing list and assign each op a
+            #    barrier_group.
+            op_bg: dict = {}
+            last_bg = 0
+            # Forward pass to assign transports to their next QubitOp's group
+            # Walk backward to find the "next QubitOp's barrier_group" for each
+            # transport op.
+            next_qubit_bg = 0
+            for i in range(len(allOps) - 1, -1, -1):
+                op = allOps[i]
+                if isinstance(op, QubitOperation):
+                    next_qubit_bg = getattr(op, '_barrier_group', 0)
+                op_bg[i] = next_qubit_bg
+
+            # 2. Group ops by barrier_group, preserving original order
+            #    within each group.
+            bg_groups: dict = _defaultdict(list)
+            for i, op in enumerate(allOps):
+                bg_groups[op_bg[i]].append(op)
+
+            # 3. Merge consecutive barrier groups of the same dominant
+            #    QubitOperation type, then build the reordered list
+            #    with barriers only at *type transitions*.
+            #
+            #    Rules:
+            #    - Consecutive groups with the same dominant QubitOp
+            #      type are merged into one super-group (e.g. several
+            #      small RX groups → one large RX segment).
+            #    - Transport-only groups between non-MS groups are
+            #      absorbed into the previous group (eliminates
+            #      spurious RECONFIG batches between rotations).
+            #    - Transport-only groups after MS are kept separate
+            #      (they create the expected RECONFIG batches between
+            #      MS sub-rounds or before the next rotation block).
+            #    - MS groups are never merged with non-MS groups.
+            from collections import Counter as _Counter
+
+            sorted_bgs = sorted(bg_groups.keys())
+
+            def _dominant_qubit_type(ops_list):
+                """Return the most common QubitOp subclass, or None."""
+                qops = [op for op in ops_list
+                        if isinstance(op, QubitOperation)]
+                if not qops:
+                    return None
+                counts = _Counter(type(op) for op in qops)
+                return counts.most_common(1)[0][0]
+
+            # merged: list of (dominant_type_or_None, [ops])
+            merged: list = []
+            for bg in sorted_bgs:
+                ops = bg_groups[bg]
+                dt = _dominant_qubit_type(ops)
+
+                if not merged:
+                    merged.append((dt, list(ops)))
+                elif dt is not None and merged[-1][0] == dt:
+                    # Same qubit-op type as previous — merge
+                    merged[-1][1].extend(ops)
+                elif dt is None:
+                    # Transport-only group.
+                    # After MS → keep separate (creates RECONFIG batch)
+                    # Otherwise → absorb into previous group
+                    if merged[-1][0] is TwoQubitMSGate:
+                        merged.append((dt, list(ops)))
+                    else:
+                        merged[-1][1].extend(ops)
+                else:
+                    # Different qubit-op type — new segment
+                    merged.append((dt, list(ops)))
+
+            reordered: list = []
+            wise_barriers: list = []
+            for _, ops in merged:
+                if reordered:
+                    wise_barriers.append(len(reordered))
+                reordered.extend(ops)
+
+            parallelOpsMap = paralleliseOperationsWithBarriers(
+                reordered, wise_barriers, isWiseArch=True,
+                epoch_mode=epoch_mode,
+            )
+        elif barriers:
             parallelOpsMap = paralleliseOperationsWithBarriers(
                 allOps, barriers, isWiseArch=is_wise,
                 epoch_mode=epoch_mode,

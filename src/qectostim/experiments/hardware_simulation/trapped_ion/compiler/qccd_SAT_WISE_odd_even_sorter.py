@@ -4608,6 +4608,38 @@ def optimal_QMR_for_WISE(
         ignore_initial_reconfig=ignore_initial_reconfig,
     )
 
+    # ── Self-consistency check: replay decoded schedule on A_in and
+    #    verify it produces the decoded layouts.  A mismatch here means
+    #    the variable-pool decode produced inconsistent (layout, schedule)
+    #    pairs — catch it at the source rather than downstream.
+    for _sc_r in range(R):
+        _sc_base = A_in.copy() if _sc_r == 0 else layouts[_sc_r - 1].copy()
+        if schedule[_sc_r]:
+            for _sc_pass in schedule[_sc_r]:
+                for (_sr, _sc) in _sc_pass.get("h_swaps", []):
+                    if 0 <= _sr < _sc_base.shape[0] and 0 <= _sc < _sc_base.shape[1] - 1:
+                        _sc_base[_sr, _sc], _sc_base[_sr, _sc + 1] = (
+                            _sc_base[_sr, _sc + 1],
+                            _sc_base[_sr, _sc],
+                        )
+                for (_sr, _sc) in _sc_pass.get("v_swaps", []):
+                    if 0 <= _sr < _sc_base.shape[0] - 1 and 0 <= _sc < _sc_base.shape[1]:
+                        _sc_base[_sr, _sc], _sc_base[_sr + 1, _sc] = (
+                            _sc_base[_sr + 1, _sc],
+                            _sc_base[_sr, _sc],
+                        )
+        if not np.array_equal(_sc_base, layouts[_sc_r]):
+            _sc_diff = int(np.count_nonzero(_sc_base != layouts[_sc_r]))
+            wise_logger.error(
+                "[WISE] SAT DECODE SELF-CONSISTENCY FAIL round %d: "
+                "schedule replay produces %d/%d cells different from "
+                "decoded layout.  Using replay-derived layout.",
+                _sc_r,
+                _sc_diff,
+                layouts[_sc_r].size,
+            )
+            layouts[_sc_r] = _sc_base
+
     row_offset, col_offset = grid_origin
     if row_offset != 0 or col_offset != 0:
         for round_schedule in schedule:

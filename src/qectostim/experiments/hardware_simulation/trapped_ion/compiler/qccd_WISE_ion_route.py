@@ -390,25 +390,45 @@ def _merge_patch_round_schedules(
 ) -> List[Dict[str, Any]]:
     """Merge per-patch schedules for a single round into a global schedule.
 
-    Output structure: all H passes first (odd-even alternating), then all
-    V passes (odd-even alternating).  H-V-H interleaving is FORBIDDEN.
+    Merges passes *positionally* — pass 0 from all patches are combined
+    first, then pass 1, etc.  This preserves the original H-V interleave
+    ordering produced by the SAT solver so that replaying the merged
+    schedule reproduces the SAT-model layout exactly.
 
     For patches on *disjoint* grid regions (the normal case within a
-    tiling), passes at the same parity-index are merged in parallel.
+    tiling), passes at the same index are merged in parallel.  If two
+    patches at the same index have different phases (one H, one V), two
+    separate pass dicts are emitted for that index.
     """
     if not patch_round_schedules:
         return []
 
-    per_patch_h, per_patch_v = _split_patch_round_into_HV(patch_round_schedules)
-    merged_h = _merge_phase_passes(per_patch_h, phase_label="H")
-    merged_v = _merge_phase_passes(per_patch_v, phase_label="V")
-    merged = merged_h + merged_v
+    max_passes = max(len(sched) for sched in patch_round_schedules)
+    merged: List[Dict[str, Any]] = []
 
-    for pass_info in merged:
-        if pass_info["h_swaps"] and pass_info["v_swaps"]:
-            raise AssertionError(
-                "Merged pass contains both horizontal and vertical swaps"
-            )
+    for p_idx in range(max_passes):
+        h_swaps_at_idx: List[Tuple[int, int]] = []
+        v_swaps_at_idx: List[Tuple[int, int]] = []
+
+        for sched in patch_round_schedules:
+            if p_idx >= len(sched):
+                continue
+            pass_info = sched[p_idx]
+            if not _pass_has_swaps(pass_info):
+                continue
+            h_swaps_at_idx.extend(pass_info.get("h_swaps", []))
+            v_swaps_at_idx.extend(pass_info.get("v_swaps", []))
+
+        # Normally all patches at the same index share a phase.
+        # If different patches have different phases, emit two passes.
+        if h_swaps_at_idx and v_swaps_at_idx:
+            merged.append({"phase": "H", "h_swaps": h_swaps_at_idx, "v_swaps": []})
+            merged.append({"phase": "V", "h_swaps": [], "v_swaps": v_swaps_at_idx})
+        elif h_swaps_at_idx:
+            merged.append({"phase": "H", "h_swaps": h_swaps_at_idx, "v_swaps": []})
+        elif v_swaps_at_idx:
+            merged.append({"phase": "V", "h_swaps": [], "v_swaps": v_swaps_at_idx})
+        # else: no swaps at this index from any patch — skip
 
     return merged
 
@@ -2498,9 +2518,25 @@ def _route_round_sequence(
         # coordinates assume an intermediate layout that doesn't exist
         # when both are applied from the original state.  Always emit
         # separate steps.
-        while tiling_step and any(t[2] for t in tiling_step):
+        #
+        # FIX (PRE-FLIGHT FAIL root cause): The old guard
+        #   ``any(t[2] for t in tiling_step)``
+        # silently dropped subsequent tilings whose solved_pairs was
+        # empty.  Those tilings still carry schedules with swaps
+        # required to reach the correct layout — dropping them causes
+        # incomplete swap chains, producing wrong layout_after values
+        # that cascade into PRE-FLIGHT FAILs in the execution loop.
+        # Process ALL remaining tiling steps unconditionally.
+        while tiling_step:
             next_layout, next_schedule, next_solved = tiling_step[0]
             tiling_step.pop(0)
+            # Skip true identity reconfigs (no layout change, no
+            # schedule) to avoid emitting useless no-op steps.
+            if (
+                next_schedule is None
+                and np.array_equal(next_layout, currentArr)
+            ):
+                continue
             steps.append(RoutingStep(
                 layout_after=next_layout,
                 schedule=next_schedule,
@@ -3423,36 +3459,29 @@ def ionRoutingWISEArch(
             # the heuristic odd-even transposition sort.  Do NOT
             # trigger a SAT rebuild for these steps.
             if not _is_ms_context:
-                # ── Non-MS contexts: avoid SAT rebuilds (Fix 19) ──
+                # ── Non-MS contexts: heuristic fallback (Fix 18/19) ──
                 # For return_round, cache_replay, transition contexts,
-                # never trigger an expensive SAT rebuild.  If the
-                # schedule is None (intentional heuristic from Fix 18)
-                # or if the cached schedule doesn't replay to the
-                # correct target (layout drift from execution), drop
-                # the schedule and let the downstream heuristic
-                # odd-even transposition sort handle it.
+                # never trigger an expensive SAT rebuild.  With the
+                # positional merge fix in _merge_patch_round_schedules,
+                # scheduled replay should always match.  If somehow it
+                # doesn't (safety net), drop the schedule and let the
+                # downstream heuristic odd-even transposition sort
+                # handle it.
                 if _step_schedule is not None:
                     _replay = _simulate_schedule_replay(
                         oldArrangementArr, _step_schedule,
                     )
                     if not np.array_equal(_replay, _step_target):
-                        logger.info(
+                        logger.warning(
                             "%s ms_round=%d: non-MS step "
-                            "(context=%s) schedule replay mismatch "
-                            "— dropping schedule, using heuristic "
-                            "instead of SAT rebuild (Fix 19)",
+                            "(context=%s) schedule replay STILL "
+                            "mismatches after merge fix — "
+                            "dropping schedule, using heuristic "
+                            "(safety net)",
                             PATCH_LOG_PREFIX, ms_round_idx,
                             first_step.reconfig_context,
                         )
                         _step_schedule = None
-                else:
-                    logger.info(
-                        "%s ms_round=%d: intentionally heuristic "
-                        "step (context=%s, schedule=None) — "
-                        "skipping SAT rebuild",
-                        PATCH_LOG_PREFIX, ms_round_idx,
-                        first_step.reconfig_context,
-                    )
                 _needs_rebuild = False
             else:
                 # MS-gate context: must rebuild if schedule is
@@ -3766,13 +3795,31 @@ def ionRoutingWISEArch(
             _sub_is_ms = (
                 subsequent_step.reconfig_context == "ms_gate"
             )
+            # ── Diagnostic: log layout_before mismatch for sub-steps
+            if subsequent_step.layout_before is not None:
+                if (
+                    subsequent_step.layout_before.shape
+                    == oldArrangementArr.shape
+                ):
+                    _sub_lb_diff = int(np.sum(
+                        oldArrangementArr != subsequent_step.layout_before
+                    ))
+                    if _sub_lb_diff:
+                        logger.warning(
+                            "%s ms_round=%d sub=%d: planning "
+                            "layout_before differs from execution "
+                            "oldArrangementArr by %d cells",
+                            PATCH_LOG_PREFIX, ms_round_idx, sub_idx,
+                            _sub_lb_diff,
+                        )
             if not np.array_equal(oldArrangementArr, _sub_target):
                 # ── Fix 18b: skip SAT for intentionally-heuristic
                 # subsequent steps (same logic as Fix 18 above). ──
                 if not _sub_is_ms:
-                    # ── Fix 19b: same as Fix 19 for subsequent
-                    # steps.  Non-MS → drop bad schedule, use
-                    # heuristic instead of SAT rebuild. ──
+                    # ── Non-MS subsequent steps: heuristic fallback
+                    # (Fix 18b/19b).  Same logic as first-step.  With
+                    # the positional merge fix, mismatches should not
+                    # occur.  Safety net drops to heuristic if they do.
                     if _sub_schedule is not None:
                         _sub_replay = _simulate_schedule_replay(
                             oldArrangementArr, _sub_schedule,
@@ -3780,25 +3827,17 @@ def ionRoutingWISEArch(
                         if not np.array_equal(
                             _sub_replay, _sub_target,
                         ):
-                            logger.info(
+                            logger.warning(
                                 "%s ms_round=%d sub=%d: non-MS "
                                 "step (context=%s) schedule "
-                                "replay mismatch — dropping "
-                                "schedule, using heuristic "
-                                "(Fix 19b)",
+                                "replay STILL mismatches after "
+                                "merge fix — dropping schedule, "
+                                "using heuristic (safety net)",
                                 PATCH_LOG_PREFIX, ms_round_idx,
                                 sub_idx,
                                 subsequent_step.reconfig_context,
                             )
                             _sub_schedule = None
-                    else:
-                        logger.info(
-                            "%s ms_round=%d sub=%d: intentionally "
-                            "heuristic step (context=%s, "
-                            "schedule=None) — skipping SAT",
-                            PATCH_LOG_PREFIX, ms_round_idx, sub_idx,
-                            subsequent_step.reconfig_context,
-                        )
                     _sub_needs_rebuild = False
                 else:
                     _sub_needs_rebuild = _sub_schedule is None
@@ -4184,22 +4223,14 @@ def _merge_disjoint_block_schedules(
 
     Because blocks occupy disjoint grid regions, swaps from different
     blocks never conflict and can execute in parallel within the same
-    pass (provided they share phase and comparator parity).
+    pass.
 
-    Delegates to ``_merge_patch_round_schedules`` which:
-
-    1. Splits each schedule into its H-segment and V-segment,
-    2. Merges all H passes (parity-aligned) across blocks,
-    3. Merges all V passes (parity-aligned) across blocks,
-    4. Concatenates: merged-H then merged-V.
-
-    This guarantees the global schedule obeys the required
-    ``H_odd, H_even, … , V_odd, V_even, …`` ordering and that
-    **no swaps are silently dropped** when two blocks have different
-    H/V pass ratios (the previous index-aligned implementation used
-    a single phase label per index and ``_runOddEvenReconfig`` only
-    applies swaps matching the label, silently discarding cross-phase
-    swaps).
+    Delegates to ``_merge_patch_round_schedules`` which merges passes
+    **positionally** (by index), preserving the SAT model's
+    interleaved H-V-H-V ordering.  If an unlikely phase mismatch
+    occurs at any index (e.g. block A is H while block B is V), the
+    minority-phase swaps are emitted as a separate pass to avoid
+    silent swap drops.
     """
     return _merge_patch_round_schedules([sched_a, sched_b])
 
@@ -5094,6 +5125,33 @@ def ionRoutingGadgetArch(
                 PATCH_LOG_PREFIX, _xv_exc, exc_info=True,
             )
 
+    # ------------------------------------------------------------------
+    # INLINE ROUTING (v2): skip plan-all-then-replay, route from actual
+    # grid state.  ionRoutingWISEArch (without _precomputed_routing_steps)
+    # calls _route_round_sequence internally, which routes each round
+    # sequentially from the actual grid, eliminating planning-vs-execution
+    # layout divergence.  No pre-flight checks, SAT rebuilds, or
+    # escalation needed.
+    # ------------------------------------------------------------------
+    if routing_config is not None and routing_config.use_inline_routing:
+        logger.info(
+            "%s ionRoutingGadgetArch: INLINE routing (v2) — "
+            "skipping route_full_experiment_as_steps, routing from "
+            "actual grid state via _route_round_sequence",
+            PATCH_LOG_PREFIX,
+        )
+        return ionRoutingWISEArch(
+            arch, wiseArch, operations,
+            lookahead=lookahead,
+            subgridsize=subgridsize,
+            base_pmax_in=base_pmax_in,
+            toMoveOps=toMoveOps,
+            routing_config=routing_config,
+            stop_event=stop_event,
+            max_inner_workers=max_inner_workers,
+            skip_coalesce=skip_coalesce,
+        )
+
     all_routing_steps, _ = route_full_experiment_as_steps(
         initial_layout=oldArrangementArr,
         n=wiseArch.n,
@@ -5130,6 +5188,41 @@ def ionRoutingGadgetArch(
         max_sat_time=_max_sat_time,
         max_rc2_time=_max_rc2_time,
     )
+
+    # ------------------------------------------------------------------
+    # DIAGNOSTIC: Verify (layout_before, schedule, layout_after) triples
+    # ------------------------------------------------------------------
+    _diag_mismatches = []
+    for _di, _step in enumerate(all_routing_steps):
+        if _step.schedule is None or _step.layout_before is None:
+            continue
+        _replay = _simulate_schedule_replay(_step.layout_before, _step.schedule)
+        if not np.array_equal(_replay, _step.layout_after):
+            _n_diff = int(np.sum(_replay != _step.layout_after))
+            _diag_mismatches.append((_di, _step.ms_round_index, _n_diff,
+                                     _step.reconfig_context,
+                                     _step.layout_before.shape,
+                                     _step.layout_after.shape,
+                                     len(_step.schedule)))
+    if _diag_mismatches:
+        logger.warning(
+            "%s PLANNING DIAG: %d/%d steps have inconsistent "
+            "(layout_before, schedule, layout_after) triples!",
+            PATCH_LOG_PREFIX, len(_diag_mismatches), len(all_routing_steps),
+        )
+        for (_di, _mri, _nd, _ctx, _shb, _sha, _slen) in _diag_mismatches[:20]:
+            logger.warning(
+                "%s   step[%d] ms_round=%d ctx=%s diff=%d "
+                "shape_before=%s shape_after=%s sched_len=%d",
+                PATCH_LOG_PREFIX, _di, _mri, _ctx, _nd,
+                _shb, _sha, _slen,
+            )
+    else:
+        logger.warning(
+            "%s PLANNING DIAG: All %d routing steps have CONSISTENT triples.",
+            PATCH_LOG_PREFIX, len(all_routing_steps),
+        )
+    # ------------------------------------------------------------------
 
     # ------------------------------------------------------------------
     # Fix 12: Fallback to flat routing if phase-aware produced zero MS pairs

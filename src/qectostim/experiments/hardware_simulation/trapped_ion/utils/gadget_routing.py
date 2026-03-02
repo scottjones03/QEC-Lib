@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as _dc_replace
 from typing import (
     Collection,
     Dict,
@@ -2048,6 +2048,46 @@ def _build_plans_from_compiler_pairs(
         phase_pairs = parallelPairs[pair_cursor:pair_cursor + n_pairs]
         pair_cursor += n_pairs
 
+        # ----------------------------------------------------------
+        # Block-aware pair filtering for EC phases.
+        #
+        # After Fix10 expansion the blind cursor slice may assign
+        # parallelPairs entries whose ions belong to a block that is
+        # *not* active in this phase.  For EC phases we filter out
+        # such "foreign" pairs so that the routing plan only contains
+        # pairs involving ions from the phase's active blocks.
+        # ----------------------------------------------------------
+        if _is_ec and block_sub_grids and active_blocks:
+            _active_ions: set = set()
+            for _bn in active_blocks:
+                _bsg = block_sub_grids.get(_bn)
+                if _bsg is not None:
+                    if _bsg.ion_indices:
+                        _active_ions.update(_bsg.ion_indices)
+                    elif _bsg.qubit_to_ion:
+                        _active_ions.update(_bsg.qubit_to_ion.values())
+            if _active_ions:
+                _filtered: List[List[Tuple[int, int]]] = []
+                _dropped = 0
+                for _rp in phase_pairs:
+                    _kept = [
+                        (a, d) for a, d in _rp
+                        if a in _active_ions and d in _active_ions
+                    ]
+                    _dropped += len(_rp) - len(_kept)
+                    if _kept:
+                        _filtered.append(_kept)
+                if _dropped > 0:
+                    logger.info(
+                        "[GadgetRouting] Phase %d (%s): filtered %d "
+                        "foreign pairs from %d rounds → %d rounds "
+                        "(active_blocks=%s)",
+                        i, phase_type, _dropped,
+                        len(phase_pairs), len(_filtered),
+                        active_blocks,
+                    )
+                    phase_pairs = _filtered
+
         round_sig = getattr(phase, 'round_signature', None)
 
         plans.append(PhaseRoutingPlan(
@@ -3564,12 +3604,25 @@ def route_full_experiment_as_steps(
         _is_ec_phase = _is_ec_phase_type(plan.phase_type)
         if _is_ec_phase:
             # --- Cache check ---
+            # Use total pair count (not n_pairs = merged round count)
+            # in cache key so phases with different numbers of actual
+            # MS pairs don't share cached steps.  Phase 0 (pre-EC, 48
+            # pairs) and Phase 6 (post-EC, 32 pairs) may share the
+            # same round_signature but must NOT share cache entries.
+            _phase_pair_total = sum(
+                len(r) for r in plan.ms_pairs_per_round
+            ) if plan.ms_pairs_per_round else 0
+            _ec_cache_key = (
+                (plan.round_signature, _phase_pair_total)
+                if plan.round_signature is not None
+                else None
+            )
             if (
                 cache_ec_rounds
-                and plan.round_signature is not None
-                and plan.round_signature in ec_cache
+                and _ec_cache_key is not None
+                and _ec_cache_key in ec_cache
             ):
-                cached_starting_layout, cached_steps = ec_cache[plan.round_signature]
+                cached_starting_layout, cached_steps = ec_cache[_ec_cache_key]
                 phase_steps: List[RoutingStep] = []
                 _cache_replayed = True
 
@@ -3775,8 +3828,8 @@ def route_full_experiment_as_steps(
                 )
 
                 # Cache for future identical phases (with starting layout)
-                if cache_ec_rounds and plan.round_signature is not None:
-                    ec_cache[plan.round_signature] = (
+                if cache_ec_rounds and _ec_cache_key is not None:
+                    ec_cache[_ec_cache_key] = (
                         ec_starting_layout, phase_steps,
                     )
 
@@ -3813,12 +3866,20 @@ def route_full_experiment_as_steps(
 
             # Fix B Part 2: Check gadget-phase cache before routing
             _gadget_cache_hit = False
+            _gadget_pair_total = sum(
+                len(r) for r in phase_pairs
+            ) if phase_pairs else 0
+            _gadget_cache_key = (
+                (plan.round_signature, _gadget_pair_total)
+                if plan.round_signature is not None
+                else None
+            )
             if (
                 cache_ec_rounds
-                and plan.round_signature is not None
-                and plan.round_signature in ec_cache
+                and _gadget_cache_key is not None
+                and _gadget_cache_key in ec_cache
             ):
-                cached_starting_layout, cached_steps = ec_cache[plan.round_signature]
+                cached_starting_layout, cached_steps = ec_cache[_gadget_cache_key]
                 phase_steps: List[RoutingStep] = []
 
                 if not np.array_equal(current_layout, cached_starting_layout):
@@ -4280,6 +4341,12 @@ def route_full_experiment_as_steps(
                                     _sched_row_off,
                                     _sched_col_off,
                                 )
+                            # ── Fix: advance base so next step's global
+                            # layout includes this step's changes. Without
+                            # this, subsequent steps use a stale base and
+                            # ChainVerify / execution diverge (PRE-FLIGHT
+                            # FAIL cascade).
+                            current_layout = step.layout_after
                     else:
                         # Horizontal concat: blocks are repositioned in the
                         # merged grid, so re-embed block-by-block.
@@ -4330,6 +4397,10 @@ def route_full_experiment_as_steps(
                                     _sched_row_off,
                                     _sched_col_off,
                                 )
+                            # ── Fix: advance base so next step's global
+                            # layout includes this step's changes (same
+                            # rationale as bbox path above).
+                            current_layout = step.layout_after
 
                     if phase_steps:
                         current_layout = phase_steps[-1].layout_after
@@ -4346,6 +4417,23 @@ def route_full_experiment_as_steps(
                     # a small per-block grid instead of the full merged
                     # bounding box.
                     if _non_bridge_ec_pairs:
+                        # ── Fix 22: Renumber non-bridge EC step indices ──
+                        # Non-bridge EC steps are routed independently on
+                        # per-block sub-grids.  Their ms_round_index values
+                        # from _route_round_sequence start at 0, which
+                        # OVERLAPS with the bridge steps' already-assigned
+                        # ms_round_index values.  After Fix 20 sorts all
+                        # steps by ms_round_index, these overlapping values
+                        # cause non-bridge and bridge steps to interleave,
+                        # creating chain breaks that ChainVerify must fix
+                        # with expensive SAT rebuilds (40+ rebuilds).
+                        # Fix: offset non-bridge ms_round_index to sit
+                        # AFTER all bridge steps and transition steps.
+                        _nb_ms_offset = max(
+                            (s.ms_round_index for s in phase_steps),
+                            default=-1,
+                        ) + 1
+
                         for _nb_name in _non_bridge_blocks:
                             _nb_rounds = _non_bridge_ec_pairs.get(
                                 _nb_name, [],
@@ -4418,6 +4506,11 @@ def route_full_experiment_as_steps(
                                                 _nb_c0,
                                             )
                                         )
+                                    # Fix 22: Renumber ms_round_index
+                                    # so non-bridge EC steps sort AFTER
+                                    # all bridge steps (prevents chain
+                                    # interleaving after Fix 20 sort).
+                                    step.ms_round_index += _nb_ms_offset
                                     phase_steps.append(step)
                                     current_layout = _gl
                                 logger.info(
@@ -4475,8 +4568,8 @@ def route_full_experiment_as_steps(
                     )
 
                 # Fix B: Cache fresh gadget routing for future phases
-                if cache_ec_rounds and plan.round_signature is not None:
-                    ec_cache[plan.round_signature] = (
+                if cache_ec_rounds and _gadget_cache_key is not None:
+                    ec_cache[_gadget_cache_key] = (
                         _gadget_starting_layout, list(phase_steps),
                     )
 
@@ -4502,10 +4595,16 @@ def route_full_experiment_as_steps(
             phase_steps = list(phase_steps_raw)
 
         # --- Global ms_round_index renumbering ---
-        for step in phase_steps:
-            step.ms_round_index += round_cursor
+        # FIX 21: Use non-mutating replace so cached step objects keep
+        # their LOCAL ms_round_index. Mutating in-place caused
+        # double-renumbering on cache replay → non-monotonic indices
+        # → cascading PRE-FLIGHT FAILs.
+        phase_steps = [
+            _dc_replace(step, ms_round_index=step.ms_round_index + round_cursor)
+            for step in phase_steps
+        ]
         if round_cursor == 0 and phase_steps:
-            phase_steps[0].is_initial_placement = True
+            phase_steps[0] = _dc_replace(phase_steps[0], is_initial_placement=True)
 
         all_routing_steps.extend(phase_steps)
 
@@ -4550,6 +4649,18 @@ def route_full_experiment_as_steps(
         _phase_span = max(n_pairs, _max_local_idx + 1)
         round_cursor += _phase_span
         _global_round_offset += _phase_span
+
+    # ── Fix 20: Sort steps by ms_round_index BEFORE ChainVerify ──
+    # The execution loop (ionRoutingWISEArch) sorts routing_steps by
+    # ms_round_index and processes them in that order via groupby.
+    # ChainVerify must verify steps in the SAME order, otherwise its
+    # chain layout diverges from execution's oldArrangementArr.
+    # Without this sort, steps produced by different tiling passes
+    # within the same ms_round may appear in a different order than
+    # execution expects, causing cascading PRE-FLIGHT FAILs.
+    all_routing_steps = sorted(
+        all_routing_steps, key=lambda s: s.ms_round_index,
+    )
 
     # ── Fix 16: Post-planning chain verification ─────────────────
     # Walk the step chain with the initial layout, verify that each

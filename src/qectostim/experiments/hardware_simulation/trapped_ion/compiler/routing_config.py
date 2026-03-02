@@ -265,6 +265,13 @@ class WISERoutingConfig:
     # ────────────────────────────────────────────────────────────
     heuristic_route_back: bool = False
     heuristic_fallback_for_noncache: bool = False
+    # ── INLINE ROUTING (V2 architecture) ──────────────────────
+    # When True, ionRoutingGadgetArch routes each MS round inline
+    # during execution instead of planning all steps upfront.
+    # This eliminates all planning-vs-execution layout divergence.
+    # Default False preserves the legacy two-phase architecture.
+    # ──────────────────────────────────────────────────────────────
+    use_inline_routing: bool = False
     progress_callback: Optional[ProgressCallback] = None
     solver_params: Optional[WISESolverParams] = None
 
@@ -284,6 +291,7 @@ class WISERoutingConfig:
         heuristic_cache_replay: bool = False,
         heuristic_route_back: bool = False,
         heuristic_fallback_for_noncache: bool = False,
+        use_inline_routing: bool = False,
     ) -> "WISERoutingConfig":
         """Create a routing config with production defaults.
 
@@ -350,9 +358,14 @@ class WISERoutingConfig:
                 f"lookahead must be >= 1, got {lookahead}"
             )
         if subgridsize is not None:
-            if len(subgridsize) != 3 or any(d <= 0 for d in subgridsize):
+            if (
+                len(subgridsize) != 3
+                or subgridsize[0] <= 0
+                or subgridsize[1] <= 0
+                or subgridsize[2] < 0
+            ):
                 raise ValueError(
-                    f"subgridsize must be a 3-tuple of positive ints "
+                    f"subgridsize must be a 3-tuple (cols>0, rows>0, inc>=0) "
                     f"or None, got {subgridsize}"
                 )
         # When replay_level=0, force cache_ec_rounds off.
@@ -392,6 +405,7 @@ class WISERoutingConfig:
             heuristic_cache_replay=heuristic_cache_replay,
             heuristic_route_back=heuristic_route_back,
             heuristic_fallback_for_noncache=heuristic_fallback_for_noncache,
+            use_inline_routing=use_inline_routing,
             solver_params=solver_params,
             progress_callback=progress_cb,
         )
