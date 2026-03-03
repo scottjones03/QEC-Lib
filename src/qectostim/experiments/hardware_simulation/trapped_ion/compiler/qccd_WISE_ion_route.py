@@ -482,6 +482,8 @@ def _patch_and_route(
     max_inner_workers: int | None = None,
     max_sat_time: Optional[float] = None,
     max_rc2_time: Optional[float] = None,
+    solver_params: Optional[Any] = None,
+    patch_verbose: Optional[bool] = None,
 ) -> List[Tuple[int, int, List[Tuple[np.ndarray, List[Dict[str, Any]], List[Tuple[int, int]]]]]]:
     """
     Patch-based Level-1 slicer. Partition the device into checkerboard patches and
@@ -498,6 +500,9 @@ def _patch_and_route(
     R = len(P_arr)
     if R == 0:
         return [], []
+
+    # Resolve patch_verbose: kwarg wins, then module-level env-var default
+    _eff_patch_verbose = patch_verbose if patch_verbose is not None else PATCH_VERBOSE_MOVES
 
     n_rows = wiseArch.n
     n_cols = wiseArch.m * wiseArch.k
@@ -760,12 +765,29 @@ def _patch_and_route(
                 # Track (start_row_local, target_col_local) → ion we kept, per round
                 bt_keys_used: List[Dict[Tuple[int, int], int]] = [dict() for _ in range(R)]
                 use_bt_softs = False
+
+                # Build the set of ions actually present in this patch's
+                # sub-grid.  Only these ions exist in the SAT solver's
+                # variable space; pinning an absent ion creates a BT
+                # constraint that the solver silently ignores, causing
+                # the post-solve consistency check to fail.
+                _ions_in_patch_grid: set = set()
+                for _pr in range(patch_grid.shape[0]):
+                    for _pc in range(patch_grid.shape[1]):
+                        _pion = int(patch_grid[_pr, _pc])
+                        if _pion != 0:
+                            _ions_in_patch_grid.add(_pion)
+
                 for ridx in range(R):
                     bt_full = BT_for_tiling[ridx] if ridx < len(BT_for_tiling) else {}
                     ions_patch = ions_in_patch_pairs[ridx]
                     ions_tiling = ions_in_tiling_pairs[ridx]
 
                     for ion, (global_r, global_c) in bt_full.items():
+                        # Only pin ions that are actually in this patch's
+                        # sub-grid (present in the initial layout slice).
+                        if ion not in _ions_in_patch_grid:
+                            continue
                         # # Only pin ions that are consistently in/out of this tiling’s pairs
                         if (ion in ions_patch) != (ion in ions_tiling):
                             continue
@@ -779,7 +801,12 @@ def _patch_and_route(
 
                         # Compute the ion's *start row* in this patch, to mirror the
                         # pre-sanity check in _optimal_QMR_for_WISE.
-                        if ridx==0:
+                        # For ridx==0: use ion_positions (from layouts_after[0]).
+                        # For ridx>0: we don't have the intermediate layout yet (it's
+                        # computed by the SAT solver), so we use the *target* row as
+                        # the key for conflict detection.  This is less precise but
+                        # avoids using a stale `key` variable from a previous iteration.
+                        if ridx == 0:
                             init_pos = ion_positions.get(ion)
                             if init_pos is None:
                                 continue
@@ -788,35 +815,36 @@ def _patch_and_route(
                             if not (0 <= start_row_local < (r1 - r0)):
                                 # Shouldn't normally happen, but be defensive
                                 continue
-
                             key = (start_row_local, local_c)
-                            existing_ion = bt_keys_used[ridx].get(key)
+                        else:
+                            # For intermediate/final rounds we don't know the start
+                            # row yet, so key on (target_row_local, target_col_local).
+                            key = (local_r, local_c)
 
-                            if existing_ion is not None and existing_ion != ion:
-                                # Conflict: another ion from the same start row already pinned
-                                # to this target column in this patch. To keep BT consistent
-                                # with _optimal_QMR_for_WISE's pre-check, we skip this one.
-                                logger.warning(
-                                    "%s BT pin conflict in patch r[%d:%d] c[%d:%d], round=%d: "
-                                    "start_row_local=%d, target_col_local=%d; keeping ion %d, "
-                                    "dropping ion %d",
-                                    PATCH_LOG_PREFIX,
-                                    r0,
-                                    r1,
-                                    c0,
-                                    c1,
-                                    ridx,
-                                    start_row_local,
-                                    local_c,
-                                    existing_ion,
-                                    ion,
-                                )
-                                continue
+                        existing_ion = bt_keys_used[ridx].get(key)
+
+                        if existing_ion is not None and existing_ion != ion:
+                            # Conflict: another ion already pinned to this key in
+                            # this patch/round.  Skip to keep BT consistent.
+                            logger.warning(
+                                "%s BT pin conflict in patch r[%d:%d] c[%d:%d], round=%d: "
+                                "key=%s; keeping ion %d, dropping ion %d",
+                                PATCH_LOG_PREFIX,
+                                r0,
+                                r1,
+                                c0,
+                                c1,
+                                ridx,
+                                key,
+                                existing_ion,
+                                ion,
+                            )
+                            continue
 
                         # No conflict: record and keep the pin.
                         bt_keys_used[ridx][key] = ion
                         BT_patch[ridx][ion] = (local_r, local_c)
-                        use_bt_softs=True
+                        use_bt_softs = True
 
                 logger.info(
                     "%s solving patch r[%d:%d] c[%d:%d] gates=%d per_round=%s boundary_prefs=%s, BTs=%s",
@@ -854,6 +882,7 @@ def _patch_and_route(
                         max_inner_workers=max_inner_workers,
                         max_sat_time=max_sat_time,
                         max_rc2_time=max_rc2_time,
+                        solver_params=solver_params,
                     )
                 except NoFeasibleLayoutError as exc:
                     logger.warning(
@@ -916,7 +945,7 @@ def _patch_and_route(
                     len(moved_ions),
                     move_detail if move_detail else "none",
                 )
-                if PATCH_VERBOSE_MOVES and len(moved_ions) > 6:
+                if _eff_patch_verbose and len(moved_ions) > 6:
                     extra_detail = ", ".join(
                         [f"ion {ion}: {src}->{dst}" for ion, src, dst in moved_ions[6:]]
                     )
@@ -931,8 +960,14 @@ def _patch_and_route(
                 # change, and that they match the SAT-decoded layout.
                 for ridx in range(R):
                     if patch_schedule and ridx < len(patch_schedule) and patch_schedule[ridx]:
+                        # For round 0, start from pre-tiling layout.
+                        # For round ridx>0, start from after-round-(ridx-1)
+                        # layout (SAT schedules are chained: schedule[r]
+                        # transforms layouts[r-1] → layouts[r]).
+                        _pp_base = (layouts_before_tiling[0] if ridx == 0
+                                    else layouts_after[ridx - 1])
                         pp_replay = _simulate_schedule_replay(
-                            layouts_before_tiling[ridx],
+                            _pp_base,
                             patch_schedule[ridx],
                         )
                         # Check patch region only
@@ -963,7 +998,7 @@ def _patch_and_route(
                                             r0 + _dr, c0 + _dc, _dr, _dc,
                                             int(pp_region[_dr, _dc]),
                                             int(patch_layouts[ridx][_dr, _dc]),
-                                            int(layouts_before_tiling[ridx][r0 + _dr, c0 + _dc]),
+                                            int(_pp_base[r0 + _dr, c0 + _dc]),
                                         )
                                         _pp_diffs_logged += 1
                                         if _pp_diffs_logged >= 10:
@@ -976,7 +1011,7 @@ def _patch_and_route(
                         _outside_mask[r0:r1, c0:c1] = False
                         _outside_changed = np.count_nonzero(
                             pp_replay[_outside_mask]
-                            != layouts_before_tiling[ridx][_outside_mask]
+                            != _pp_base[_outside_mask]
                         )
                         if _outside_changed > 0:
                             logger.error(
@@ -1016,8 +1051,14 @@ def _patch_and_route(
             # that the snapshot is self-consistent.
             for ridx in range(R):
                 if merged_tiling_schedule[ridx]:
+                    # Chained replay: round 0 starts from pre-tiling
+                    # snapshot; round r>0 starts from layouts_after[r-1]
+                    # which was set (and possibly corrected) during the
+                    # previous round's replay.
+                    _mr_base = (layouts_before_tiling[0] if ridx == 0
+                                else layouts_after[ridx - 1])
                     replay_r = _simulate_schedule_replay(
-                        layouts_before_tiling[ridx],
+                        _mr_base,
                         merged_tiling_schedule[ridx],
                     )
                     if not np.array_equal(replay_r, layouts_after[ridx]):
@@ -1130,6 +1171,7 @@ def _escalate_sat_for_ms_reconfig(
     max_attempts: int = 3,
     max_sat_time: Optional[float] = None,
     max_rc2_time: Optional[float] = None,
+    solver_params: Optional[Any] = None,
 ) -> Optional[List[Tuple[np.ndarray, Optional[List[Dict[str, Any]]], list]]]:
     """Try full-grid SAT with escalating *pmax* for MS-gate reconfig.
 
@@ -1164,6 +1206,7 @@ def _escalate_sat_for_ms_reconfig(
                 max_inner_workers=max_inner_workers,
                 max_sat_time=max_sat_time,
                 max_rc2_time=max_rc2_time,
+                solver_params=solver_params,
             )
         except Exception as exc:
             logger.warning(
@@ -1196,6 +1239,7 @@ def _rebuild_schedule_for_layout(
     allow_heuristic_fallback: bool = True,
     max_sat_time: Optional[float] = None,
     max_rc2_time: Optional[float] = None,
+    solver_params: Optional[Any] = None,
 ) -> List[Tuple[np.ndarray, List[Dict[str, Any]], List[Tuple[int, int]]]]:
     """
     Given a current global layout (oldArrangementArr) and a desired global layout
@@ -1377,6 +1421,29 @@ def _rebuild_schedule_for_layout(
             "right": _fp_c1 < n_cols,
         }
 
+        # Cross-boundary prefs for orphan ions in fast-path patch
+        _fp_cb_r1: Dict[int, Set[str]] = {}
+        for _fpcbr in range(_fp_h):
+            for _fpcbc in range(_fp_w):
+                _fpcb_ion = int(_fp_patch[_fpcbr, _fpcbc])
+                if _fpcb_ion == 0 or _fpcb_ion in _fp_bt:
+                    continue
+                _fpcb_tgt = ion_target_pos.get(_fpcb_ion)
+                if _fpcb_tgt is None:
+                    continue
+                _fpcb_tr, _fpcb_tc = _fpcb_tgt
+                _fpcb_dirs: Set[str] = set()
+                if _fpcb_tr < _fp_r0:
+                    _fpcb_dirs.add("top")
+                if _fpcb_tr >= _fp_r1:
+                    _fpcb_dirs.add("bottom")
+                if _fpcb_tc < _fp_c0:
+                    _fpcb_dirs.add("left")
+                if _fpcb_tc >= _fp_c1:
+                    _fpcb_dirs.add("right")
+                if _fpcb_dirs:
+                    _fp_cb_r1[_fpcb_ion] = _fpcb_dirs
+
         _fp_solved = False
         for _fp_soft in (False, True):
             try:
@@ -1394,7 +1461,7 @@ def _rebuild_schedule_for_layout(
                     prev_pmax=None,
                     grid_origin=(_fp_r0, _fp_c0),
                     boundary_adjacent=_fp_boundary,
-                    cross_boundary_prefs=[{}, {}],
+                    cross_boundary_prefs=[{}, _fp_cb_r1],
                     bt_soft=_fp_soft,
                     parent_stop_event=stop_event,
                     progress_callback=progress_callback,
@@ -1402,6 +1469,7 @@ def _rebuild_schedule_for_layout(
                     max_sat_time=min(max_sat_time or 60.0, 10.0),
                     max_rc2_time=max_rc2_time,
                     skip_bt_check_c=True,
+                    solver_params=solver_params,
                 )
                 # Embed patch result back into current_layout
                 if _fp_layouts:
@@ -1610,7 +1678,39 @@ def _rebuild_schedule_for_layout(
                     "left": c0 > 0,
                     "right": c1 < n_cols,
                 }
-                cross_boundary_prefs: List[Dict[int, Set[str]]] = [{}, {}]
+
+                # ── Cross-boundary directional prefs for orphan ions ──
+                # For each ion in the patch whose global target is
+                # OUTSIDE the patch, push it toward the boundary
+                # closest to its target.  Without these prefs, orphan
+                # ions are treated as free variables by the SAT solver
+                # and wander aimlessly across cycles — the root cause of
+                # patch-based layout rebuild non-convergence.
+                #
+                # Round 0 (intermediate): empty — solver freely arranges.
+                # Round 1 (final): directional prefs for orphan ions.
+                _cb_prefs_r1: Dict[int, Set[str]] = {}
+                for _cbr in range(patch_h_local):
+                    for _cbc in range(patch_w_local):
+                        _cb_ion = int(patch_grid[_cbr, _cbc])
+                        if _cb_ion == 0 or _cb_ion in bt_map:
+                            continue  # skip empty cells & already-pinned ions
+                        _cb_tgt = ion_target_pos.get(_cb_ion)
+                        if _cb_tgt is None:
+                            continue
+                        _cb_tr, _cb_tc = _cb_tgt
+                        _cb_dirs: Set[str] = set()
+                        if _cb_tr < r0:
+                            _cb_dirs.add("top")
+                        if _cb_tr >= r1:
+                            _cb_dirs.add("bottom")
+                        if _cb_tc < c0:
+                            _cb_dirs.add("left")
+                        if _cb_tc >= c1:
+                            _cb_dirs.add("right")
+                        if _cb_dirs:
+                            _cb_prefs_r1[_cb_ion] = _cb_dirs
+                cross_boundary_prefs: List[Dict[int, Set[str]]] = [{}, _cb_prefs_r1]
 
                 logger.info(
                     "%s rebuilding schedule-only patch (cycle %d, tiling %d) "
@@ -1662,6 +1762,7 @@ def _rebuild_schedule_for_layout(
                         max_sat_time=_patch_sat_time,
                         max_rc2_time=max_rc2_time,
                         skip_bt_check_c=True,
+                        solver_params=solver_params,
                     )
                 except NoFeasibleLayoutError:
                     # Retry with soft BT constraints (relaxable pins)
@@ -1694,6 +1795,7 @@ def _rebuild_schedule_for_layout(
                             max_sat_time=_patch_sat_time,
                             max_rc2_time=max_rc2_time,
                             skip_bt_check_c=True,
+                            solver_params=solver_params,
                         )
                     except NoFeasibleLayoutError:
                         # Even soft BT failed – try with fewer pins
@@ -1733,6 +1835,7 @@ def _rebuild_schedule_for_layout(
                                     max_sat_time=_patch_sat_time,
                                     max_rc2_time=max_rc2_time,
                                     skip_bt_check_c=True,
+                                    solver_params=solver_params,
                                 )
                             except NoFeasibleLayoutError:
                                 logger.info(
@@ -1878,14 +1981,27 @@ def _rebuild_schedule_for_layout(
 
         prev_mismatch = mismatch_after
 
-        # ── Patch growth (matching _patch_and_route) ────────────
+        # ── Patch growth ─────────────────────────────────────
         # When inc > 0, grow patches each cycle so that larger SAT
         # windows can resolve cross-boundary permutations that small
-        # patches cannot.  This is the designed convergence mechanism:
-        # start small (fast SAT) and grow only as needed.
+        # patches cannot.
+        #
+        # Exponential growth on plateau: when no progress is being
+        # made, *double* patch dimensions instead of linear +inc.
+        # This reaches full-grid coverage in O(log(grid/patch))
+        # cycles instead of O(grid/inc) — critical for large grids
+        # (d=5,7) where linear growth would take 20+ cycles.
+        #
+        # Normal growth: linear +inc when progress is being made,
+        # keeping patches small (fast SAT) while progress continues.
         if inc > 0:
-            n_c += max(inc, min(n_c, wiseArch.k))
-            n_r += inc
+            if _plateau_count > 0:
+                # Exponential growth: double both dimensions
+                n_c = min(n_c * 2, n_cols)
+                n_r = min(n_r * 2, n_rows)
+            else:
+                n_c += max(inc, min(n_c, wiseArch.k))
+                n_r += inc
             # Re-apply k-compatibility adjustment after growth
             if n_c < wiseArch.k and (wiseArch.k % n_c != 0):
                 n_c += int(np.mod(wiseArch.k, n_c))
@@ -1897,106 +2013,360 @@ def _rebuild_schedule_for_layout(
     if not np.array_equal(current_layout, target_layout):
         mismatch_remaining = int(np.count_nonzero(current_layout != target_layout))
 
+        # ── Post-cycle small-mismatch retry ──────────────────────
+        # When only a few cells remain mismatched (≤8), try a tight
+        # bounding-box SAT call BEFORE entering the heavy escalation.
+        # This is the most common case: 4×4 patches converge most of
+        # the grid but leave a few cross-boundary ions.  A single
+        # targeted SAT call on the mismatch region resolves them
+        # instantly instead of burning minutes in recursive full-grid
+        # SAT attempts.
+        if 0 < mismatch_remaining <= 8:
+            _pcr_positions = np.argwhere(current_layout != target_layout)
+            _pcr_r0 = max(0, int(_pcr_positions[:, 0].min()) - 1)
+            _pcr_r1 = min(n_rows, int(_pcr_positions[:, 0].max()) + 2)
+            _pcr_c0 = max(0, int(_pcr_positions[:, 1].min()) - 1)
+            _pcr_c1 = min(n_cols, int(_pcr_positions[:, 1].max()) + 2)
+            _pcr_h = _pcr_r1 - _pcr_r0
+            _pcr_w = _pcr_c1 - _pcr_c0
+            _pcr_pmax = max(base_pmax_in or 1, _pcr_h + _pcr_w)
+
+            logger.info(
+                "%s post-cycle small-mismatch retry: %d cells, "
+                "bbox r[%d:%d] c[%d:%d] (%dx%d), pmax=%d",
+                PATCH_LOG_PREFIX, mismatch_remaining,
+                _pcr_r0, _pcr_r1, _pcr_c0, _pcr_c1,
+                _pcr_h, _pcr_w, _pcr_pmax,
+            )
+
+            _pcr_patch = np.array(
+                current_layout[_pcr_r0:_pcr_r1, _pcr_c0:_pcr_c1],
+                dtype=int, copy=True,
+            )
+            # Build BT pin map (same logic as small-mismatch fast path)
+            _pcr_row_of: Dict[int, int] = {}
+            for _pr in range(_pcr_h):
+                for _pc in range(_pcr_w):
+                    _p_ion = int(_pcr_patch[_pr, _pc])
+                    if _p_ion != 0:
+                        _pcr_row_of[_p_ion] = _pr
+
+            _pcr_bt: Dict[int, Tuple[int, int]] = {}
+            for _pr in range(_pcr_h):
+                for _pc in range(_pcr_w):
+                    _p_tgt = int(target_layout[_pcr_r0 + _pr, _pcr_c0 + _pc])
+                    if _p_tgt != 0 and _p_tgt in _pcr_row_of:
+                        _pcr_bt[_p_tgt] = (_pr, _pc)
+
+            _pcr_BT: List[Dict[int, Tuple[int, int]]] = [{}, _pcr_bt]
+            _pcr_boundary = {
+                "top": _pcr_r0 > 0,
+                "bottom": _pcr_r1 < n_rows,
+                "left": _pcr_c0 > 0,
+                "right": _pcr_c1 < n_cols,
+            }
+
+            # Cross-boundary prefs for orphan ions in post-cycle retry
+            _pcr_cb_r1: Dict[int, Set[str]] = {}
+            for _pcr_cbr in range(_pcr_h):
+                for _pcr_cbc in range(_pcr_w):
+                    _pcr_cb_ion = int(_pcr_patch[_pcr_cbr, _pcr_cbc])
+                    if _pcr_cb_ion == 0 or _pcr_cb_ion in _pcr_bt:
+                        continue
+                    _pcr_cb_tgt = ion_target_pos.get(_pcr_cb_ion)
+                    if _pcr_cb_tgt is None:
+                        continue
+                    _pcr_cb_tr, _pcr_cb_tc = _pcr_cb_tgt
+                    _pcr_cb_dirs: Set[str] = set()
+                    if _pcr_cb_tr < _pcr_r0:
+                        _pcr_cb_dirs.add("top")
+                    if _pcr_cb_tr >= _pcr_r1:
+                        _pcr_cb_dirs.add("bottom")
+                    if _pcr_cb_tc < _pcr_c0:
+                        _pcr_cb_dirs.add("left")
+                    if _pcr_cb_tc >= _pcr_c1:
+                        _pcr_cb_dirs.add("right")
+                    if _pcr_cb_dirs:
+                        _pcr_cb_r1[_pcr_cb_ion] = _pcr_cb_dirs
+
+            _pcr_solved = False
+            for _pcr_soft in (False, True):
+                try:
+                    _pcr_layouts, _pcr_sched, _ = GlobalReconfigurations._optimal_QMR_for_WISE(
+                        _pcr_patch,
+                        P_arr=[[], []],
+                        k=wiseArch.k,
+                        BT=_pcr_BT,
+                        active_ions=None,
+                        wB_col=0,
+                        wB_row=0,
+                        full_P_arr=[[], []],
+                        ignore_initial_reconfig=False,
+                        base_pmax_in=_pcr_pmax,
+                        prev_pmax=None,
+                        grid_origin=(_pcr_r0, _pcr_c0),
+                        boundary_adjacent=_pcr_boundary,
+                        cross_boundary_prefs=[{}, _pcr_cb_r1],
+                        bt_soft=_pcr_soft,
+                        parent_stop_event=stop_event,
+                        progress_callback=progress_callback,
+                        max_inner_workers=max_inner_workers,
+                        max_sat_time=min(max_sat_time or 60.0, 15.0),
+                        max_rc2_time=max_rc2_time,
+                        skip_bt_check_c=True,
+                        solver_params=solver_params,
+                    )
+                    if _pcr_layouts:
+                        _pcr_final = _pcr_layouts[-1]
+                        current_layout[_pcr_r0:_pcr_r1, _pcr_c0:_pcr_c1] = _pcr_final
+                        _pcr_remain = int(np.count_nonzero(
+                            current_layout != target_layout
+                        ))
+                        if _pcr_remain == 0:
+                            logger.info(
+                                "%s post-cycle small-mismatch retry: "
+                                "CONVERGED (bt_soft=%s)",
+                                PATCH_LOG_PREFIX, _pcr_soft,
+                            )
+                            _pcr_merged: List[Dict[str, Any]] = []
+                            if _pcr_sched:
+                                for _pcr_round in _pcr_sched:
+                                    _pcr_merged.extend(_pcr_round)
+                            snapshots.append((
+                                np.array(current_layout, copy=True),
+                                _pcr_merged if _pcr_merged else None,
+                                [],
+                            ))
+                            _pcr_solved = True
+                            break
+                        else:
+                            logger.info(
+                                "%s post-cycle small-mismatch retry: "
+                                "partial convergence, %d cells remain",
+                                PATCH_LOG_PREFIX, _pcr_remain,
+                            )
+                            mismatch_remaining = _pcr_remain
+                except NoFeasibleLayoutError:
+                    logger.info(
+                        "%s post-cycle small-mismatch retry: infeasible "
+                        "(bt_soft=%s), trying next",
+                        PATCH_LOG_PREFIX, _pcr_soft,
+                    )
+                    continue
+
+            if _pcr_solved:
+                return snapshots
+
         if not allow_heuristic_fallback:
             # ── HEURISTIC FALLBACK POLICY (DO NOT MODIFY) ────────
             # MS-gate / return-round context: heuristic fallback is
             # NOT allowed unless user explicitly set the flag.
-            # Retry with a full-grid SAT solve covering the entire
-            # grid at escalating pmax values.  This is expensive but
-            # guarantees optimal SAT-based routing.
-            # This policy is intentional and correct.  Do NOT relax.
             # ─────────────────────────────────────────────────────
-            # Scale the starting pmax with grid dimensions so the
-            # SAT solver has enough passes to sort any permutation.
-            # A 2D grid of NxM needs at most N+M passes to route
-            # any permutation (ions may traverse both axes).
-            _escalation_pmax = max(base_pmax_in or 1, n_rows + n_cols)
-            _esc_step = max(2, min(n_rows, n_cols) // 2)
+
+            # ── Mismatch-targeted SAT escalation ─────────────────
+            # Compute the bounding box of remaining mismatched cells
+            # and run DIRECT targeted SAT calls on that region.
+            # This is O(mismatch_region) not O(grid) — a 4-cell local
+            # swap gets a small bbox even on a large grid.  Grid-wide
+            # shuffles naturally get full-grid bbox.
+            _mm_positions_esc = np.argwhere(current_layout != target_layout)
+            _esc_r0 = max(0, int(_mm_positions_esc[:, 0].min()) - 1)
+            _esc_r1 = min(n_rows, int(_mm_positions_esc[:, 0].max()) + 2)
+            _esc_c0 = max(0, int(_mm_positions_esc[:, 1].min()) - 1)
+            _esc_c1 = min(n_cols, int(_mm_positions_esc[:, 1].max()) + 2)
+            _esc_h = _esc_r1 - _esc_r0
+            _esc_w = _esc_c1 - _esc_c0
+
+            # Scale pmax with bbox dimensions, not full grid
+            _escalation_pmax = max(base_pmax_in or 1, _esc_h + _esc_w)
+            _esc_step = max(2, min(_esc_h, _esc_w) // 2)
+
             logger.warning(
                 "%s schedule-only rebuild could not converge "
                 "(%d/%d cells mismatched after %d cycle(s)). "
                 "allow_heuristic_fallback=False — retrying with "
-                "full-grid SAT at escalating pmax (start=%d, step=%d).",
+                "bbox-targeted SAT (bbox %dx%d, pmax start=%d, step=%d).",
                 PATCH_LOG_PREFIX,
                 mismatch_remaining,
                 current_layout.size,
                 len(snapshots),
+                _esc_h, _esc_w,
                 _escalation_pmax,
                 _esc_step,
             )
 
-            # Retry with full-grid single-patch SAT at escalating
-            # pmax.  Each attempt starts from the current (partially
-            # converged) layout and uses the same cycle-based BT pin
-            # machinery, but with the patch forced to cover the full
-            # grid (subgridsize = full grid) and a higher pmax.
             for _esc_attempt in range(5):
                 _esc_pmax = _escalation_pmax + _esc_attempt * _esc_step
-                logger.info(
-                    "%s full-grid SAT escalation attempt %d/5 "
-                    "pmax=%d (mismatch=%d)",
-                    PATCH_LOG_PREFIX, _esc_attempt + 1, _esc_pmax,
-                    mismatch_remaining,
-                )
-                try:
-                    _esc_snaps = _rebuild_schedule_for_layout(
-                        np.array(current_layout, copy=True),
-                        wiseArch,
-                        np.array(target_layout, copy=True),
-                        subgridsize=subgridsize,
-                        base_pmax_in=_esc_pmax,
-                        stop_event=stop_event,
-                        progress_callback=progress_callback,
-                        max_inner_workers=max_inner_workers,
-                        # Use heuristic fallback so the recursive call
-                        # does NOT itself recurse into escalation again.
-                        allow_heuristic_fallback=True,
-                        max_sat_time=max_sat_time,
-                        max_rc2_time=max_rc2_time,
-                    )
-                except Exception as _esc_exc:
-                    logger.warning(
-                        "%s SAT escalation attempt %d failed: %s",
-                        PATCH_LOG_PREFIX, _esc_attempt + 1, _esc_exc,
-                    )
-                    continue
 
-                if _esc_snaps:
-                    _esc_layout = _esc_snaps[-1][0]
-                    if np.array_equal(_esc_layout, target_layout):
-                        # Check the last snapshot has a real SAT schedule
-                        # (not a heuristic None placeholder).
-                        _last_sched = _esc_snaps[-1][1]
-                        if _last_sched is not None:
-                            snapshots.extend(_esc_snaps)
+                # Extract the mismatch region from the current layout
+                _esc_patch = np.array(
+                    current_layout[_esc_r0:_esc_r1, _esc_c0:_esc_c1],
+                    dtype=int, copy=True,
+                )
+
+                # Build BT pins: pin every ion in the patch whose
+                # global target also falls inside the patch.
+                _esc_row_of: Dict[int, int] = {}
+                for _er in range(_esc_h):
+                    for _ec in range(_esc_w):
+                        _e_ion = int(_esc_patch[_er, _ec])
+                        if _e_ion != 0:
+                            _esc_row_of[_e_ion] = _er
+
+                _esc_bt: Dict[int, Tuple[int, int]] = {}
+                for _er in range(_esc_h):
+                    for _ec in range(_esc_w):
+                        _e_tgt = int(target_layout[_esc_r0 + _er, _esc_c0 + _ec])
+                        if _e_tgt != 0 and _e_tgt in _esc_row_of:
+                            _esc_bt[_e_tgt] = (_er, _ec)
+
+                _esc_BT: List[Dict[int, Tuple[int, int]]] = [{}, _esc_bt]
+                _esc_boundary = {
+                    "top": _esc_r0 > 0,
+                    "bottom": _esc_r1 < n_rows,
+                    "left": _esc_c0 > 0,
+                    "right": _esc_c1 < n_cols,
+                }
+
+                # Cross-boundary prefs for orphan ions in escalation
+                _esc_cb_r1: Dict[int, Set[str]] = {}
+                for _esc_cbr in range(_esc_h):
+                    for _esc_cbc in range(_esc_w):
+                        _esc_cb_ion = int(_esc_patch[_esc_cbr, _esc_cbc])
+                        if _esc_cb_ion == 0 or _esc_cb_ion in _esc_bt:
+                            continue
+                        _esc_cb_tgt = ion_target_pos.get(_esc_cb_ion)
+                        if _esc_cb_tgt is None:
+                            continue
+                        _esc_cb_tr, _esc_cb_tc = _esc_cb_tgt
+                        _esc_cb_dirs: Set[str] = set()
+                        if _esc_cb_tr < _esc_r0:
+                            _esc_cb_dirs.add("top")
+                        if _esc_cb_tr >= _esc_r1:
+                            _esc_cb_dirs.add("bottom")
+                        if _esc_cb_tc < _esc_c0:
+                            _esc_cb_dirs.add("left")
+                        if _esc_cb_tc >= _esc_c1:
+                            _esc_cb_dirs.add("right")
+                        if _esc_cb_dirs:
+                            _esc_cb_r1[_esc_cb_ion] = _esc_cb_dirs
+
+                # Remaining wall budget for this attempt
+                _esc_elapsed = _time_mod.perf_counter() - _t0_rebuild
+                _esc_time = max(
+                    5.0,
+                    (max_sat_time or 60.0) - _esc_elapsed,
+                ) / max(1, 5 - _esc_attempt)
+
+                logger.info(
+                    "%s bbox-targeted SAT escalation attempt %d/5 "
+                    "pmax=%d bbox=(%dx%d) pins=%d time=%.1fs",
+                    PATCH_LOG_PREFIX, _esc_attempt + 1, _esc_pmax,
+                    _esc_h, _esc_w, len(_esc_bt), _esc_time,
+                )
+
+                for _esc_soft in (False, True):
+                    try:
+                        _esc_layouts, _esc_sched, _ = (
+                            GlobalReconfigurations._optimal_QMR_for_WISE(
+                                _esc_patch,
+                                P_arr=[[], []],
+                                k=wiseArch.k,
+                                BT=_esc_BT,
+                                active_ions=None,
+                                wB_col=0,
+                                wB_row=0,
+                                full_P_arr=[[], []],
+                                ignore_initial_reconfig=False,
+                                base_pmax_in=_esc_pmax,
+                                prev_pmax=None,
+                                grid_origin=(_esc_r0, _esc_c0),
+                                boundary_adjacent=_esc_boundary,
+                                cross_boundary_prefs=[{}, _esc_cb_r1],
+                                bt_soft=_esc_soft,
+                                parent_stop_event=stop_event,
+                                progress_callback=progress_callback,
+                                max_inner_workers=max_inner_workers,
+                                max_sat_time=_esc_time,
+                                max_rc2_time=max_rc2_time,
+                                skip_bt_check_c=True,
+                                solver_params=solver_params,
+                            )
+                        )
+                    except NoFeasibleLayoutError:
+                        logger.info(
+                            "%s escalation attempt %d: infeasible "
+                            "(bt_soft=%s), trying next",
+                            PATCH_LOG_PREFIX, _esc_attempt + 1,
+                            _esc_soft,
+                        )
+                        continue
+                    except Exception as _esc_exc:
+                        logger.warning(
+                            "%s escalation attempt %d failed: %s",
+                            PATCH_LOG_PREFIX, _esc_attempt + 1,
+                            _esc_exc,
+                        )
+                        continue
+
+                    if _esc_layouts:
+                        # Embed patch result back into current_layout
+                        _esc_final = _esc_layouts[-1]
+                        current_layout[
+                            _esc_r0:_esc_r1, _esc_c0:_esc_c1
+                        ] = _esc_final
+                        mismatch_remaining = int(
+                            np.count_nonzero(
+                                current_layout != target_layout
+                            )
+                        )
+                        if mismatch_remaining == 0:
+                            # Build merged schedule and append snapshot
+                            _esc_merged: List[Dict[str, Any]] = []
+                            if _esc_sched:
+                                for _esc_round in _esc_sched:
+                                    _esc_merged.extend(_esc_round)
+                            snapshots.append((
+                                np.array(current_layout, copy=True),
+                                _esc_merged if _esc_merged else None,
+                                [],
+                            ))
                             logger.info(
-                                "%s full-grid SAT retry succeeded at "
-                                "pmax=%d (attempt %d).",
+                                "%s bbox-targeted SAT escalation succeeded "
+                                "at pmax=%d (attempt %d, bt_soft=%s).",
                                 PATCH_LOG_PREFIX, _esc_pmax,
-                                _esc_attempt + 1,
+                                _esc_attempt + 1, _esc_soft,
                             )
                             return snapshots
                         else:
-                            # Recursive call fell through to heuristic.
-                            # Reject heuristic result — keep trying
-                            # at higher pmax so SAT has another chance.
-                            logger.warning(
-                                "%s escalation attempt %d reached "
-                                "target via heuristic; REJECTING "
-                                "(allow_heuristic_fallback=False). "
-                                "Trying next pmax.",
+                            logger.info(
+                                "%s escalation attempt %d: partial "
+                                "progress, %d cells remain",
                                 PATCH_LOG_PREFIX, _esc_attempt + 1,
+                                mismatch_remaining,
                             )
-                            continue
-                    else:
-                        # Partial progress — update starting layout
-                        snapshots.extend(_esc_snaps)
-                        current_layout = np.array(_esc_layout, copy=True)
-                        mismatch_remaining = int(
-                            np.count_nonzero(current_layout != target_layout)
-                        )
-                        if mismatch_remaining == 0:
-                            return snapshots
+                            # Recompute bounding box for next attempt
+                            _mm_positions_esc = np.argwhere(
+                                current_layout != target_layout
+                            )
+                            _esc_r0 = max(
+                                0, int(_mm_positions_esc[:, 0].min()) - 1
+                            )
+                            _esc_r1 = min(
+                                n_rows,
+                                int(_mm_positions_esc[:, 0].max()) + 2,
+                            )
+                            _esc_c0 = max(
+                                0, int(_mm_positions_esc[:, 1].min()) - 1
+                            )
+                            _esc_c1 = min(
+                                n_cols,
+                                int(_mm_positions_esc[:, 1].max()) + 2,
+                            )
+                            _esc_h = _esc_r1 - _esc_r0
+                            _esc_w = _esc_c1 - _esc_c0
+                            break  # Exit soft-BT loop, try next pmax
+                    break  # Exit soft-BT loop if we got layouts
 
             # ── Ion-set safety check (Fix FM3) ────────────────────
             # Before raising, verify whether the ion sets match.  If
@@ -2391,6 +2761,8 @@ def _route_round_sequence(
     replay_level: int = 1,
     max_sat_time: Optional[float] = None,
     max_rc2_time: Optional[float] = None,
+    solver_params: Optional[Any] = None,
+    patch_verbose: Optional[bool] = None,
 ) -> Tuple[List[RoutingStep], np.ndarray]:
     """Pure-array routing engine extracted from ``ionRoutingWISEArch``.
 
@@ -2563,6 +2935,8 @@ def _route_round_sequence(
                     max_inner_workers=max_inner_workers,
                     max_sat_time=max_sat_time,
                     max_rc2_time=max_rc2_time,
+                    solver_params=solver_params,
+                    patch_verbose=patch_verbose,
                 )
                 if len(cache_for_block) < BLOCK_LEN:
                     cache_for_block[blk_idx] = deepcopy(tiling_steps_meta)
@@ -2682,6 +3056,8 @@ def _route_round_sequence(
                         max_inner_workers=max_inner_workers,
                         max_sat_time=max_sat_time,
                         max_rc2_time=max_rc2_time,
+                        solver_params=solver_params,
+                        patch_verbose=patch_verbose,
                     )
                     tiling_steps = [snapshot for (_cy, _ti, snapshot) in tiling_steps_meta]
                 if not tiling_steps:
@@ -3049,6 +3425,15 @@ def ionRoutingWISEArch(
         if _max_rc2_time is None:
             _max_rc2_time = _max_sat_time
 
+    # solver_params / patch_verbose / debug_mode → threaded through
+    _solver_params = None
+    _patch_verbose = None
+    if routing_config is not None:
+        _solver_params = getattr(routing_config, 'solver_params', None)
+        _pv = getattr(routing_config, 'patch_verbose', None)
+        if _pv is not None:
+            _patch_verbose = _pv
+
     logger.info(
         "%s ionRoutingWISEArch: ops=%d, MS_rounds=%d, lookahead=%d, subgrid=(%d,%d,%d), active_ions=%d",
         PATCH_LOG_PREFIX,
@@ -3120,6 +3505,8 @@ def ionRoutingWISEArch(
             max_inner_workers=max_inner_workers,
             max_sat_time=_max_sat_time,
             max_rc2_time=_max_rc2_time,
+            solver_params=_solver_params,
+            patch_verbose=_patch_verbose,
         )
 
     reconfigTime = 0.0
@@ -3786,6 +4173,7 @@ def ionRoutingWISEArch(
                         allow_heuristic_fallback=_allow_heuristic,
                         max_sat_time=_max_sat_time,
                         max_rc2_time=_max_rc2_time,
+                        solver_params=_solver_params,
                     )
                 except Exception as _rb_exc:
                     logger.error(
@@ -3881,6 +4269,7 @@ def ionRoutingWISEArch(
                     max_inner_workers=max_inner_workers,
                     max_sat_time=_max_sat_time,
                     max_rc2_time=_max_rc2_time,
+                    solver_params=_solver_params,
                 )
                 if _escalated:
                     # Apply intermediate cycles, keep last as schedule
@@ -4113,6 +4502,7 @@ def ionRoutingWISEArch(
                             allow_heuristic_fallback=_sub_allow_heuristic,
                             max_sat_time=_max_sat_time,
                             max_rc2_time=_max_rc2_time,
+                            solver_params=_solver_params,
                         )
                     except Exception as _sub_exc:
                         logger.error(
@@ -4167,6 +4557,7 @@ def ionRoutingWISEArch(
                     max_inner_workers=max_inner_workers,
                     max_sat_time=_max_sat_time,
                     max_rc2_time=_max_rc2_time,
+                    solver_params=_solver_params,
                 )
                 if _sub_escalated:
                     for _se_layout, _se_sched, _ in _sub_escalated[:-1]:
@@ -4478,6 +4869,7 @@ def _merge_block_routing_steps(
     max_sat_time: Optional[float] = None,
     max_rc2_time: Optional[float] = None,
     allow_heuristic_fallback: bool = True,
+    solver_params: Optional[Any] = None,
 ) -> Tuple[List[RoutingStep], np.ndarray]:
     """Merge per-block ``RoutingStep`` lists into global-grid steps.
 
@@ -4780,6 +5172,7 @@ def _merge_block_routing_steps(
                     allow_heuristic_fallback=allow_heuristic_fallback,
                     max_sat_time=max_sat_time,
                     max_rc2_time=max_rc2_time,
+                    solver_params=solver_params,
                 )
             except Exception as _rb_exc:
                 logger.warning(
@@ -5023,6 +5416,15 @@ def ionRoutingGadgetArch(
             _max_sat_time = getattr(routing_config, 'timeout_seconds', None)
         if _max_rc2_time is None:
             _max_rc2_time = _max_sat_time
+
+    # solver_params / patch_verbose → threaded through
+    _solver_params = None
+    _patch_verbose = None
+    if routing_config is not None:
+        _solver_params = getattr(routing_config, 'solver_params', None)
+        _pv = getattr(routing_config, 'patch_verbose', None)
+        if _pv is not None:
+            _patch_verbose = _pv
 
     # ------------------------------------------------------------------
     # 1) Determine phase boundaries from qec_metadata.phases

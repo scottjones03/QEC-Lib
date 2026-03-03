@@ -1092,138 +1092,80 @@ class TrappedIonCompiler(HardwareCompiler):
         barriers = circuit.metadata.get("barriers", [])
         is_wise = circuit.metadata.get("is_wise", False)
         allOps = circuit.operations
+        wise_barriers: list = []
+        reordered: list = list(allOps)
 
         if is_wise:
-            # ── Barrier-driven scheduling for WISE ───────────────────
-            # The pre-routing reorder (reorder_with_type_barriers) tagged
-            # each QubitOp with _barrier_group — an integer that changes
-            # at every barrier boundary.
+            # ── Barrier-group scheduling for WISE ────────────────────
+            # Pre-routing reorder_with_type_barriers() already grouped
+            # ops by type with barriers.  Each QubitOp carries a
+            # ``_barrier_group`` tag.  After routing, transport ops
+            # (Split/Move/Merge/Reconfig) are interleaved.
             #
-            # The router may interleave QubitOps from different barrier
-            # groups (because different ions are routed in different
-            # orders).  We must reorder the post-routing list so that
-            # all ops belonging to barrier_group N come before any ops
-            # from barrier_group N+1.
+            # Key insight: rotations are *global* control pulses —
+            # RECONFIGs between rotation ops can be deferred to just
+            # before the next MS round.
             #
-            # Transport ops are assigned to the barrier_group of the
-            # NEXT QubitOp in the list (they bring ions into position
-            # for that QubitOp).  This preserves the happens-before
-            # relationship since the DAG already encodes component
-            # dependencies.
+            # Algorithm:
+            #  1. Identify barrier groups containing MS gates.
+            #  2. Defer transport between non-MS groups to next MS.
+            #  3. Build barriers at type transitions.
 
-            from collections import defaultdict as _defaultdict
+            # 1. Identify MS barrier groups.
+            ms_groups: set = set()
+            for op in allOps:
+                if isinstance(op, TwoQubitMSGate):
+                    ms_groups.add(getattr(op, '_barrier_group', 0))
 
-            # 1. Walk the post-routing list and assign each op a
-            #    barrier_group.
-            op_bg: dict = {}
-            last_bg = 0
-            # Forward pass to assign transports to their next QubitOp's group
-            # Walk backward to find the "next QubitOp's barrier_group" for each
-            # transport op.
-            next_qubit_bg = 0
-            for i in range(len(allOps) - 1, -1, -1):
-                op = allOps[i]
-                if isinstance(op, QubitOperation):
-                    next_qubit_bg = getattr(op, '_barrier_group', 0)
-                op_bg[i] = next_qubit_bg
+            # 2. Defer transport between non-MS groups.
+            n = len(allOps)
+            prev_qbg = [0] * n
+            next_qbg = [0] * n
+            p = 0
+            for i in range(n):
+                if isinstance(allOps[i], QubitOperation):
+                    p = getattr(allOps[i], '_barrier_group', 0)
+                prev_qbg[i] = p
+            nxt = 0
+            for i in range(n - 1, -1, -1):
+                if isinstance(allOps[i], QubitOperation):
+                    nxt = getattr(allOps[i], '_barrier_group', 0)
+                next_qbg[i] = nxt
 
-            # 2. Group ops by barrier_group, preserving original order
-            #    within each group.
-            bg_groups: dict = _defaultdict(list)
+            reordered = []
+            deferred_transport: list = []
             for i, op in enumerate(allOps):
-                bg_groups[op_bg[i]].append(op)
-
-            # 3. Merge consecutive barrier groups of the same dominant
-            #    QubitOperation type, then build the reordered list
-            #    with barriers only at *type transitions*.
-            #
-            #    Rules:
-            #    - Consecutive groups with the same dominant QubitOp
-            #      type are merged into one super-group (e.g. several
-            #      small RX groups → one large RX segment).
-            #    - Transport-only groups between non-MS groups are
-            #      absorbed into the previous group (eliminates
-            #      spurious RECONFIG batches between rotations).
-            #    - Transport-only groups after MS are kept separate
-            #      (they create the expected RECONFIG batches between
-            #      MS sub-rounds or before the next rotation block).
-            #    - MS groups are never merged with non-MS groups.
-            from collections import Counter as _Counter
-
-            sorted_bgs = sorted(bg_groups.keys())
-
-            def _dominant_qubit_type(ops_list):
-                """Return the most common QubitOp subclass, or None."""
-                qops = [op for op in ops_list
-                        if isinstance(op, QubitOperation)]
-                if not qops:
-                    return None
-                counts = _Counter(type(op) for op in qops)
-                return counts.most_common(1)[0][0]
-
-            # merged: list of (dominant_type_or_None, [ops])
-            merged: list = []
-            for bg in sorted_bgs:
-                ops = bg_groups[bg]
-                dt = _dominant_qubit_type(ops)
-
-                if not merged:
-                    merged.append((dt, list(ops)))
-                elif dt is not None and merged[-1][0] == dt:
-                    # Same qubit-op type as previous — merge
-                    merged[-1][1].extend(ops)
-                elif dt is None:
-                    # Transport-only group.
-                    # After MS → keep separate (creates RECONFIG batch)
-                    # Otherwise → absorb into previous group
-                    if merged[-1][0] is TwoQubitMSGate:
-                        merged.append((dt, list(ops)))
-                    else:
-                        merged[-1][1].extend(ops)
+                if isinstance(op, QubitOperation):
+                    bg = getattr(op, '_barrier_group', 0)
+                    if bg in ms_groups and deferred_transport:
+                        reordered.extend(deferred_transport)
+                        deferred_transport.clear()
+                    reordered.append(op)
                 else:
-                    # Different qubit-op type — new segment
-                    merged.append((dt, list(ops)))
-
-            # ── Post-process: clean up RECONFIG placement ────────
-            # RECONFIGs (transport-only segments) should only appear
-            # directly before/after MS rounds.  Transport between
-            # rotation blocks is absorbed into the adjacent block.
-            # Then merge any consecutive same-type segments.
-            _stable = False
-            while not _stable:
-                _stable = True
-                _i = 0
-                while _i < len(merged):
-                    _dt = merged[_i][0]
-                    if _dt is None:
-                        _next_dt = merged[_i + 1][0] if _i + 1 < len(merged) else None
-                        _prev_dt = merged[_i - 1][0] if _i > 0 else None
-                        if _next_dt is TwoQubitMSGate or _prev_dt is TwoQubitMSGate:
-                            _i += 1          # keep RECONFIG around MS
-                        elif _i > 0:
-                            merged[_i - 1][1].extend(merged[_i][1])
-                            merged.pop(_i)
-                            _stable = False
-                        elif _i + 1 < len(merged):
-                            merged[_i + 1] = (merged[_i + 1][0],
-                                              merged[_i][1] + merged[_i + 1][1])
-                            merged.pop(_i)
-                            _stable = False
-                        else:
-                            _i += 1
-                    elif _i > 0 and merged[_i - 1][0] == _dt:
-                        merged[_i - 1][1].extend(merged[_i][1])
-                        merged.pop(_i)
-                        _stable = False
+                    if prev_qbg[i] in ms_groups or next_qbg[i] in ms_groups:
+                        reordered.append(op)
                     else:
-                        _i += 1
+                        deferred_transport.append(op)
+            reordered.extend(deferred_transport)
 
-            reordered: list = []
-            wise_barriers: list = []
-            for _, ops in merged:
-                if reordered:
-                    wise_barriers.append(len(reordered))
-                reordered.extend(ops)
+            # 3. Build barriers at type transitions.
+            #    QubitOps: barrier when type changes OR entering/leaving MS.
+            #    Transport ops inherit preceding QubitOp's group.
+            wise_barriers = []
+            prev_type: type = type(None)
+            prev_is_ms = False
+
+            for i, op in enumerate(reordered):
+                if isinstance(op, QubitOperation):
+                    cur_is_ms = isinstance(op, TwoQubitMSGate)
+                    cur_type = type(op)
+
+                    # Barrier if: type changed, or MS boundary crossed
+                    if i > 0 and (cur_type is not prev_type or cur_is_ms != prev_is_ms):
+                        wise_barriers.append(i)
+
+                    prev_type = cur_type
+                    prev_is_ms = cur_is_ms
 
             parallelOpsMap = paralleliseOperationsWithBarriers(
                 reordered, wise_barriers, isWiseArch=True,
@@ -1260,6 +1202,7 @@ class TrappedIonCompiler(HardwareCompiler):
             batches=list(parallelOpsMap.values()),
             metadata={
                 "parallel_ops_map": parallelOpsMap,
-                "all_operations": list(allOps),
+                "all_operations": reordered if is_wise else list(allOps),
+                "wise_barriers": wise_barriers if is_wise else [],
             },
         )

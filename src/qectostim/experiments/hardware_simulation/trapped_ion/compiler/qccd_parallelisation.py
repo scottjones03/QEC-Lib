@@ -126,7 +126,7 @@ _ROTATION_TYPE_PRIORITY = _OP_TYPE_PRIORITY
 
 
 # ---------------------------------------------------------------------------
-# Phase-based barrier reordering (pre-routing, called from decompose_to_native)
+# Pre-routing barrier reorder (5-step algorithm)
 # ---------------------------------------------------------------------------
 
 def reorder_with_type_barriers(
@@ -136,26 +136,22 @@ def reorder_with_type_barriers(
 
     Implements the 5-step barrier algorithm:
 
-    1. **Group MS gates by stim index** into contiguous blocks, barrier
-       around each.
-    2. **Group RESETs and MEASUREMENTs** by stim index between barriers.
-    3. **Merge adjacent RESET / MEAS blocks** when only separated by
-       rotations, pushing rotations to the correct side to respect the
-       happens-before relation on each qubit.
+    1. **Group MS gates by stim origin** into contiguous blocks, barrier
+       around each.  All MS from one CX stay together.
+    2. **Group RESETs and MEASurements** by stim origin between barriers.
+    3. **Merge adjacent same-type blocks** across stim origins, pushing
+       rotations to respect per-qubit happens-before.
     4. **Barrier around RESET and MEAS blocks**.
     5. **Group ROTX and ROTY** between barriers, barrier around each.
 
     Final pattern::
 
-        RESET BLOCK | ROTX BLOCK | ROTY BLOCK |
-        { MS BLOCK | ROTX BLOCK | ROTY BLOCK } × n |
-        MEAS BLOCK | RESET BLOCK | ...
+        RESET | RX | RY | {MS | RX | RY} × n | MEAS | RESET
 
     Parameters
     ----------
     operations : list[Operation]
-        Flat list of native ``QubitOperation``s from ``decompose_to_native``
-        (no transport ops at this stage).
+        Native ``QubitOperation``s from ``decompose_to_native`` (no transport).
 
     Returns
     -------
@@ -167,154 +163,237 @@ def reorder_with_type_barriers(
     if not operations:
         return [], []
 
-    # ── 1. Group MS gates by stim index into contiguous blocks ───────
-    #
-    # Build per-ion operation sequences to determine phase assignment.
-    # Each unique _stim_origin with MS gates defines one MS layer.
-    # Non-MS ops are assigned to the gap between the MS layers they
-    # fall between *on each ion* (per-ion walk).
-
-    ms_layer_keys: List[Tuple[int, int]] = []  # ordered unique keys
-    ms_layer_set: Set[Tuple[int, int]] = set()
+    # ── Step 0: Group ops by stim origin ─────────────────────────────
+    # Key = (tick_epoch, stim_origin) to handle multi-round circuits
+    ops_by_origin: Dict[Tuple[int, int], List[Operation]] = defaultdict(list)
     for op in operations:
-        if isinstance(op, TwoQubitMSGate):
-            key = (
-                getattr(op, '_tick_epoch', 0),
-                getattr(op, '_stim_origin', 0),
-            )
-            if key not in ms_layer_set:
-                ms_layer_set.add(key)
-                ms_layer_keys.append(key)
-    ms_layer_keys.sort()
-    ms_layer_map: Dict[Tuple[int, int], int] = {
-        k: i for i, k in enumerate(ms_layer_keys)
-    }
-    num_ms_layers = len(ms_layer_keys)
-
-    if num_ms_layers == 0:
-        # No MS gates — apply steps 2-5 directly
-        result, barriers = _barrier_reorder_non_ms(operations)
-        _tag_barrier_groups(result, barriers)
-        return result, barriers
-
-    # Per-ion operation sequences
-    ion_ops: Dict[int, List[Tuple[int, Operation]]] = defaultdict(list)
-    for i, op in enumerate(operations):
-        if isinstance(op, QubitOperation):
-            for ion in op.ions:
-                ion_ops[id(ion)].append((i, op))
-
-    # Assign each op to a phase:
-    #   0          = before first MS
-    #   2k+1       = MS layer k (odd)
-    #   2(k+1)     = gap between MS layer k and k+1 (even)
-    #   2N         = after last MS
-    op_phase: Dict[int, int] = {}
-
-    for _ion_id, ops_list in ion_ops.items():
-        prev_layer = -1
-        for _orig_idx, op in ops_list:
-            oid = id(op)
-            if isinstance(op, TwoQubitMSGate):
-                key = (
-                    getattr(op, '_tick_epoch', 0),
-                    getattr(op, '_stim_origin', 0),
-                )
-                layer = ms_layer_map[key]
-                phase = 2 * layer + 1
-                op_phase[oid] = max(op_phase.get(oid, phase), phase)
-                prev_layer = layer
-            else:
-                if prev_layer == -1:
-                    phase = 0
-                else:
-                    phase = 2 * (prev_layer + 1)
-                op_phase[oid] = max(op_phase.get(oid, phase), phase)
-
-    # ── Phase fixup for ops on ions not participating in any MS gate ──
-    # The per-ion walk above leaves prev_layer = -1 for such ions,
-    # assigning ALL their ops to phase 0 (before first MS).  But if
-    # those ops come from a stim instruction that is LATER than an MS
-    # layer (e.g. MRX after CX in the stim circuit), they should be
-    # in the gap AFTER that MS layer, not before.
-    #
-    # We skip ops whose (tick_epoch, stim_origin) matches an MS layer
-    # key — those share a decomposition with MS ops and the per-ion
-    # walk already handles them correctly.
-    for op in operations:
-        oid = id(op)
-        if isinstance(op, TwoQubitMSGate):
-            continue
-        current_phase = op_phase.get(oid, 0)
-        op_key = (
+        key = (
             getattr(op, '_tick_epoch', 0),
             getattr(op, '_stim_origin', 0),
         )
-        if op_key in ms_layer_set:
-            continue  # same decomposition as MS — per-ion walk is correct
-        # Find the latest MS layer that precedes this op in stim order
-        best_layer = -1
-        for mk in ms_layer_keys:
-            if mk < op_key:
-                best_layer = ms_layer_map[mk]
-        if best_layer >= 0:
-            target_phase = 2 * (best_layer + 1)
-            if target_phase > current_phase:
-                op_phase[oid] = target_phase
+        ops_by_origin[key].append(op)
 
-    # Sort by (phase, original_index) and group by phase
-    ops_with_phase = [
-        (op_phase.get(id(op), 0), i, op)
-        for i, op in enumerate(operations)
-    ]
-    ops_with_phase.sort(key=lambda x: (x[0], x[1]))
+    # Sort origins to preserve stim instruction order
+    sorted_origins = sorted(ops_by_origin.keys())
 
-    phase_ops: Dict[int, List[Operation]] = defaultdict(list)
-    for phase, _orig_idx, op in ops_with_phase:
-        phase_ops[phase].append(op)
+    # ── Step 1: Canonicalize each origin's ops ───────────────────────
+    # For each stim origin, arrange: pre-MS | ALL MS | post-MS
+    # Rotations between MS from same origin get pushed to post-MS
+    canonicalized: Dict[Tuple[int, int], List[Operation]] = {}
+    ms_origins: Set[Tuple[int, int]] = set()
 
-    # ── Emit phases: MS phases as-is, non-MS phases through steps 2-5 ──
-    total_phases = 2 * num_ms_layers
+    for origin in sorted_origins:
+        origin_ops = ops_by_origin[origin]
+        canon, has_ms = _canonicalize_origin_ops(origin_ops)
+        canonicalized[origin] = canon
+        if has_ms:
+            ms_origins.add(origin)
+
+    # ── Step 2-3: Concatenate origins with barriers around MS ────────
     result: List[Operation] = []
     barriers: List[int] = []
 
-    for phase in range(total_phases + 1):
-        ops = phase_ops.get(phase)
-        if not ops:
+    for origin in sorted_origins:
+        canon = canonicalized[origin]
+        if not canon:
             continue
 
-        if phase % 2 == 1:
-            # Odd phase: MS layer — emit as contiguous block with barriers
-            if result:
+        if origin in ms_origins:
+            # Find MS block boundaries within this origin
+            first_ms_idx = None
+            last_ms_idx = None
+            for i, op in enumerate(canon):
+                if isinstance(op, TwoQubitMSGate):
+                    if first_ms_idx is None:
+                        first_ms_idx = i
+                    last_ms_idx = i
+
+            # Emit pre-MS ops
+            pre_ms = canon[:first_ms_idx] if first_ms_idx else []
+            if pre_ms:
+                result.extend(pre_ms)
+
+            # Barrier before MS block
+            if first_ms_idx is not None:
                 barriers.append(len(result))
-            result.extend(ops)
-            barriers.append(len(result))
+
+            # Emit MS block
+            ms_block = canon[first_ms_idx:last_ms_idx + 1] if first_ms_idx is not None else []
+            result.extend(ms_block)
+
+            # Barrier after MS block
+            if last_ms_idx is not None:
+                barriers.append(len(result))
+
+            # Emit post-MS ops
+            post_ms = canon[last_ms_idx + 1:] if last_ms_idx is not None else []
+            if post_ms:
+                result.extend(post_ms)
         else:
-            # Even phase: non-MS window — apply steps 2-5
-            if result:
-                barriers.append(len(result))
-            if phase == 0:
-                pos = "first"
-            elif phase >= total_phases:
-                pos = "last"
-            else:
-                pos = "middle"
-            grouped, sub_barriers = _barrier_reorder_non_ms(ops, position=pos)
-            offset = len(result)
-            result.extend(grouped)
-            for b in sub_barriers:
-                barriers.append(offset + b)
+            # No MS in this origin: just append
+            result.extend(canon)
 
-    barriers = sorted(set(b for b in barriers if 0 < b < len(result)))
+    # ── Step 4-5: Merge adjacent same-type blocks ────────────────────
+    # Group consecutive non-MS ops by type, respecting barriers
+    result, barriers = _merge_and_barrier_types(result, barriers)
 
-    # ── Tag each op with its barrier group ───────────────────────────
-    # The barrier group index is used post-routing to reconstruct
-    # barriers after transport ops have been inserted between QubitOps.
-    # The scheduler can then place barriers whenever _barrier_group
-    # changes between consecutive QubitOps.
+    # ── Tag each op with barrier group ───────────────────────────────
     _tag_barrier_groups(result, barriers)
 
     return result, barriers
+
+
+def _canonicalize_origin_ops(
+    ops: List[Operation],
+) -> Tuple[List[Operation], bool]:
+    """Canonicalize ops from one stim origin.
+
+    Returns (canonicalized_ops, has_ms).
+
+    For origins with MS gates:
+      pre-MS non-rotations | pre-MS rotations | ALL MS | post-MS rotations | post-MS non-rotations
+
+    For origins without MS gates:
+      RESET | MEAS | RX | RY  (or RX | RY | MEAS | RESET depending on context)
+    """
+    ms_ops = [op for op in ops if isinstance(op, TwoQubitMSGate)]
+
+    if not ms_ops:
+        # No MS: simple type-priority sort
+        # Priority: RESET < RX < RY < MEAS (for non-MS instructions)
+        priority = {QubitReset: 0, XRotation: 1, YRotation: 2, Measurement: 3}
+        return sorted(ops, key=lambda o: priority.get(type(o), 99)), False
+
+    # Has MS: separate pre-MS and post-MS regions
+    # The decomposition of CX is: RY → MS → RY → MS → RY
+    # We want: ALL rotations that were originally between MS gates
+    # to be pushed to AFTER all MS gates.
+
+    # Find original indices of first and last MS
+    ms_indices = []
+    for i, op in enumerate(ops):
+        if isinstance(op, TwoQubitMSGate):
+            ms_indices.append(i)
+
+    first_ms_orig = ms_indices[0]
+    last_ms_orig = ms_indices[-1]
+
+    pre_ms_ops: List[Operation] = []
+    between_ms_ops: List[Operation] = []  # rotations between MS gates
+    post_ms_ops: List[Operation] = []
+
+    for i, op in enumerate(ops):
+        if isinstance(op, TwoQubitMSGate):
+            continue  # MS ops handled separately
+
+        if i < first_ms_orig:
+            pre_ms_ops.append(op)
+        elif i > last_ms_orig:
+            post_ms_ops.append(op)
+        else:
+            # Between first and last MS — these are the interleaved rotations
+            between_ms_ops.append(op)
+
+    # Sort pre-MS: RESET, MEAS, RX, RY
+    pre_priority = {QubitReset: 0, Measurement: 1, XRotation: 2, YRotation: 3}
+    pre_ms_ops.sort(key=lambda o: pre_priority.get(type(o), 99))
+
+    # Post-MS gets: between_ms_ops + post_ms_ops, sorted as RX, RY, MEAS, RESET
+    all_post = between_ms_ops + post_ms_ops
+    post_priority = {XRotation: 0, YRotation: 1, Measurement: 2, QubitReset: 3}
+    all_post.sort(key=lambda o: post_priority.get(type(o), 99))
+
+    return pre_ms_ops + ms_ops + all_post, True
+
+
+def _merge_and_barrier_types(
+    ops: List[Operation],
+    ms_barriers: List[int],
+) -> Tuple[List[Operation], List[int]]:
+    """Merge adjacent same-type blocks and insert barriers at type transitions.
+
+    Parameters
+    ----------
+    ops : list
+        Operations with MS barriers already in place.
+    ms_barriers : list
+        Barrier positions around MS blocks.
+
+    Returns
+    -------
+    merged_ops : list
+        Operations with same-type blocks merged.
+    barriers : list
+        Barrier positions at all type transitions.
+    """
+    if not ops:
+        return [], []
+
+    # Convert ms_barriers to a set for fast lookup
+    barrier_set = set(ms_barriers)
+
+    # Split into segments at MS barriers
+    segments: List[Tuple[int, int, bool]] = []  # (start, end, is_ms_segment)
+    seg_start = 0
+
+    for i in range(len(ops) + 1):
+        if i in barrier_set or i == len(ops):
+            if i > seg_start:
+                # Check if this segment contains MS
+                has_ms = any(isinstance(ops[j], TwoQubitMSGate)
+                            for j in range(seg_start, i))
+                segments.append((seg_start, i, has_ms))
+            seg_start = i
+
+    # Process each segment: MS segments stay as-is, non-MS get type-sorted
+    result: List[Operation] = []
+    barriers: List[int] = []
+
+    for seg_start, seg_end, is_ms in segments:
+        seg_ops = ops[seg_start:seg_end]
+
+        if is_ms:
+            # MS segment: keep as-is, barrier at start
+            if result:
+                barriers.append(len(result))
+            result.extend(seg_ops)
+            barriers.append(len(result))
+        else:
+            # Non-MS segment: sort by type, barrier at transitions
+            sorted_seg = _sort_by_type_with_context(seg_ops, len(result) == 0)
+            if sorted_seg:
+                if result and type(result[-1]) is not type(sorted_seg[0]):
+                    barriers.append(len(result))
+                # Add barriers at type transitions within segment
+                for i in range(1, len(sorted_seg)):
+                    if type(sorted_seg[i]) is not type(sorted_seg[i - 1]):
+                        barriers.append(len(result) + i)
+                result.extend(sorted_seg)
+
+    # Clean up barriers: remove duplicates and out-of-range
+    barriers = sorted(set(b for b in barriers if 0 < b < len(result)))
+
+    return result, barriers
+
+
+def _sort_by_type_with_context(
+    ops: List[Operation],
+    is_first_segment: bool,
+) -> List[Operation]:
+    """Sort ops by type priority.
+
+    For first segment (before any MS): RESET, RX, RY, MEAS
+    For other segments (after MS): RX, RY, MEAS, RESET
+    """
+    if not ops:
+        return []
+
+    if is_first_segment:
+        priority = {QubitReset: 0, XRotation: 1, YRotation: 2, Measurement: 3}
+    else:
+        priority = {XRotation: 0, YRotation: 1, Measurement: 2, QubitReset: 3}
+
+    return sorted(ops, key=lambda o: priority.get(type(o), 99))
 
 
 def _tag_barrier_groups(
@@ -332,140 +411,6 @@ def _tag_barrier_groups(
         if i in barrier_set:
             group += 1
         op._barrier_group = group  # type: ignore[attr-defined]
-
-
-# ── Steps 2-5: Type-block reordering for non-MS windows ──────────
-
-def _barrier_reorder_non_ms(
-    ops: List[Operation],
-    position: str = "middle",
-) -> Tuple[List[Operation], List[int]]:
-    """Apply steps 2-5 of the barrier algorithm to a non-MS window.
-
-    Uses **priority-driven layered emission** to group same-type
-    operations across different ions while preserving per-ion ordering.
-    In each pass, only the *highest-priority* available type is emitted;
-    lower-priority types are deferred.  This lets ops from different ions
-    accumulate at queue heads and merge into contiguous same-type blocks
-    (e.g. two separate MEAS groups merge into one when intervening
-    rotations are emitted first).
-
-    Critical for MRX decompositions where one ion has
-    ``XRot → YRot → Meas → Reset → YRot → XRot``.
-
-    Algorithm:
-      1. Build per-ion operation queues (preserving original order per ion).
-      2. Iteratively: peek at each ion's next unplaced op, group available
-         ops by type, emit **only the highest-priority type**, repeat.
-      3. Insert barriers at every type transition.
-
-    The priority ordering depends on ``position`` in the cycle:
-
-    * ``"first"`` (before first MS):
-      ``QubitReset → XRotation → YRotation → Measurement``
-    * ``"middle"`` / ``"last"`` (between or after MS layers):
-      ``XRotation → YRotation → Measurement → QubitReset``
-
-    Returns (reordered_ops, barrier_positions).
-    """
-    if not ops:
-        return [], []
-    if len(ops) == 1:
-        return list(ops), []
-
-    # ── Priority map (position-aware) ────────────────────────────────
-    if position == "first":
-        _priority = {QubitReset: 0, XRotation: 1, YRotation: 2, Measurement: 3}
-    else:
-        _priority = {XRotation: 0, YRotation: 1, Measurement: 2, QubitReset: 3}
-
-    # ── Build per-ion operation queues ────────────────────────────────
-    # Each ion gets an ordered deque of its ops (preserving original
-    # order within the phase for that ion).
-    ion_queues: Dict[int, deque] = {}   # ion id(obj) → deque[op]
-    no_ion_ops: List[Operation] = []    # ops without ion info (fallback)
-    seen: Set[int] = set()
-
-    for op in ops:
-        oid = id(op)
-        if oid in seen:
-            continue
-        seen.add(oid)
-        ions = getattr(op, 'ions', None) or getattr(op, '_ions', [])
-        if ions:
-            ion_id = id(ions[0])
-            if ion_id not in ion_queues:
-                ion_queues[ion_id] = deque()
-            ion_queues[ion_id].append(op)
-        else:
-            no_ion_ops.append(op)
-
-    # ── Layered emission ─────────────────────────────────────────────
-    # Each pass examines the HEAD of every ion's queue, groups the
-    # available ops by type, and emits ONLY the highest-priority type.
-    #
-    # By deferring lower-priority types we give ops from different
-    # ions time to align at the queue heads, enabling natural merging
-    # of same-type blocks (e.g. MEAS from ion A + MEAS from ion B
-    # merge into one MEAS block when we defer MEAS until all higher-
-    # priority rotations have been emitted first).
-    result: List[Operation] = []
-    placed: Set[int] = set()
-
-    while any(q for q in ion_queues.values()):
-        # Clean up queue heads that were already placed (handles
-        # multi-ion ops that appear in more than one queue).
-        for _ion_id, q in ion_queues.items():
-            while q and id(q[0]) in placed:
-                q.popleft()
-
-        # Collect the next available op from each ion
-        available: Dict[type, List[Operation]] = defaultdict(list)
-        available_ids: Set[int] = set()
-        for _ion_id, q in ion_queues.items():
-            if not q:
-                continue
-            op = q[0]
-            oid = id(op)
-            if oid not in available_ids:
-                available_ids.add(oid)
-                available[type(op)].append(op)
-
-        if not available:
-            break  # shouldn't happen, but safety valve
-
-        # Emit ONLY the highest-priority available type.  This
-        # maximises same-type block merging: lower-priority ops are
-        # deferred to later passes where they may accumulate with
-        # newly-available same-type ops from other ions.
-        sorted_types = sorted(
-            available.keys(),
-            key=lambda t: _priority.get(t, 99),
-        )
-        tp = sorted_types[0]
-        for op in available[tp]:
-            oid = id(op)
-            if oid in placed:
-                continue
-            placed.add(oid)
-            result.append(op)
-            # Pop from all ion queues that have this op at head
-            for _ion_id2, q2 in ion_queues.items():
-                if q2 and id(q2[0]) == oid:
-                    q2.popleft()
-
-    # Append any ops without ion info at the end
-    for op in no_ion_ops:
-        if id(op) not in placed:
-            result.append(op)
-
-    # ── Insert barriers at type transitions ──────────────────────────
-    barriers: List[int] = []
-    for i in range(1, len(result)):
-        if type(result[i]) is not type(result[i - 1]):
-            barriers.append(i)
-
-    return result, barriers
 
 
 # ---------------------------------------------------------------------------
@@ -492,7 +437,8 @@ def reorder_rotations_for_batching(
     def _flush() -> None:
         if not window_ops:
             return
-        grouped, _ = _barrier_reorder_non_ms(window_ops)
+        # Sort by type: RX before RY before MEAS before RESET (for post-MS context)
+        grouped = _sort_by_type_with_context(window_ops, is_first_segment=False)
         result.extend(grouped)
         window_ops.clear()
 
@@ -866,18 +812,31 @@ def paralleliseOperationsWithBarriers(
             continue
 
         if isWiseArch:
-            # ── WISE: separate transport from QubitOps ────────────
-            # Transport ops (shuttling / reconfiguration) must be in
-            # their own batches so they don't fragment QubitOp
-            # packing.  Schedule transport first, then QubitOps.
-            qubit_ops = [op for op in seg_ops
-                         if isinstance(op, QubitOperation)]
-            transport_ops = [op for op in seg_ops
-                             if not isinstance(op, QubitOperation)]
-            for sub_ops in (transport_ops, qubit_ops):
-                if not sub_ops:
-                    continue
-                batches = _wise_parallel_pack(sub_ops)
+            # ── WISE: order-preserving run-based packing ─────────
+            # Split the segment into consecutive runs of the same
+            # "kind" (transport vs QubitOp).  Each run is packed
+            # independently, and runs are emitted in their original
+            # order.  This ensures that transport-before-MS, MS, and
+            # transport-after-MS stay in the correct sequence instead
+            # of lumping all transport to the front.
+            runs: List[List[Operation]] = []
+            current_run: List[Operation] = []
+            current_is_qubit: Optional[bool] = None
+
+            for op in seg_ops:
+                is_qubit = isinstance(op, QubitOperation)
+                if is_qubit != current_is_qubit:
+                    if current_run:
+                        runs.append(current_run)
+                    current_run = [op]
+                    current_is_qubit = is_qubit
+                else:
+                    current_run.append(op)
+            if current_run:
+                runs.append(current_run)
+
+            for run_ops in runs:
+                batches = _wise_parallel_pack(run_ops)
                 for batch in batches:
                     while t in time_schedule:
                         t += max(abs(t) * 1e-9, 1e-15)

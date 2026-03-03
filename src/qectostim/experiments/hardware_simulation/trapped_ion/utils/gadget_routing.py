@@ -2660,6 +2660,7 @@ def route_full_experiment_as_steps(
     progress_callback: Any = None,
     max_sat_time: Optional[float] = None,
     max_rc2_time: Optional[float] = None,
+    solver_params: Any = None,
 ) -> Tuple[List, np.ndarray]:
     """Phase-aware routing returning ``RoutingStep`` objects.
 
@@ -3081,6 +3082,7 @@ def route_full_experiment_as_steps(
                     max_sat_time=max_sat_time,
                     max_rc2_time=max_rc2_time,
                     allow_heuristic_fallback=heuristic_fallback_for_noncache,
+                    solver_params=solver_params,
                 )
 
                 # ── Batched full-grid return reconfig ──

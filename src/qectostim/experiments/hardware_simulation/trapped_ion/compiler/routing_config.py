@@ -137,6 +137,27 @@ class WISESolverParams:
     wB_row: int = 1
     base_pmax_in: Optional[int] = None
     sat_workers: int = 4
+    # ── Overrides for environment-variable defaults ────────────
+    # When set (not None), these take priority over the corresponding
+    # ``WISE_*`` environment variable.  When None, the env var is the
+    # fallback, and when the env var is also unset, the documented
+    # default is used.
+    inprocess_limit: Optional[int] = None
+    """Override ``WISE_INPROCESS_LIMIT``.  CNF clause threshold above
+    which the solver delegates to a subprocess.  Default: 50 000.
+    Set to a very large value (e.g. 999999999) to force all solves
+    in-process, avoiding subprocess overhead on macOS."""
+    notebook_sat_timeout: Optional[float] = None
+    """Override ``WISE_NOTEBOOK_SAT_TIMEOUT``.  Hard cap (seconds) on
+    per-call SAT timeout when running inside a Jupyter notebook.
+    Default: 120 s."""
+    notebook_rc2_timeout: Optional[float] = None
+    """Override ``WISE_NOTEBOOK_RC2_TIMEOUT``.  Hard cap (seconds) on
+    per-call RC2 (MaxSAT) timeout inside a Jupyter notebook.
+    Default: 180 s."""
+    macos_thread_cap: Optional[int] = None
+    """Override ``WISE_MACOS_THREAD_CAP``.  Maximum ThreadPoolExecutor
+    workers on macOS (where threads replace processes).  Default: 4."""
 
     @classmethod
     def from_grid(
@@ -272,6 +293,9 @@ class WISERoutingConfig:
     # Default False preserves the legacy two-phase architecture.
     # ──────────────────────────────────────────────────────────────
     use_inline_routing: bool = False
+    patch_verbose: bool = False
+    """Override ``WISE_PATCH_VERBOSE``.  When ``True``, emit verbose
+    patch-level move logs during routing.  Default: ``False``."""
     progress_callback: Optional[ProgressCallback] = None
     solver_params: Optional[WISESolverParams] = None
 
@@ -292,6 +316,14 @@ class WISERoutingConfig:
         heuristic_route_back: bool = False,
         heuristic_fallback_for_noncache: bool = False,
         use_inline_routing: bool = False,
+        # ── env-var overrides (configured value wins) ─────────
+        inprocess_limit: Optional[int] = None,
+        notebook_sat_timeout: Optional[float] = None,
+        notebook_rc2_timeout: Optional[float] = None,
+        macos_thread_cap: Optional[int] = None,
+        patch_verbose: bool = False,
+        debug_mode: bool = False,
+        solver_params: Optional["WISESolverParams"] = None,
     ) -> "WISERoutingConfig":
         """Create a routing config with production defaults.
 
@@ -377,12 +409,17 @@ class WISERoutingConfig:
         if sat_workers is None:
             sat_workers = max(1, mp.cpu_count())
 
-        solver_params = WISESolverParams(
-            max_sat_time=timeout_seconds,
-            max_rc2_time=timeout_seconds,
-            base_pmax_in=base_pmax_in,
-            sat_workers=sat_workers,
-        )
+        if solver_params is None:
+            solver_params = WISESolverParams(
+                max_sat_time=timeout_seconds,
+                max_rc2_time=timeout_seconds,
+                base_pmax_in=base_pmax_in,
+                sat_workers=sat_workers,
+                inprocess_limit=inprocess_limit,
+                notebook_sat_timeout=notebook_sat_timeout,
+                notebook_rc2_timeout=notebook_rc2_timeout,
+                macos_thread_cap=macos_thread_cap,
+            )
 
         progress_cb = None
         progress_close = None
@@ -406,6 +443,8 @@ class WISERoutingConfig:
             heuristic_route_back=heuristic_route_back,
             heuristic_fallback_for_noncache=heuristic_fallback_for_noncache,
             use_inline_routing=use_inline_routing,
+            debug_mode=debug_mode,
+            patch_verbose=patch_verbose,
             solver_params=solver_params,
             progress_callback=progress_cb,
         )

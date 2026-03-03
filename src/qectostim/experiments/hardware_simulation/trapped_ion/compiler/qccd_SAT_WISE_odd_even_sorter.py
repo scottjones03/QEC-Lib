@@ -1799,6 +1799,9 @@ def _wise_sat_config_worker(
     sat_children: Optional[Dict[Any, int]] = None,
     rc2_children: Optional[Dict[Any, int]] = None,
     stop_event: Optional[Any] = None,
+    inprocess_limit: Optional[int] = None,
+    notebook_sat_timeout: Optional[float] = None,
+    notebook_rc2_timeout: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Run a binary search for the tightest satisfiable schedule at a given P_max.
 
@@ -1919,6 +1922,8 @@ def _wise_sat_config_worker(
                     stop_event=stop_event,
                     job_key=job_key,
                     children_dict=rc2_children,
+                    inprocess_limit=inprocess_limit,
+                    notebook_rc2_timeout=notebook_rc2_timeout,
                 )
                 sat_ok = status_solver == "ok" and model_mid is not None
             else:
@@ -1935,6 +1940,8 @@ def _wise_sat_config_worker(
                     stop_event=stop_event,
                     job_key=job_key,
                     children_dict=sat_children,
+                    inprocess_limit=inprocess_limit,
+                    notebook_sat_timeout=notebook_sat_timeout,
                 )
         except Exception as e:
             return {
@@ -2202,6 +2209,9 @@ def run_sat_with_timeout_file(
     stop_event: Optional[Any] = None,
     job_key: Optional[Any] = None,
     children_dict: Optional[Mapping[Any, int]] = None,
+    *,
+    inprocess_limit: Optional[int] = None,
+    notebook_sat_timeout: Optional[float] = None,
 ):
     """
     Run Minisat22 on *cnf* in a separate process with a wall-clock timeout.
@@ -2224,11 +2234,15 @@ def run_sat_with_timeout_file(
     # workers still get real parallelism.
     # A threading-based timeout prevents infinite hangs on hard instances.
     _is_pool_worker = mp.current_process().daemon
-    if _in_notebook_env() or _is_pool_worker or sys.platform == "darwin" or len(cnf.clauses) <= _SAT_INPROCESS_CLAUSE_LIMIT:
+    _eff_inprocess_limit = inprocess_limit if inprocess_limit is not None else _SAT_INPROCESS_CLAUSE_LIMIT
+    if _in_notebook_env() or _is_pool_worker or sys.platform == "darwin" or len(cnf.clauses) <= _eff_inprocess_limit:
         _ip_timeout = timeout_s if (timeout_s is not None and timeout_s > 0) else 60.0
         # Cap timeout in notebook to avoid multi-hour hangs on hard SAT instances.
-        # Override via WISE_NOTEBOOK_SAT_TIMEOUT env var (seconds).
-        _NB_SAT_CAP = float(os.environ.get("WISE_NOTEBOOK_SAT_TIMEOUT", "120"))
+        # Configured value wins; env var is fallback.
+        if notebook_sat_timeout is not None:
+            _NB_SAT_CAP = notebook_sat_timeout
+        else:
+            _NB_SAT_CAP = float(os.environ.get("WISE_NOTEBOOK_SAT_TIMEOUT", "120"))
         if _in_notebook_env() and _ip_timeout > _NB_SAT_CAP:
             _ip_timeout = _NB_SAT_CAP
         wise_logger.debug(
@@ -2600,6 +2614,9 @@ def run_rc2_with_timeout_file(
     stop_event: Optional[Any] = None,
     job_key: Optional[Any] = None,
     children_dict: Optional[Mapping[Any, int]] = None,
+    *,
+    inprocess_limit: Optional[int] = None,
+    notebook_rc2_timeout: Optional[float] = None,
 ):
     """
     Run RC2 on *wcnf* in a separate process with a wall-clock timeout.
@@ -2620,11 +2637,15 @@ def run_rc2_with_timeout_file(
     # workers still get real parallelism.
     # A threading-based timeout prevents infinite hangs on hard instances.
     _is_pool_worker = mp.current_process().daemon
-    if _in_notebook_env() or _is_pool_worker or sys.platform == "darwin" or len(wcnf.hard) <= _SAT_INPROCESS_CLAUSE_LIMIT:
+    _eff_inprocess_limit = inprocess_limit if inprocess_limit is not None else _SAT_INPROCESS_CLAUSE_LIMIT
+    if _in_notebook_env() or _is_pool_worker or sys.platform == "darwin" or len(wcnf.hard) <= _eff_inprocess_limit:
         _ip_timeout = timeout_s if (timeout_s is not None and timeout_s > 0) else 60.0
         # Cap timeout in notebook to avoid very long hangs on hard RC2 instances.
-        # Override via WISE_NOTEBOOK_RC2_TIMEOUT env var (seconds).
-        _NB_RC2_CAP = float(os.environ.get("WISE_NOTEBOOK_RC2_TIMEOUT", "180"))
+        # Configured value wins; env var is fallback.
+        if notebook_rc2_timeout is not None:
+            _NB_RC2_CAP = notebook_rc2_timeout
+        else:
+            _NB_RC2_CAP = float(os.environ.get("WISE_NOTEBOOK_RC2_TIMEOUT", "180"))
         if _in_notebook_env() and _ip_timeout > _NB_RC2_CAP:
             _ip_timeout = _NB_RC2_CAP
         wise_logger.debug(
@@ -2708,19 +2729,32 @@ def run_rc2_with_timeout_file(
 
 
 def _wise_apply_time_env(default_value: Optional[float], env_var: str) -> Optional[float]:
-    """Apply environment variable override for timeout values."""
+    """Apply environment variable as fallback when no explicit value is configured.
+
+    Priority order:
+      1. Explicit configured value (``default_value``) — always wins when set.
+      2. Environment variable — used only when ``default_value`` is ``None``
+         (i.e. the user did not configure a timeout).
+
+    This ensures that ``WISERoutingConfig(timeout_seconds=X)`` or
+    ``WISESolverParams(max_sat_time=X)`` always means exactly *X* seconds,
+    without being silently clamped by an env var.
+    """
+    # If the caller explicitly configured a value, respect it.
+    if default_value is not None and default_value > 0:
+        return default_value
+
+    # No explicit config — check env var as fallback.
     env_val = os.environ.get(env_var)
     if not env_val:
-        return default_value
+        return default_value          # stays None (auto-compute later)
     try:
         parsed = float(env_val)
     except ValueError:
         return default_value
     if parsed <= 0:
         return default_value
-    if default_value is None or default_value <= 0:
-        return parsed
-    return min(default_value, parsed)
+    return parsed
 
 
 def _wise_normalize_inputs(
@@ -3480,6 +3514,8 @@ def optimal_QMR_for_WISE(
     progress_callback: Optional[Callable] = None,
     max_inner_workers: int | None = None,
     skip_bt_check_c: bool = False,
+    solver_params: Optional[Any] = None,
+    debug_diag: Optional[bool] = None,
 ) -> Tuple[List[np.ndarray], List[List[Dict[str, Any]]], int]:
     """Find the minimum-pass ion schedule for a (possibly patched) grid.
 
@@ -3538,7 +3574,7 @@ def optimal_QMR_for_WISE(
     NoFeasibleLayoutError
         If no satisfiable schedule is found within the time budget.
     """
-    DEBUG_DIAG = os.environ.get("WISE_DEBUG_DIAG", "") == "1"
+    DEBUG_DIAG = debug_diag if debug_diag is not None else (os.environ.get("WISE_DEBUG_DIAG", "") == "1")
     DEBUG_DIAG_DETAILED = False
 
     A_in = np.asarray(A_in, dtype=int)
@@ -3814,7 +3850,12 @@ def optimal_QMR_for_WISE(
     # More threads = more solve parallelism, but more GIL contention during build.
     # 4 is a good balance for typical WISE problems where solve >> build time.
     if sys.platform == "darwin":
-        _MACOS_THREAD_CAP = int(os.environ.get("WISE_MACOS_THREAD_CAP", "4"))
+        # Configured value wins; env var is fallback.
+        _sp_macos_cap = getattr(solver_params, 'macos_thread_cap', None) if solver_params else None
+        if _sp_macos_cap is not None:
+            _MACOS_THREAD_CAP = _sp_macos_cap
+        else:
+            _MACOS_THREAD_CAP = int(os.environ.get("WISE_MACOS_THREAD_CAP", "4"))
         if max_workers > _MACOS_THREAD_CAP:
             wise_logger.debug(
                 "[WISE] macOS: capping ThreadPool workers from %d to %d "
@@ -3822,6 +3863,11 @@ def optimal_QMR_for_WISE(
                 max_workers, _MACOS_THREAD_CAP,
             )
             max_workers = _MACOS_THREAD_CAP
+
+    # ── Resolve solver_params overrides for inner functions ─────
+    _sp_inprocess_limit = getattr(solver_params, 'inprocess_limit', None) if solver_params else None
+    _sp_nb_sat_timeout = getattr(solver_params, 'notebook_sat_timeout', None) if solver_params else None
+    _sp_nb_rc2_timeout = getattr(solver_params, 'notebook_rc2_timeout', None) if solver_params else None
 
     results: List[Dict[str, Any]] = []
     solver_timeout = max_rc2_time if bt_soft_enabled else max_sat_time
@@ -3969,6 +4015,9 @@ def optimal_QMR_for_WISE(
                     sat_children=sat_children,
                     rc2_children=rc2_children,
                     stop_event=stop_event,
+                    inprocess_limit=_sp_inprocess_limit,
+                    notebook_sat_timeout=_sp_nb_sat_timeout,
+                    notebook_rc2_timeout=_sp_nb_rc2_timeout,
                 )
                 futures.append((idx, cfg, fut))
 
@@ -4241,6 +4290,9 @@ def optimal_QMR_for_WISE(
                     sat_children=sat_children,
                     rc2_children=rc2_children,
                     stop_event=stop_event,
+                    inprocess_limit=_sp_inprocess_limit,
+                    notebook_sat_timeout=_sp_nb_sat_timeout,
+                    notebook_rc2_timeout=_sp_nb_rc2_timeout,
                 )
                 results.append(res)
 
