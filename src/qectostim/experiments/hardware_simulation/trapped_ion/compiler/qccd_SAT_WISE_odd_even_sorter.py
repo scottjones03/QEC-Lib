@@ -2243,7 +2243,7 @@ def run_sat_with_timeout_file(
             _NB_SAT_CAP = notebook_sat_timeout
         else:
             _NB_SAT_CAP = float(os.environ.get("WISE_NOTEBOOK_SAT_TIMEOUT", "120"))
-        if _in_notebook_env() and _ip_timeout > _NB_SAT_CAP:
+        if (notebook_sat_timeout is not None or _in_notebook_env()) and _ip_timeout > _NB_SAT_CAP:
             _ip_timeout = _NB_SAT_CAP
         wise_logger.debug(
             "%s SAT in-process: clauses=%d, vars=%d, timeout=%.1fs",
@@ -2646,7 +2646,7 @@ def run_rc2_with_timeout_file(
             _NB_RC2_CAP = notebook_rc2_timeout
         else:
             _NB_RC2_CAP = float(os.environ.get("WISE_NOTEBOOK_RC2_TIMEOUT", "180"))
-        if _in_notebook_env() and _ip_timeout > _NB_RC2_CAP:
+        if (notebook_rc2_timeout is not None or _in_notebook_env()) and _ip_timeout > _NB_RC2_CAP:
             _ip_timeout = _NB_RC2_CAP
         wise_logger.debug(
             "%s RC2 in-process: hard=%d, soft=%d, vars=%d, timeout=%.1fs",
@@ -2816,8 +2816,10 @@ def _wise_normalize_inputs(
     bt_soft_weight_value = 0
     if bt_soft_enabled:
         base_pref_weight = max(wB_col, wB_row, 1)
-        # Fix C: Increase BT soft weight by 100× to strongly discourage
-        # the MaxSAT solver from violating ion-return pin constraints.
+        # BT soft weight: high enough to strongly prefer BT pin
+        # satisfaction, but not so high that it distorts the solver's
+        # cost landscape.  Infeasible pins are handled by the
+        # iterative pin-drop retry in the caller.
         bt_soft_weight_value = max(10000, base_pref_weight * 100)
         if debug_diag:
             wise_logger.info(
@@ -3442,23 +3444,25 @@ def _wise_assert_bt_consistency(
     n: int,
     m: int,
     logger,
-) -> bool:
+) -> Tuple[bool, Set[int]]:
     """
     Check BT pin consistency against layouts.
 
-    Logs errors instead of raising and returns True/False.
+    Returns (ok, failed_ions) where failed_ions is the set of ions
+    whose BT pins were not satisfied.
     """
     if BT is None or len(BT) == 0:
-        return True
+        return True, set()
 
     ok = True
+    failed_ions: Set[int] = set()
 
     if len(layouts) < R:
         logger.error(
             "[WISE] BT consistency check: expected at least %d layouts, got %d",
             R, len(layouts),
         )
-        return False
+        return False, set()
 
     for r in range(R):
         layout_r = np.asarray(layouts[r], dtype=int)
@@ -3482,13 +3486,14 @@ def _wise_assert_bt_consistency(
 
             found = int(layout_r[d, c])
             if found != ion:
-                logger.error(
+                logger.debug(
                     "[WISE] BT consistency mismatch at round %d: expected ion %d at (d=%d, c=%d), but found %d",
                     r, ion, d, c, found,
                 )
                 ok = False
+                failed_ions.add(ion)
 
-    return ok
+    return ok, failed_ions
 
 
 def optimal_QMR_for_WISE(
@@ -3868,6 +3873,14 @@ def optimal_QMR_for_WISE(
     _sp_inprocess_limit = getattr(solver_params, 'inprocess_limit', None) if solver_params else None
     _sp_nb_sat_timeout = getattr(solver_params, 'notebook_sat_timeout', None) if solver_params else None
     _sp_nb_rc2_timeout = getattr(solver_params, 'notebook_rc2_timeout', None) if solver_params else None
+
+    # ── Cap outer timeouts when notebook/per-call timeout is configured ──
+    # Without this cap, the pool budget can balloon to 2*max_sat_time
+    # (e.g. 2592s) even when the user wants 30s per SAT call.
+    if _sp_nb_sat_timeout is not None and max_sat_time is not None:
+        max_sat_time = min(max_sat_time, _sp_nb_sat_timeout)
+    if _sp_nb_rc2_timeout is not None and max_rc2_time is not None:
+        max_rc2_time = min(max_rc2_time, _sp_nb_rc2_timeout)
 
     results: List[Dict[str, Any]] = []
     solver_timeout = max_rc2_time if bt_soft_enabled else max_sat_time
@@ -4680,14 +4693,20 @@ def optimal_QMR_for_WISE(
                             _sc_base[_sr + 1, _sc],
                             _sc_base[_sr, _sc],
                         )
+        _sc_diff_count = int(np.count_nonzero(_sc_base != layouts[_sc_r]))
+        wise_logger.warning(
+            "[WISE-SELFCHECK] Round %d: replay vs decoded: %d/%d cells differ "
+            "(grid_origin=%s, grid=%dx%d)",
+            _sc_r, _sc_diff_count, layouts[_sc_r].size,
+            grid_origin, _sc_base.shape[0], _sc_base.shape[1],
+        )
         if not np.array_equal(_sc_base, layouts[_sc_r]):
-            _sc_diff = int(np.count_nonzero(_sc_base != layouts[_sc_r]))
             wise_logger.error(
                 "[WISE] SAT DECODE SELF-CONSISTENCY FAIL round %d: "
                 "schedule replay produces %d/%d cells different from "
                 "decoded layout.  Using replay-derived layout.",
                 _sc_r,
-                _sc_diff,
+                _sc_diff_count,
                 layouts[_sc_r].size,
             )
             layouts[_sc_r] = _sc_base
@@ -4725,65 +4744,96 @@ def optimal_QMR_for_WISE(
         best_sum_bound,
     )
 
-    bt_ok = _wise_assert_bt_consistency(layouts, BT, R, n, m, wise_logger)
-    if not bt_ok and bt_soft:
-        # --- Fix C (cont.): Hard-BT retry ---
-        # Soft BT constraints were violated.  Retry once with hard BT
-        # to ensure ion-return consistency.  If the hard-BT solve also
-        # fails (UNSAT), fall through and use the soft-BT result.
-        wise_logger.warning(
-            "[WISE] BT consistency check failed with soft BT; "
-            "retrying with hard BT constraints"
-        )
-        try:
-            layouts_hard, schedule_hard, ph_hard = optimal_QMR_for_WISE(
-                A_in=A_in,
-                P_arr=P_arr,
-                k=k,
-                BT=BT,
-                wB_col=wB_col,
-                wB_row=wB_row,
-                max_rc2_time=max_rc2_time,
-                max_sat_time=max_sat_time,
-                active_ions=active_ions,
-                full_P_arr=full_P_arr,
-                ignore_initial_reconfig=ignore_initial_reconfig,
-                base_pmax_in=base_pmax_in,
-                prev_pmax=prev_pmax,
-                grid_origin=grid_origin,
-                boundary_adjacent=boundary_adjacent,
-                cross_boundary_prefs=cross_boundary_prefs,
-                bt_soft=False,  # Force hard BT
-                parent_stop_event=parent_stop_event,
-                progress_callback=progress_callback,
-                max_inner_workers=max_inner_workers,
+    bt_ok, _bt_failed_ions = _wise_assert_bt_consistency(layouts, BT, R, n, m, wise_logger)
+    if not bt_ok and bt_soft and _bt_failed_ions:
+        # --- Iterative pin-drop retry ---
+        # Some BT pins are infeasible given the hard constraints (MS pairs).
+        # Instead of retrying with hard BT (which is almost always UNSAT),
+        # remove the failing ions from BT and re-solve with reduced soft BT.
+        # Repeat up to _BT_PINDROP_MAX_ITER times until consistent.
+        _BT_PINDROP_MAX_ITER = 3
+        _dropped_all: Set[int] = set()
+        for _pd_iter in range(_BT_PINDROP_MAX_ITER):
+            _dropped_all.update(_bt_failed_ions)
+            # Build reduced BT with failing ions removed
+            BT_reduced: List[Dict[int, Tuple[int, int]]] = []
+            for _bt_r_dict in (BT or []):
+                BT_reduced.append(
+                    {ion: pos for ion, pos in _bt_r_dict.items()
+                     if ion not in _dropped_all}
+                )
+            _remaining_pins = sum(len(d) for d in BT_reduced)
+            wise_logger.info(
+                "[WISE] BT pin-drop iter %d: dropped %d ions (%s), "
+                "%d pins remaining",
+                _pd_iter + 1,
+                len(_dropped_all),
+                sorted(_dropped_all),
+                _remaining_pins,
             )
-            bt_ok_hard = _wise_assert_bt_consistency(
-                layouts_hard, BT, R, n, m, wise_logger
-            )
-            if bt_ok_hard:
+            if _remaining_pins == 0:
+                # No BT pins left — nothing to enforce, accept as-is
                 wise_logger.info(
-                    "[WISE] Hard-BT retry succeeded; using hard-BT result"
+                    "[WISE] All BT pins dropped; accepting current result"
                 )
-                layouts = layouts_hard
-                schedule = schedule_hard
-                pass_horizon = ph_hard
-                bt_ok = True
-            else:
-                wise_logger.warning(
-                    "[WISE] Hard-BT retry also failed; "
-                    "using original soft-BT result"
+                break
+            try:
+                layouts_pd, schedule_pd, ph_pd = optimal_QMR_for_WISE(
+                    A_in=A_in,
+                    P_arr=P_arr,
+                    k=k,
+                    BT=BT_reduced,
+                    wB_col=wB_col,
+                    wB_row=wB_row,
+                    max_rc2_time=max_rc2_time,
+                    max_sat_time=max_sat_time,
+                    active_ions=active_ions,
+                    full_P_arr=full_P_arr,
+                    ignore_initial_reconfig=ignore_initial_reconfig,
+                    base_pmax_in=base_pmax_in,
+                    prev_pmax=prev_pmax,
+                    grid_origin=grid_origin,
+                    boundary_adjacent=boundary_adjacent,
+                    cross_boundary_prefs=cross_boundary_prefs,
+                    bt_soft=True,
+                    parent_stop_event=parent_stop_event,
+                    progress_callback=progress_callback,
+                    max_inner_workers=max_inner_workers,
+                    solver_params=solver_params,
                 )
-        except (NoFeasibleLayoutError, Exception) as hard_bt_exc:
-            wise_logger.warning(
-                "[WISE] Hard-BT retry raised %s; "
-                "using original soft-BT result",
-                hard_bt_exc,
+                bt_ok, _bt_failed_ions = _wise_assert_bt_consistency(
+                    layouts_pd, BT_reduced, R, n, m, wise_logger
+                )
+                if bt_ok:
+                    wise_logger.info(
+                        "[WISE] Pin-drop retry succeeded after dropping %d ions",
+                        len(_dropped_all),
+                    )
+                    layouts = layouts_pd
+                    schedule = schedule_pd
+                    pass_horizon = ph_pd
+                    break
+                # else: loop continues, dropping newly failed ions too
+            except (NoFeasibleLayoutError, Exception) as _pd_exc:
+                wise_logger.debug(
+                    "[WISE] Pin-drop retry iter %d raised %s; "
+                    "keeping previous result",
+                    _pd_iter + 1,
+                    _pd_exc,
+                )
+                break
+        else:
+            # Exhausted iterations — accept what we have
+            wise_logger.info(
+                "[WISE] BT pin-drop exhausted %d iterations; "
+                "accepting result with %d unsatisfied pins",
+                _BT_PINDROP_MAX_ITER,
+                len(_bt_failed_ions),
             )
     elif not bt_ok:
-        wise_logger.warning(
-            "[WISE] BT consistency check failed; "
-            "proceeding with returned layouts anyway"
+        wise_logger.debug(
+            "[WISE] BT consistency check failed (non-soft mode); "
+            "proceeding with returned layouts"
         )
 
     # --- Reverse sparse-grid padding: replace dummy IDs back with 0 ---

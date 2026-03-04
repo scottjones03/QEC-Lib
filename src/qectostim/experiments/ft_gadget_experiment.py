@@ -913,21 +913,18 @@ class FaultTolerantGadgetExperiment(Experiment):
         if not active_builders:
             return
         
-        # Check if stabilizer transform cleared history (teleportation)
+        # Get stabilizer transform (needed for post-gadget schedule computation)
         stab_transform = self.gadget.get_stabilizer_transform()
-        skip_ancilla_reset = stab_transform.clear_history
         
-        # Reset ancillas for surviving blocks before first post-gadget round
-        # Skip for teleportation-style transforms where history is cleared
-        if not skip_ancilla_reset:
-            for builder in active_builders:
-                anc = builder.all_ancillas
-                if builder.has_metachecks:
-                    anc = anc + builder.meta_x_ancillas + builder.meta_z_ancillas
-                if anc:
-                    circuit.append("R", anc)
-            if active_builders:
-                circuit.append("TICK")
+        # NOTE: No manual ancilla reset here.  The builder's emit_round()
+        # handles R/RX correctly via the _ancilla_already_reset flag:
+        #   - If reset_stabilizer_history() was called (sets flag False):
+        #     emit_round() emits RX for X-type and R for Z-type ancillas.
+        #   - If not called (flag stays True from prior MR/MRX):
+        #     emit_round() skips the reset since MR/MRX already did it.
+        # The old manual "R" on all ancillas was wrong: it used Z-basis
+        # reset for X-type ancillas that need RX (|+⟩), causing both a
+        # basis error and a double-reset when emit_round() ran afterwards.
         
         # Get crossing detector config if we have pre-gadget measurements
         crossing_config = None

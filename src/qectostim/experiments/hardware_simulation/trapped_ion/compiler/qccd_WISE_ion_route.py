@@ -665,11 +665,15 @@ def _patch_and_route(
                 key = (cycle_idx, tiling_idx)
                 BT_for_tiling: List[Dict[int, Tuple[int, int]]] = []
                 pairs_for_tiling: List[Set[Tuple[int, int]]] = []
+                bt_expected_starts_for_tiling: List[Dict[int, Tuple[int, int]]] = []
                 for r in range(R):
                     entry = None
                     if r < len(BTs):
                         entry = BTs[r].get(key)
-                    if isinstance(entry, tuple):
+                    expected_starts_full: Dict[int, Tuple[int, int]] = {}
+                    if isinstance(entry, tuple) and len(entry) == 3:
+                        bt_map_full, solved_pairs_full, expected_starts_full = entry
+                    elif isinstance(entry, tuple) and len(entry) == 2:
                         bt_map_full, solved_pairs_full = entry
                     elif isinstance(entry, dict):
                         bt_map_full = entry
@@ -682,11 +686,14 @@ def _patch_and_route(
                         solved_pairs_full = []
                     BT_for_tiling.append(bt_map_full)
                     pairs_for_tiling.append(set(solved_pairs_full))
+                    bt_expected_starts_for_tiling.append(expected_starts_full)
             else:
                 BT_for_tiling = [dict() for _ in range(R)]
                 pairs_for_tiling = [set() for _ in range(R)]
+                bt_expected_starts_for_tiling = [dict() for _ in range(R)]
 
             patch_schedules_this_tiling: List[List[List[Dict[str, Any]]]] = []
+            solved_patch_regions: List[Tuple[int, int, int, int]] = []
 
             for region in patch_regions:
                 patch_pairs, new_remaining = _split_pairs_for_patch(remaining_pairs, ion_positions, region)
@@ -784,6 +791,26 @@ def _patch_and_route(
                     ions_tiling = ions_in_tiling_pairs[ridx]
 
                     for ion, (global_r, global_c) in bt_full.items():
+                        # ── Divergence check ──────────────────────────
+                        # Drop BT pins where the ion's actual starting
+                        # position diverges from what the BT source
+                        # window expected.  With patch-based routing,
+                        # patch boundaries shift between windows, causing
+                        # stale pins that trigger UNSAT with hard BT.
+                        _bt_exp = (
+                            bt_expected_starts_for_tiling[ridx].get(ion)
+                            if ridx < len(bt_expected_starts_for_tiling)
+                            else None
+                        )
+                        if _bt_exp is not None:
+                            _bt_actual = ion_positions.get(ion)
+                            if _bt_actual is not None and _bt_actual != _bt_exp:
+                                logger.debug(
+                                    "%s Dropping diverged BT pin for ion %d round %d: "
+                                    "expected start %s, actual %s",
+                                    PATCH_LOG_PREFIX, ion, ridx, _bt_exp, _bt_actual,
+                                )
+                                continue
                         # Only pin ions that are actually in this patch's
                         # sub-grid (present in the initial layout slice).
                         if ion not in _ions_in_patch_grid:
@@ -1025,6 +1052,7 @@ def _patch_and_route(
                             )
 
                 patch_schedules_this_tiling.append(patch_schedule)
+                solved_patch_regions.append(region)
 
                 remaining_pairs = new_remaining
 
@@ -1049,6 +1077,28 @@ def _patch_and_route(
             # pre-tiling layout, actually produces the SAT-model
             # layout.  If they diverge, use the replay result so
             # that the snapshot is self-consistent.
+            #
+            # For round r>0 we restrict the comparison to cells
+            # covered by THIS tiling's patches.  The replay starts
+            # from layouts_after[r-1] which includes round-(r-1)
+            # results from ALL tilings so far, but the merged
+            # schedule only contains swaps for the current tiling.
+            # Cells outside this tiling therefore retain their
+            # round-(r-1) values in the replay, which differ from
+            # layouts_after[r] where previous tilings already
+            # wrote their round-r results.  Comparing the full grid
+            # would flag those expected differences as divergences
+            # and — worse — the correction would overwrite previous
+            # tilings' round-r results with stale round-(r-1) data.
+            _tiling_mask: Optional[np.ndarray] = None
+            if R > 1:
+                _tiling_mask = np.zeros_like(layouts_after[0], dtype=bool)
+                # Use only successfully solved patches — skipped/failed
+                # patches have no schedule entries and stale layouts_after
+                # data, so including them would cause false divergences.
+                for _pm_r0, _pm_c0, _pm_r1, _pm_c1 in solved_patch_regions:
+                    _tiling_mask[_pm_r0:_pm_r1, _pm_c0:_pm_c1] = True
+
             for ridx in range(R):
                 if merged_tiling_schedule[ridx]:
                     # Chained replay: round 0 starts from pre-tiling
@@ -1061,18 +1111,122 @@ def _patch_and_route(
                         _mr_base,
                         merged_tiling_schedule[ridx],
                     )
-                    if not np.array_equal(replay_r, layouts_after[ridx]):
-                        diff_count = int(
-                            np.count_nonzero(replay_r != layouts_after[ridx])
-                        )
+
+                    # Round 0: full-grid comparison is valid because
+                    # the base is layouts_before_tiling[0] (a snapshot
+                    # from before any patches in this tiling ran).
+                    # Round r>0: restrict to this tiling's patches to
+                    # avoid false positives from previous tilings.
+                    if ridx > 0 and _tiling_mask is not None:
+                        _cmp_replay = replay_r[_tiling_mask]
+                        _cmp_model = layouts_after[ridx][_tiling_mask]
+                        diverged = bool(np.any(_cmp_replay != _cmp_model))
+                    else:
+                        diverged = not np.array_equal(replay_r, layouts_after[ridx])
+
+                    if diverged:
+                        if ridx > 0 and _tiling_mask is not None:
+                            diff_count = int(np.count_nonzero(
+                                replay_r[_tiling_mask] != layouts_after[ridx][_tiling_mask]
+                            ))
+                            total_cells = int(_tiling_mask.sum())
+                        else:
+                            diff_count = int(
+                                np.count_nonzero(replay_r != layouts_after[ridx])
+                            )
+                            total_cells = layouts_after[ridx].size
                         logger.warning(
                             "%s patch-and-route round %d: merged schedule "
                             "replay diverges from SAT model layout "
                             "(%d/%d cells differ). Using replay result.",
                             PATCH_LOG_PREFIX, ridx, diff_count,
-                            layouts_after[ridx].size,
+                            total_cells,
                         )
-                        layouts_after[ridx] = replay_r
+                        # Diagnostic: log the differing cells
+                        _diag_diffs_logged = 0
+                        for _dr in range(replay_r.shape[0]):
+                            for _dc in range(replay_r.shape[1]):
+                                if replay_r[_dr, _dc] != layouts_after[ridx][_dr, _dc]:
+                                    # Check if this cell is in any patch
+                                    _in_patch = "outside-tiling"
+                                    for _prr0, _prc0, _prr1, _prc1 in solved_patch_regions:
+                                        if _prr0 <= _dr < _prr1 and _prc0 <= _dc < _prc1:
+                                            _in_patch = f"patch[{_prr0}:{_prr1},{_prc0}:{_prc1}]"
+                                            break
+                                    logger.warning(
+                                        "%s   DIFF cell (%d,%d): replay=%d, "
+                                        "model=%d, base=%d, region=%s",
+                                        PATCH_LOG_PREFIX, _dr, _dc,
+                                        int(replay_r[_dr, _dc]),
+                                        int(layouts_after[ridx][_dr, _dc]),
+                                        int(_mr_base[_dr, _dc]),
+                                        _in_patch,
+                                    )
+                                    _diag_diffs_logged += 1
+                                    if _diag_diffs_logged >= 20:
+                                        break
+                            if _diag_diffs_logged >= 20:
+                                break
+
+                        # ── Per-patch schedule analysis for diverging round ──
+                        # Check which per-patch schedules have swaps at
+                        # the diverging cell positions, and trace what
+                        # each per-patch replay produces.
+                        _diff_positions: set = set()
+                        for _dr2 in range(replay_r.shape[0]):
+                            for _dc2 in range(replay_r.shape[1]):
+                                if replay_r[_dr2, _dc2] != layouts_after[ridx][_dr2, _dc2]:
+                                    _diff_positions.add((_dr2, _dc2))
+                        _pp_swap_report: List[str] = []
+                        for _pp_idx, (_pp_sched, (_pp_r0, _pp_c0, _pp_r1, _pp_c1)) in enumerate(
+                            zip(patch_schedules_this_tiling, solved_patch_regions)
+                        ):
+                            if ridx >= len(_pp_sched):
+                                continue
+                            _pp_round = _pp_sched[ridx]
+                            _pp_total_h = sum(len(p.get("h_swaps", [])) for p in _pp_round)
+                            _pp_total_v = sum(len(p.get("v_swaps", [])) for p in _pp_round)
+                            # Check for swaps touching diff positions
+                            _pp_touching: List[str] = []
+                            for _pass_i, _pp_pass in enumerate(_pp_round):
+                                for _hr, _hc in _pp_pass.get("h_swaps", []):
+                                    if (_hr, _hc) in _diff_positions or (_hr, _hc+1) in _diff_positions:
+                                        _pp_touching.append(f"pass{_pass_i}:H({_hr},{_hc})")
+                                for _vr, _vc in _pp_pass.get("v_swaps", []):
+                                    if (_vr, _vc) in _diff_positions or (_vr+1, _vc) in _diff_positions:
+                                        _pp_touching.append(f"pass{_pass_i}:V({_vr},{_vc})")
+                            _pp_swap_report.append(
+                                f"patch{_pp_idx}[{_pp_r0}:{_pp_r1},{_pp_c0}:{_pp_c1}] "
+                                f"passes={len(_pp_round)} h={_pp_total_h} v={_pp_total_v} "
+                                f"touching_diff={_pp_touching or 'none'}"
+                            )
+                        logger.warning(
+                            "%s   PER-PATCH BREAKDOWN round %d: %s",
+                            PATCH_LOG_PREFIX, ridx,
+                            " | ".join(_pp_swap_report),
+                        )
+                        # Also log merged schedule's swaps touching diff positions
+                        _mg_touching: List[str] = []
+                        for _mg_i, _mg_pass in enumerate(merged_tiling_schedule[ridx]):
+                            for _hr, _hc in _mg_pass.get("h_swaps", []):
+                                if (_hr, _hc) in _diff_positions or (_hr, _hc+1) in _diff_positions:
+                                    _mg_touching.append(f"pass{_mg_i}:H({_hr},{_hc})")
+                            for _vr, _vc in _mg_pass.get("v_swaps", []):
+                                if (_vr, _vc) in _diff_positions or (_vr+1, _vc) in _diff_positions:
+                                    _mg_touching.append(f"pass{_mg_i}:V({_vr},{_vc})")
+                        logger.warning(
+                            "%s   MERGED SWAPS TOUCHING DIFF round %d: %s",
+                            PATCH_LOG_PREFIX, ridx,
+                            _mg_touching or "NONE",
+                        )
+
+                        # Only overwrite cells within this tiling's
+                        # patches to avoid clobbering previous tilings'
+                        # round-r results.
+                        if ridx > 0 and _tiling_mask is not None:
+                            layouts_after[ridx][_tiling_mask] = replay_r[_tiling_mask]
+                        else:
+                            layouts_after[ridx] = replay_r
 
             # Compute which pairs were solved in this tiling, per round
             solved_pairs_per_round: List[List[Tuple[int, int]]] = []
@@ -1267,6 +1421,47 @@ def _rebuild_schedule_for_layout(
         ]
 
     The caller should apply these schedules in order to reach target_layout.
+
+    CRITICAL IMPLEMENTATION NOTES — DO NOT REVERT
+    ==============================================
+
+    Cross-boundary directional preferences (``cross_boundary_prefs``)
+    -----------------------------------------------------------------
+    Every SAT call site in this function **MUST** compute non-trivial
+    ``cross_boundary_prefs`` for orphan ions (ions whose source is in the
+    patch but whose global target is outside it).  Without directional
+    guidance, ~73% of ions per patch are "orphans" that the SAT solver
+    treats as free variables.  They wander aimlessly across cycles and the
+    rebuild **never converges**.
+
+    There are **four** SAT call sites that each compute their own
+    cross-boundary prefs mapping (``Dict[int, Set[str]]``):
+
+      1. **Main patch loop** (``_cb_prefs_r1``) — the primary tiling loop.
+      2. **Small-mismatch fast path** (``_fp_cb_r1``) — bounding-box SAT
+         for ≤8 mismatched cells before the main cycle loop.
+      3. **Post-cycle retry** (``_pcr_cb_r1``) — bounding-box SAT after
+         the cycle loop for residual ≤8 cell mismatches.
+      4. **Escalation path** (``_esc_cb_r1``) — targeted bounding-box SAT
+         with increasing pmax when ``allow_heuristic_fallback=False``.
+
+    If you add a new SAT call site, you MUST also compute cross-boundary
+    prefs for it.  Passing ``[{}, {}]`` (empty dicts) will cause
+    non-convergence on any grid with patching.
+
+    Heuristic fallback policy
+    -------------------------
+    When ``allow_heuristic_fallback=False`` (MS-gate context), this function
+    MUST NOT silently fall back to heuristic odd-even transposition sort.
+    If SAT exhausts all strategies (cycle loop + post-cycle retry +
+    escalation), it raises ``ValueError`` rather than using heuristic.
+    The only exception is the ion-set safety check (Fix FM3): if ion sets
+    differ between current and target, a ``ValueError`` is raised
+    indicating a reconciliation bug.
+
+    When ``allow_heuristic_fallback=True`` (cache replay / route-back
+    context), heuristic fallback is acceptable and is used as a last resort
+    after SAT fails to converge.
     """
     # ── Single-round SAT (R=1) strategy ────────────────────────────
     # BT[0] = {all local-target ions → exact positions}.
@@ -1421,7 +1616,12 @@ def _rebuild_schedule_for_layout(
             "right": _fp_c1 < n_cols,
         }
 
-        # Cross-boundary prefs for orphan ions in fast-path patch
+        # ── Cross-boundary prefs for orphan ions (CRITICAL — DO NOT REMOVE) ──
+        # Without these prefs, orphan ions (~73% of patch ions) have no
+        # directional guidance and the SAT solver treats them as free
+        # variables.  This causes the rebuild to wander and NEVER converge.
+        # See docstring of _rebuild_schedule_for_layout for details.
+        # This is call site 2/4 (small-mismatch fast path).
         _fp_cb_r1: Dict[int, Set[str]] = {}
         for _fpcbr in range(_fp_h):
             for _fpcbc in range(_fp_w):
@@ -1491,10 +1691,11 @@ def _rebuild_schedule_for_layout(
                         if _fp_sched:
                             for _fp_round in _fp_sched:
                                 _fp_merged.extend(_fp_round)
-                        snapshots.append({
-                            "layout_after": np.array(current_layout, copy=True),
-                            "schedule": _fp_merged if _fp_merged else None,
-                        })
+                        snapshots.append((
+                            np.array(current_layout, copy=True),
+                            _fp_merged if _fp_merged else None,
+                            [],
+                        ))
                         _fp_solved = True
                         break
                     else:
@@ -1679,13 +1880,15 @@ def _rebuild_schedule_for_layout(
                     "right": c1 < n_cols,
                 }
 
-                # ── Cross-boundary directional prefs for orphan ions ──
+                # ── Cross-boundary directional prefs (CRITICAL — DO NOT REMOVE) ──
                 # For each ion in the patch whose global target is
                 # OUTSIDE the patch, push it toward the boundary
                 # closest to its target.  Without these prefs, orphan
-                # ions are treated as free variables by the SAT solver
-                # and wander aimlessly across cycles — the root cause of
-                # patch-based layout rebuild non-convergence.
+                # ions (~73% of patch ions) are treated as free variables
+                # by the SAT solver and wander aimlessly across cycles —
+                # the root cause of patch-based layout rebuild
+                # non-convergence.  See docstring for full rationale.
+                # This is call site 1/4 (main patch loop).
                 #
                 # Round 0 (intermediate): empty — solver freely arranges.
                 # Round 1 (final): directional prefs for orphan ions.
@@ -2066,7 +2269,12 @@ def _rebuild_schedule_for_layout(
                 "right": _pcr_c1 < n_cols,
             }
 
-            # Cross-boundary prefs for orphan ions in post-cycle retry
+            # ── Cross-boundary prefs for orphan ions (CRITICAL — DO NOT REMOVE) ──
+            # Without these prefs, orphan ions (~73% of patch ions) have no
+            # directional guidance and the SAT solver treats them as free
+            # variables.  This causes the rebuild to wander and NEVER converge.
+            # See docstring of _rebuild_schedule_for_layout for details.
+            # This is call site 3/4 (post-cycle retry).
             _pcr_cb_r1: Dict[int, Set[str]] = {}
             for _pcr_cbr in range(_pcr_h):
                 for _pcr_cbc in range(_pcr_w):
@@ -2158,10 +2366,22 @@ def _rebuild_schedule_for_layout(
                 return snapshots
 
         if not allow_heuristic_fallback:
-            # ── HEURISTIC FALLBACK POLICY (DO NOT MODIFY) ────────
-            # MS-gate / return-round context: heuristic fallback is
-            # NOT allowed unless user explicitly set the flag.
-            # ─────────────────────────────────────────────────────
+            # ══════════════════════════════════════════════════════
+            # HEURISTIC FALLBACK POLICY — DO NOT MODIFY / REVERT
+            # ══════════════════════════════════════════════════════
+            # When allow_heuristic_fallback=False (MS-gate context),
+            # we MUST NOT silently fall back to heuristic odd-even
+            # transposition sort.  Instead, we escalate through:
+            #   1. Bounding-box SAT with increasing pmax (5 attempts)
+            #   2. ValueError if SAT exhausts all strategies
+            # The only exception is Fix FM3 (ion-set safety check):
+            # if ion sets differ, it's a reconciliation bug.
+            #
+            # Callers set allow_heuristic_fallback=False for MS-gate
+            # reconfigs from ChainVerify (gadget_routing.py).  For
+            # non-MS contexts (cache_replay, return_round, transition)
+            # allow_heuristic_fallback=True is passed instead.
+            # ══════════════════════════════════════════════════════
 
             # ── Mismatch-targeted SAT escalation ─────────────────
             # Compute the bounding box of remaining mismatched cells
@@ -2228,7 +2448,12 @@ def _rebuild_schedule_for_layout(
                     "right": _esc_c1 < n_cols,
                 }
 
-                # Cross-boundary prefs for orphan ions in escalation
+                # ── Cross-boundary prefs for orphan ions (CRITICAL — DO NOT REMOVE) ──
+                # Without these prefs, orphan ions (~73% of patch ions) have no
+                # directional guidance and the SAT solver treats them as free
+                # variables.  This causes the rebuild to wander and NEVER converge.
+                # See docstring of _rebuild_schedule_for_layout for details.
+                # This is call site 4/4 (escalation path).
                 _esc_cb_r1: Dict[int, Set[str]] = {}
                 for _esc_cbr in range(_esc_h):
                     for _esc_cbc in range(_esc_w):
@@ -2759,6 +2984,7 @@ def _route_round_sequence(
     max_inner_workers: Optional[int] = None,
     initial_BTs: Optional[List] = None,
     replay_level: int = 1,
+    ms_rounds_per_ec_round: int = 4,
     max_sat_time: Optional[float] = None,
     max_rc2_time: Optional[float] = None,
     solver_params: Optional[Any] = None,
@@ -2852,7 +3078,11 @@ def _route_round_sequence(
     recheck_cache: bool = True
     # When replay_level == 0 we disable block caching entirely so
     # every round is solved fresh with SAT (no replayed schedules).
-    BLOCK_LEN = 4 if replay_level > 0 else float('inf')
+    # When replay_level > 0, each cache block spans
+    #   replay_level × ms_rounds_per_ec_round
+    # MS rounds.  replay_level=1 caches one EC stabilizer cycle;
+    # replay_level=d caches d consecutive EC cycles together.
+    BLOCK_LEN = (replay_level * ms_rounds_per_ec_round) if replay_level > 0 else float('inf')
     cache_for_block: Dict = {}
 
     # Track current layout (updated after each routing step)
@@ -2951,21 +3181,54 @@ def _route_round_sequence(
             hadMultipleTilingSteps = len(tiling_steps) > 1
 
             # --- Trick 4: Build BTs from tiling_steps_meta for future windows ---
+            # FIX: Only pin ions that were part of *solved* MS pairs in the
+            #      look-ahead round.  Pinning ALL active ions over-constrains
+            #      the SAT solver for the next window, causing frequent BT
+            #      consistency mismatches and hard-BT UNSAT with lookahead>1.
+            #
+            # FIX 2: Also store the expected starting positions for each
+            #      BT round so the next window can validate pins against
+            #      its actual layout.  When patch-based routing causes
+            #      layout divergence, stale pins are dropped early,
+            #      preventing UNSAT and BT consistency failures.
             if tiling_steps_meta:
-                active_set = set(active_ions)
                 R_local = len(P_arr)
                 BTs = [dict() for _ in range(R_local - 1)]
                 for cycle_idx_meta, tiling_idx_meta, tiling in tiling_steps_meta:
                     for r, (layout_after_r, _sched_r, _solved_pairs_r) in enumerate(tiling[1:]):
+                        if r >= len(BTs):
+                            break  # snapshot has more rounds than current window needs
+                        # Only pin ions involved in the solved MS pairs
+                        _solved_ion_set: set = set()
+                        for _sp_a, _sp_b in _solved_pairs_r:
+                            _solved_ion_set.add(_sp_a)
+                            _solved_ion_set.add(_sp_b)
                         bt_map: Dict[int, Tuple[int, int]] = {}
                         layout_arr = layout_after_r
                         for rr in range(wiseArch.n):
                             for cc in range(wiseArch.m * wiseArch.k):
                                 ionidx = int(layout_arr[rr][cc])
-                                if ionidx in active_set:
+                                if ionidx in _solved_ion_set:
                                     bt_map[ionidx] = (rr, cc)
+                        # Build expected starting positions.  The NEXT
+                        # window will start from the layout after executing
+                        # this window's round 0 (the non-look-ahead round).
+                        # This is tiling[1] (the first solved round's
+                        # result), NOT tiling[0] (the initial layout).
+                        _bt_start_layout = tiling[1] if len(tiling) > 1 else None
+                        _bt_expected_starts: Dict[int, Tuple[int, int]] = {}
+                        if _bt_start_layout is not None:
+                            _bt_sl = _bt_start_layout
+                            # Handle both tuple-format (layout, sched, pairs) and raw array
+                            _bt_sl_arr = _bt_sl[0] if isinstance(_bt_sl, (tuple, list)) else _bt_sl
+                            for rr in range(wiseArch.n):
+                                for cc in range(wiseArch.m * wiseArch.k):
+                                    ionidx = int(_bt_sl_arr[rr][cc])
+                                    if ionidx in _solved_ion_set:
+                                        _bt_expected_starts[ionidx] = (rr, cc)
+
                         key = (cycle_idx_meta, tiling_idx_meta)
-                        BTs[r][key] = (bt_map, list(_solved_pairs_r))
+                        BTs[r][key] = (bt_map, list(_solved_pairs_r), _bt_expected_starts)
 
                 # --- Fix 3 (cont.): Re-inject sticky return-round BT ---
                 # If the current window includes the return round (the
@@ -3433,6 +3696,49 @@ def ionRoutingWISEArch(
         _pv = getattr(routing_config, 'patch_verbose', None)
         if _pv is not None:
             _patch_verbose = _pv
+
+    # ── Propagate notebook timeouts from routing_config into solver_params ──
+    # WISESolverParams.from_grid() doesn't set notebook timeouts.  If the
+    # user configured them on WISERoutingConfig, copy across so downstream
+    # SAT calls respect per-call caps (prevents 1000s+ default timeouts).
+    if _solver_params is not None and routing_config is not None:
+        import os as _os_sp
+        if getattr(_solver_params, 'notebook_sat_timeout', None) is None:
+            _nst = getattr(routing_config, 'notebook_sat_timeout', None)
+            if _nst is not None:
+                _solver_params.notebook_sat_timeout = _nst
+        if getattr(_solver_params, 'notebook_rc2_timeout', None) is None:
+            _nrt = getattr(routing_config, 'notebook_rc2_timeout', None)
+            if _nrt is not None:
+                _solver_params.notebook_rc2_timeout = _nrt
+        if getattr(_solver_params, 'macos_thread_cap', None) is None:
+            _mtc = getattr(routing_config, 'macos_thread_cap', None)
+            if _mtc is not None:
+                _solver_params.macos_thread_cap = _mtc
+        if getattr(_solver_params, 'inprocess_limit', None) is None:
+            _ipl = int(_os_sp.environ.get('WISE_INPROCESS_LIMIT', '0'))
+            if not _ipl:
+                _ipl = getattr(routing_config, 'inprocess_limit', None)
+            if _ipl:
+                _solver_params.inprocess_limit = _ipl
+
+    # ── Cap _max_sat_time when notebook_sat_timeout is configured ──────
+    # The auto-computed max_sat_time (from WISESolverParams.from_grid) can
+    # be very large (e.g. 1296s for a 7x4 grid).  This value controls the
+    # wall-time budget for _rebuild_schedule_for_layout's escalation loop.
+    # Without this cap, a single schedule rebuild can stall for 10+ mins
+    # burning through the SAT budget on bbox-targeted escalation attempts.
+    # Cap at 5× the per-call timeout so rebuilds get a reasonable budget
+    # (e.g. 5×30=150s) without dominating total compilation time.
+    if _solver_params is not None:
+        _nb_sat_cap = getattr(_solver_params, 'notebook_sat_timeout', None)
+        if _nb_sat_cap is not None and _max_sat_time is not None:
+            _rebuild_cap = _nb_sat_cap * 5.0
+            if _max_sat_time > _rebuild_cap:
+                _max_sat_time = _rebuild_cap
+                _max_rc2_time = min(
+                    _max_rc2_time or _rebuild_cap, _rebuild_cap,
+                )
 
     logger.info(
         "%s ionRoutingWISEArch: ops=%d, MS_rounds=%d, lookahead=%d, subgrid=(%d,%d,%d), active_ions=%d",
@@ -4747,16 +5053,24 @@ def ionRoutingWISEArch(
                 _coalesced_allOps.append(op)
                 i += 1
 
-        # Rebuild barrier indices from scratch based on type transitions.
-        # A barrier is placed wherever the operation type changes or at
-        # each GlobalReconfigurations boundary (transport must be isolated).
-        _coalesced_barriers: List[int] = [0]
-        for idx in range(1, len(_coalesced_allOps)):
-            prev_type = type(_coalesced_allOps[idx - 1])
-            curr_type = type(_coalesced_allOps[idx])
-            if prev_type != curr_type or isinstance(_coalesced_allOps[idx], GlobalReconfigurations):
-                _coalesced_barriers.append(idx)
-        _coalesced_barriers.append(len(_coalesced_allOps))
+        # Rebuild barrier indices based on _barrier_group transitions
+        # on QubitOperations.  These tags were set by
+        # reorder_with_type_barriers() in decompose_to_native and are
+        # the SOLE source of truth for block boundaries.
+        #
+        # Transport ops (GlobalReconfigurations) do NOT trigger barriers
+        # — they belong to the MS section they are adjacent to.
+        # A barrier is placed at each index where the _barrier_group of
+        # the current QubitOperation differs from the previous
+        # QubitOperation's _barrier_group.
+        _coalesced_barriers: List[int] = []
+        _prev_bg: Optional[int] = None
+        for idx, _op in enumerate(_coalesced_allOps):
+            if isinstance(_op, QubitOperation):
+                _cur_bg = getattr(_op, '_barrier_group', 0)
+                if _prev_bg is not None and _cur_bg != _prev_bg:
+                    _coalesced_barriers.append(idx)
+                _prev_bg = _cur_bg
 
         if len(_coalesced_allOps) < len(allOps):
             logger.info(
@@ -4765,6 +5079,21 @@ def ionRoutingWISEArch(
             )
         allOps = _coalesced_allOps
         barriers = _coalesced_barriers
+
+    # ── Final barrier rebuild from _barrier_group tags ──────────────
+    # Whether or not we coalesced, rebuild barriers from the
+    # _barrier_group tags on QubitOperations.  These were set by
+    # reorder_with_type_barriers() in decompose_to_native and are the
+    # sole source of truth for block boundaries.
+    _final_barriers: List[int] = []
+    _fprev_bg: Optional[int] = None
+    for _fi, _fop in enumerate(allOps):
+        if isinstance(_fop, QubitOperation):
+            _fcur_bg = getattr(_fop, '_barrier_group', 0)
+            if _fprev_bg is not None and _fcur_bg != _fprev_bg:
+                _final_barriers.append(_fi)
+            _fprev_bg = _fcur_bg
+    barriers = _final_barriers
 
     # ── End-of-routing assertion: verify no MS gates left unexecuted ──
     # This catches silent failures where solved_pairs didn't match operationsLeft
@@ -5426,6 +5755,43 @@ def ionRoutingGadgetArch(
         if _pv is not None:
             _patch_verbose = _pv
 
+    # ── Propagate notebook timeouts from routing_config into solver_params ──
+    # WISESolverParams.from_grid() doesn't set notebook timeouts.  If the
+    # user configured them on WISERoutingConfig, copy across so downstream
+    # SAT calls respect per-call caps (prevents 1000s+ default timeouts).
+    if _solver_params is not None and routing_config is not None:
+        import os as _os_sp
+        if getattr(_solver_params, 'notebook_sat_timeout', None) is None:
+            _nst = getattr(routing_config, 'notebook_sat_timeout', None)
+            if _nst is not None:
+                _solver_params.notebook_sat_timeout = _nst
+        if getattr(_solver_params, 'notebook_rc2_timeout', None) is None:
+            _nrt = getattr(routing_config, 'notebook_rc2_timeout', None)
+            if _nrt is not None:
+                _solver_params.notebook_rc2_timeout = _nrt
+        if getattr(_solver_params, 'macos_thread_cap', None) is None:
+            _mtc = getattr(routing_config, 'macos_thread_cap', None)
+            if _mtc is not None:
+                _solver_params.macos_thread_cap = _mtc
+        if getattr(_solver_params, 'inprocess_limit', None) is None:
+            _ipl = int(_os_sp.environ.get('WISE_INPROCESS_LIMIT', '0'))
+            if not _ipl:
+                _ipl = getattr(routing_config, 'inprocess_limit', None)
+            if _ipl:
+                _solver_params.inprocess_limit = _ipl
+
+    # ── Cap _max_sat_time when notebook_sat_timeout is configured ──────
+    # (Same cap as ionRoutingWISEArch — see comment there for rationale.)
+    if _solver_params is not None:
+        _nb_sat_cap = getattr(_solver_params, 'notebook_sat_timeout', None)
+        if _nb_sat_cap is not None and _max_sat_time is not None:
+            _rebuild_cap = _nb_sat_cap * 5.0
+            if _max_sat_time > _rebuild_cap:
+                _max_sat_time = _rebuild_cap
+                _max_rc2_time = min(
+                    _max_rc2_time or _rebuild_cap, _rebuild_cap,
+                )
+
     # ------------------------------------------------------------------
     # 1) Determine phase boundaries from qec_metadata.phases
     # ------------------------------------------------------------------
@@ -5447,11 +5813,14 @@ def ionRoutingGadgetArch(
     # ------------------------------------------------------------------
     phase_pair_counts: Optional[List[int]] = None
     _cx_per_ec_round: Optional[int] = None
+    _ms_rounds_per_ec_round: Optional[int] = None
 
     if phases and len(parallelPairs) > 0:
-        # Read cx_per_ec_round from metadata
+        # Read cx_per_ec_round and ms_rounds_per_ec_round from metadata
         if qec_metadata is not None and hasattr(qec_metadata, 'cx_per_ec_round'):
             _cx_per_ec_round = qec_metadata.cx_per_ec_round
+        if qec_metadata is not None and hasattr(qec_metadata, 'ms_rounds_per_ec_round'):
+            _ms_rounds_per_ec_round = qec_metadata.ms_rounds_per_ec_round
 
         # Build phase_pair_counts from circuit-counted ms_pair_count.
         # These values are patched by to_stim() after circuit construction,
@@ -5791,6 +6160,7 @@ def ionRoutingGadgetArch(
         max_inner_workers=max_inner_workers,
         stop_event=stop_event,
         cx_per_ec_round=_cx_per_ec_round,
+        ms_rounds_per_ec_round=_ms_rounds_per_ec_round,
         cache_ec_rounds=(
             routing_config.cache_ec_rounds if routing_config else True
         ),
@@ -5812,6 +6182,7 @@ def ionRoutingGadgetArch(
         progress_callback=routing_config.progress_callback if routing_config else None,
         max_sat_time=_max_sat_time,
         max_rc2_time=_max_rc2_time,
+        solver_params=_solver_params,
     )
 
     # ------------------------------------------------------------------

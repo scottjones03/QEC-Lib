@@ -203,14 +203,33 @@ def derive_ms_pairs_from_metadata(
                     block_qubits_global.update(ba.z_ancilla_qubits)
                     break
 
-        # Interleave X+Z layers by phase index (same logic as pipeline.py)
-        n_layers = max(len(x_sched), len(z_sched))
-        for li in range(n_layers):
-            merged_layer: List[Tuple[int, int]] = []
-            if li < len(x_sched):
-                merged_layer.extend(x_sched[li])
-            if li < len(z_sched):
-                merged_layer.extend(z_sched[li])
+        # Combine X+Z layers respecting the scheduling mode.
+        # Interleaved (surface codes): X[i]+Z[i] merged per phase.
+        # Sequential (non-geometric / different-length schedules):
+        #   all X layers first, then all Z layers.
+        _is_il = getattr(qec_meta, 'is_interleaved', None)
+        if _is_il is None:
+            # Legacy fallback: interleave when schedule lengths match
+            _is_il = (len(x_sched) > 0 and len(z_sched) > 0
+                      and len(x_sched) == len(z_sched))
+
+        if _is_il:
+            # Interleave X+Z layers by phase index
+            n_layers = max(len(x_sched), len(z_sched))
+            combined_iter: List[List[Tuple[int, int]]] = []
+            for li in range(n_layers):
+                merged_layer: List[Tuple[int, int]] = []
+                if li < len(x_sched):
+                    merged_layer.extend(x_sched[li])
+                if li < len(z_sched):
+                    merged_layer.extend(z_sched[li])
+                combined_iter.append(merged_layer)
+        else:
+            # Sequential: all X layers then all Z layers
+            combined_iter = [list(layer) for layer in x_sched]
+            combined_iter += [list(layer) for layer in z_sched]
+
+        for merged_layer in combined_iter:
             pairs = []
             for ctrl, tgt in merged_layer:
                 if block_qubits_global and (
@@ -954,6 +973,7 @@ def _compute_return_reconfig(
     use_heuristic_directly: bool = False,
     max_sat_time: Optional[float] = None,
     max_rc2_time: Optional[float] = None,
+    solver_params: Optional[Any] = None,
 ) -> list:
     """Compute return-round reconfiguration.
 
@@ -1049,6 +1069,7 @@ def _compute_return_reconfig(
         allow_heuristic_fallback=allow_heuristic_fallback,
         max_sat_time=max_sat_time,
         max_rc2_time=max_rc2_time,
+        solver_params=solver_params,
     )
 
     steps = []
@@ -2343,6 +2364,7 @@ def _compute_transition_reconfig_steps(
     use_heuristic_directly: bool = False,
     max_sat_time: Optional[float] = None,
     max_rc2_time: Optional[float] = None,
+    solver_params: Optional[Any] = None,
 ) -> List:
     """Compute SAT-based transition reconfig from current to target layout.
 
@@ -2528,6 +2550,7 @@ def _compute_transition_reconfig_steps(
         allow_heuristic_fallback=allow_heuristic_fallback,
         max_sat_time=max_sat_time,
         max_rc2_time=max_rc2_time,
+        solver_params=solver_params,
     )
     # Consolidate multiple transition steps into one reconfiguration
     return _consolidate_transition_steps(_snapshots_to_steps(snaps))
@@ -2651,6 +2674,7 @@ def route_full_experiment_as_steps(
     max_inner_workers: int | None = None,
     stop_event: Any = None,
     cx_per_ec_round: Optional[int] = None,
+    ms_rounds_per_ec_round: Optional[int] = None,
     cache_ec_rounds: bool = True,
     replay_level: int = 1,
     block_level_slicing: bool = True,
@@ -2723,6 +2747,27 @@ def route_full_experiment_as_steps(
         re-solved.  Set ``False`` to force fresh SAT routing on
         every EC phase.
 
+    Heuristic fallback policy — DO NOT REVERT
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    The three heuristic flags (``heuristic_cache_replay``,
+    ``heuristic_route_back``, ``heuristic_fallback_for_noncache``)
+    control whether the odd-even transposition sort can be used
+    instead of SAT for specific contexts:
+
+    - **MS-gate routing**: ALWAYS uses SAT (``allow_heuristic_fallback=False``).
+      This is enforced in the ChainVerify loop below, where
+      ``_cv_allow_heuristic`` is set to ``False`` when
+      ``reconfig_context == "ms_gate"``.  Do not change this.
+    - **Return reconfigs**: ``allow_heuristic_fallback=True`` because
+      these are pure layout permutations.
+    - **Cache replay**: uses ``heuristic_cache_replay`` flag.
+    - **Block-merge / transition reconfigs**: uses
+      ``heuristic_fallback_for_noncache`` flag.
+
+    If you set ``allow_heuristic_fallback=True`` for MS-gate contexts,
+    the SAT solver will be bypassed for MS-gate reconfigs.  This produces
+    valid layouts but sub-optimal physical gate schedules.
+
     Returns
     -------
     Tuple[List[RoutingStep], np.ndarray]
@@ -2749,6 +2794,30 @@ def route_full_experiment_as_steps(
     # Resolve subgridsize=None → full grid (no patching)
     if subgridsize is None:
         subgridsize = (m * k, n, 1)
+
+    # ── Propagate routing-config timeouts into solver_params ────
+    # WISESolverParams.from_grid() doesn't set notebook_sat_timeout
+    # or notebook_rc2_timeout.  If the caller set these on the
+    # routing config but not on solver_params, copy them across so
+    # downstream SAT calls respect user-configured per-call caps.
+    import os as _os
+    if solver_params is not None:
+        if getattr(solver_params, 'notebook_sat_timeout', None) is None:
+            _cfg_nst = getattr(max_sat_time, '__self__', None)  # not useful
+            # Try to pick up from the keyword args that were forwarded
+            # from WISERoutingConfig.  The caller typically passes
+            # max_sat_time and max_rc2_time from routing_cfg; notebook
+            # timeouts are separate fields on WISERoutingConfig but
+            # aren't forwarded to route_full_experiment_as_steps.
+            # Best-effort: if max_sat_time looks like a notebook-scale
+            # cap (< 600s), use it as the notebook_sat_timeout.
+            pass  # handled below via env-var fallback
+        _env_ip = int(_os.environ.get('WISE_INPROCESS_LIMIT', '0'))
+        if getattr(solver_params, 'inprocess_limit', None) is None and _env_ip:
+            solver_params.inprocess_limit = _env_ip
+        _env_mac_cap = int(_os.environ.get('WISE_MACOS_THREAD_CAP', '0'))
+        if getattr(solver_params, 'macos_thread_cap', None) is None and _env_mac_cap:
+            solver_params.macos_thread_cap = _env_mac_cap
 
     import logging
     logger = logging.getLogger("wise.qccd.gadget_routing")
@@ -2855,6 +2924,14 @@ def route_full_experiment_as_steps(
     if replay_level == 0:
         cache_ec_rounds = False
 
+    # Default ms_rounds_per_ec_round from cx_per_ec_round when not
+    # supplied.  For gadget experiments they are already equal (both
+    # use max(|X|, |Z|)).  For CSS memory cx_per_ec_round is the sum,
+    # so a dedicated ms_rounds_per_ec_round from QECMetadata is needed
+    # to get the correct interleaved round count.
+    if ms_rounds_per_ec_round is None:
+        ms_rounds_per_ec_round = cx_per_ec_round  # fallback
+
     wiseArch = QCCDWiseArch(n=n, m=m, k=k)
 
     _use_per_block = (
@@ -2952,7 +3029,7 @@ def route_full_experiment_as_steps(
 
         Returns ``(phase_steps, final_layout)``.
         """
-        stab_round_size = cx_per_ec_round or n_pairs
+        stab_round_size = ms_rounds_per_ec_round or cx_per_ec_round or n_pairs
         num_stab_rounds = max(1, n_pairs // stab_round_size)
         result_steps: list = []
         current = np.array(start_layout, copy=True)
@@ -3061,8 +3138,10 @@ def route_full_experiment_as_steps(
                         max_inner_workers=max_inner_workers,
                         progress_callback=_phase_cb,
                         replay_level=replay_level,
+                        ms_rounds_per_ec_round=ms_rounds_per_ec_round or 4,
                         max_sat_time=max_sat_time,
                         max_rc2_time=max_rc2_time,
+                        solver_params=solver_params,
                     )
                     # When replay_level == 0 we skip per-block return
                     # reconfig entirely — no route-back at all.
@@ -3117,6 +3196,7 @@ def route_full_experiment_as_steps(
                         use_heuristic_directly=True,
                         max_sat_time=max_sat_time,
                         max_rc2_time=max_rc2_time,
+                        solver_params=solver_params,
                     )
                     sr_merged.extend(_return_steps)
                     if _return_steps:
@@ -3197,8 +3277,10 @@ def route_full_experiment_as_steps(
                                 stop_event=stop_event,
                                 max_inner_workers=max_inner_workers,
                                 progress_callback=_phase_cb,
+                                ms_rounds_per_ec_round=ms_rounds_per_ec_round or 4,
                                 max_sat_time=max_sat_time,
                                 max_rc2_time=max_rc2_time,
+                                solver_params=solver_params,
                             )
                             # P4: Cross-block route-back is deferred
                             # to a full-grid return below (after re-
@@ -3265,6 +3347,7 @@ def route_full_experiment_as_steps(
                                         use_heuristic_directly=True,
                                         max_sat_time=max_sat_time,
                                         max_rc2_time=max_rc2_time,
+                                        solver_params=solver_params,
                                     )
                                 )
                                 sr_merged.extend(_xb_fg_return)
@@ -3299,8 +3382,10 @@ def route_full_experiment_as_steps(
                     stop_event=stop_event,
                     max_inner_workers=max_inner_workers,
                     progress_callback=_phase_cb,
+                    ms_rounds_per_ec_round=ms_rounds_per_ec_round or 4,
                     max_sat_time=max_sat_time,
                     max_rc2_time=max_rc2_time,
+                    solver_params=solver_params,
                 )
                 # Separate return-round reconfig (skip when replay_level == 0
                 # or when replay_level >= num_stab_rounds, i.e. route-back
@@ -3325,6 +3410,7 @@ def route_full_experiment_as_steps(
                         use_heuristic_directly=True,
                         max_sat_time=max_sat_time,
                         max_rc2_time=max_rc2_time,
+                        solver_params=solver_params,
                     )
                     sr_merged = list(sr_merged) + _sr_return
                 else:
@@ -3412,6 +3498,7 @@ def route_full_experiment_as_steps(
                     use_heuristic_directly=True,
                     max_sat_time=max_sat_time,
                     max_rc2_time=max_rc2_time,
+                    solver_params=solver_params,
                 )
             except Exception as exc:
                 logger.warning(
@@ -3431,6 +3518,7 @@ def route_full_experiment_as_steps(
                     use_heuristic_directly=True,
                     max_sat_time=max_sat_time,
                     max_rc2_time=max_rc2_time,
+                    solver_params=solver_params,
                 )
         except Exception as exc_final:
             # FM5 fix: only swallow the exception if all ions happen to
@@ -3634,6 +3722,7 @@ def route_full_experiment_as_steps(
                             use_heuristic_directly=True,
                             max_sat_time=max_sat_time,
                             max_rc2_time=max_rc2_time,
+                            solver_params=solver_params,
                         )
                     except Exception as exc:
                         logger.warning(
@@ -3725,6 +3814,7 @@ def route_full_experiment_as_steps(
                                             allow_heuristic_fallback=True,
                                             max_sat_time=max_sat_time,
                                             max_rc2_time=max_rc2_time,
+                                            solver_params=solver_params,
                                         )
                                     except Exception as _sat_exc:
                                         logger.warning(
@@ -3884,6 +3974,7 @@ def route_full_experiment_as_steps(
                             use_heuristic_directly=True,
                             max_sat_time=max_sat_time,
                             max_rc2_time=max_rc2_time,
+                            solver_params=solver_params,
                         )
                     except Exception as exc:
                         logger.warning(
@@ -3951,6 +4042,7 @@ def route_full_experiment_as_steps(
                                             allow_heuristic_fallback=True,
                                             max_sat_time=max_sat_time,
                                             max_rc2_time=max_rc2_time,
+                                            solver_params=solver_params,
                                         )
                                     except Exception as _sat_exc:
                                         logger.warning(
@@ -4271,8 +4363,10 @@ def route_full_experiment_as_steps(
                         max_inner_workers=max_inner_workers,
                         progress_callback=_phase_cb,
                         replay_level=replay_level,
+                        ms_rounds_per_ec_round=ms_rounds_per_ec_round or 4,
                         max_sat_time=max_sat_time,
                         max_rc2_time=max_rc2_time,
+                        solver_params=solver_params,
                     )
                     phase_steps = list(phase_steps_raw)
 
@@ -4453,8 +4547,10 @@ def route_full_experiment_as_steps(
                                     ),
                                     progress_callback=_phase_cb,
                                     replay_level=replay_level,
+                                    ms_rounds_per_ec_round=ms_rounds_per_ec_round or 4,
                                     max_sat_time=max_sat_time,
                                     max_rc2_time=max_rc2_time,
+                                    solver_params=solver_params,
                                 )
                                 _nb_r0 = r0
                                 _nb_c0 = c0i
@@ -4528,8 +4624,10 @@ def route_full_experiment_as_steps(
                         max_inner_workers=max_inner_workers,
                         progress_callback=_phase_cb,
                         replay_level=replay_level,
+                        ms_rounds_per_ec_round=ms_rounds_per_ec_round or 4,
                         max_sat_time=max_sat_time,
                         max_rc2_time=max_rc2_time,
+                        solver_params=solver_params,
                     )
                     phase_steps = list(phase_steps_raw)
 
@@ -4566,8 +4664,10 @@ def route_full_experiment_as_steps(
                 max_inner_workers=max_inner_workers,
                 progress_callback=_phase_cb,
                 replay_level=replay_level,
+                ms_rounds_per_ec_round=ms_rounds_per_ec_round or 4,
                 max_sat_time=max_sat_time,
                 max_rc2_time=max_rc2_time,
+                solver_params=solver_params,
             )
             phase_steps = list(phase_steps_raw)
 
@@ -4689,6 +4789,31 @@ def route_full_experiment_as_steps(
             )
 
         if _cv_need_rebuild:
+            # ══════════════════════════════════════════════════════════
+            # ChainVerify HEURISTIC POLICY — DO NOT MODIFY / REVERT
+            # ══════════════════════════════════════════════════════════
+            # This policy determines whether _rebuild_schedule_for_layout
+            # may fall back to heuristic odd-even transposition sort or
+            # must use SAT-only routing.
+            #
+            # - ms_gate context:  allow_heuristic = False
+            #     MS-gate reconfigs MUST use SAT because the schedule
+            #     encodes physical ion movements that affect gate
+            #     fidelity.  Heuristic would produce a valid layout
+            #     but with a non-optimised schedule.
+            #
+            # - non-MS contexts (cache_replay, return_round, transition):
+            #     allow_heuristic = True
+            #     These are pure layout permutations where the odd-even
+            #     sort heuristic always produces the exact target layout.
+            #     Using SAT here adds 20s+ overhead per rebuild with no
+            #     fidelity benefit.
+            #
+            # If you change this policy, the compiler will either:
+            #   - Stall indefinitely (if you set ms_gate to True)
+            #   - Produce sub-optimal gate schedules (if you set
+            #     non-MS to False when the user has disabled heuristics)
+            # ══════════════════════════════════════════════════════════
             # 4. Rebuild schedule during planning
             if _step.reconfig_context == "ms_gate":
                 _cv_allow_heuristic = False
@@ -4736,6 +4861,7 @@ def route_full_experiment_as_steps(
                         allow_heuristic_fallback=_cv_allow_heuristic,
                         max_sat_time=max_sat_time,
                         max_rc2_time=max_rc2_time,
+                        solver_params=solver_params,
                     )
                 except Exception as _cv_exc:
                     logger.warning(

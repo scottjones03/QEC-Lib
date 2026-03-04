@@ -116,6 +116,7 @@ class PhaseInfo:
 def _build_round_signature(
     x_stab: "StabilizerInfo",
     z_stab: "StabilizerInfo",
+    is_interleaved: bool = True,
 ) -> Optional[Tuple]:
     """Build a canonical, hashable round signature from CNOT schedules.
 
@@ -123,26 +124,37 @@ def _build_round_signature(
     ``block_cache`` key format used by ``ionRoutingWISEArch``:
     ``((sorted pairs layer 0), (sorted pairs layer 1), ...)``.
 
-    X and Z layers are interleaved (merged by phase index) so that the
-    signature has ``max(len(x_layers), len(z_layers))`` entries rather
-    than ``len(x_layers) + len(z_layers)``.
+    When *is_interleaved* is ``True`` (surface codes with matching
+    geometric schedules), X and Z layers are merged by phase index,
+    producing ``max(|X|, |Z|)`` entries.  When ``False`` (sequential
+    X-then-Z emission), layers are concatenated, producing
+    ``|X| + |Z|`` entries.
 
     Returns ``None`` when no CNOT schedule is available.
     """
     x_layers = x_stab.cnot_schedule or []
     z_layers = z_stab.cnot_schedule or []
-    n = max(len(x_layers), len(z_layers))
-    if n == 0:
+    if not x_layers and not z_layers:
         return None
-    merged: List[Tuple] = []
-    for i in range(n):
-        pairs: List[Tuple[int, int]] = []
-        if i < len(x_layers):
-            pairs.extend(x_layers[i])
-        if i < len(z_layers):
-            pairs.extend(z_layers[i])
-        merged.append(tuple(sorted(pairs)))
-    return tuple(merged)
+
+    result: List[Tuple] = []
+    if is_interleaved:
+        # Merge X[i] + Z[i] per phase — standard for surface codes
+        n = max(len(x_layers), len(z_layers))
+        for i in range(n):
+            pairs: List[Tuple[int, int]] = []
+            if i < len(x_layers):
+                pairs.extend(x_layers[i])
+            if i < len(z_layers):
+                pairs.extend(z_layers[i])
+            result.append(tuple(sorted(pairs)))
+    else:
+        # Sequential: all X layers then all Z layers
+        for layer in x_layers:
+            result.append(tuple(sorted(layer)))
+        for layer in z_layers:
+            result.append(tuple(sorted(layer)))
+    return tuple(result)
 
 
 @dataclass
@@ -214,6 +226,8 @@ class QECMetadata:
     round_signature: Optional[Tuple] = None
     ion_return_invariant: bool = False
     cx_per_ec_round: Optional[int] = None
+    ms_rounds_per_ec_round: Optional[int] = None
+    is_interleaved: Optional[bool] = None
     extra: Dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -335,23 +349,42 @@ class QECMetadata:
                     [builder.data_offset + int(c) for c in range(len(row)) if row[c]]
                 )
 
+        # --- Detect interleaving capability ---
+        # The CSS builder interleaves X+Z layers (merging by geometric
+        # phase) only when _can_interleave() returns True.  Otherwise
+        # it emits all X layers then all Z layers sequentially.
+        # We replicate the same detection so ms_rounds_per_ec_round
+        # matches the actual stim circuit structure.
+        _n_x = len(x_info.cnot_schedule) if x_info.cnot_schedule else 0
+        _n_z = len(z_info.cnot_schedule) if z_info.cnot_schedule else 0
+        _can_il = hasattr(builder, '_can_interleave') and builder._can_interleave()
+        if not _can_il:
+            # Fallback heuristic when builder method unavailable:
+            # interleave iff both types present with matching lengths
+            if not hasattr(builder, '_can_interleave'):
+                _can_il = (_n_x > 0 and _n_z > 0 and _n_x == _n_z)
+        _is_interleaved: bool = _can_il
+
         # --- Round signature ---
-        sig = _build_round_signature(x_info, z_info)
+        sig = _build_round_signature(x_info, z_info, is_interleaved=_is_interleaved)
 
         # --- Ion return invariant ---
         # For a pure memory experiment, ions return to starting positions
         # after each round when the round signature is well-defined.
         iri = sig is not None
 
-        # --- cx_per_ec_round: number of CNOT schedule *layers* per round ---
-        # Each layer maps to one stim CX instruction (which may carry
-        # multiple target pairs) and one parallelPairs routing round.
-        _cx = 0
-        if x_info.cnot_schedule:
-            _cx += len(x_info.cnot_schedule)
-        if z_info.cnot_schedule:
-            _cx += len(z_info.cnot_schedule)
+        # --- cx_per_ec_round: total CNOT schedule *layers* per round ---
+        # Always the sum of X + Z layers (each stim CX instruction).
+        _cx = _n_x + _n_z
         _cx_per_ec = _cx if _cx > 0 else None
+
+        # --- ms_rounds_per_ec_round: routing rounds per EC round ---
+        # Interleaved: X[i]+Z[i] share a routing step → max(|X|, |Z|)
+        # Sequential:  X then Z run separately → |X| + |Z|
+        if _is_interleaved:
+            _ms_per_ec = max(_n_x, _n_z) if (_n_x or _n_z) else None
+        else:
+            _ms_per_ec = (_n_x + _n_z) if (_n_x or _n_z) else None
 
         # --- Phase decomposition ---
         _stab_ms_count = (_cx * max(0, rounds - 1)) if _cx else 0
@@ -399,6 +432,8 @@ class QECMetadata:
             round_signature=sig,
             ion_return_invariant=iri,
             cx_per_ec_round=_cx_per_ec,
+            ms_rounds_per_ec_round=_ms_per_ec,
+            is_interleaved=_is_interleaved,
         )
 
     @classmethod
@@ -472,6 +507,17 @@ class QECMetadata:
         z_info = _build_stab_info_for_builder(code, builder, "z")
 
         # --- Per-block stabilizer info ---
+        # --- Detect interleaving capability from primary builder ---
+        # Use the same detection as from_css_memory: call
+        # _can_interleave() on the primary builder.
+        _n_x_g = len(x_info.cnot_schedule) if x_info.cnot_schedule else 0
+        _n_z_g = len(z_info.cnot_schedule) if z_info.cnot_schedule else 0
+        _can_il_g = hasattr(builder, '_can_interleave') and builder._can_interleave()
+        if not _can_il_g:
+            if not hasattr(builder, '_can_interleave'):
+                _can_il_g = (_n_x_g > 0 and _n_z_g > 0 and _n_x_g == _n_z_g)
+        _is_interleaved_g: bool = _can_il_g
+
         per_block_stabs: Dict[str, StabilizerInfo] = {}
         block_round_sigs: Dict[str, Optional[Tuple]] = {}
         for i, b in enumerate(builders):
@@ -479,31 +525,38 @@ class QECMetadata:
             block_name = getattr(b, "block_name", f"block_{i}")
             x_stab = _build_stab_info_for_builder(c, b, "x")
             z_stab = _build_stab_info_for_builder(c, b, "z")
-            # Interleave X and Z CNOT layers so that both stabiliser
-            # types share each geometric phase.  This is the key change
-            # that allows the trapped-ion compiler to emit parallel MS
-            # gates for X and Z stabilisers within the same routing step.
-            #
-            # Before: [x0, x1, x2, x3, z0, z1, z2, z3]  → 8 layers
-            # After:  [x0+z0, x1+z1, x2+z2, x3+z3]      → 4 layers
             x_layers = x_stab.cnot_schedule or []
             z_layers = z_stab.cnot_schedule or []
             n_xl, n_zl = len(x_layers), len(z_layers)
-            n_combined = max(n_xl, n_zl)
             combined_layers: List[List[Tuple[int, int]]] = []
-            for li in range(n_combined):
-                merged: List[Tuple[int, int]] = []
-                if li < n_xl:
-                    merged.extend(x_layers[li])
-                if li < n_zl:
-                    merged.extend(z_layers[li])
-                combined_layers.append(merged)
+            if _is_interleaved_g:
+                # Interleave X and Z CNOT layers so that both stabiliser
+                # types share each geometric phase.
+                # Before: [x0, x1, x2, x3, z0, z1, z2, z3]  → 8 layers
+                # After:  [x0+z0, x1+z1, x2+z2, x3+z3]      → 4 layers
+                n_combined = max(n_xl, n_zl)
+                for li in range(n_combined):
+                    merged: List[Tuple[int, int]] = []
+                    if li < n_xl:
+                        merged.extend(x_layers[li])
+                    if li < n_zl:
+                        merged.extend(z_layers[li])
+                    combined_layers.append(merged)
+            else:
+                # Sequential: all X layers then all Z layers.
+                # The stim circuit emits X rounds first, then Z rounds.
+                for layer in x_layers:
+                    combined_layers.append(list(layer))
+                for layer in z_layers:
+                    combined_layers.append(list(layer))
             per_block_stabs[block_name] = StabilizerInfo(
                 supports=x_stab.supports + z_stab.supports,
                 ancillas=x_stab.ancillas + z_stab.ancillas,
                 cnot_schedule=combined_layers if combined_layers else None,
             )
-            block_round_sigs[block_name] = _build_round_signature(x_stab, z_stab)
+            block_round_sigs[block_name] = _build_round_signature(
+                x_stab, z_stab, is_interleaved=_is_interleaved_g,
+            )
 
         # --- Block allocations ---
         blocks: List[BlockInfo] = []
@@ -533,19 +586,20 @@ class QECMetadata:
                     )
 
         # --- Round signature (primary block) ---
-        sig = _build_round_signature(x_info, z_info)
+        sig = _build_round_signature(
+            x_info, z_info, is_interleaved=_is_interleaved_g,
+        )
 
         # --- Gadget experiments are NOT ion-return-invariant ---
         iri = False
 
-        # --- cx_per_ec_round: CNOT schedule *layers* per interleaved round ---
-        # After interleaving, one EC round has max(len(x_sched), len(z_sched))
-        # layers (not the sum) because X and Z CX gates share geometric
-        # phases.  Each layer = one stim CX instruction = one routing round.
-        _cx_x = len(x_info.cnot_schedule) if x_info.cnot_schedule else 0
-        _cx_z = len(z_info.cnot_schedule) if z_info.cnot_schedule else 0
-        _cx = max(_cx_x, _cx_z)
+        # --- cx_per_ec_round / ms_rounds_per_ec_round ---
+        if _is_interleaved_g:
+            _cx = max(_n_x_g, _n_z_g)
+        else:
+            _cx = _n_x_g + _n_z_g
         _cx_per_ec = _cx if _cx > 0 else None
+        _ms_per_ec = _cx if _cx > 0 else None
 
         # --- Phase decomposition (multi-phase aware) ---
         # Get block names and per-phase active blocks from gadget
@@ -662,6 +716,8 @@ class QECMetadata:
             round_signature=sig,
             ion_return_invariant=iri,
             cx_per_ec_round=_cx_per_ec,
+            ms_rounds_per_ec_round=_ms_per_ec,
+            is_interleaved=_is_interleaved_g,
             extra={"block_round_signatures": block_round_sigs},
         )
 

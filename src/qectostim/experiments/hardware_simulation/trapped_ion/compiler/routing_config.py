@@ -296,6 +296,14 @@ class WISERoutingConfig:
     patch_verbose: bool = False
     """Override ``WISE_PATCH_VERBOSE``.  When ``True``, emit verbose
     patch-level move logs during routing.  Default: ``False``."""
+    notebook_sat_timeout: Optional[float] = None
+    """Notebook/per-call SAT timeout cap (seconds).  Propagated to
+    ``solver_params.notebook_sat_timeout`` and used to cap individual
+    SAT solver calls.  ``None`` means no cap (use auto-scaling)."""
+    notebook_rc2_timeout: Optional[float] = None
+    """Notebook/per-call RC2 timeout cap (seconds).  Propagated to
+    ``solver_params.notebook_rc2_timeout`` and used to cap individual
+    RC2 solver calls.  ``None`` means no cap (use auto-scaling)."""
     progress_callback: Optional[ProgressCallback] = None
     solver_params: Optional[WISESolverParams] = None
 
@@ -420,6 +428,13 @@ class WISERoutingConfig:
                 notebook_rc2_timeout=notebook_rc2_timeout,
                 macos_thread_cap=macos_thread_cap,
             )
+        else:
+            # When solver_params is pre-built, still honour explicitly
+            # configured notebook timeouts from the routing config.
+            if notebook_sat_timeout is not None:
+                solver_params.notebook_sat_timeout = notebook_sat_timeout
+            if notebook_rc2_timeout is not None:
+                solver_params.notebook_rc2_timeout = notebook_rc2_timeout
 
         progress_cb = None
         progress_close = None
@@ -445,6 +460,8 @@ class WISERoutingConfig:
             use_inline_routing=use_inline_routing,
             debug_mode=debug_mode,
             patch_verbose=patch_verbose,
+            notebook_sat_timeout=notebook_sat_timeout,
+            notebook_rc2_timeout=notebook_rc2_timeout,
             solver_params=solver_params,
             progress_callback=progress_cb,
         )

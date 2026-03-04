@@ -200,8 +200,9 @@ class GeneralStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         
         anc = self.ancilla_qubits
         
-        # Reset ancillas at start of round
-        circuit.append("R", anc)
+        # Reset ancillas at start of round (skip if previous MR already reset)
+        if not getattr(self, '_ancilla_already_reset', False):
+            circuit.append("R", anc)
         circuit.append("TICK")
         
         # Apply stabilizer gates with graph-coloring scheduling
@@ -212,6 +213,9 @@ class GeneralStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         # Measure all ancillas
         meas_start = self.ctx.add_measurement(self._n_stabs)
         circuit.append("MR", anc)
+
+        # MR already reset ancillas; mark so next round skips R
+        self._ancilla_already_reset = True
         
         # Time-like detectors - for non-CSS codes, skip first round
         # (initial state is generally not eigenstate of all stabilizers)

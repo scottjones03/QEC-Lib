@@ -129,6 +129,12 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         # Track metacheck measurements (for detecting syndrome measurement errors)
         self._last_meta_x_meas: List[Optional[int]] = [None] * self._n_meta_x
         self._last_meta_z_meas: List[Optional[int]] = [None] * self._n_meta_z
+
+        # Track whether the previous round ended with MR/MRX so that the
+        # next round can skip the redundant R/RX on ancillas.  MR already
+        # resets to |0⟩ and MRX already resets to |+⟩, so a subsequent R/RX
+        # on the same qubit is a no-op that wastes hardware cycles.
+        self._ancilla_already_reset: bool = False
     
     def _get_stabilizer_coords(self, basis: str) -> List[Tuple[float, ...]]:
         """Get stabilizer coordinates using code hooks or metadata.
@@ -229,6 +235,14 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         
         # Set flag to skip first-round detectors (for teleportation)
         self._skip_first_round = skip_first_round
+
+        # After a stabiliser transform that swaps X↔Z (Hadamard), the
+        # ancilla preparation basis changes, so the next round must emit
+        # its own R/RX.  When only clearing measurement history
+        # (clear_history without swap_xz), the physical ancilla state is
+        # unchanged — MR/MRX already left them correctly reset.
+        if swap_xz:
+            self._ancilla_already_reset = False
 
     @property
     def x_ancillas(self) -> List[int]:
@@ -653,6 +667,12 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         self._emit_x_anchors = emit_x_anchors
         self._explicit_anchor_mode = True
 
+        # Skip redundant resets if the previous round's MR/MRX already
+        # reset the ancillas (same optimisation as _emit_interleaved_round).
+        if self._ancilla_already_reset:
+            self._ancilla_already_reset = False   # consumed
+            return
+
         x_anc = self.x_ancillas
         z_anc = self.z_ancillas
 
@@ -768,6 +788,11 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         self._emit_z_anchors = False
         self._emit_x_anchors = False
         self._explicit_anchor_mode = False
+
+        # MR/MRX already resets ancillas — flag so the next round
+        # can skip an explicit R/RX (applies to both sequential and
+        # parallel emission paths).
+        self._ancilla_already_reset = True
 
     def emit_round(
         self,
@@ -943,9 +968,10 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
             # Z ancillas measure X-type → RX - CX(anc→data) - MRX
             # X ancillas measure Z-type → R - CNOT(data→anc) - MR
             
-            # Step 1: Prepare ancillas
-            circuit.append("R", x_anc)    # X ancillas: |0⟩ for Z-type measurement
-            circuit.append("RX", z_anc)   # Z ancillas: |+⟩ for X-type measurement
+            # Step 1: Prepare ancillas (skip if MR/MRX already reset them)
+            if not self._ancilla_already_reset:
+                circuit.append("R", x_anc)    # X ancillas: |0⟩ for Z-type measurement
+                circuit.append("RX", z_anc)   # Z ancillas: |+⟩ for X-type measurement
             circuit.append("TICK")
             
             # Step 2: Interleaved CNOT phases - swapped control/target
@@ -980,8 +1006,10 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         else:
             # Normal mode: standard surface code interleaving
             # Step 1: Prepare ancillas - RX for X-type, R for Z-type
-            circuit.append("RX", x_anc)  # X ancillas: |+⟩ for X-type measurement
-            circuit.append("R", z_anc)   # Z ancillas: |0⟩ for Z-type measurement
+            # (skip if MR/MRX from the previous round already reset them)
+            if not self._ancilla_already_reset:
+                circuit.append("RX", x_anc)  # X ancillas: |+⟩ for X-type measurement
+                circuit.append("R", z_anc)   # Z ancillas: |0⟩ for Z-type measurement
             circuit.append("TICK")
             
             # Step 2: Interleaved CNOT phases - X and Z in parallel
@@ -1038,6 +1066,10 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         
         self._emit_detectors_for_type(circuit, "x", x_meas_start, emit_detectors, x_effective_basis)
         self._emit_detectors_for_type(circuit, "z", z_meas_start, emit_detectors, z_effective_basis)
+
+        # MR/MRX already reset the ancillas; mark so the next round
+        # can skip the redundant R/RX.
+        self._ancilla_already_reset = True
         
         # Add final TICK after measurements to separate from next round
         circuit.append("TICK")
@@ -1061,7 +1093,8 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         if self._stabilizer_swapped:
             # After Hadamard: X ancillas measure Z-type stabilizers
             # Use Z syndrome circuit: R - CNOT(data→anc) - MR
-            circuit.append("R", x_anc)
+            if not self._ancilla_already_reset:
+                circuit.append("R", x_anc)
             circuit.append("TICK")
             
             if self._use_geometric_x():
@@ -1075,7 +1108,8 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         else:
             # Normal: X ancillas measure X-type stabilizers
             # Use X syndrome circuit: RX - CX(anc→data) - MRX
-            circuit.append("RX", x_anc)
+            if not self._ancilla_already_reset:
+                circuit.append("RX", x_anc)
             circuit.append("TICK")
             
             if self._use_geometric_x():
@@ -1090,6 +1124,9 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         # Effective basis: after swap X ancillas measure Z, before swap they measure X
         effective_basis = "Z" if self._stabilizer_swapped else "X"
         self._emit_detectors_for_type(circuit, "x", meas_start, emit_detectors, effective_basis)
+
+        # MR/MRX already reset ancillas
+        self._ancilla_already_reset = True
     
     def _emit_z_round(self, circuit: stim.Circuit, emit_detectors: bool) -> None:
         """Emit Z stabilizer measurements.
@@ -1107,7 +1144,8 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         if self._stabilizer_swapped:
             # After Hadamard: Z ancillas measure X-type stabilizers  
             # Use X syndrome circuit: RX - CX(anc→data) - MRX
-            circuit.append("RX", z_anc)
+            if not self._ancilla_already_reset:
+                circuit.append("RX", z_anc)
             circuit.append("TICK")
             
             if self._use_geometric_z():
@@ -1121,7 +1159,8 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         else:
             # Normal: Z ancillas measure Z-type stabilizers
             # Use Z syndrome circuit: R - CNOT(data→anc) - MR
-            circuit.append("R", z_anc)
+            if not self._ancilla_already_reset:
+                circuit.append("R", z_anc)
             circuit.append("TICK")
             
             if self._use_geometric_z():
@@ -1136,6 +1175,9 @@ class CSSStabilizerRoundBuilder(BaseStabilizerRoundBuilder):
         # Effective basis: after swap Z ancillas measure X, before swap they measure Z
         effective_basis = "X" if self._stabilizer_swapped else "Z"
         self._emit_detectors_for_type(circuit, "z", meas_start, emit_detectors, effective_basis)
+
+        # MR/MRX already reset ancillas
+        self._ancilla_already_reset = True
     
     def _emit_metacheck_round(
         self,

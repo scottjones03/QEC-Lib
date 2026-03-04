@@ -406,6 +406,8 @@ def compile_gadget_for_animation(
     show_progress: bool = False,
     routing_config: Optional["WISERoutingConfig"] = None,
     replay_level: Optional[int] = None,
+    notebook_sat_timeout: Optional[float] = None,
+    notebook_rc2_timeout: Optional[float] = None,
 ) -> Tuple[Any, TrappedIonCompiler, Any, List[Any], Dict[int, str], Dict[int, int], Dict[int, int]]:
     """Compile a gadget circuit through the full WISE pipeline for animation.
 
@@ -557,6 +559,26 @@ def compile_gadget_for_animation(
     if routing_config is not None:
         _rc = routing_config
     else:
+        # ── Env-var fallback for notebook timeouts ──
+        # Users set WISE_MAX_SAT_TIME as a general timeout control.
+        # When notebook_sat_timeout is not explicitly provided, use
+        # the env var so the per-call cap is respected.
+        import os as _os_cgfa
+        if notebook_sat_timeout is None:
+            _env_nst = _os_cgfa.environ.get('WISE_MAX_SAT_TIME')
+            if _env_nst:
+                try:
+                    notebook_sat_timeout = float(_env_nst)
+                except ValueError:
+                    pass
+        if notebook_rc2_timeout is None:
+            _env_nrt = _os_cgfa.environ.get('WISE_MAX_RC2_TIME')
+            if _env_nrt:
+                try:
+                    notebook_rc2_timeout = float(_env_nrt)
+                except ValueError:
+                    pass
+
         _rc_kwargs: dict = dict(
             lookahead=lookahead,
             subgridsize=subgridsize if subgridsize is not None else (4, 3, 0),
@@ -565,6 +587,10 @@ def compile_gadget_for_animation(
         )
         if replay_level is not None:
             _rc_kwargs["replay_level"] = replay_level
+        if notebook_sat_timeout is not None:
+            _rc_kwargs["notebook_sat_timeout"] = notebook_sat_timeout
+        if notebook_rc2_timeout is not None:
+            _rc_kwargs["notebook_rc2_timeout"] = notebook_rc2_timeout
         _rc = WISERoutingConfig.default(**_rc_kwargs)
     compiler.routing_kwargs = dict(
         routing_config=_rc,

@@ -126,7 +126,7 @@ _ROTATION_TYPE_PRIORITY = _OP_TYPE_PRIORITY
 
 
 # ---------------------------------------------------------------------------
-# Pre-routing barrier reorder (5-step algorithm)
+# Pre-routing barrier reorder (v4: full merge/push/reorder algorithm)
 # ---------------------------------------------------------------------------
 
 def reorder_with_type_barriers(
@@ -134,19 +134,43 @@ def reorder_with_type_barriers(
 ) -> Tuple[List[Operation], List[int]]:
     """Reorder native ops into barrier-separated type-homogeneous blocks.
 
-    Implements the 5-step barrier algorithm:
+    Implements a 6-phase algorithm per user spec:
 
-    1. **Group MS gates by stim origin** into contiguous blocks, barrier
-       around each.  All MS from one CX stay together.
-    2. **Group RESETs and MEASurements** by stim origin between barriers.
-    3. **Merge adjacent same-type blocks** across stim origins, pushing
-       rotations to respect per-qubit happens-before.
-    4. **Barrier around RESET and MEAS blocks**.
-    5. **Group ROTX and ROTY** between barriers, barrier around each.
+    1. **Per-origin canonicalization**: Convert each stim instruction block to::
+           RX | RY | MS | RY | RX | MEAS | RESET
 
-    Final pattern::
+    2. **Linearize**: Concatenate all origins in stim-line order, producing
+       a linear sequence of typed operations.
 
-        RESET | RX | RY | {MS | RX | RY} × n | MEAS | RESET
+    3. **Merge at boundaries**: Join contiguous same-type blocks across
+       origin boundaries (e.g., trailing RX from block1 + leading RX from
+       block2 become one merged RX block).
+
+    4. **Merge MEAS/RESET spans**: Push rotations out of MEAS/RESET spans.
+       All MEAS ops merge together, all RESET ops merge together. Rotations
+       that were between MEAS and RESET get pushed: rotations before MEAS
+       stay before, rotations after RESET stay after.
+
+    5. **Reorder rotations at MS-MS, MS-MEAS, RESET-MS boundaries**: Between
+       two MS blocks, merge trailing rotations of first MS with leading
+       rotations of second MS. At MS→MEAS boundary, rotations before MEAS.
+       At RESET→MS boundary, rotations after RESET.
+
+    6. **Insert barriers**: Between each final contiguous type block.
+
+    Example transformation::
+
+        Input stim blocks:
+        |block1: RX,RY,MS,RY,RX| |block2: RX,RY,MS,RY,RX| |block3: RX,MEAS,RESET,RX| |block4: RX,MEAS,RESET| |block5: RX,RY,MS,RY,RX|
+
+        After merge at boundaries (showing boundary merges with |):
+        RX,RY,MS,RY,|RX|,RY,MS,RY,|RX|,MEAS,RESET,|RX|,MEAS,RESET,|RX|,RY,MS,RY,RX
+
+        After MEAS/RESET merge + push rotations:
+        RX RY MS RY RX RY MS RY RX MEAS RESET RX RY MS RY RX
+
+        After reorder rotations between MS-MS:
+        RX RY MS RY RX MS RY RX MEAS RESET RX RY MS RY RX
 
     Parameters
     ----------
@@ -163,8 +187,10 @@ def reorder_with_type_barriers(
     if not operations:
         return [], []
 
-    # ── Step 0: Group ops by stim origin ─────────────────────────────
-    # Key = (tick_epoch, stim_origin) to handle multi-round circuits
+    # ══════════════════════════════════════════════════════════════════════
+    # Phase 1: Group by stim origin and canonicalize each to:
+    #          RX | RY | MS | RY | RX | MEAS | RESET
+    # ══════════════════════════════════════════════════════════════════════
     ops_by_origin: Dict[Tuple[int, int], List[Operation]] = defaultdict(list)
     for op in operations:
         key = (
@@ -173,227 +199,748 @@ def reorder_with_type_barriers(
         )
         ops_by_origin[key].append(op)
 
-    # Sort origins to preserve stim instruction order
     sorted_origins = sorted(ops_by_origin.keys())
 
-    # ── Step 1: Canonicalize each origin's ops ───────────────────────
-    # For each stim origin, arrange: pre-MS | ALL MS | post-MS
-    # Rotations between MS from same origin get pushed to post-MS
-    canonicalized: Dict[Tuple[int, int], List[Operation]] = {}
-    ms_origins: Set[Tuple[int, int]] = set()
-
+    # Canonicalize each origin into typed blocks
+    # Format: list of (type_tag, ops) where type_tag is 'RX'|'RY'|'MS'|'MEAS'|'RESET'
+    origin_blocks: List[List[Tuple[str, List[Operation]]]] = []
     for origin in sorted_origins:
         origin_ops = ops_by_origin[origin]
-        canon, has_ms = _canonicalize_origin_ops(origin_ops)
-        canonicalized[origin] = canon
-        if has_ms:
-            ms_origins.add(origin)
+        blocks = _canonicalize_origin_to_blocks(origin_ops)
+        if blocks:
+            origin_blocks.append(blocks)
 
-    # ── Step 2-3: Concatenate origins with barriers around MS ────────
+    # ══════════════════════════════════════════════════════════════════════
+    # Phase 2 & 3: Linearize and merge at boundaries
+    # Flatten all blocks, merging same-type adjacent blocks
+    # ══════════════════════════════════════════════════════════════════════
+    merged: List[Tuple[str, List[Operation]]] = []
+    for blocks in origin_blocks:
+        for type_tag, ops in blocks:
+            if not ops:
+                continue
+            if merged and merged[-1][0] == type_tag:
+                # Same type as previous - merge (boundary merge)
+                merged[-1][1].extend(ops)
+            else:
+                merged.append((type_tag, list(ops)))
+
+    # ══════════════════════════════════════════════════════════════════════
+    # Phase 4: Merge MEAS/RESET spans, pushing rotations out
+    # Find spans of [rotations...MEAS...RESET...rotations] and consolidate:
+    # - MEAS ops all merge together
+    # - RESET ops all merge together
+    # - Rotations before MEAS stay before, rotations after RESET stay after
+    # ══════════════════════════════════════════════════════════════════════
+    merged = _merge_meas_reset_spans(merged)
+
+    # ══════════════════════════════════════════════════════════════════════
+    # Phase 4b: Merge RESET+rotation spans (initialisation blocks)
+    # Consolidate interleaved RESET|RX|RESET|RX → RESET|RX
+    # ══════════════════════════════════════════════════════════════════════
+    merged = _merge_reset_rotation_spans(merged)
+
+    # ══════════════════════════════════════════════════════════════════════
+    # Phase 4c: Consolidate rotation spans across stim origins
+    # After Phases 4/4b, different stim origins each contribute RX/RY pairs
+    # within the same anchor span.  This produces alternating RX, RY, RX, RY
+    # blocks.  Consolidate each such span into ONE RX + ONE RY block.
+    # ══════════════════════════════════════════════════════════════════════
+    merged = _consolidate_rotation_spans(merged)
+
+    # ══════════════════════════════════════════════════════════════════════
+    # Phase 5: Reorder rotations at MS-MS, MS-MEAS, RESET-MS boundaries
+    # Between MS→MS: merge trailing rotations with leading rotations
+    # Between MS→MEAS: rotations come before MEAS
+    # Between RESET→MS: rotations come after RESET
+    # ══════════════════════════════════════════════════════════════════════
+    merged = _reorder_rotations_between_anchors(merged)
+
+    # ══════════════════════════════════════════════════════════════════════
+    # Phase 5b: Final boundary merge — catch any new same-type adjacencies
+    # created by Phases 4/4b/5.
+    # ══════════════════════════════════════════════════════════════════════
+    final_merged: List[Tuple[str, List[Operation]]] = []
+    for type_tag, ops in merged:
+        if not ops:
+            continue
+        if final_merged and final_merged[-1][0] == type_tag:
+            final_merged[-1][1].extend(ops)
+        else:
+            final_merged.append((type_tag, list(ops)))
+    merged = final_merged
+
+    # ══════════════════════════════════════════════════════════════════════
+    # Phase 5c: Deduplicate RESET and MEAS ops that target the same ion
+    # within a merged block.  MR (measure-reset) already emits a RESET,
+    # so a subsequent R on the same qubit produces a redundant QubitReset.
+    # Keep only the first occurrence per ion within each RESET/MEAS block.
+    # ══════════════════════════════════════════════════════════════════════
+    merged = _dedup_same_ion_ops(merged)
+
+    # ══════════════════════════════════════════════════════════════════════
+    # Phase 6: Build final result with barriers between each type block
+    # ══════════════════════════════════════════════════════════════════════
     result: List[Operation] = []
     barriers: List[int] = []
 
-    for origin in sorted_origins:
-        canon = canonicalized[origin]
-        if not canon:
+    for type_tag, ops in merged:
+        if not ops:
             continue
+        # Barrier before this block (if there's prior content)
+        if result:
+            barriers.append(len(result))
+        result.extend(ops)
 
-        if origin in ms_origins:
-            # Find MS block boundaries within this origin
-            first_ms_idx = None
-            last_ms_idx = None
-            for i, op in enumerate(canon):
-                if isinstance(op, TwoQubitMSGate):
-                    if first_ms_idx is None:
-                        first_ms_idx = i
-                    last_ms_idx = i
+    # Clean up barriers
+    barriers = sorted(set(b for b in barriers if 0 < b < len(result)))
 
-            # Emit pre-MS ops
-            pre_ms = canon[:first_ms_idx] if first_ms_idx else []
-            if pre_ms:
-                result.extend(pre_ms)
-
-            # Barrier before MS block
-            if first_ms_idx is not None:
-                barriers.append(len(result))
-
-            # Emit MS block
-            ms_block = canon[first_ms_idx:last_ms_idx + 1] if first_ms_idx is not None else []
-            result.extend(ms_block)
-
-            # Barrier after MS block
-            if last_ms_idx is not None:
-                barriers.append(len(result))
-
-            # Emit post-MS ops
-            post_ms = canon[last_ms_idx + 1:] if last_ms_idx is not None else []
-            if post_ms:
-                result.extend(post_ms)
-        else:
-            # No MS in this origin: just append
-            result.extend(canon)
-
-    # ── Step 4-5: Merge adjacent same-type blocks ────────────────────
-    # Group consecutive non-MS ops by type, respecting barriers
-    result, barriers = _merge_and_barrier_types(result, barriers)
-
-    # ── Tag each op with barrier group ───────────────────────────────
+    # Tag barrier groups
     _tag_barrier_groups(result, barriers)
 
     return result, barriers
 
 
-def _canonicalize_origin_ops(
+def _canonicalize_origin_to_blocks(
     ops: List[Operation],
-) -> Tuple[List[Operation], bool]:
-    """Canonicalize ops from one stim origin.
+) -> List[Tuple[str, List[Operation]]]:
+    """Convert one stim origin's ops to ordered type blocks.
 
-    Returns (canonicalized_ops, has_ms).
+    Output order for MS-containing origins:
+        [pre-RX][pre-RY][MS][post-RY][post-RX][MEAS][RESET]
 
-    For origins with MS gates:
-      pre-MS non-rotations | pre-MS rotations | ALL MS | post-MS rotations | post-MS non-rotations
-
-    For origins without MS gates:
-      RESET | MEAS | RX | RY  (or RX | RY | MEAS | RESET depending on context)
+    Output order for non-MS origins:
+        [RESET][RX][RY] for initialization
+        [RX][RY][MEAS][RESET] for measurement rounds
     """
-    ms_ops = [op for op in ops if isinstance(op, TwoQubitMSGate)]
+    has_ms = any(isinstance(op, TwoQubitMSGate) for op in ops)
+    has_meas = any(isinstance(op, Measurement) for op in ops)
 
-    if not ms_ops:
-        # No MS: simple type-priority sort
-        # Priority: RESET < RX < RY < MEAS (for non-MS instructions)
-        priority = {QubitReset: 0, XRotation: 1, YRotation: 2, Measurement: 3}
-        return sorted(ops, key=lambda o: priority.get(type(o), 99)), False
-
-    # Has MS: separate pre-MS and post-MS regions
-    # The decomposition of CX is: RY → MS → RY → MS → RY
-    # We want: ALL rotations that were originally between MS gates
-    # to be pushed to AFTER all MS gates.
-
-    # Find original indices of first and last MS
-    ms_indices = []
-    for i, op in enumerate(ops):
-        if isinstance(op, TwoQubitMSGate):
-            ms_indices.append(i)
-
-    first_ms_orig = ms_indices[0]
-    last_ms_orig = ms_indices[-1]
-
-    pre_ms_ops: List[Operation] = []
-    between_ms_ops: List[Operation] = []  # rotations between MS gates
-    post_ms_ops: List[Operation] = []
-
-    for i, op in enumerate(ops):
-        if isinstance(op, TwoQubitMSGate):
-            continue  # MS ops handled separately
-
-        if i < first_ms_orig:
-            pre_ms_ops.append(op)
-        elif i > last_ms_orig:
-            post_ms_ops.append(op)
-        else:
-            # Between first and last MS — these are the interleaved rotations
-            between_ms_ops.append(op)
-
-    # Sort pre-MS: RESET, MEAS, RX, RY
-    pre_priority = {QubitReset: 0, Measurement: 1, XRotation: 2, YRotation: 3}
-    pre_ms_ops.sort(key=lambda o: pre_priority.get(type(o), 99))
-
-    # Post-MS gets: between_ms_ops + post_ms_ops, sorted as RX, RY, MEAS, RESET
-    all_post = between_ms_ops + post_ms_ops
-    post_priority = {XRotation: 0, YRotation: 1, Measurement: 2, QubitReset: 3}
-    all_post.sort(key=lambda o: post_priority.get(type(o), 99))
-
-    return pre_ms_ops + ms_ops + all_post, True
+    if has_ms:
+        return _canonicalize_ms_origin_to_blocks(ops)
+    elif has_meas:
+        # Measurement round: RX | RY | MEAS | RESET
+        return _canonicalize_meas_origin_to_blocks(ops)
+    else:
+        # Initialization or pure rotations: RESET | RX | RY
+        return _canonicalize_init_origin_to_blocks(ops)
 
 
-def _merge_and_barrier_types(
+def _canonicalize_ms_origin_to_blocks(
     ops: List[Operation],
-    ms_barriers: List[int],
-) -> Tuple[List[Operation], List[int]]:
-    """Merge adjacent same-type blocks and insert barriers at type transitions.
+) -> List[Tuple[str, List[Operation]]]:
+    """Canonicalize MS-containing origin to blocks using per-pair segmentation.
 
-    Parameters
-    ----------
-    ops : list
-        Operations with MS barriers already in place.
-    ms_barriers : list
-        Barrier positions around MS blocks.
+    Pattern: [pre-RX][pre-RY][MS][post-RY][post-RX][MEAS][RESET]
 
-    Returns
-    -------
-    merged_ops : list
-        Operations with same-type blocks merged.
-    barriers : list
-        Barrier positions at all type transitions.
+    For multi-pair CX (e.g. ``CX 4 1 3 6 …``), each pair decomposes as
+    ``[RY, RX, RX, MS, RY]``.  We segment ops around each MS gate so
+    that *every* pair's pre-MS rotations are collected (not just pair 0's).
+
+    Result for 6-pair CX: ``RX(12), RY(6), MS(6), RY(6)``
+    (not the old buggy ``RX(2), RY(1), MS(6), RY(11), RX(10)``).
     """
-    if not ops:
-        return [], []
-
-    # Convert ms_barriers to a set for fast lookup
-    barrier_set = set(ms_barriers)
-
-    # Split into segments at MS barriers
-    segments: List[Tuple[int, int, bool]] = []  # (start, end, is_ms_segment)
-    seg_start = 0
-
-    for i in range(len(ops) + 1):
-        if i in barrier_set or i == len(ops):
-            if i > seg_start:
-                # Check if this segment contains MS
-                has_ms = any(isinstance(ops[j], TwoQubitMSGate)
-                            for j in range(seg_start, i))
-                segments.append((seg_start, i, has_ms))
-            seg_start = i
-
-    # Process each segment: MS segments stay as-is, non-MS get type-sorted
-    result: List[Operation] = []
-    barriers: List[int] = []
-
-    for seg_start, seg_end, is_ms in segments:
-        seg_ops = ops[seg_start:seg_end]
-
-        if is_ms:
-            # MS segment: keep as-is, barrier at start
-            if result:
-                barriers.append(len(result))
-            result.extend(seg_ops)
-            barriers.append(len(result))
-        else:
-            # Non-MS segment: sort by type, barrier at transitions
-            sorted_seg = _sort_by_type_with_context(seg_ops, len(result) == 0)
-            if sorted_seg:
-                if result and type(result[-1]) is not type(sorted_seg[0]):
-                    barriers.append(len(result))
-                # Add barriers at type transitions within segment
-                for i in range(1, len(sorted_seg)):
-                    if type(sorted_seg[i]) is not type(sorted_seg[i - 1]):
-                        barriers.append(len(result) + i)
-                result.extend(sorted_seg)
-
-    # Clean up barriers: remove duplicates and out-of-range
-    barriers = sorted(set(b for b in barriers if 0 < b < len(result)))
-
-    return result, barriers
-
-
-def _sort_by_type_with_context(
-    ops: List[Operation],
-    is_first_segment: bool,
-) -> List[Operation]:
-    """Sort ops by type priority.
-
-    For first segment (before any MS): RESET, RX, RY, MEAS
-    For other segments (after MS): RX, RY, MEAS, RESET
-    """
-    if not ops:
+    ms_indices = [i for i, op in enumerate(ops) if isinstance(op, TwoQubitMSGate)]
+    if not ms_indices:
         return []
 
-    if is_first_segment:
-        priority = {QubitReset: 0, XRotation: 1, YRotation: 2, Measurement: 3}
-    else:
-        priority = {XRotation: 0, YRotation: 1, Measurement: 2, QubitReset: 3}
+    all_pre_rx: List[Operation] = []
+    all_pre_ry: List[Operation] = []
+    all_pre_reset: List[Operation] = []
+    all_ms: List[Operation] = []
+    all_post_ry: List[Operation] = []
+    all_post_rx: List[Operation] = []
+    all_post_meas: List[Operation] = []
+    all_post_reset: List[Operation] = []
 
-    return sorted(ops, key=lambda o: priority.get(type(o), 99))
+    # ── Ops before the first MS gate: always pre-MS ──────────
+    for i in range(0, ms_indices[0]):
+        op = ops[i]
+        if isinstance(op, XRotation):
+            all_pre_rx.append(op)
+        elif isinstance(op, YRotation):
+            all_pre_ry.append(op)
+        elif isinstance(op, QubitReset):
+            all_pre_reset.append(op)
+
+    # ── Collect all MS gates ─────────────────────────────────
+    all_ms = [ops[i] for i in ms_indices]
+
+    # ── Ops between consecutive MS gates ─────────────────────
+    # Per-pair decomposition: MS(k) is followed by one post-RY,
+    # then the next pair's pre-MS rotations, then MS(k+1).
+    # The first YRotation after MS(k) is the post-MS correction;
+    # everything else before MS(k+1) is pre-MS for the next pair.
+    for k in range(len(ms_indices) - 1):
+        start = ms_indices[k] + 1
+        end = ms_indices[k + 1]
+        found_post_ry = False
+        for i in range(start, end):
+            op = ops[i]
+            if isinstance(op, YRotation) and not found_post_ry:
+                all_post_ry.append(op)
+                found_post_ry = True
+            elif isinstance(op, XRotation):
+                all_pre_rx.append(op)
+            elif isinstance(op, YRotation):
+                all_pre_ry.append(op)
+            elif isinstance(op, QubitReset):
+                all_pre_reset.append(op)
+            elif isinstance(op, Measurement):
+                all_post_meas.append(op)
+
+    # ── Ops after the last MS gate: always post-MS ───────────
+    for i in range(ms_indices[-1] + 1, len(ops)):
+        op = ops[i]
+        if isinstance(op, YRotation):
+            all_post_ry.append(op)
+        elif isinstance(op, XRotation):
+            all_post_rx.append(op)
+        elif isinstance(op, Measurement):
+            all_post_meas.append(op)
+        elif isinstance(op, QubitReset):
+            all_post_reset.append(op)
+
+    # Build blocks: [RESET] [RX] [RY] [MS] [RY] [RX] [MEAS] [RESET]
+    blocks: List[Tuple[str, List[Operation]]] = []
+    if all_pre_reset:
+        blocks.append(('RESET', all_pre_reset))
+    if all_pre_rx:
+        blocks.append(('RX', all_pre_rx))
+    if all_pre_ry:
+        blocks.append(('RY', all_pre_ry))
+    if all_ms:
+        blocks.append(('MS', all_ms))
+    if all_post_ry:
+        blocks.append(('RY', all_post_ry))
+    if all_post_rx:
+        blocks.append(('RX', all_post_rx))
+    if all_post_meas:
+        blocks.append(('MEAS', all_post_meas))
+    if all_post_reset:
+        blocks.append(('RESET', all_post_reset))
+
+    return blocks
+
+
+def _canonicalize_meas_origin_to_blocks(
+    ops: List[Operation],
+) -> List[Tuple[str, List[Operation]]]:
+    """Canonicalize measurement origin (no MS) to blocks.
+
+    Pattern: [pre-RX][pre-RY][MEAS][RESET][post-RX][post-RY]
+
+    For MRX instructions, the decomposition per qubit is::
+
+        XRot, YRot, MEAS, RESET, YRot, XRot
+
+    Rotations *before* the qubit's MEAS are pre-MEAS (basis change).
+    Rotations *after* the qubit's RESET are post-RESET (re-initialisation).
+    Using per-qubit anchor tracking ensures multi-qubit MRX is classified
+    correctly even when ops are interleaved by qubit.
+    """
+    meas_ops = [op for op in ops if isinstance(op, Measurement)]
+    reset_ops = [op for op in ops if isinstance(op, QubitReset)]
+
+    if not meas_ops:
+        return _canonicalize_init_origin_to_blocks(ops)
+
+    # Build per-qubit MEAS / RESET index maps
+    qubit_meas_idx: Dict = {}   # ion → first MEAS index
+    qubit_reset_idx: Dict = {}  # ion → last RESET index
+
+    for i, op in enumerate(ops):
+        if isinstance(op, Measurement):
+            ion = op.ions[0] if op.ions else None
+            if ion is not None and ion not in qubit_meas_idx:
+                qubit_meas_idx[ion] = i
+        elif isinstance(op, QubitReset):
+            ion = op.ions[0] if op.ions else None
+            if ion is not None:
+                qubit_reset_idx[ion] = i  # last RESET for this qubit
+
+    pre_rx: List[Operation] = []
+    pre_ry: List[Operation] = []
+    post_rx: List[Operation] = []
+    post_ry: List[Operation] = []
+
+    for i, op in enumerate(ops):
+        if not isinstance(op, (XRotation, YRotation)):
+            continue
+
+        ion = op.ions[0] if op.ions else None
+        is_pre = True  # default
+
+        if ion is not None:
+            m_idx = qubit_meas_idx.get(ion)
+            r_idx = qubit_reset_idx.get(ion)
+
+            if m_idx is not None and i < m_idx:
+                is_pre = True   # before this qubit's MEAS
+            elif r_idx is not None and i > r_idx:
+                is_pre = False  # after this qubit's RESET
+            # else: between MEAS and RESET – unusual, keep as pre
+
+        if is_pre:
+            if isinstance(op, XRotation):
+                pre_rx.append(op)
+            else:
+                pre_ry.append(op)
+        else:
+            if isinstance(op, XRotation):
+                post_rx.append(op)
+            else:
+                post_ry.append(op)
+
+    blocks: List[Tuple[str, List[Operation]]] = []
+    if pre_rx:
+        blocks.append(('RX', pre_rx))
+    if pre_ry:
+        blocks.append(('RY', pre_ry))
+    if meas_ops:
+        blocks.append(('MEAS', meas_ops))
+    if reset_ops:
+        blocks.append(('RESET', reset_ops))
+    if post_rx:
+        blocks.append(('RX', post_rx))
+    if post_ry:
+        blocks.append(('RY', post_ry))
+    return blocks
+
+
+def _canonicalize_init_origin_to_blocks(
+    ops: List[Operation],
+) -> List[Tuple[str, List[Operation]]]:
+    """Canonicalize initialization origin (no MS, no MEAS) to blocks.
+
+    Pattern: [RESET][RX][RY]
+    """
+    rx = [op for op in ops if isinstance(op, XRotation)]
+    ry = [op for op in ops if isinstance(op, YRotation)]
+    reset = [op for op in ops if isinstance(op, QubitReset)]
+
+    blocks: List[Tuple[str, List[Operation]]] = []
+    if reset:
+        blocks.append(('RESET', reset))
+    if rx:
+        blocks.append(('RX', rx))
+    if ry:
+        blocks.append(('RY', ry))
+    return blocks
+
+
+def _merge_meas_reset_spans(
+    blocks: List[Tuple[str, List[Operation]]],
+) -> List[Tuple[str, List[Operation]]]:
+    """Merge MEAS/RESET spans, pushing rotations out.
+
+    When we have a sequence like [...RX...RY...MEAS...RESET...RX...RY...],
+    consolidate all MEAS together and all RESET together. Rotations that
+    appear between MEAS and RESET get pushed:
+    - Rotations immediately before MEAS stay before MEAS
+    - Rotations immediately after RESET stay after RESET
+    - Rotations BETWEEN MEAS and RESET: push to after RESET
+
+    This ensures MEAS and RESET form contiguous blocks.
+    """
+    if not blocks:
+        return []
+
+    # Look for MEAS/RESET spans and merge them
+    result: List[Tuple[str, List[Operation]]] = []
+    i = 0
+
+    while i < len(blocks):
+        tag, ops = blocks[i]
+
+        if tag == 'MEAS':
+            # Found MEAS - collect following MEAS/RESET/rotations into a span
+            all_meas = list(ops)
+            all_reset: List[Operation] = []
+            rotations_after_reset: List[Tuple[str, List[Operation]]] = []
+            j = i + 1
+
+            while j < len(blocks):
+                next_tag, next_ops = blocks[j]
+                if next_tag == 'MEAS':
+                    all_meas.extend(next_ops)
+                    j += 1
+                elif next_tag == 'RESET':
+                    all_reset.extend(next_ops)
+                    j += 1
+                elif next_tag in ('RX', 'RY'):
+                    # Rotations - check if more MEAS/RESET follow
+                    # If so, these rotations are BETWEEN MEAS/RESET spans
+                    # Push them to after RESET
+                    k = j + 1
+                    has_more_meas_reset = False
+                    while k < len(blocks):
+                        if blocks[k][0] in ('MEAS', 'RESET'):
+                            has_more_meas_reset = True
+                            break
+                        elif blocks[k][0] in ('RX', 'RY'):
+                            k += 1
+                        else:
+                            break
+                    if has_more_meas_reset:
+                        # Push these rotations to after RESET
+                        rotations_after_reset.append((next_tag, list(next_ops)))
+                        j += 1
+                    else:
+                        # No more MEAS/RESET - these rotations end the span
+                        break
+                else:
+                    # MS or other - end of span
+                    break
+
+            # Emit merged MEAS block
+            if all_meas:
+                result.append(('MEAS', all_meas))
+            # Emit merged RESET block
+            if all_reset:
+                result.append(('RESET', all_reset))
+            # Emit pushed rotations (after RESET)
+            for rot_tag, rot_ops in rotations_after_reset:
+                if rot_ops:
+                    # Merge with previous if same type
+                    if result and result[-1][0] == rot_tag:
+                        result[-1][1].extend(rot_ops)
+                    else:
+                        result.append((rot_tag, rot_ops))
+
+            i = j
+        else:
+            # Not MEAS - just pass through
+            result.append((tag, list(ops)))
+            i += 1
+
+    return result
+
+
+def _merge_reset_rotation_spans(
+    blocks: List[Tuple[str, List[Operation]]],
+) -> List[Tuple[str, List[Operation]]]:
+    """Merge RESET+rotation spans without MS/MEAS (initialisation blocks).
+
+    When consecutive blocks consist only of RESET and rotations (RX, RY) with
+    no MS or MEAS anchors between them, collect all RESET ops into one block
+    and all rotations into one block each:
+
+        RESET | RX | RESET | RX | RY | RESET → RESET | RX | RY
+
+    This handles initialisation sequences where multiple stim origins
+    (R, RX, R, RX, ...) produce interleaved RESET/rotation blocks.
+    """
+    if not blocks:
+        return []
+
+    result: List[Tuple[str, List[Operation]]] = []
+    i = 0
+
+    while i < len(blocks):
+        tag, ops = blocks[i]
+
+        # Only start collecting when we see RESET
+        if tag == 'RESET':
+            # Look ahead — is there a span of RESET+rotation blocks
+            # before the next MS/MEAS anchor?
+            j = i + 1
+            has_more_resets = False
+            while j < len(blocks) and blocks[j][0] in ('RESET', 'RX', 'RY'):
+                if blocks[j][0] == 'RESET':
+                    has_more_resets = True
+                j += 1
+
+            if has_more_resets:
+                # Collect the entire span [i..j)
+                all_reset: List[Operation] = []
+                all_rx: List[Operation] = []
+                all_ry: List[Operation] = []
+                for tag_s, ops_s in blocks[i:j]:
+                    if tag_s == 'RESET':
+                        all_reset.extend(ops_s)
+                    elif tag_s == 'RX':
+                        all_rx.extend(ops_s)
+                    elif tag_s == 'RY':
+                        all_ry.extend(ops_s)
+                # Emit in canonical order: RESET | RX | RY
+                if all_reset:
+                    result.append(('RESET', all_reset))
+                if all_rx:
+                    result.append(('RX', all_rx))
+                if all_ry:
+                    result.append(('RY', all_ry))
+                i = j
+            else:
+                result.append((tag, list(ops)))
+                i += 1
+        else:
+            result.append((tag, list(ops)))
+            i += 1
+
+    return result
+
+
+def _dedup_same_ion_ops(
+    blocks: List[Tuple[str, List[Operation]]],
+) -> List[Tuple[str, List[Operation]]]:
+    """Remove duplicate RESET (or MEAS) ops targeting the same ion in a block.
+
+    After merging, a single RESET block may contain two ``QubitReset`` ops
+    for the same ion — one from an ``MR`` (measure-reset) stim instruction
+    and another from a standalone ``R`` at the start of the next round.
+    The second reset is physically redundant.
+
+    This function keeps only the **first** occurrence per ion within each
+    RESET or MEAS block.  Other block types are passed through unchanged.
+    """
+    if not blocks:
+        return []
+
+    result: List[Tuple[str, List[Operation]]] = []
+    for tag, ops in blocks:
+        if tag in ('RESET', 'MEAS') and ops:
+            seen_ions: Set = set()
+            deduped: List[Operation] = []
+            for op in ops:
+                # Single-qubit ops have exactly one ion in _ions
+                ions = getattr(op, '_ions', None) or getattr(op, 'ions', None)
+                if ions:
+                    ion_key = id(ions[0])
+                    if ion_key in seen_ions:
+                        continue  # skip duplicate
+                    seen_ions.add(ion_key)
+                deduped.append(op)
+            if deduped:
+                result.append((tag, deduped))
+        else:
+            result.append((tag, list(ops)))
+    return result
+
+
+def _consolidate_rotation_spans(
+    blocks: List[Tuple[str, List[Operation]]],
+) -> List[Tuple[str, List[Operation]]]:
+    """Consolidate consecutive rotation blocks into ONE RX + ONE RY.
+
+    After Phases 4/4b, different stim origins may each contribute their own
+    RX/RY pairs within a single anchor span (e.g. RESET→MS).  This produces
+    alternating blocks like ``RX, RY, RX, RY, RX, RY`` that cannot be merged
+    by adjacent-same-type logic alone.
+
+    This function finds every maximal span of consecutive rotation blocks
+    and replaces it with at most two blocks: ``RX(all), RY(all)``.
+
+    Example::
+
+        RESET, RX, RY, RX, RY, RX, RY, MS
+        →  RESET, RX(all), RY(all), MS
+    """
+    if not blocks:
+        return []
+
+    result: List[Tuple[str, List[Operation]]] = []
+    i = 0
+
+    while i < len(blocks):
+        tag, ops = blocks[i]
+
+        if tag in ('RX', 'RY'):
+            # Collect all consecutive rotation blocks
+            all_rx: List[Operation] = []
+            all_ry: List[Operation] = []
+            while i < len(blocks) and blocks[i][0] in ('RX', 'RY'):
+                if blocks[i][0] == 'RX':
+                    all_rx.extend(blocks[i][1])
+                else:
+                    all_ry.extend(blocks[i][1])
+                i += 1
+            # Emit in canonical order: RX then RY
+            if all_rx:
+                result.append(('RX', all_rx))
+            if all_ry:
+                result.append(('RY', all_ry))
+        else:
+            result.append((tag, list(ops)))
+            i += 1
+
+    return result
+
+
+def _reorder_rotations_between_anchors(
+    blocks: List[Tuple[str, List[Operation]]],
+) -> List[Tuple[str, List[Operation]]]:
+    """Reorder rotations at MS-MS, MS-MEAS, RESET-MS boundaries.
+
+    Between MS→MS: consolidate trailing rotations with leading rotations.
+    If we have MS | RY | RX | RY | MS, the RY-RX-RY span gets simplified
+    by merging the two RY blocks: MS | RY | RX | MS
+
+    Between MS→MEAS: rotations stay before MEAS (already correct from Phase 4)
+
+    Between RESET→MS: rotations stay after RESET (already correct from Phase 4)
+
+    The key optimization is MS→MS boundaries where we can merge rotations.
+    """
+    if not blocks:
+        return []
+
+    result: List[Tuple[str, List[Operation]]] = []
+    i = 0
+
+    while i < len(blocks):
+        tag, ops = blocks[i]
+
+        if tag == 'MS':
+            # Emit MS block
+            result.append(('MS', list(ops)))
+            i += 1
+
+            # Collect rotations until next anchor (MS, MEAS, or end)
+            rotations: List[Tuple[str, List[Operation]]] = []
+            while i < len(blocks) and blocks[i][0] in ('RX', 'RY'):
+                rotations.append((blocks[i][0], list(blocks[i][1])))
+                i += 1
+
+            if not rotations:
+                continue
+
+            # Check what's next
+            if i < len(blocks):
+                next_tag = blocks[i][0]
+
+                if next_tag == 'MS':
+                    # MS→rotations→MS: merge same-type rotations
+                    # Emit consolidated rotations
+                    merged_rots = _merge_rotation_blocks(rotations)
+                    for rot_tag, rot_ops in merged_rots:
+                        if rot_ops:
+                            result.append((rot_tag, rot_ops))
+
+                elif next_tag in ('MEAS', 'RESET'):
+                    # MS→rotations→MEAS/RESET: merge rotations, keep before anchor
+                    merged_rots = _merge_rotation_blocks(rotations)
+                    for rot_tag, rot_ops in merged_rots:
+                        if rot_ops:
+                            result.append((rot_tag, rot_ops))
+                else:
+                    # Some other block - emit rotations
+                    for rot_tag, rot_ops in rotations:
+                        if rot_ops:
+                            if result and result[-1][0] == rot_tag:
+                                result[-1][1].extend(rot_ops)
+                            else:
+                                result.append((rot_tag, rot_ops))
+            else:
+                # End of sequence - emit rotations
+                for rot_tag, rot_ops in rotations:
+                    if rot_ops:
+                        if result and result[-1][0] == rot_tag:
+                            result[-1][1].extend(rot_ops)
+                        else:
+                            result.append((rot_tag, rot_ops))
+        else:
+            # Non-MS block — pass through, but handle RESET→rotations→MS
+            if tag == 'RESET':
+                result.append(('RESET', list(ops)))
+                i += 1
+                # Collect subsequent rotations
+                rot_after_reset: List[Tuple[str, List[Operation]]] = []
+                while i < len(blocks) and blocks[i][0] in ('RX', 'RY'):
+                    rot_after_reset.append((blocks[i][0], list(blocks[i][1])))
+                    i += 1
+                if rot_after_reset:
+                    if i < len(blocks) and blocks[i][0] == 'MS':
+                        # RESET→rotations→MS: merge with RX,RY order
+                        merged = _merge_rotation_blocks_pre_ms(rot_after_reset)
+                        for rt, ro in merged:
+                            if ro:
+                                result.append((rt, ro))
+                    else:
+                        # No MS follows — emit rotations as-is
+                        for rt, ro in rot_after_reset:
+                            if ro:
+                                if result and result[-1][0] == rt:
+                                    result[-1][1].extend(ro)
+                                else:
+                                    result.append((rt, ro))
+            elif result and result[-1][0] == tag:
+                result[-1][1].extend(ops)
+                i += 1
+            else:
+                result.append((tag, list(ops)))
+                i += 1
+
+    return result
+
+
+def _merge_rotation_blocks(
+    rotations: List[Tuple[str, List[Operation]]],
+) -> List[Tuple[str, List[Operation]]]:
+    """Merge all rotation blocks into one RY + one RX block.
+
+    Collects all XRotation and YRotation ops from the input blocks
+    and outputs them in **RY | RX** order, matching the post-MS canonical
+    pattern (correction RY from the preceding MS comes first, then the
+    pre-MS RX for the next MS)::
+
+        { MS BLOCK | ROTY BLOCK | ROTX BLOCK } × n
+
+    Used at inter-MS boundaries (MS→MS, MS→MEAS).
+    """
+    if not rotations:
+        return []
+
+    all_rx: List[Operation] = []
+    all_ry: List[Operation] = []
+
+    for tag, ops in rotations:
+        if tag == 'RX':
+            all_rx.extend(ops)
+        elif tag == 'RY':
+            all_ry.extend(ops)
+
+    # Output in RY | RX order (post-MS canonical order)
+    result: List[Tuple[str, List[Operation]]] = []
+    if all_ry:
+        result.append(('RY', all_ry))
+    if all_rx:
+        result.append(('RX', all_rx))
+    return result
+
+
+def _merge_rotation_blocks_pre_ms(
+    rotations: List[Tuple[str, List[Operation]]],
+) -> List[Tuple[str, List[Operation]]]:
+    """Merge all rotation blocks into one RX + one RY block.
+
+    Collects all XRotation and YRotation ops from the input blocks
+    and outputs them in **RX | RY** order, matching the pre-MS canonical
+    pattern (RESET → RX → RY → MS)::
+
+        RESET | ROTX BLOCK | ROTY BLOCK | MS
+
+    Used at RESET→MS boundaries.
+    """
+    if not rotations:
+        return []
+
+    all_rx: List[Operation] = []
+    all_ry: List[Operation] = []
+
+    for tag, ops in rotations:
+        if tag == 'RX':
+            all_rx.extend(ops)
+        elif tag == 'RY':
+            all_ry.extend(ops)
+
+    # Output in RX | RY order (pre-MS canonical order)
+    result: List[Tuple[str, List[Operation]]] = []
+    if all_rx:
+        result.append(('RX', all_rx))
+    if all_ry:
+        result.append(('RY', all_ry))
+    return result
 
 
 def _tag_barrier_groups(
@@ -411,6 +958,22 @@ def _tag_barrier_groups(
         if i in barrier_set:
             group += 1
         op._barrier_group = group  # type: ignore[attr-defined]
+
+
+def _sort_by_type_with_context(
+    ops: List[Operation],
+    is_first_segment: bool,
+) -> List[Operation]:
+    """Sort ops by type priority (for legacy reorder_rotations_for_batching)."""
+    if not ops:
+        return []
+
+    if is_first_segment:
+        priority = {QubitReset: 0, XRotation: 1, YRotation: 2, Measurement: 3}
+    else:
+        priority = {XRotation: 0, YRotation: 1, Measurement: 2, QubitReset: 3}
+
+    return sorted(ops, key=lambda o: priority.get(type(o), 99))
 
 
 # ---------------------------------------------------------------------------
@@ -812,32 +1375,36 @@ def paralleliseOperationsWithBarriers(
             continue
 
         if isWiseArch:
-            # ── WISE: order-preserving run-based packing ─────────
-            # Split the segment into consecutive runs of the same
-            # "kind" (transport vs QubitOp).  Each run is packed
-            # independently, and runs are emitted in their original
-            # order.  This ensures that transport-before-MS, MS, and
-            # transport-after-MS stay in the correct sequence instead
-            # of lumping all transport to the front.
+            # ── WISE: type-homogeneous run-based packing ─────────
+            # WISE requires type-homogeneous batches (global control
+            # pulses).  Split the segment into consecutive runs by
+            # (is_qubit, op_type).  Each run is packed independently,
+            # and runs are emitted in their original order.
             runs: List[List[Operation]] = []
             current_run: List[Operation] = []
-            current_is_qubit: Optional[bool] = None
+            current_key: Optional[Tuple[bool, type]] = None
 
             for op in seg_ops:
                 is_qubit = isinstance(op, QubitOperation)
-                if is_qubit != current_is_qubit:
+                op_type = type(op) if is_qubit else None
+                key = (is_qubit, op_type)
+                if key != current_key:
                     if current_run:
                         runs.append(current_run)
                     current_run = [op]
-                    current_is_qubit = is_qubit
+                    current_key = key
                 else:
                     current_run.append(op)
             if current_run:
                 runs.append(current_run)
 
             for run_ops in runs:
-                batches = _wise_parallel_pack(run_ops)
-                for batch in batches:
+                if not run_ops:
+                    continue
+                # WISE: pack type-homogeneous runs into parallel
+                # batches respecting component disjointness.
+                packed = _wise_parallel_pack(run_ops)
+                for batch in packed:
                     while t in time_schedule:
                         t += max(abs(t) * 1e-9, 1e-15)
                     time_schedule[t] = batch
