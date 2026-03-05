@@ -319,7 +319,7 @@ def make_shared_progress_callback(
 def make_notebook_widget_progress_callback(
     title: str = "WISE Routing",
 ) -> Tuple[Any, "Callable[[Any], None]", "Callable[[], None]"]:
-    """Create an ipywidgets-based 3-bar progress callback for notebook use.
+    """Create an ipywidgets-based 4-bar progress callback for notebook use.
 
     Returns a triple ``(container, callback, close)``:
 
@@ -328,60 +328,94 @@ def make_notebook_widget_progress_callback(
       bars directly (no multiprocessing needed).
     - **close**: marks all bars as complete.
 
-    The three bars mirror the :class:`ProgressTableWidget` colour scheme:
-      - **Route** (blue ``#3498db``): MS rounds
+    The widget shows a **phase label** at the top describing the current
+    work (e.g. "SAT solving EC phase", "Replaying cached Gadget phase")
+    and four hierarchical progress bars:
+
+      - **Steps** (blue ``#3498db``):   MS rounds / reconfig steps
+      - **Blocks** (teal ``#1abc9c``):  per-block progress when block_level_slicing=True
       - **Patch** (orange ``#e67e22``): patches within tiling cycle
-      - **SAT** (green ``#2ecc71``): SAT configs within patch
+      - **SAT** (green ``#2ecc71``):    SAT configs within patch
     """
     # Import here to avoid circular dependency
     from ..compiler.routing_config import (
         _INNER_STAGES,
         _PATCH_STAGES,
+        _BLOCK_STAGES,
         STAGE_ROUTING,
         STAGE_APPLYING,
         STAGE_COMPLETE,
         STAGE_RECONFIG_PROGRESS,
+        STAGE_PHASE,
+        STAGE_BLOCK,
     )
     _ROUTE_STAGES = frozenset({STAGE_ROUTING, STAGE_APPLYING, STAGE_COMPLETE, STAGE_RECONFIG_PROGRESS})
 
     import ipywidgets as widgets
 
-    # ── Header ────────────────────────────────────────────────────
+    # ── Header + phase label ──────────────────────────────────────
     header = widgets.HTML(
         value=f"<b style='font-size: 13px;'>{title}</b>",
+        layout=widgets.Layout(margin='0 0 2px 0'),
+    )
+    phase_label = widgets.HTML(
+        value=(
+            "<span style='font-size: 11px; color: #7f8c8d; "
+            "font-style: italic;'>Initialising…</span>"
+        ),
         layout=widgets.Layout(margin='0 0 4px 0'),
     )
 
-    # ── Route bar (blue) ──────────────────────────────────────────
+    # ── Steps bar (blue) ──────────────────────────────────────────
     route_bar = widgets.IntProgress(
         value=0, min=0, max=1,
         bar_style='',
         style={'bar_color': '#3498db'},
-        layout=widgets.Layout(width='65%'),
+        layout=widgets.Layout(width='60%'),
     )
     route_label = widgets.HTML(
-        value="<span style='color:#3498db; font-size:11px;'>MS Rounds: 0/1</span>",
-        layout=widgets.Layout(width='160px', min_width='140px'),
+        value="<span style='color:#3498db; font-size:11px;'>Steps: 0/1</span>",
+        layout=widgets.Layout(width='180px', min_width='150px'),
     )
     route_row = widgets.HBox([
         widgets.HTML(
-            "<b style='width:80px; display:inline-block; font-size:12px;'>Route</b>",
+            "<b style='width:80px; display:inline-block; font-size:12px;'>Steps</b>",
             layout=widgets.Layout(width='80px'),
         ),
         route_bar,
         route_label,
     ], layout=widgets.Layout(align_items='center'))
 
+    # ── Blocks bar (teal) — hidden when there's no block-level slicing ─
+    block_bar = widgets.IntProgress(
+        value=0, min=0, max=1,
+        bar_style='',
+        style={'bar_color': '#1abc9c'},
+        layout=widgets.Layout(width='60%'),
+    )
+    block_label = widgets.HTML(
+        value="<span style='color:#1abc9c; font-size:11px;'>Blocks: –</span>",
+        layout=widgets.Layout(width='180px', min_width='150px'),
+    )
+    block_row = widgets.HBox([
+        widgets.HTML(
+            "<b style='width:80px; display:inline-block; font-size:12px;'>Blocks</b>",
+            layout=widgets.Layout(width='80px'),
+        ),
+        block_bar,
+        block_label,
+    ], layout=widgets.Layout(align_items='center', display='none'))
+
     # ── Patch bar (orange) ────────────────────────────────────────
     patch_bar = widgets.IntProgress(
         value=0, min=0, max=1,
         bar_style='',
         style={'bar_color': '#e67e22'},
-        layout=widgets.Layout(width='65%'),
+        layout=widgets.Layout(width='60%'),
     )
     patch_label = widgets.HTML(
         value="<span style='color:#e67e22; font-size:11px;'>Patches: 0/1</span>",
-        layout=widgets.Layout(width='160px', min_width='140px'),
+        layout=widgets.Layout(width='180px', min_width='150px'),
     )
     patch_row = widgets.HBox([
         widgets.HTML(
@@ -397,11 +431,11 @@ def make_notebook_widget_progress_callback(
         value=0, min=0, max=1,
         bar_style='',
         style={'bar_color': '#2ecc71'},
-        layout=widgets.Layout(width='65%'),
+        layout=widgets.Layout(width='60%'),
     )
     sat_label = widgets.HTML(
         value="<span style='color:#2ecc71; font-size:11px;'>SAT: 0/1</span>",
-        layout=widgets.Layout(width='160px', min_width='140px'),
+        layout=widgets.Layout(width='180px', min_width='150px'),
     )
     sat_row = widgets.HBox([
         widgets.HTML(
@@ -414,7 +448,7 @@ def make_notebook_widget_progress_callback(
 
     # ── Container ─────────────────────────────────────────────────
     container = widgets.VBox(
-        [header, route_row, patch_row, sat_row],
+        [header, phase_label, route_row, block_row, patch_row, sat_row],
         layout=widgets.Layout(
             border='1px solid #ddd',
             padding='8px',
@@ -425,9 +459,12 @@ def make_notebook_widget_progress_callback(
 
     # ── Callback ──────────────────────────────────────────────────
     # Hierarchical reset model:
-    #   Route (outermost):  shows completed MS rounds — only moves forward.
+    #   Phase (informational): label describing current QEC phase.
+    #   Steps (outermost):  shows completed MS rounds — only moves forward.
+    #   Blocks (optional):  shows per-block progress within a step —
+    #                       resets each time a new step starts.
     #   Patch (middle):     shows patches in current tiling cycle — resets
-    #                       each time a new MS round starts.
+    #                       each time a new block (or step) starts.
     #   SAT (innermost):    shows configs in current SAT solve — resets
     #                       each time a new patch starts solving.
     #
@@ -440,11 +477,20 @@ def make_notebook_widget_progress_callback(
     _route_hwm = 0
     _FLUSH_INTERVAL = 0.25          # seconds between widget pushes
     _last_push: float = 0.0         # monotonic ts of last widget push
+    _blocks_visible = False         # whether the block bar has been shown
 
     # Shadow state — updated on every callback, pushed to widgets on flush
+    _s_phase_text = (
+        "<span style='font-size: 11px; color: #7f8c8d; "
+        "font-style: italic;'>Initialising…</span>"
+    )
     _s_route_val = 0
     _s_route_max = 1
-    _s_route_text = f"<span style='color:#3498db; font-size:11px;'>MS Rounds: 0/1</span>"
+    _s_route_text = "<span style='color:#3498db; font-size:11px;'>Steps: 0/1</span>"
+    _s_block_val = 0
+    _s_block_max = 1
+    _s_block_style = ''
+    _s_block_text = "<span style='color:#1abc9c; font-size:11px;'>Blocks: –</span>"
     _s_patch_val = 0
     _s_patch_max = 1
     _s_patch_style = ''
@@ -456,15 +502,22 @@ def make_notebook_widget_progress_callback(
 
     def _push_to_widgets(force: bool = False) -> None:
         """Push accumulated shadow state → widgets (throttled)."""
-        nonlocal _last_push
+        nonlocal _last_push, _blocks_visible
         now = _time_mod.monotonic()
         if not force and (now - _last_push) < _FLUSH_INTERVAL:
             return
         _last_push = now
-        # Batch all widget mutations together, then one brief yield
+        # Batch all widget mutations together
+        phase_label.value = _s_phase_text
         route_bar.max = _s_route_max
         route_bar.value = _s_route_val
         route_label.value = _s_route_text
+        block_bar.max = _s_block_max
+        block_bar.value = _s_block_val
+        block_bar.bar_style = _s_block_style
+        block_label.value = _s_block_text
+        if _blocks_visible:
+            block_row.layout.display = ''
         patch_bar.max = _s_patch_max
         patch_bar.value = _s_patch_val
         patch_bar.bar_style = _s_patch_style
@@ -475,13 +528,63 @@ def make_notebook_widget_progress_callback(
         sat_label.value = _s_sat_text
 
     def _callback(p) -> None:
-        nonlocal _route_hwm
+        nonlocal _route_hwm, _blocks_visible
+        nonlocal _s_phase_text
         nonlocal _s_route_val, _s_route_max, _s_route_text
+        nonlocal _s_block_val, _s_block_max, _s_block_style, _s_block_text
         nonlocal _s_patch_val, _s_patch_max, _s_patch_style, _s_patch_text
         nonlocal _s_sat_val, _s_sat_max, _s_sat_style, _s_sat_text
         stage = p.stage
         force_push = False
-        if stage in _ROUTE_STAGES:
+
+        # ── Phase label (informational) ───────────────────────────
+        if stage == STAGE_PHASE:
+            # p.message carries the human-readable phase description
+            # p.current / p.total carry phase index / total phases
+            _phase_msg = p.message or "Working…"
+            _phase_idx = p.current
+            _phase_total = max(p.total, 1)
+            _s_phase_text = (
+                f"<span style='font-size: 11px; color: #2c3e50;'>"
+                f"<b>Phase {_phase_idx + 1}/{_phase_total}:</b> "
+                f"{_phase_msg}</span>"
+            )
+            force_push = True
+
+        # ── Block progress ────────────────────────────────────────
+        elif stage == STAGE_BLOCK:
+            _blocks_visible = True
+            total = max(p.total, 1)
+            cur = min(p.current, total)
+            _s_block_max = total
+            _s_block_val = cur
+            _block_name = p.message or ""
+            _s_block_style = 'success' if cur >= total else ''
+            _s_block_text = (
+                f"<span style='color:#1abc9c; font-size:11px;'>"
+                f"Blocks: {cur}/{total}"
+                f"{(' (' + _block_name + ')') if _block_name else ''}"
+                f"</span>"
+            )
+            # New block → reset sub-bars
+            _s_patch_val = 0
+            _s_patch_max = 1
+            _s_patch_style = ''
+            _s_patch_text = (
+                "<span style='color:#e67e22; font-size:11px;'>"
+                "Patches: 0/?</span>"
+            )
+            _s_sat_val = 0
+            _s_sat_max = 1
+            _s_sat_style = ''
+            _s_sat_text = (
+                "<span style='color:#2ecc71; font-size:11px;'>"
+                "SAT: waiting</span>"
+            )
+            force_push = True
+
+        # ── Steps (route) progress ────────────────────────────────
+        elif stage in _ROUTE_STAGES:
             total = max(p.total, 1)
             cur = min(p.current, total)
             # STAGE_APPLYING signals the start of the execution phase
@@ -515,6 +618,14 @@ def make_notebook_widget_progress_callback(
                     )
                 # Only reset sub-bars when Route truly advances
                 if cur > old_route:
+                    # Reset blocks bar
+                    _s_block_val = 0
+                    _s_block_max = 1
+                    _s_block_style = ''
+                    _s_block_text = (
+                        "<span style='color:#1abc9c; font-size:11px;'>"
+                        "Blocks: –</span>"
+                    )
                     _s_patch_val = 0
                     _s_patch_max = 1
                     _s_patch_style = ''
@@ -568,21 +679,25 @@ def make_notebook_widget_progress_callback(
 
     # ── Close ─────────────────────────────────────────────────────
     def _close() -> None:
-        nonlocal _s_route_val, _s_patch_val, _s_sat_val
-        nonlocal _s_patch_style, _s_sat_style
+        nonlocal _s_route_val, _s_block_val, _s_patch_val, _s_sat_val
+        nonlocal _s_block_style, _s_patch_style, _s_sat_style
         _s_route_val = _s_route_max
+        _s_block_val = _s_block_max
         _s_patch_val = _s_patch_max
         _s_sat_val = _s_sat_max
+        _s_block_style = 'success'
         _s_patch_style = 'success'
         _s_sat_style = 'success'
         _push_to_widgets(force=True)
         route_bar.bar_style = 'success'
+        block_bar.bar_style = 'success'
         patch_bar.bar_style = 'success'
         sat_bar.bar_style = 'success'
         header.value = (
             f"<b style='font-size: 13px; color: #27ae60;'>"
             f"✓ {title} — complete</b>"
         )
+        phase_label.value = ""
 
     return container, _callback, _close
 

@@ -2788,6 +2788,8 @@ def route_full_experiment_as_steps(
         STAGE_RECONFIG,
         STAGE_RECONFIG_PROGRESS,
         STAGE_COMPLETE,
+        STAGE_PHASE,
+        STAGE_BLOCK,
     )
     from .qccd_nodes import QCCDWiseArch
 
@@ -2897,6 +2899,32 @@ def route_full_experiment_as_steps(
             progress_callback(p)
 
     _phase_cb = _global_progress_wrapper if progress_callback is not None else None
+
+    # ── Phase / block progress helpers ───────────────────────────
+    _n_phases = len(plans)
+
+    def _emit_phase(phase_idx: int, description: str) -> None:
+        """Emit a STAGE_PHASE event with the given description."""
+        if progress_callback is None:
+            return
+        progress_callback(RoutingProgress(
+            stage=STAGE_PHASE,
+            current=phase_idx,
+            total=_n_phases,
+            message=description,
+        ))
+
+    def _emit_block(block_idx: int, total_blocks: int,
+                    block_name: str = "") -> None:
+        """Emit a STAGE_BLOCK event for per-block progress."""
+        if progress_callback is None:
+            return
+        progress_callback(RoutingProgress(
+            stage=STAGE_BLOCK,
+            current=block_idx,
+            total=total_blocks,
+            message=block_name,
+        ))
 
     # Emit initial Route bar state so the widget shows the total immediately
     if progress_callback is not None and _total_work_units > 0:
@@ -3703,6 +3731,10 @@ def route_full_experiment_as_steps(
                 # layout, prepend a transition reconfig to return us to
                 # the layout the cached schedule expects.
                 if not np.array_equal(current_layout, cached_starting_layout):
+                    _emit_phase(
+                        phase_idx,
+                        "Routing to cached EC layout",
+                    )
                     _emit_reconfig_progress(
                         f"Phase {phase_idx + 1}/{len(plans)} (EC cached): "
                         f"transition reconfig to cached layout"
@@ -3766,6 +3798,10 @@ def route_full_experiment_as_steps(
                         phase_steps.extend(fresh_steps)
 
                 if _cache_replayed:
+                    _emit_phase(
+                        phase_idx,
+                        "Replaying cached EC phase",
+                    )
                     # Replay cached steps.
                     #
                     # Change 2 (P2, P6): For the first step, attempt a
@@ -3894,6 +3930,10 @@ def route_full_experiment_as_steps(
                     )
             else:
                 # --- Per-stabilizer-round splitting (H2: unified helper) ---
+                _emit_phase(
+                    phase_idx,
+                    "SAT solving EC phase",
+                )
                 ec_starting_layout = np.array(current_layout, copy=True)
                 phase_steps, current_layout = _route_ec_fresh(
                     phase_pairs, n_pairs, current_layout,

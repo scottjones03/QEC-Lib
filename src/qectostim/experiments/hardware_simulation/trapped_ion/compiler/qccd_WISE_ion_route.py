@@ -3853,6 +3853,72 @@ def ionRoutingWISEArch(
         routing_steps = _precomputed_routing_steps
 
         # ----------------------------------------------------------
+        # DIAGNOSTIC: Compare execution's initial layout with planning's
+        # ----------------------------------------------------------
+        if routing_steps and routing_steps[0].layout_before is not None:
+            _init_diff = int(np.sum(
+                oldArrangementArr != routing_steps[0].layout_before
+            ))
+            if _init_diff:
+                logger.warning(
+                    "%s EXEC-INIT DIAG: execution oldArrangementArr "
+                    "differs from routing_steps[0].layout_before by "
+                    "%d/%d cells! This is the ROOT CAUSE of "
+                    "downstream PRE-FLIGHT FAILs.",
+                    PATCH_LOG_PREFIX, _init_diff,
+                    oldArrangementArr.size,
+                )
+                # Log which cells differ
+                _diff_cells = np.argwhere(
+                    oldArrangementArr != routing_steps[0].layout_before
+                )
+                for _dc in _diff_cells[:10]:
+                    logger.warning(
+                        "%s   cell(%d,%d): exec=%d planning=%d",
+                        PATCH_LOG_PREFIX,
+                        int(_dc[0]), int(_dc[1]),
+                        int(oldArrangementArr[_dc[0], _dc[1]]),
+                        int(routing_steps[0].layout_before[_dc[0], _dc[1]]),
+                    )
+            else:
+                logger.info(
+                    "%s EXEC-INIT DIAG: initial layout OK — "
+                    "execution and planning match (%d cells)",
+                    PATCH_LOG_PREFIX, oldArrangementArr.size,
+                )
+
+        # Log ms_round_index sequence for ordering verification
+        _mri_seq = [s.ms_round_index for s in routing_steps]
+        _is_sorted = all(
+            _mri_seq[i] <= _mri_seq[i + 1]
+            for i in range(len(_mri_seq) - 1)
+        )
+        logger.info(
+            "%s EXEC-ORDER DIAG: %d steps, ms_round_index range "
+            "[%d..%d], is_monotonic=%s, unique_rounds=%d",
+            PATCH_LOG_PREFIX,
+            len(routing_steps),
+            min(_mri_seq) if _mri_seq else -1,
+            max(_mri_seq) if _mri_seq else -1,
+            _is_sorted,
+            len(set(_mri_seq)),
+        )
+        if not _is_sorted:
+            # Log the first few disorder points
+            for _oi in range(len(_mri_seq) - 1):
+                if _mri_seq[_oi] > _mri_seq[_oi + 1]:
+                    logger.warning(
+                        "%s   ORDER BREAK at step[%d→%d]: "
+                        "ms_round %d → %d (ctx=%s → %s)",
+                        PATCH_LOG_PREFIX, _oi, _oi + 1,
+                        _mri_seq[_oi], _mri_seq[_oi + 1],
+                        routing_steps[_oi].reconfig_context,
+                        routing_steps[_oi + 1].reconfig_context,
+                    )
+                    if _oi >= 5:
+                        break
+
+        # ----------------------------------------------------------
         # Fix 13: Force Path B execution for precomputed routing steps.
         #
         # When ionRoutingGadgetArch provides precomputed routing steps,
@@ -5097,6 +5163,37 @@ def ionRoutingWISEArch(
                 barriers.append(len(allOps))
                 last_reconfig_time = getattr(allOps[-1], "_reconfigTime", 0.0)
                 reconfigTime += last_reconfig_time
+
+                # ── Post-apply verification for subsequent steps ──
+                if not np.array_equal(
+                    oldArrangementArr, _sub_target,
+                ):
+                    _sub_pa_diff = int(np.sum(
+                        oldArrangementArr != _sub_target
+                    ))
+                    logger.warning(
+                        "%s ms_round=%d sub=%d: POST-APPLY "
+                        "DIVERGENCE! oldArr != sub_target by "
+                        "%d/%d cells",
+                        PATCH_LOG_PREFIX, ms_round_idx, sub_idx,
+                        _sub_pa_diff, oldArrangementArr.size,
+                    )
+                if not np.array_equal(
+                    oldArrangementArr,
+                    subsequent_step.layout_after,
+                ):
+                    _sub_pa2_diff = int(np.sum(
+                        oldArrangementArr
+                        != subsequent_step.layout_after
+                    ))
+                    logger.warning(
+                        "%s ms_round=%d sub=%d: POST-APPLY vs "
+                        "PLANNING! oldArr != "
+                        "subsequent_step.layout_after by "
+                        "%d/%d cells",
+                        PATCH_LOG_PREFIX, ms_round_idx, sub_idx,
+                        _sub_pa2_diff, oldArrangementArr.size,
+                    )
 
             # Fix A/D: drain single-qubit ops before subsequent-step
             # MS gates.  After a reconfig, new 1q ops may be eligible

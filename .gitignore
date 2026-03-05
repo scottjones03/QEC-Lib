@@ -6,6 +6,8 @@ __pycache__/
 dist/
 build/
 *.egg
+*.so
+*.dylib
 
 # === Virtual environments ===
 my_venv/
@@ -14,57 +16,81 @@ venv/
 .venv/
 env/
 
-# === IDE ===
+# === IDE / OS ===
 .vscode/
 .idea/
 *.swp
 *.swo
+*~
 .DS_Store
+Thumbs.db
 
 # === Git repair artifacts ===
 .git_corrupt/
 
-# === Large / generated files ===
+# === Large / generated media files ===
 *.mp4
 *.avi
 *.mov
+*.gif
 *.bak
-*.log
+*.pkl
+*.pickle
+*.h5
+*.hdf5
 
-# === Notebooks: large backups & generated outputs ===
+# === Log files ===
+*.log
+logs/
+nohup.out
+
+# === Temp / diagnostic scripts & output (root-level underscore-prefixed) ===
+/_*.py
+/_*.md
+/_*.txt
+/_*.log
+/_*.svg
+/_*.sh
+/_IMPLEMENTATION_STATE.py
+/diag_packing.py
+/=
+
+# === Plan / fix / analysis markdown (root level, non-underscore) ===
+/AUDIT_*.md
+/CSS_SURGERY_*.md
+/FIX_PLAN*.md
+/FIX14_*.md
+/GADGET_*.md
+/IMPLEMENTATION_PLAN.md
+/REFACTOR_PLAN_*.md
+/REPLAY_OVERHAUL_PLAN.md
+
+# === Notebooks: large/generated/backup files ===
 notebooks/logs/
+notebooks/figs/
+notebooks/_*.py
+notebooks/_*.txt
+notebooks/_*.json
+notebooks/_*.csv
+notebooks/*.bak
+notebooks/*.csv
+notebooks/*.txt
+notebooks/*.png
+notebooks/*.mp4
 notebooks/old_native_animation_demo.ipynb
 notebooks/test_animation_demo.ipynb.bak
 notebooks/css_surgery_diagnostic.ipynb
 notebooks/wise_pipeline_v2_validation.ipynb
+notebooks/wise_pipeline_validation.ipynb
 notebooks/trapped_ion_demo copy.ipynb
+notebooks/conference_figures.ipynb
+notebooks/ion.py
 
-# === Temp / diagnostic scripts (root level) ===
-_diag_*.py
-_analyze_*.py
-_apply_*.py
-_bench_*.py
-_benchmark_*.py
-_bisect_*.py
-_check_*.py
-_d2_*.py
-_debug_*.py
-_fix_*.py
-_test_*.py
-_verify_*.py
-_css_test_output.txt
+# === Test output / tmp ===
+/tmp/
+*.pytest_cache/
+.pytest_cache/
 
-# === Markdown context-save files ===
-_ADDITIONAL_FIX_DETAILS.md
-_ANALYSIS_*.md
-_COMPLETE_*.md
-_COMPREHENSIVE_*.md
-_CONTEXT_*.md
-_CRITICAL_*.md
-_CSS_BRIDGE_*.md
-_CSS_SURGERY_*.md
-_CURRENT_*.md
-
-# === Log directories ===
-logs/
-_test_output.log
+# === Jupyter / IPython ===
+.ipynb_checkpoints/
+*.ipynb_checkpoints/

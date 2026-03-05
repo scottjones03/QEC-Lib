@@ -115,10 +115,20 @@ STAGE_RECONFIG_PROGRESS = "reconfig_progress"
 STAGE_APPLYING = "applying"          # Execution phase: applying precomputed steps
 STAGE_COMPLETE = "complete"
 
+# Phase-level progress: emitted at the start of each QEC phase so the
+# notebook widget can display what kind of work is happening.
+STAGE_PHASE = "phase"                # phase_type label (ec, gadget, etc.)
+# Block-level progress: emitted when block_level_slicing is active and
+# each code block is routed independently.
+STAGE_BLOCK = "block"                # per-block progress within a step
+
 # Fine-grained stages for detailed progress tracking within SAT solver
 STAGE_BINARY_SEARCH_ITER = "binary_search_iter"  # Emitted each binary search iteration
 STAGE_SAT_SOLVING = "sat_solving"  # Emitted when SAT subprocess is running
 STAGE_SAT_SOLVED = "sat_solved"  # Emitted when SAT subprocess returns
+
+# Stage groups — extended with block / phase
+_BLOCK_STAGES = frozenset({STAGE_BLOCK})
 
 
 @dataclass
