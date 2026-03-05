@@ -333,6 +333,7 @@ def _draw_qccd_grid(
     highlight_traps: Optional[Set[int]] = None,
     gate_kind: Optional[str] = None,
     ion_count_override: Optional[Dict[int, int]] = None,
+    show_trap_labels: bool = True,
 ) -> None:
     """Draw the static QCCD infrastructure using FancyBboxPatch.
 
@@ -406,10 +407,11 @@ def _draw_qccd_grid(
         )
         ax.add_patch(rect)
         # Label above trap
-        ax.text(px, py + th / 2 + 0.12, trap["label"],
-                fontsize=TRAP_LABEL_FONT, ha="center", va="bottom",
-                color=ec, fontweight="bold",
-                path_effects=STROKE_THIN)
+        if show_trap_labels:
+            ax.text(px, py + th / 2 + 0.12, trap["label"],
+                    fontsize=TRAP_LABEL_FONT, ha="center", va="bottom",
+                    color=ec, fontweight="bold",
+                    path_effects=STROKE_THIN)
 
     # --- Junctions ---
     for junc in geom["junctions"]:
@@ -433,6 +435,7 @@ def _draw_wise_grid(
     arch: Any,
     highlight_traps: Optional[Set[int]] = None,
     gate_kind: Optional[str] = None,
+    show_trap_labels: bool = True,
 ) -> None:
     """Draw the static WISE infrastructure using FancyBboxPatch.
 
@@ -489,10 +492,11 @@ def _draw_wise_grid(
             linewidth=TRAP_LW, zorder=2, alpha=alpha,
         )
         ax.add_patch(rect)
-        ax.text(trap.cx, trap.cy + th / 2 + 0.15, trap.label,
-                fontsize=TRAP_LABEL_FONT, ha="center", va="bottom",
-                color=ec, fontweight="bold",
-                path_effects=STROKE_THIN)
+        if show_trap_labels:
+            ax.text(trap.cx, trap.cy + th / 2 + 0.15, trap.label,
+                    fontsize=TRAP_LABEL_FONT, ha="center", va="bottom",
+                    color=ec, fontweight="bold",
+                    path_effects=STROKE_THIN)
 
     # --- Junctions ---
     half = JUNCTION_SIDE / 2
@@ -518,6 +522,7 @@ def _draw_ions_full(
     physical_to_logical: Optional[Dict[int, int]] = None,
     per_ion_gate_kind: Optional[Dict[int, str]] = None,
     ms_pairs: Optional[List[Tuple[int, int]]] = None,
+    simple_ion_labels: bool = False,
 ) -> None:
     """Draw all ions at their current positions with role colours and lasers.
 
@@ -576,7 +581,10 @@ def _draw_ions_full(
                     linewidth=2.5, foreground=color)])
         if show_labels:
             # Format: D(I{ion_idx}Q{qubit_idx}) or M(I{ion_idx}Q{qubit_idx})
-            if physical_to_logical:
+            # simple_ion_labels: just "I{idx}" (no role prefix)
+            if simple_ion_labels:
+                label_str = f"I{idx}"
+            elif physical_to_logical:
                 qubit_id = physical_to_logical.get(idx)
                 if qubit_id is not None:
                     label_str = f"{role_ch}(I{idx}Q{qubit_id})"
@@ -779,7 +787,8 @@ def _draw_transport_arrows(
 # Legend helper
 # =============================================================================
 
-def _draw_role_legend(ax: Any, ion_roles: Optional[Dict[int, str]]) -> None:
+def _draw_role_legend(ax: Any, ion_roles: Optional[Dict[int, str]],
+                     legend_loc: str = "lower right") -> None:
     """Draw a small legend showing role → colour mapping."""
     if not ion_roles:
         return
@@ -806,9 +815,15 @@ def _draw_role_legend(ax: Any, ion_roles: Optional[Dict[int, str]]) -> None:
         labels.append(f"{letter} = {full_name}")
 
     if handles:
-        ax.legend(handles, labels, loc="lower right",
-                  fontsize=LEGEND_FONT, framealpha=0.8,
-                  edgecolor="#ccc", fancybox=True)
+        if legend_loc == "below":
+            ax.legend(handles, labels, loc="upper center",
+                      bbox_to_anchor=(0.5, -0.02), ncol=len(handles),
+                      fontsize=LEGEND_FONT, framealpha=0.8,
+                      edgecolor="#ccc", fancybox=True)
+        else:
+            ax.legend(handles, labels, loc=legend_loc,
+                      fontsize=LEGEND_FONT, framealpha=0.8,
+                      edgecolor="#ccc", fancybox=True)
 
 
 # =============================================================================
@@ -824,12 +839,16 @@ def display_architecture(
     show_edges: bool = True,
     show_ions: bool = True,
     show_labels: bool = True,
+    show_trap_labels: bool = True,
     highlight_qubits: Optional[list] = None,
     ion_roles: Optional[Dict[int, str]] = None,
     show_legend: bool = True,
     figsize: Optional[Tuple[float, float]] = None,
     ion_idx_remap: Optional[Dict[int, int]] = None,
     physical_to_logical: Optional[Dict[int, int]] = None,
+    legend_loc: str = "lower right",
+    margin: Optional[float] = None,
+    simple_ion_labels: bool = False,
 ) -> Tuple[Any, Any]:
     """Display a QCCD architecture topology.
 
@@ -901,9 +920,9 @@ def display_architecture(
     _is_wise_arch = ("QCCDWiseArch" in _mro_all
                      or "WISEArchitecture" in _mro_all)
     if _is_wise_arch:
-        _draw_wise_grid(ax, arch)
+        _draw_wise_grid(ax, arch, show_trap_labels=show_trap_labels)
     else:
-        _draw_qccd_grid(ax, arch)
+        _draw_qccd_grid(ax, arch, show_trap_labels=show_trap_labels)
 
     # Draw ions
     if show_ions:
@@ -917,6 +936,7 @@ def display_architecture(
             show_laser=False,
             ion_idx_remap=ion_idx_remap,
             physical_to_logical=physical_to_logical,
+            simple_ion_labels=simple_ion_labels,
         )
 
     # Auto-compute axis limits from geometry
@@ -933,15 +953,15 @@ def display_architecture(
         all_x.append(jx)
         all_y.append(jy)
     if all_x and all_y:
-        margin = 0.5
-        ax.set_xlim(min(all_x) - margin, max(all_x) + margin)
-        ax.set_ylim(min(all_y) - margin, max(all_y) + margin * 1.2)
+        _margin = margin if margin is not None else 0.5
+        ax.set_xlim(min(all_x) - _margin, max(all_x) + _margin)
+        ax.set_ylim(min(all_y) - _margin, max(all_y) + _margin * 1.2)
     ax.set_aspect("equal")
 
     if title:
         ax.set_title(title, fontsize=16, fontweight="bold", pad=14)
 
     if show_legend:
-        _draw_role_legend(ax, ion_roles)
+        _draw_role_legend(ax, ion_roles, legend_loc=legend_loc)
 
     return fig, ax

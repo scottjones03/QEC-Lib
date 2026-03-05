@@ -1874,7 +1874,7 @@ def _wise_sat_config_worker(
         except Exception as _pub_err:
             wise_logger.debug("Progress publish failed: %r", _pub_err)
 
-    def _solve_with_bound(sum_bound_B: int) -> Dict[str, Any]:
+    def _solve_with_bound(sum_bound_B: int, *, step_timeout: Optional[float] = None) -> Dict[str, Any]:
         if stop_event is not None and stop_event.is_set():
             return {
                 "P_max": P_max,
@@ -1910,6 +1910,29 @@ def _wise_sat_config_worker(
                 bt_soft_weight=bt_soft_weight,
             )
 
+            # ── Adaptive per-step timeout ────────────────────────
+            # When step_timeout is provided (bisection steps), cap the
+            # solver timeout to avoid spending the full budget on a
+            # single exploratory probe.  The feasibility check (loosest
+            # bound) always uses the full timeout.
+            _eff_sat_time = max_sat_time
+            _eff_rc2_time = max_rc2_time
+            _eff_nb_sat = notebook_sat_timeout
+            _eff_nb_rc2 = notebook_rc2_timeout
+            if step_timeout is not None:
+                if _eff_sat_time is not None:
+                    _eff_sat_time = min(_eff_sat_time, step_timeout)
+                else:
+                    _eff_sat_time = step_timeout
+                if _eff_rc2_time is not None:
+                    _eff_rc2_time = min(_eff_rc2_time, step_timeout)
+                else:
+                    _eff_rc2_time = step_timeout
+                if _eff_nb_sat is not None:
+                    _eff_nb_sat = min(_eff_nb_sat, step_timeout)
+                if _eff_nb_rc2 is not None:
+                    _eff_nb_rc2 = min(_eff_nb_rc2, step_timeout)
+
             cost_mid: Optional[int] = None
             worker_pid = os.getpid()
             job_base = (worker_pid, P_max, boundary_capacity_factor, sum_bound_B)
@@ -1917,13 +1940,13 @@ def _wise_sat_config_worker(
                 job_key = ("RC2",) + job_base
                 model_mid, cost_mid, status_solver = run_rc2_with_timeout_file(
                     formula_mid,
-                    timeout_s=max_rc2_time,
+                    timeout_s=_eff_rc2_time,
                     debug_prefix="[WISE-RC2]",
                     stop_event=stop_event,
                     job_key=job_key,
                     children_dict=rc2_children,
                     inprocess_limit=inprocess_limit,
-                    notebook_rc2_timeout=notebook_rc2_timeout,
+                    notebook_rc2_timeout=_eff_nb_rc2,
                 )
                 sat_ok = status_solver == "ok" and model_mid is not None
             else:
@@ -1934,14 +1957,14 @@ def _wise_sat_config_worker(
 
                 sat_ok, model_mid, status_solver = run_sat_with_timeout_file(
                     formula_mid,
-                    timeout_s=max_sat_time,
+                    timeout_s=_eff_sat_time,
                     debug_prefix=None,
                     assumptions=assumptions_mid,
                     stop_event=stop_event,
                     job_key=job_key,
                     children_dict=sat_children,
                     inprocess_limit=inprocess_limit,
-                    notebook_sat_timeout=notebook_sat_timeout,
+                    notebook_sat_timeout=_eff_nb_sat,
                 )
         except Exception as e:
             return {
@@ -2002,8 +2025,11 @@ def _wise_sat_config_worker(
     # — this P_max can never be feasible.  Saves ~log₂(max_bound_B)
     # iterations for every UNSAT config.
     # ------------------------------------------------------------------
+    _feas_t0 = time.time()
+    _feas_elapsed = 0.0
     if max_bound_B > 1:
         feas_result = _solve_with_bound(max_bound_B)
+        _feas_elapsed = time.time() - _feas_t0
         last_result = feas_result
         if not (feas_result.get("status") == "ok"
                 and feas_result.get("sat")
@@ -2036,6 +2062,24 @@ def _wise_sat_config_worker(
             P_max, boundary_capacity_factor, max_bound_B, low, high,
         )
 
+    # ------------------------------------------------------------------
+    # Adaptive bisection budget
+    # ------------------------------------------------------------------
+    # The feasibility check (loosest bound) uses the full solver timeout.
+    # For the bisection loop, we use adaptive timeouts:
+    #   - Per-step cap: max(15s, 5× feasibility time) so easy problems
+    #     get quick probes while hard problems get proportional headroom.
+    #   - Total bisection budget: min(solver_timeout, 90s) to prevent
+    #     spending hundreds of seconds on optimization when a feasible
+    #     result is already in hand.
+    # When a bisection step times out, it is treated as UNSAT (low rises),
+    # which narrows toward the known-feasible upper bound.
+    # ------------------------------------------------------------------
+    _solver_timeout = max_rc2_time if use_soft_bt else max_sat_time
+    _bisect_step_cap = max(15.0, min(5.0 * _feas_elapsed, _solver_timeout or 300.0))
+    _BISECT_BUDGET_S = min(_solver_timeout or 300.0, 90.0)
+    _bisect_t0 = time.time()
+
     while low <= high:
         if stop_event is not None and stop_event.is_set():
             wise_logger.debug(
@@ -2044,15 +2088,27 @@ def _wise_sat_config_worker(
                 boundary_capacity_factor,
             )
             break
+        # Check total bisection budget
+        _bisect_elapsed = time.time() - _bisect_t0
+        if _bisect_elapsed >= _BISECT_BUDGET_S:
+            wise_logger.debug(
+                "[WISE] config P_max=%d cap=%.2f: bisection budget exhausted "
+                "(%.1fs >= %.1fs); returning best ΣP so far",
+                P_max, boundary_capacity_factor,
+                _bisect_elapsed, _BISECT_BUDGET_S,
+            )
+            break
         mid = (low + high) // 2
 
         wise_logger.debug(
-            "[WISE] config P_max=%d cap=%.2f: trying ΣP<=%d",
+            "[WISE] config P_max=%d cap=%.2f: trying ΣP<=%d (step_cap=%.0fs, budget_left=%.0fs)",
             P_max,
             boundary_capacity_factor,
             mid,
+            _bisect_step_cap,
+            max(0.0, _BISECT_BUDGET_S - _bisect_elapsed),
         )
-        result = _solve_with_bound(mid)
+        result = _solve_with_bound(mid, step_timeout=_bisect_step_cap)
         last_result = result
 
         if result.get("status") == "ok" and result.get("sat") and result.get("model") is not None:
@@ -3873,6 +3929,8 @@ def optimal_QMR_for_WISE(
     _sp_inprocess_limit = getattr(solver_params, 'inprocess_limit', None) if solver_params else None
     _sp_nb_sat_timeout = getattr(solver_params, 'notebook_sat_timeout', None) if solver_params else None
     _sp_nb_rc2_timeout = getattr(solver_params, 'notebook_rc2_timeout', None) if solver_params else None
+    _sp_pool_budget_floor = getattr(solver_params, 'pool_budget_floor', None) if solver_params else None
+    _sp_pool_budget_mult = getattr(solver_params, 'pool_budget_mult', None) if solver_params else None
 
     # ── Cap outer timeouts when notebook/per-call timeout is configured ──
     # Without this cap, the pool budget can balloon to 2*max_sat_time
@@ -3895,9 +3953,11 @@ def optimal_QMR_for_WISE(
     # Safety-net: difficulty-aware floor so small demos don't stall but
     # hard problems get enough headroom.
     # No ceiling: solver_timeout already scales with difficulty.
+    _eff_pool_floor = _sp_pool_budget_floor if _sp_pool_budget_floor is not None else _MIN_POOL_BUDGET_S_FLOOR
+    _eff_pool_mult = _sp_pool_budget_mult if _sp_pool_budget_mult is not None else _POOL_BUDGET_MULT
     _MIN_POOL_BUDGET_S = max(
-        _MIN_POOL_BUDGET_S_FLOOR,
-        (solver_timeout or 0.0) * _POOL_BUDGET_MULT,
+        _eff_pool_floor,
+        (solver_timeout or 0.0) * _eff_pool_mult,
     )
     if global_budget_s is None:
         global_budget_s = _MIN_POOL_BUDGET_S
@@ -4053,7 +4113,12 @@ def optimal_QMR_for_WISE(
             _POOL_EARLY_EXIT_SAT = 3 if _grid_cells <= 24 else 5
             _pool_sat_count = 0
             _last_progress_time = time.time()  # stall detection
-            _STALL_TIMEOUT_S = 60.0  # break if no progress for 60s
+            # Stall timeout: use solver_timeout (already capped by
+            # notebook_sat_timeout / notebook_rc2_timeout) plus a
+            # small margin for CNF construction overhead.  This way
+            # the stall watchdog directly respects what the user
+            # configured in WISERoutingConfig.
+            _STALL_TIMEOUT_S = max(120.0, (solver_timeout or 300.0) + 60.0)
             
             while True:
                 # Emit incremental progress as configs complete
@@ -4694,12 +4759,21 @@ def optimal_QMR_for_WISE(
                             _sc_base[_sr, _sc],
                         )
         _sc_diff_count = int(np.count_nonzero(_sc_base != layouts[_sc_r]))
-        wise_logger.warning(
-            "[WISE-SELFCHECK] Round %d: replay vs decoded: %d/%d cells differ "
-            "(grid_origin=%s, grid=%dx%d)",
-            _sc_r, _sc_diff_count, layouts[_sc_r].size,
-            grid_origin, _sc_base.shape[0], _sc_base.shape[1],
-        )
+        # Log at DEBUG when self-check passes (0 diffs); only WARNING+ for real issues
+        if _sc_diff_count == 0:
+            wise_logger.debug(
+                "[WISE-SELFCHECK] Round %d: replay vs decoded: 0/%d cells differ "
+                "(grid_origin=%s, grid=%dx%d) — OK",
+                _sc_r, layouts[_sc_r].size,
+                grid_origin, _sc_base.shape[0], _sc_base.shape[1],
+            )
+        else:
+            wise_logger.warning(
+                "[WISE-SELFCHECK] Round %d: replay vs decoded: %d/%d cells differ "
+                "(grid_origin=%s, grid=%dx%d)",
+                _sc_r, _sc_diff_count, layouts[_sc_r].size,
+                grid_origin, _sc_base.shape[0], _sc_base.shape[1],
+            )
         if not np.array_equal(_sc_base, layouts[_sc_r]):
             wise_logger.error(
                 "[WISE] SAT DECODE SELF-CONSISTENCY FAIL round %d: "

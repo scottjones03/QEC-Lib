@@ -1046,8 +1046,7 @@ class CrystalRotation(CrystalOperation):
         involvedComponents: Sequence["QCCDComponent"],
         **kwargs,
     ) -> None:
-        super().__init__(run, involvedComponents=involvedComponents, **kwargs)
-        self._trap: Trap = trap
+        super().__init__(run, involvedComponents=involvedComponents, trap=trap, **kwargs)
 
     def calculateOperationTime(self) -> None:
         self._operationTime = self.ROTATION_TIME
@@ -1425,6 +1424,8 @@ class SingleQubitGate(_OneQubitGate):
         def _noop(trap):
             ...
 
+        kwargs.pop("run", None)
+        kwargs.pop("involvedComponents", None)
         super().__init__(run=_noop, ion=ion, involvedComponents=[ion], **kwargs)
         self._gate_type = gate_type
 
@@ -1440,6 +1441,8 @@ class Measurement(_OldMeasurement):
         def _noop(trap):
             ...
 
+        kwargs.pop("run", None)
+        kwargs.pop("involvedComponents", None)
         super().__init__(run=_noop, ion=ion, involvedComponents=[ion], **kwargs)
 
 
@@ -1450,5 +1453,7 @@ class QubitReset(_OldQubitReset):
         def _noop(trap):
             ...
 
+        kwargs.pop("run", None)
+        kwargs.pop("involvedComponents", None)
         super().__init__(run=_noop, ion=ion, involvedComponents=[ion], **kwargs)
     

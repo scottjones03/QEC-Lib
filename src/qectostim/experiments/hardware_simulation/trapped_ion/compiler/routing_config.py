@@ -41,6 +41,24 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional, Tuple, List
 
 
+def _safe_tqdm():
+    """Return the best available tqdm class.
+
+    ``tqdm.auto`` picks ``tqdm.notebook`` inside Jupyter kernels, which
+    requires *ipywidgets*.  When ipywidgets is **not** installed the
+    notebook bar silently produces no visible output.  This helper
+    detects that situation and falls back to the plain-text
+    ``tqdm.tqdm`` which always works.
+    """
+    try:
+        import ipywidgets  # noqa: F401
+        from tqdm.auto import tqdm
+        return tqdm
+    except ImportError:
+        from tqdm import tqdm
+        return tqdm
+
+
 @dataclass
 class RoutingProgress:
     """Snapshot of SAT-routing progress, emitted via a callback.
@@ -158,6 +176,14 @@ class WISESolverParams:
     macos_thread_cap: Optional[int] = None
     """Override ``WISE_MACOS_THREAD_CAP``.  Maximum ThreadPoolExecutor
     workers on macOS (where threads replace processes).  Default: 4."""
+    pool_budget_floor: Optional[float] = None
+    """Override ``_MIN_POOL_BUDGET_S_FLOOR`` (default 600 s).  Minimum
+    total wall-clock budget for the multi-config SAT pool, regardless of
+    solver timeout.  Set to a smaller value (e.g. 120) for notebooks."""
+    pool_budget_mult: Optional[float] = None
+    """Override ``_POOL_BUDGET_MULT`` (default 10).  The pool budget is
+    at least ``solver_timeout * pool_budget_mult``.  Set to a smaller
+    value (e.g. 3) for notebooks."""
 
     @classmethod
     def from_grid(
@@ -329,6 +355,8 @@ class WISERoutingConfig:
         notebook_sat_timeout: Optional[float] = None,
         notebook_rc2_timeout: Optional[float] = None,
         macos_thread_cap: Optional[int] = None,
+        pool_budget_floor: Optional[float] = None,
+        pool_budget_mult: Optional[float] = None,
         patch_verbose: bool = False,
         debug_mode: bool = False,
         solver_params: Optional["WISESolverParams"] = None,
@@ -427,6 +455,8 @@ class WISERoutingConfig:
                 notebook_sat_timeout=notebook_sat_timeout,
                 notebook_rc2_timeout=notebook_rc2_timeout,
                 macos_thread_cap=macos_thread_cap,
+                pool_budget_floor=pool_budget_floor,
+                pool_budget_mult=pool_budget_mult,
             )
         else:
             # When solver_params is pre-built, still honour explicitly
@@ -435,6 +465,10 @@ class WISERoutingConfig:
                 solver_params.notebook_sat_timeout = notebook_sat_timeout
             if notebook_rc2_timeout is not None:
                 solver_params.notebook_rc2_timeout = notebook_rc2_timeout
+            if pool_budget_floor is not None:
+                solver_params.pool_budget_floor = pool_budget_floor
+            if pool_budget_mult is not None:
+                solver_params.pool_budget_mult = pool_budget_mult
 
         progress_cb = None
         progress_close = None
@@ -508,7 +542,7 @@ def make_tqdm_progress_callback(
     >>> close()
     """
     try:
-        from tqdm.auto import tqdm
+        tqdm = _safe_tqdm()
     except ImportError:
         # Fallback: no-op callback if tqdm not available
         def _noop(p: RoutingProgress) -> None:
@@ -638,7 +672,7 @@ def make_sat_only_tqdm_progress_callback(
     Returns ``(callback, close)`` — call ``close()`` when routing is done.
     """
     try:
-        from tqdm.auto import tqdm
+        tqdm = _safe_tqdm()
     except ImportError:
         def _noop(p: RoutingProgress) -> None:
             pass
@@ -679,7 +713,7 @@ def make_sat_only_tqdm_progress_callback(
             msg = p.message or ""
             if msg and msg != _last_outer_msg:
                 # Use tqdm.write to print above the progress bar
-                from tqdm.auto import tqdm as _tqdm_cls
+                _tqdm_cls = _safe_tqdm()
                 _tqdm_cls.write(f"[Routing] {msg}")
                 _last_outer_msg = msg
     
@@ -715,7 +749,7 @@ def make_triple_tqdm_progress_callback(
     Returns ``(callback, close)`` — call ``close()`` when routing is done.
     """
     try:
-        from tqdm.auto import tqdm
+        tqdm = _safe_tqdm()
     except ImportError:
         def _noop(p: RoutingProgress) -> None:
             pass
@@ -866,7 +900,7 @@ def make_nested_tqdm_progress_callback(
     >>> close()
     """
     try:
-        from tqdm.auto import tqdm
+        tqdm = _safe_tqdm()
     except ImportError:
         def _noop(p: RoutingProgress) -> None:
             pass
@@ -1003,7 +1037,7 @@ def make_single_tqdm_progress_callback(
     >>> close()
     """
     try:
-        from tqdm.auto import tqdm
+        tqdm = _safe_tqdm()
     except ImportError:
         def _noop(p: RoutingProgress) -> None:
             pass

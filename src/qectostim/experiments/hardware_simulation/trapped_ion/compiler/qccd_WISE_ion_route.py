@@ -3071,6 +3071,13 @@ def _route_round_sequence(
         Tuple[Tuple[Tuple[int, int], ...], ...],
         Dict[int, List[Tuple[int, int, List[Tuple[np.ndarray, List[Dict[str, Any]], List[Tuple[int, int]]]]]]]
     ] = {}
+    # Parallel cache for starting layouts — keyed by block_key then blk_idx.
+    # Unlike the old flat cache_start_layouts dict, this persists across
+    # block transitions so layout validation works on block_cache replays.
+    block_layout_cache: Dict[
+        Tuple[Tuple[Tuple[int, int], ...], ...],
+        Dict[int, np.ndarray]
+    ] = {}
     tiling_steps_from_cache: bool = False
     pending_first_cached_reconfig: bool = False
     blk_idx: int = 0
@@ -3084,6 +3091,8 @@ def _route_round_sequence(
     # replay_level=d caches d consecutive EC cycles together.
     BLOCK_LEN = (replay_level * ms_rounds_per_ec_round) if replay_level > 0 else float('inf')
     cache_for_block: Dict = {}
+    cache_start_layouts: Dict[int, np.ndarray] = {}  # per-block starting layouts (active pointer)
+    _active_block_key: Optional[Tuple] = None  # tracks which block_key cache_start_layouts points to
 
     # Track current layout (updated after each routing step)
     currentArr = oldArrangementArr.copy()
@@ -3117,11 +3126,19 @@ def _route_round_sequence(
                 # --- Trick 6: Block cache lookup ---
                 new_blk_end = min(len(parallelPairs), window_start + BLOCK_LEN) - window_start
                 new_block_key_rounds = parallelPairs[window_start:new_blk_end + window_start]
-                new_block_key: Tuple[Tuple[Tuple[int, int], ...], ...] = tuple(
+                _pair_key: Tuple[Tuple[Tuple[int, int], ...], ...] = tuple(
                     tuple(sorted(round_pairs)) for round_pairs in new_block_key_rounds
                 )
+                # Include starting layout hash in block key so that the
+                # same pair pattern with a different starting layout gets
+                # a separate cache slot (avoids false cache hits that
+                # trigger "cache layout drift" warnings).
+                _layout_hash = hash(currentArr.tobytes())
+                new_block_key = (_pair_key, _layout_hash)
 
                 new_cache_for_block = block_cache.setdefault(new_block_key, {})
+                # Always load the matching start-layout dict for this block key
+                new_start_layouts = block_layout_cache.setdefault(new_block_key, {})
                 logger.info(
                     "%s rechecked cache at idx=%d; blk_idx=%d, blk_end=%d, new_blk_end=%d, "
                     "cache_for_block=%d, new_cache=%d",
@@ -3130,11 +3147,15 @@ def _route_round_sequence(
                 )
                 if len(new_cache_for_block) > 0:
                     cache_for_block = new_cache_for_block
+                    cache_start_layouts = new_start_layouts
+                    _active_block_key = new_block_key
                     blk_idx = 0
                     blk_end = new_blk_end
                     tiling_steps_from_cache = True
                 elif len(cache_for_block) == 0:
                     cache_for_block = new_cache_for_block
+                    cache_start_layouts = new_start_layouts
+                    _active_block_key = new_block_key
                     blk_idx = 0
                     blk_end = new_blk_end
                     tiling_steps_from_cache = False
@@ -3143,6 +3164,31 @@ def _route_round_sequence(
 
             if tiling_steps_from_cache:
                 # --- Trick 6: Cache hit → replay ---
+                # Validate that the actual starting layout matches the layout
+                # when this cache entry was first computed.  Layout drift
+                # (e.g. from a previous rebuild) invalidates the cached
+                # schedules, causing cascading PRE-FLIGHT FAILs.
+                _cached_start = cache_start_layouts.get(blk_idx)
+                if _cached_start is not None and not np.array_equal(currentArr, _cached_start):
+                    _drift_n = int(np.count_nonzero(currentArr != _cached_start))
+                    logger.warning(
+                        "%s cache layout drift: %d/%d cells differ at blk_idx=%d; "
+                        "invalidating cache and re-solving fresh",
+                        PATCH_LOG_PREFIX, _drift_n, currentArr.size, blk_idx,
+                    )
+                    tiling_steps_from_cache = False
+                    # Evict this block key from both caches so it gets
+                    # re-solved with the current actual layout.
+                    if _active_block_key is not None:
+                        block_cache.pop(_active_block_key, None)
+                        block_layout_cache.pop(_active_block_key, None)
+                    cache_for_block = {}
+                    cache_start_layouts = {}
+                    _active_block_key = None
+                    blk_idx = blk_end = 0
+                    recheck_cache = False  # skip re-lookup; solve fresh below
+
+            if tiling_steps_from_cache:
                 tiling_steps_meta = deepcopy(cache_for_block[blk_idx])
                 pending_first_cached_reconfig = (blk_idx == 0)
                 logger.info(
@@ -3170,6 +3216,7 @@ def _route_round_sequence(
                 )
                 if len(cache_for_block) < BLOCK_LEN:
                     cache_for_block[blk_idx] = deepcopy(tiling_steps_meta)
+                    cache_start_layouts[blk_idx] = currentArr.copy()
                 logger.info(
                     "%s patch routing idx=%d produced %d tiling steps; blk_idx=%d, cache_size=%d",
                     PATCH_LOG_PREFIX, idx, len(tiling_steps_meta),
@@ -3352,6 +3399,25 @@ def _route_round_sequence(
         else:
             sched_arg = schedule
 
+        # ── Planning-side consistency fix (multi-tiling + lookahead>1) ──
+        # When multiple offset tilings are used with R>1, earlier
+        # tilings' R>0 snapshots contain stale layout_after values
+        # that don't account for later tilings' R0 changes to
+        # overlapping cells.  Replay the schedule on the ACTUAL
+        # currentArr and use the result so that every RoutingStep has
+        # a self-consistent (layout_before, schedule, layout_after)
+        # triple.  This is a no-op when the snapshot is already correct.
+        if sched_arg is not None:
+            _replay = _simulate_schedule_replay(currentArr, sched_arg)
+            if not np.array_equal(_replay, layout_after):
+                _replay_diff = int(np.count_nonzero(_replay != layout_after))
+                logger.info(
+                    "%s planning validation: schedule replay differs from "
+                    "snapshot layout_after by %d/%d cells; using replay result",
+                    PATCH_LOG_PREFIX, _replay_diff, layout_after.size,
+                )
+                layout_after = _replay
+
         # Build the RoutingStep
         _step_layout_before = currentArr.copy()
         steps.append(RoutingStep(
@@ -3396,6 +3462,19 @@ def _route_round_sequence(
         while tiling_step:
             next_layout, next_schedule, next_solved = tiling_step[0]
             tiling_step.pop(0)
+
+            # ── Planning-side consistency fix (same as above) ──
+            if next_schedule is not None:
+                _replay2 = _simulate_schedule_replay(currentArr, next_schedule)
+                if not np.array_equal(_replay2, next_layout):
+                    _replay2_diff = int(np.count_nonzero(_replay2 != next_layout))
+                    logger.info(
+                        "%s planning validation (tiling): schedule replay "
+                        "differs from snapshot by %d/%d cells; using replay",
+                        PATCH_LOG_PREFIX, _replay2_diff, next_layout.size,
+                    )
+                    next_layout = _replay2
+
             # Skip true identity reconfigs (no layout change, no
             # schedule) to avoid emitting useless no-op steps.
             if (
@@ -3425,6 +3504,8 @@ def _route_round_sequence(
         recheck_cache = (blk_idx not in cache_for_block)
         if blk_idx == blk_end:
             cache_for_block = {}
+            cache_start_layouts = {}
+            _active_block_key = None
             blk_idx = blk_end = 0
 
     return steps, currentArr
@@ -4371,6 +4452,29 @@ def ionRoutingWISEArch(
         _step_schedule = first_step.schedule
         _step_target = first_step.layout_after
         _is_ms_context = (first_step.reconfig_context == "ms_gate")
+
+        # ── Per-step layout consistency diagnostic (Fix 20 diag) ──
+        if first_step.layout_before is not None:
+            _lb_diff_20 = int(np.sum(
+                oldArrangementArr != first_step.layout_before
+            ))
+            if _lb_diff_20:
+                logger.warning(
+                    "%s ms_round=%d: LAYOUT MISMATCH — "
+                    "oldArr differs from planned layout_before "
+                    "by %d/%d cells  (context=%s, has_schedule=%s)",
+                    PATCH_LOG_PREFIX, ms_round_idx,
+                    _lb_diff_20, oldArrangementArr.size,
+                    first_step.reconfig_context,
+                    first_step.schedule is not None,
+                )
+            else:
+                logger.debug(
+                    "%s ms_round=%d: layout OK (context=%s)",
+                    PATCH_LOG_PREFIX, ms_round_idx,
+                    first_step.reconfig_context,
+                )
+
         if not _skip_preflight and not np.array_equal(oldArrangementArr, _step_target):
             # ── Intentionally-heuristic steps (Fix 18) ──────────
             # When use_heuristic_directly produced a RoutingStep with
@@ -4633,6 +4737,33 @@ def ionRoutingWISEArch(
                         f"/{oldArrangementArr.size} cells."
                     )
 
+        # ── Fix 20: Reset target to planned layout ───────────────
+        # Rebuild/escalation may have overwritten _step_target with
+        # an intermediate layout (_last_layout or _elast) that
+        # differs from the original planned target.  Always use the
+        # ORIGINAL planned target (first_step.layout_after) so that
+        # oldArrangementArr stays in sync with the planning chain's
+        # currentArr for subsequent rounds.  Without this reset,
+        # cascading PRE-FLIGHT FAILs occur because every subsequent
+        # step's layout_before (from the planning chain) expects the
+        # original target, not the rebuild's intermediate result.
+        _step_target = first_step.layout_after
+        if _step_schedule is not None:
+            _fix20_replay = _simulate_schedule_replay(
+                oldArrangementArr, _step_schedule,
+            )
+            if not np.array_equal(_fix20_replay, _step_target):
+                _fix20_diff = int(np.sum(_fix20_replay != _step_target))
+                logger.warning(
+                    "%s ms_round=%d: Fix20 — schedule doesn't reach "
+                    "original planned target after rebuild/escalation "
+                    "(%d/%d cells); dropping schedule",
+                    PATCH_LOG_PREFIX, ms_round_idx,
+                    _fix20_diff,
+                    oldArrangementArr.size,
+                )
+                _step_schedule = None
+
         # INV-E1: No-op reconfig elision — skip reconfig when the
         # target layout is identical to the current layout.
         if np.array_equal(oldArrangementArr, _step_target):
@@ -4667,6 +4798,25 @@ def ionRoutingWISEArch(
                 reconfigTime,
                 len(allOps),
             )
+            # ── Post-apply verification (Fix 20 diag) ──────────
+            if not np.array_equal(oldArrangementArr, _step_target):
+                _pa_diff = int(np.sum(oldArrangementArr != _step_target))
+                logger.warning(
+                    "%s ms_round=%d: POST-APPLY DIVERGENCE! "
+                    "oldArr != applied target by %d/%d cells",
+                    PATCH_LOG_PREFIX, ms_round_idx,
+                    _pa_diff, oldArrangementArr.size,
+                )
+            if not np.array_equal(oldArrangementArr, first_step.layout_after):
+                _pa2_diff = int(np.sum(
+                    oldArrangementArr != first_step.layout_after
+                ))
+                logger.warning(
+                    "%s ms_round=%d: POST-APPLY vs PLANNING! "
+                    "oldArr != first_step.layout_after by %d/%d cells",
+                    PATCH_LOG_PREFIX, ms_round_idx,
+                    _pa2_diff, oldArrangementArr.size,
+                )
 
         # 4b) Run as many single-qubit operations as possible without routing
         # Fix 1: round-bounded drain — only drain ops whose CX
@@ -4899,6 +5049,29 @@ def ionRoutingWISEArch(
                         f"{int(np.sum(oldArrangementArr != _sub_target))}"
                         f"/{oldArrangementArr.size} cells."
                     )
+
+            # ── Fix 20b: Reset sub-target to planned layout ────────
+            # Same as Fix 20 for first steps: rebuild/escalation may
+            # have overwritten _sub_target.  Reset to the original
+            # planned target so oldArrangementArr stays in sync.
+            _sub_target = subsequent_step.layout_after
+            if _sub_schedule is not None:
+                _fix20b_replay = _simulate_schedule_replay(
+                    oldArrangementArr, _sub_schedule,
+                )
+                if not np.array_equal(_fix20b_replay, _sub_target):
+                    _fix20b_diff = int(
+                        np.sum(_fix20b_replay != _sub_target)
+                    )
+                    logger.warning(
+                        "%s ms_round=%d sub=%d: Fix20b — schedule "
+                        "doesn't reach original planned target "
+                        "(%d/%d cells); dropping schedule",
+                        PATCH_LOG_PREFIX, ms_round_idx, sub_idx,
+                        _fix20b_diff,
+                        oldArrangementArr.size,
+                    )
+                    _sub_schedule = None
 
             # INV-E1: No-op reconfig elision for subsequent steps too
             if np.array_equal(oldArrangementArr, _sub_target):
@@ -6217,6 +6390,85 @@ def ionRoutingGadgetArch(
         logger.warning(
             "%s PLANNING DIAG: All %d routing steps have CONSISTENT triples.",
             PATCH_LOG_PREFIX, len(all_routing_steps),
+        )
+
+    # ------------------------------------------------------------------
+    # DIAGNOSTIC: Verify chain consistency (Fix 20 diag)
+    # layout_after[N] should equal layout_before[N+1]
+    # ------------------------------------------------------------------
+    _chain_breaks = []
+    for _ci in range(len(all_routing_steps) - 1):
+        _s_curr = all_routing_steps[_ci]
+        _s_next = all_routing_steps[_ci + 1]
+        if _s_curr.layout_after is None or _s_next.layout_before is None:
+            continue
+        if not np.array_equal(_s_curr.layout_after, _s_next.layout_before):
+            _cb_diff = int(np.sum(_s_curr.layout_after != _s_next.layout_before))
+            _chain_breaks.append((
+                _ci, _s_curr.ms_round_index,
+                _ci + 1, _s_next.ms_round_index,
+                _cb_diff, _s_curr.reconfig_context,
+                _s_next.reconfig_context,
+            ))
+    if _chain_breaks:
+        logger.warning(
+            "%s PLANNING DIAG: %d CHAIN BREAKS detected "
+            "(layout_after[N] != layout_before[N+1])!",
+            PATCH_LOG_PREFIX, len(_chain_breaks),
+        )
+        for (_ci, _mri_c, _ni, _mri_n, _nd, _ctx_c, _ctx_n) in _chain_breaks[:20]:
+            logger.warning(
+                "%s   step[%d](ms=%d,ctx=%s) -> step[%d](ms=%d,ctx=%s): "
+                "%d cells differ",
+                PATCH_LOG_PREFIX, _ci, _mri_c, _ctx_c,
+                _ni, _mri_n, _ctx_n, _nd,
+            )
+    else:
+        logger.warning(
+            "%s PLANNING DIAG: All %d step transitions have "
+            "CONSISTENT chain (no gaps).",
+            PATCH_LOG_PREFIX, len(all_routing_steps) - 1,
+        )
+
+    # ------------------------------------------------------------------
+    # DIAGNOSTIC: Also verify chain consistency in SORTED order
+    # (the execution loop sorts by ms_round_index — if sorted
+    # order has gaps, that's the PRE-FLIGHT root cause)
+    # ------------------------------------------------------------------
+    _sorted_steps = sorted(all_routing_steps,
+                           key=lambda s: s.ms_round_index)
+    _sorted_breaks = []
+    for _ci in range(len(_sorted_steps) - 1):
+        _s_curr = _sorted_steps[_ci]
+        _s_next = _sorted_steps[_ci + 1]
+        if _s_curr.layout_after is None or _s_next.layout_before is None:
+            continue
+        if not np.array_equal(_s_curr.layout_after, _s_next.layout_before):
+            _sb_diff = int(np.sum(_s_curr.layout_after != _s_next.layout_before))
+            _sorted_breaks.append((
+                _ci, _s_curr.ms_round_index,
+                _ci + 1, _s_next.ms_round_index,
+                _sb_diff, _s_curr.reconfig_context,
+                _s_next.reconfig_context,
+            ))
+    if _sorted_breaks:
+        logger.warning(
+            "%s PLANNING DIAG: %d SORTED-ORDER CHAIN BREAKS! "
+            "(execution sort reorders steps, breaking chain)",
+            PATCH_LOG_PREFIX, len(_sorted_breaks),
+        )
+        for (_ci, _mri_c, _ni, _mri_n, _nd, _ctx_c, _ctx_n) in _sorted_breaks[:20]:
+            logger.warning(
+                "%s   sorted[%d](ms=%d,ctx=%s) -> sorted[%d](ms=%d,ctx=%s): "
+                "%d cells differ",
+                PATCH_LOG_PREFIX, _ci, _mri_c, _ctx_c,
+                _ni, _mri_n, _ctx_n, _nd,
+            )
+    else:
+        logger.warning(
+            "%s PLANNING DIAG: SORTED order also has "
+            "CONSISTENT chain (%d transitions).",
+            PATCH_LOG_PREFIX, len(_sorted_steps) - 1,
         )
     # ------------------------------------------------------------------
 

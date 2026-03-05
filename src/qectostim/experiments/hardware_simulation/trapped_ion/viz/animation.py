@@ -78,6 +78,14 @@ def _ease(t: float) -> float:
 # Pre-computation: snapshot building
 # =============================================================================
 
+def _read_trap_occupancy(arch: Any) -> Dict[int, int]:
+    """Return {trap_idx: n_ions} for all manipulation traps."""
+    occ: Dict[int, int] = {}
+    for t in getattr(arch, "_manipulationTraps", []):
+        occ[t.idx] = len(list(getattr(t, "ions", [])))
+    return occ
+
+
 def _build_snapshots(
     arch: Any,
     operations: Sequence[Any],
@@ -88,6 +96,7 @@ def _build_snapshots(
     List[bool],
     List[str],
     List[float],
+    List[Dict[int, int]],
 ]:
     """Run all operations sequentially, snapshot positions after each.
 
@@ -104,6 +113,8 @@ def _build_snapshots(
         Human-readable label for each step.
     durations_us : list of float
         Physical duration (us) for each step.
+    trap_occupancy_per_step : list of {trap_idx: n_ions}
+        Trap occupancy at each step for dynamic grid sizing.
 
     **DESTRUCTIVE**: ``op.run()`` permanently mutates ``arch``.
     """
@@ -114,6 +125,7 @@ def _build_snapshots(
     is_transport_list: List[bool] = [False]
     labels: List[str] = ["Initial"]
     durations: List[float] = [0.0]
+    trap_occupancy: List[Dict[int, int]] = [_read_trap_occupancy(arch)]
 
     for i, op in enumerate(operations):
         # Run
@@ -160,7 +172,10 @@ def _build_snapshots(
                 dur = H_PASS_TIME_US
         durations.append(dur)
 
-    return snapshots, active_ions, gate_kinds, is_transport_list, labels, durations
+        # Trap occupancy for dynamic grid sizing
+        trap_occupancy.append(_read_trap_occupancy(arch))
+
+    return snapshots, active_ions, gate_kinds, is_transport_list, labels, durations, trap_occupancy
 
 
 # =============================================================================
@@ -676,6 +691,10 @@ def animate_transport(
     title_prefix: str = "",
     repeat: bool = False,
     native_circuit: Any = None,
+    show_trap_labels: bool = True,
+    end_hold_frames: int = 0,
+    simple_ion_labels: bool = False,
+    margin: Optional[float] = None,
 ) -> Any:
     """Animate step-by-step ion transport with interpolated motion.
 
@@ -707,6 +726,14 @@ def animate_transport(
         Prefix for frame titles.
     repeat : bool
         Whether the animation should loop.
+    end_hold_frames : int
+        Extra frames to hold the final state before looping (default 0).
+    simple_ion_labels : bool
+        If True, ion labels use simple ``I{idx}`` format instead of
+        the full ``D(I{idx})`` role-prefixed format (default False).
+    margin : float | None
+        Override for the axis margin around the grid (default None
+        = auto-detect: 2.0 for WISE, 1.2 otherwise).
 
     Returns
     -------
@@ -736,7 +763,8 @@ def animate_transport(
     # 1. Pre-compute snapshots (destructive — runs all operations)
     # ------------------------------------------------------------------
     snapshots, active_ions_per_step, gate_kind_per_step, \
-        is_transport_step, labels_per_step, step_duration_us = \
+        is_transport_step, labels_per_step, step_duration_us, \
+        trap_occupancy_per_step = \
         _build_snapshots(arch, operations)
 
     # ------------------------------------------------------------------
@@ -771,7 +799,7 @@ def animate_transport(
     cum_frames: List[int] = [1]  # frame 0 = initial state (1 frame)
     for nf in step_nframes:
         cum_frames.append(cum_frames[-1] + nf)
-    total_frames = cum_frames[-1]
+    total_frames = cum_frames[-1] + max(0, end_hold_frames)
 
     # ------------------------------------------------------------------
     # 3. Compute axis bounds from geometry
@@ -797,11 +825,11 @@ def animate_transport(
             all_x.append(ix)
             all_y.append(iy)
 
-    margin = 2.0 if is_wise else 1.2
-    x_lo = min(all_x) - margin if all_x else -5
-    x_hi = max(all_x) + margin if all_x else 10
-    y_lo = min(all_y) - margin if all_y else -5
-    y_hi = max(all_y) + margin * 1.5 if all_y else 10
+    _margin = margin if margin is not None else (2.0 if is_wise else 1.2)
+    x_lo = min(all_x) - _margin if all_x else -5
+    x_hi = max(all_x) + _margin if all_x else 10
+    y_lo = min(all_y) - _margin if all_y else -5
+    y_hi = max(all_y) + _margin * 1.5 if all_y else 10
 
     # ------------------------------------------------------------------
     # 4. Stim mapping (if stim_circuit provided)
@@ -942,10 +970,20 @@ def animate_transport(
 
         # --- Draw static grid ---
         gk = gate_kind_per_step[op_idx + 1] if op_idx >= 0 and op_idx + 1 < len(gate_kind_per_step) else None
-        if is_wise:
-            _draw_wise_grid(ax, arch, gate_kind=gk)
+        # Use pre-step trap occupancy during interpolation, post-step at t=1
+        if op_idx < 0:
+            _frame_occ = trap_occupancy_per_step[0] if trap_occupancy_per_step else None
+        elif t >= 1.0:
+            _step_idx = min(op_idx + 1, len(trap_occupancy_per_step) - 1)
+            _frame_occ = trap_occupancy_per_step[_step_idx]
         else:
-            _draw_qccd_grid(ax, arch, gate_kind=gk)
+            _step_idx = min(op_idx, len(trap_occupancy_per_step) - 1)
+            _frame_occ = trap_occupancy_per_step[_step_idx]
+        if is_wise:
+            _draw_wise_grid(ax, arch, gate_kind=gk, show_trap_labels=show_trap_labels)
+        else:
+            _draw_qccd_grid(ax, arch, gate_kind=gk, show_trap_labels=show_trap_labels,
+                            ion_count_override=_frame_occ)
 
         if frame == 0:
             # Initial state
@@ -958,6 +996,7 @@ def animate_transport(
                 ion_idx_remap=ion_idx_remap,
                 physical_to_logical=physical_to_logical,
                 per_ion_gate_kind=None,
+                simple_ion_labels=simple_ion_labels,
             )
             title_str = "Initial configuration"
             if n_ops == 0:
@@ -1021,6 +1060,7 @@ def animate_transport(
                 physical_to_logical=physical_to_logical,
                 per_ion_gate_kind=_pigk,
                 ms_pairs=_ms_pairs,
+                simple_ion_labels=simple_ion_labels,
             )
 
             # Transport arrows
